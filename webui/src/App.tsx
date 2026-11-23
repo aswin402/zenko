@@ -596,6 +596,7 @@ export default function App() {
         body: JSON.stringify({
           title: 'New Session',
           ...(draftPolicy ? { permission_mode: draftPolicy } : {}),
+          ...(activeModel ? { model_override: activeModel } : {}),
         }),
       })
       setDraftPolicy(null)
@@ -612,7 +613,11 @@ export default function App() {
       setLiveTools([])
       setLiveOrchestrator(null)
     }
-    const payload: any = { text, mode: 'auto' }
+    const payload: any = {
+      text,
+      mode: 'auto',
+      ...(activeModel ? { model: activeModel } : {}),
+    }
     const effectiveParent = overrideParentId !== undefined ? overrideParentId : branchParent
     if (effectiveParent !== undefined) {
       payload.parent_event_id = effectiveParent

@@ -469,6 +469,60 @@ html, body, #root {
   border-top: 1px solid var(--border);
   margin: 1rem 0;
 }
+.zenko-prose a,
+.zenko-prose-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 0 2px;
+  margin: 0 -2px;
+  background-image:
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(
+      color-mix(in srgb, var(--accent) 36%, transparent),
+      color-mix(in srgb, var(--accent) 36%, transparent)
+    );
+  background-repeat: no-repeat, no-repeat;
+  background-position: 0 100%, 0 100%;
+  background-size: 0% 1.5px, 100% 1px;
+  transition:
+    color var(--motion-ms) var(--motion-ease),
+    background-size 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 180ms ease;
+}
+.zenko-prose a:hover,
+.zenko-prose-link:hover {
+  color: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  background-size: 100% 1.5px, 100% 1px;
+}
+.zenko-prose a:focus-visible,
+.zenko-prose-link:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+}
+.zenko-prose-link-icon {
+  display: inline-block;
+  vertical-align: -0.11em;
+  margin-left: 2px;
+  opacity: 0.72;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
+}
+.zenko-prose-link:hover .zenko-prose-link-icon {
+  opacity: 1;
+  transform: translate(2px, -2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .zenko-prose a,
+  .zenko-prose-link,
+  .zenko-prose-link-icon {
+    transition: none;
+  }
+  .zenko-prose-link:hover .zenko-prose-link-icon {
+    transform: none;
+  }
+}
 
 /* RareUI Living Status Orb */
 .z-orb-core {

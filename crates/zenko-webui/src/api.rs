@@ -366,6 +366,8 @@ pub struct CreateSessionReq {
     title: Option<String>,
     #[serde(default)]
     permission_mode: Option<String>,
+    #[serde(default)]
+    model_override: Option<String>,
 }
 
 pub async fn api_create_session(
@@ -389,7 +391,19 @@ pub async fn api_create_session(
         None,
         mode,
     ) {
-        Ok(s) => Json(s).into_response(),
+        Ok(mut s) => {
+            if let Some(m) = req.model_override.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                if state
+                    .runtime
+                    .store
+                    .update_session_meta(&s.id, None, Some(Some(m)), None)
+                    .is_ok()
+                {
+                    s.model_override = Some(m.to_string());
+                }
+            }
+            Json(s).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
@@ -480,23 +494,37 @@ pub async fn api_update_session(
         return r;
     }
 
-    // Allow switching active provider / streaming directly from the Chat Composer!
-    if req.provider_kind.is_some() || req.enable_streaming.is_some() {
+    // Allow switching active provider / model / streaming directly from the Chat Composer!
+    if req.provider_kind.is_some() || req.model_override.is_some() || req.enable_streaming.is_some()
+    {
         let target_kind = req.provider_kind.clone();
         let target_model = req.model_override.clone();
         let target_stream = req.enable_streaming;
         let _ = state.runtime.update_config(|c| {
+            let mut switched_provider = false;
             if let Some(ref kind) = target_kind {
                 let desc = find_provider(kind);
-                let switched = !c.provider.kind.eq_ignore_ascii_case(desc.id);
+                switched_provider = !c.provider.kind.eq_ignore_ascii_case(desc.id);
                 c.provider.kind = desc.id.to_string();
-                if switched {
+                if switched_provider {
                     c.provider.base_url = desc.default_base_url.to_string();
+                    c.provider.plan_model.clear();
+                    c.provider.advisor_model.clear();
+                    c.provider.compaction_model.clear();
+                    c.provider.dream_model.clear();
+                    c.provider.fallbacks.clear();
                 }
-                if let Some(ref m) = target_model {
-                    if !m.trim().is_empty() {
-                        c.provider.lead_model = m.trim().to_string();
-                    }
+            }
+            if let Some(ref m) = target_model {
+                let chosen = m.trim();
+                if !chosen.is_empty() {
+                    c.provider.lead_model = chosen.to_string();
+                    // Keep fast_model synchronized with explicit Composer model picks so new
+                    // sessions never silently fall back to an older/stale fast model.
+                    c.provider.fast_model = chosen.to_string();
+                } else if switched_provider {
+                    c.provider.lead_model.clear();
+                    c.provider.fast_model.clear();
                 }
             }
             if let Some(stream_on) = target_stream {
@@ -533,6 +561,8 @@ pub struct SendMessageReq {
     parent_event_id: Option<Option<String>>,
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 pub async fn api_send_message(
@@ -587,6 +617,10 @@ pub async fn api_send_message(
     let rt = state.runtime.clone();
     let text = req.text;
     let parent = req.parent_event_id;
+    let model_override = req
+        .model
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     tokio::spawn(async move {
         let _ = rt
             .run_turn_with_options(
@@ -594,6 +628,7 @@ pub async fn api_send_message(
                 &text,
                 TurnOptions {
                     parent_event_override: parent,
+                    model_override,
                     send_mode,
                     ..TurnOptions::default()
                 },

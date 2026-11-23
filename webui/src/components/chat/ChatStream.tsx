@@ -384,6 +384,26 @@ function MarkdownProse({
           table({ children }) {
             return <MarkdownDataTable>{children}</MarkdownDataTable>
           },
+          a({ href, children, ...props }) {
+            const safeHref = typeof href === 'string' ? href : undefined
+            const isExternal = Boolean(
+              safeHref && (safeHref.startsWith('http://') || safeHref.startsWith('https://')),
+            )
+            return (
+              <a
+                {...props}
+                href={safeHref}
+                target={isExternal ? '_blank' : undefined}
+                rel={isExternal ? 'noopener noreferrer' : undefined}
+                className="zenko-prose-link"
+              >
+                {children}
+                {isExternal && (
+                  <ArrowUpRight size={12} aria-hidden="true" className="zenko-prose-link-icon" />
+                )}
+              </a>
+            )
+          },
         }}
       >
         {text}
