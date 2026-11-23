@@ -350,6 +350,80 @@ export const PromptComposer = memo(function PromptComposer({
     </>
   )
 
+  const smoothBreakdown = contextData
+    ? [
+        { label: 'Tier 1 (KV frozen)', tokens: contextData.tier1_tokens },
+        { label: 'Tier 2 (Memory/Skills)', tokens: contextData.tier2_tokens },
+        { label: 'Tool Schemas', tokens: contextData.tool_schema_tokens },
+        { label: 'Active History', tokens: contextData.history_tokens },
+      ]
+    : [
+        { label: 'Session Used', tokens: totalTokens },
+        {
+          label: 'Available Window',
+          tokens: Math.max(0, (contextLimit ?? 128000) - totalTokens),
+        },
+      ]
+
+  const sendActionControl = isRunning ? (
+    <div className="flex items-center gap-1.5">
+      {value.trim() && (
+        <ZenkoTooltip label={modeMeta.tooltip} shortcut="⏎" side="top">
+          <motion.button
+            type="button"
+            whileTap={{ scale: 0.92 }}
+            transition={SPRING_PRESS}
+            onClick={onSend}
+            aria-label={modeMeta.ariaLabel}
+            className={cn(
+              'z-btn z-btn-primary flex items-center justify-center',
+              sendShapeClass,
+            )}
+          >
+            <SendGlyph size={14} strokeWidth={2.2} />
+            {composerStyle.send_button_shape === 'pill_label' && (
+              <span>{isOrchestratingBg ? 'Steer' : 'Queue'}</span>
+            )}
+          </motion.button>
+        </ZenkoTooltip>
+      )}
+      <ZenkoTooltip label="Stop generation" side="top">
+        <motion.button
+          type="button"
+          whileTap={{ scale: 0.92 }}
+          transition={SPRING_PRESS}
+          onClick={onStop}
+          aria-label="Stop generation"
+          className={cn(
+            'z-btn z-btn-danger flex items-center justify-center',
+            sendShapeClass,
+          )}
+        >
+          <ZenkoIcon slot="stop" size={13} />
+          {composerStyle.send_button_shape === 'pill_label' && <span>Stop</span>}
+        </motion.button>
+      </ZenkoTooltip>
+    </div>
+  ) : (
+    <ZenkoTooltip label="Send prompt" shortcut="⏎" side="top">
+      <motion.button
+        type="button"
+        whileTap={{ scale: 0.92 }}
+        transition={SPRING_PRESS}
+        disabled={!value.trim()}
+        onClick={onSend}
+        aria-label="Send prompt"
+        className={cn(
+          'z-btn z-btn-primary flex items-center justify-center',
+          sendShapeClass,
+        )}
+      >
+        <SendGlyph size={15} strokeWidth={2.2} />
+        {composerStyle.send_button_shape === 'pill_label' && <span>Send</span>}
+      </motion.button>
+    </ZenkoTooltip>
+  )
+
   const contextMeterControl = composerStyle.context_meter !== 'hidden' && (
     <ZenkoTooltip
       label="Inspect live context & KV-cache breakdown"
@@ -379,16 +453,7 @@ export const PromptComposer = memo(function PromptComposer({
                 used={totalTokens}
                 limit={contextLimit ?? 128000}
                 chrome={meterChrome}
-                breakdown={
-                  contextData
-                    ? [
-                        { label: 'Tier 1 (KV frozen)', tokens: contextData.tier1_tokens },
-                        { label: 'Tier 2 (Memory/Skills)', tokens: contextData.tier2_tokens },
-                        { label: 'Tool Schemas', tokens: contextData.tool_schema_tokens },
-                        { label: 'Active History', tokens: contextData.history_tokens },
-                      ]
-                    : undefined
-                }
+                breakdown={smoothBreakdown}
               />
             </div>
           ) : (
@@ -397,10 +462,7 @@ export const PromptComposer = memo(function PromptComposer({
               aria-label="Inspect live context & KV-cache breakdown"
               className={cn(
                 'hidden cursor-pointer items-center gap-1.5 font-mono text-[11px] text-[var(--muted)] transition-colors hover:text-[var(--fg)] sm:inline-flex',
-                composerStyle.context_meter === 'compact_text' &&
-                  !composerStyle.context_meter_chrome
-                  ? 'px-1 py-0.5'
-                  : meterChromeClass,
+                meterChromeClass,
               )}
             >
               {composerStyle.context_meter === 'progress_ring' && contextLimit != null && (
@@ -595,6 +657,7 @@ export const PromptComposer = memo(function PromptComposer({
                 {contextMeterControl}
               </>
             }
+            sendButton={sendActionControl}
             className="w-full"
           />
         ) : (
@@ -624,65 +687,7 @@ export const PromptComposer = memo(function PromptComposer({
             <div className="relative flex items-center gap-1.5">
               {extraTools}
               {contextMeterControl}
-
-              {isRunning ? (
-                <div className="flex items-center gap-1.5">
-                  {value.trim() && (
-                    <ZenkoTooltip label={modeMeta.tooltip} shortcut="⏎" side="top">
-                      <motion.button
-                        type="button"
-                        whileTap={{ scale: 0.92 }}
-                        transition={SPRING_PRESS}
-                        onClick={onSend}
-                        aria-label={modeMeta.ariaLabel}
-                        className={cn(
-                          'z-btn z-btn-primary flex items-center justify-center',
-                          sendShapeClass,
-                        )}
-                      >
-                        <SendGlyph size={14} strokeWidth={2.2} />
-                        {composerStyle.send_button_shape === 'pill_label' && (
-                          <span>{isOrchestratingBg ? 'Steer' : 'Queue'}</span>
-                        )}
-                      </motion.button>
-                    </ZenkoTooltip>
-                  )}
-                  <ZenkoTooltip label="Stop generation" side="top">
-                    <motion.button
-                      type="button"
-                      whileTap={{ scale: 0.92 }}
-                      transition={SPRING_PRESS}
-                      onClick={onStop}
-                      aria-label="Stop generation"
-                      className={cn(
-                        'z-btn z-btn-danger flex items-center justify-center',
-                        sendShapeClass,
-                      )}
-                    >
-                      <ZenkoIcon slot="stop" size={13} />
-                      {composerStyle.send_button_shape === 'pill_label' && <span>Stop</span>}
-                    </motion.button>
-                  </ZenkoTooltip>
-                </div>
-              ) : (
-                <ZenkoTooltip label="Send prompt" shortcut="⏎" side="top">
-                  <motion.button
-                    type="button"
-                    whileTap={{ scale: 0.92 }}
-                    transition={SPRING_PRESS}
-                    disabled={!value.trim()}
-                    onClick={onSend}
-                    aria-label="Send prompt"
-                    className={cn(
-                      'z-btn z-btn-primary flex items-center justify-center',
-                      sendShapeClass,
-                    )}
-                  >
-                    <SendGlyph size={15} strokeWidth={2.2} />
-                    {composerStyle.send_button_shape === 'pill_label' && <span>Send</span>}
-                  </motion.button>
-                </ZenkoTooltip>
-              )}
+              {sendActionControl}
             </div>
           </div>
         </div>

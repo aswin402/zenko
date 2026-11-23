@@ -12,7 +12,7 @@
   </p>
 
   <p>
-    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.8-ea5829?style=flat-square" alt="Version 0.0.8" /></a>
+    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.9-ea5829?style=flat-square" alt="Version 0.0.9" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88%2B-141417?style=flat-square&logo=rust&logoColor=f5f5f6" alt="Rust 1.88+" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141417?style=flat-square" alt="MIT License" /></a>
     <img src="https://img.shields.io/badge/runtime-Zero%20Node%20%7C%20Zero%20Python%20%7C%20rustls-141417?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -156,7 +156,7 @@ Zenko's WebUI and TUI follow a strict **60 / 30 / 10** visual hierarchy (default
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — Release history (`v0.0.8`)
+- [CHANGELOG.md](CHANGELOG.md) — Release history (`v0.0.9`)
 - [docs/DESIGN.md](docs/DESIGN.md) — WebUI Design System & Customization Spec
 - [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) — Rust Systems Architecture
 - [docs/PRD.md](docs/PRD.md) — Product Requirements

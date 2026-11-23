@@ -282,7 +282,7 @@ function ToastCard({
       onPointerCancel={() => setDrag(null)}
       style={style}
       className={cn(
-        "absolute inset-x-0 bottom-0 origin-bottom touch-none select-none overflow-hidden rounded-2xl bg-background",
+        "absolute inset-x-0 bottom-0 origin-bottom touch-none select-none overflow-hidden rounded-[var(--radius-lg)] bg-[var(--surface)]",
         "shadow-[0_0_0_1px_var(--border-strong),0_10px_30px_-12px_rgb(0_0_0/0.3)]",
         (hidden || item.closing) && "pointer-events-none",
       )}
@@ -296,9 +296,9 @@ function ToastCard({
       >
         {TONE_ICON[item.tone]}
         <div className="min-w-0 flex-1 text-sm">
-          <p className="font-medium text-foreground">{item.title}</p>
+          <p className="font-medium text-[var(--fg)]">{item.title}</p>
           {item.description ? (
-            <p className="mt-0.5 text-pretty text-muted-foreground">{item.description}</p>
+            <p className="mt-0.5 text-pretty text-[var(--muted)]">{item.description}</p>
           ) : null}
         </div>
         {item.action ? (
@@ -308,7 +308,7 @@ function ToastCard({
               item.action?.onClick();
               dismiss(item.id);
             }}
-            className="inline-flex h-7 shrink-0 items-center rounded-full bg-foreground px-3 text-xs font-medium text-background transition-[background-color,scale] duration-150 ease-out hover:bg-foreground/85 active:scale-[0.97]"
+            className="inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full bg-[var(--primary)] px-3 text-xs font-medium text-[var(--primary-fg)] transition-[opacity,scale] duration-150 ease-out hover:opacity-90 active:scale-[0.97]"
           >
             {item.action.label}
           </button>
@@ -317,7 +317,7 @@ function ToastCard({
           type="button"
           aria-label="Dismiss"
           onClick={() => dismiss(item.id)}
-          className="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 after:absolute after:-inset-1.5 hover:bg-muted hover:text-foreground"
+          className="relative inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--muted)] transition-colors duration-150 after:absolute after:-inset-1.5 hover:bg-[var(--card)] hover:text-[var(--fg)]"
         >
           <X className="h-3.5 w-3.5" />
         </button>

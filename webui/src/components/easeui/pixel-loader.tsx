@@ -66,7 +66,7 @@ export function PixelLoader({ label = "Thinking", showElapsed = false, className
             ref={(el) => {
               cellRefs.current[index] = el;
             }}
-            className="h-[5px] w-[5px] rounded-[1px] bg-foreground"
+            className="h-[5px] w-[5px] rounded-[1px] bg-[var(--accent)]"
             style={{ opacity: reduce ? 0.5 : 0.15 }}
           />
         ))}

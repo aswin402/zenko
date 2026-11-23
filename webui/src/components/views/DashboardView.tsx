@@ -560,6 +560,7 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
             data={previewGrid}
             unit="events"
             cellSize={10}
+            cellShape={dash.heatmap_shape}
             colors={[ramp[1], ramp[2], ramp[3], ramp[4]]}
             className="zenko-mb-card w-full"
           />
@@ -597,6 +598,10 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
           goal={100}
           unit="% KV cache"
           color={palette.accent}
+          captionTitle="82% prompt cache efficiency"
+          captionSubtitle="Target 100% KV reuse"
+          hoverTitle="18% uncached headroom"
+          hoverSubtitle="Healthy prompt caching"
           className="zenko-mb-card w-full"
         />
       )}
@@ -759,7 +764,7 @@ export function DashboardView({
     [data?.top_tools, palette, dash.chart_theme],
   )
 
-  const activityGridDays = dash.heatmap_range === 'quarter' ? 91 : 182
+  const activityGridDays = HEATMAP_RANGE_DAYS[dash.heatmap_range] ?? 364
   const activityGridData = useMemo(
     () => buildActivityGridSeries(data?.daily_activity || [], activityGridDays),
     [data?.daily_activity, activityGridDays],
@@ -1021,10 +1026,15 @@ export function DashboardView({
               goal={100}
               unit="% KV cache"
               color={palette.accent}
+              captionTitle={`${Math.round(activeTelemetry?.cache_hit_pct ?? 0)}% prompt cache efficiency`}
+              captionSubtitle={`${formatCompactTokens(data?.total_cache_read_tokens ?? 0)} tokens served from cache`}
+              hoverTitle={`${Math.max(0, 100 - Math.round(activeTelemetry?.cache_hit_pct ?? 0))}% uncached share`}
+              hoverSubtitle="Live KV prompt reuse ratio"
               className="zenko-mb-card w-full"
             />
             <UsageRing
               title="Runtime Budgets"
+              accentColor={palette.accent}
               metrics={[
                 { label: 'VmRSS', value: Number(rssMb) || 0, goal: 64, unit: 'MB' },
                 {
@@ -1092,6 +1102,7 @@ export function DashboardView({
                 title="Zenko Activity Grid"
                 data={activityGridData}
                 unit="events"
+                cellShape={dash.heatmap_shape}
                 colors={[ramp[1], ramp[2], ramp[3], ramp[4]]}
                 className="zenko-mb-card w-full"
               />

@@ -192,7 +192,7 @@ export function CommandPalette({
       <CommandContext.Provider value={ctx}>
         <div
           className={cn(
-            "relative flex w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-background",
+            "relative flex w-full max-w-lg flex-col overflow-hidden rounded-[var(--radius-lg)] bg-[var(--surface)]",
             "shadow-[0_0_0_1px_var(--border-strong),0_24px_60px_-20px_rgb(0_0_0/0.45)]",
             "scale-[0.97] opacity-0 transition-[opacity,scale] duration-150 ease-out",
             "group-data-[shown=true]:scale-100 group-data-[shown=true]:opacity-100 group-data-[shown=true]:duration-200",
@@ -248,7 +248,7 @@ export function CommandList({ className, children }: { className?: string; child
     <div
       id={listboxId}
       role="listbox"
-      className={cn("flex max-h-80 flex-col gap-1 overflow-y-auto p-2", className)}
+      className={cn("zenko-thin-scroll flex max-h-80 flex-col gap-1 overflow-y-auto p-2", className)}
     >
       {children}
     </div>
@@ -320,8 +320,8 @@ export function CommandItem({
       }}
       onClick={() => select(thisValue)}
       className={cn(
-        "flex min-h-9 w-full touch-manipulation items-center gap-2 rounded-lg px-2.5 text-left text-sm text-foreground outline-none transition-colors duration-100",
-        "data-[active=true]:bg-muted",
+        "flex min-h-9 w-full cursor-pointer touch-manipulation items-center gap-2 rounded-[var(--radius-sm)] px-2.5 text-left text-sm text-[var(--fg)] outline-none transition-colors duration-100",
+        "data-[active=true]:bg-[var(--card)]",
         "disabled:pointer-events-none disabled:opacity-50",
         className,
       )}

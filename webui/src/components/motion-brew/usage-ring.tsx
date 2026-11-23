@@ -199,7 +199,7 @@ const PillTabs = React.forwardRef<HTMLDivElement, PillTabsProps>(function PillTa
         if (e.key === "End") (e.preventDefault(), focusTab(tabs.length - 1));
       }}
       className={cn(
-        "relative inline-flex max-w-full items-center gap-1 rounded-full bg-[#242423]/6 p-1.5 dark:bg-white/8",
+        "relative inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface)] p-1",
         className,
       )}
     >
@@ -212,22 +212,22 @@ const PillTabs = React.forwardRef<HTMLDivElement, PillTabsProps>(function PillTa
       {/* The pill: two round caps and a flat middle, so stretching never squashes the ends; it thins as it stretches. */}
       <motion.span
         aria-hidden
-        className="pointer-events-none absolute inset-y-1.5 left-0 w-full"
+        className="pointer-events-none absolute inset-y-1 left-0 w-full"
         style={{
-          filter: `url(#${filterId}) drop-shadow(0 1px 2px rgba(0,0,0,0.08)) drop-shadow(0 4px 10px rgba(0,0,0,0.06))`,
+          filter: `url(#${filterId}) drop-shadow(0 1px 2px rgba(0,0,0,0.12))`,
           scaleY: thin,
         }}
       >
         <motion.span
-          className="absolute left-0 top-0 rounded-full bg-white dark:bg-zinc-700"
+          className="absolute left-0 top-0 rounded-full bg-[var(--card)]"
           style={{ x: left, width: height, height }}
         />
         <motion.span
-          className="absolute left-0 top-0 w-px origin-left bg-white dark:bg-zinc-700"
+          className="absolute left-0 top-0 w-px origin-left bg-[var(--card)]"
           style={{ x: midX, scaleX: midScale, height }}
         />
         <motion.span
-          className="absolute left-0 top-0 rounded-full bg-white dark:bg-zinc-700"
+          className="absolute left-0 top-0 rounded-full bg-[var(--card)]"
           style={{ x: capX, width: height, height }}
         />
       </motion.span>
@@ -246,10 +246,10 @@ const PillTabs = React.forwardRef<HTMLDivElement, PillTabsProps>(function PillTa
             onClick={() => select(tab.id)}
             whileTap={{ scale: 0.96 }}
             className={cn(
-              "relative z-10 inline-flex h-10 cursor-pointer items-center gap-2 rounded-full px-5 text-[14px] max-[360px]:px-3 font-medium outline-none transition-colors duration-300 focus-visible:ring-2 focus-visible:ring-zinc-400",
+              "relative z-10 inline-flex h-8 cursor-pointer items-center gap-2 rounded-full px-4 text-[12.5px] max-[360px]:px-2.5 font-medium outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40",
               active
-                ? "text-zinc-900 dark:text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                ? "text-[var(--fg)]"
+                : "text-[var(--muted)] hover:text-[var(--fg)]",
             )}
           >
             {tab.label}
@@ -259,7 +259,7 @@ const PillTabs = React.forwardRef<HTMLDivElement, PillTabsProps>(function PillTa
                 animate={{ scale: 1, opacity: 1 }}
                 transition={{ type: "spring", stiffness: 500, damping: 20, delay: 0.15 }}
                 aria-label={`${tab.badge} new`}
-                className="grid h-5 min-w-5 place-items-center rounded-full bg-[#242423] px-1.5 text-[12px] font-semibold tabular-nums text-white dark:bg-white dark:text-zinc-900"
+                className="grid h-5 min-w-5 place-items-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold tabular-nums text-[var(--primary-fg)]"
               >
                 {tab.badge}
               </motion.span>
@@ -307,6 +307,8 @@ export interface UsageRingProps {
   metrics?: UsageMetric[];
   /** Segments around the ring. Default `20`. */
   segments?: number;
+  /** Single theme accent color obeying Zenko's 60/30/10 discipline (overrides rainbow hues). */
+  accentColor?: string;
   /**
    * Hues the ring walks between on the colour wheel, in degrees, from empty to
    * the limit. Default `[265, 385]`: indigo through violet and magenta to coral
@@ -465,6 +467,7 @@ export const UsageRing = React.forwardRef<HTMLDivElement, UsageRingProps>(
       title = "Plan usage",
       metrics = DEFAULT_METRICS,
       segments = 20,
+      accentColor,
       hues = [265, 385],
       className,
     },
@@ -531,11 +534,11 @@ export const UsageRing = React.forwardRef<HTMLDivElement, UsageRingProps>(
         animate={shown ? { opacity: 1, y: 0 } : undefined}
         transition={{ duration: 0.6, ease: GLIDE }}
         className={cn(
-          "w-[340px] max-w-full rounded-3xl bg-white p-6 text-[#242423] shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-16px_rgba(0,0,0,0.18)] dark:bg-zinc-900 dark:text-zinc-100",
+          "w-[340px] max-w-full rounded-[var(--radius)] bg-[var(--card)] p-6 text-[var(--fg)]",
           className,
         )}
       >
-        <p className="text-center text-base font-semibold tracking-tight">
+        <p className="text-center text-base font-semibold tracking-tight text-[var(--fg)]">
           {title}
         </p>
 
@@ -556,11 +559,14 @@ export const UsageRing = React.forwardRef<HTMLDivElement, UsageRingProps>(
               const a1 = (((i + 1) * step - gap / 2) * Math.PI) / 180;
               const c = SIZE / 2;
               const on = i < lit;
-              // Lit segments lift outward a hair on hover, in a wave. The lift is drawn
-              // into the arc itself (a larger radius), not a CSS transform, so every
-              // browser places the segments the same way.
               const r = R + (ringHover && on && !still ? 4 : 0);
               const arc = `M ${c + r * Math.cos(a0)} ${c + r * Math.sin(a0)} A ${r} ${r} 0 0 1 ${c + r * Math.cos(a1)} ${c + r * Math.sin(a1)}`;
+              const litStroke = accentColor
+                ? accentColor
+                : wheel((i + 1) / segments, hues);
+              const litOpacity = accentColor
+                ? 0.42 + 0.58 * ((i + 1) / Math.max(1, lit))
+                : 1;
               return (
                 <motion.path
                   key={i}
@@ -569,13 +575,13 @@ export const UsageRing = React.forwardRef<HTMLDivElement, UsageRingProps>(
                   initial={false}
                   animate={{
                     d: arc,
-                    stroke: on
-                      ? wheel((i + 1) / segments, hues)
-                      : "rgba(36,36,35,0.08)",
+                    stroke: on ? litStroke : "var(--border)",
+                    strokeOpacity: on ? litOpacity : 0.65,
                     strokeWidth: on ? STROKE : STROKE - 2,
                   }}
                   transition={{
                     stroke: { duration: 0.2 },
+                    strokeOpacity: { duration: 0.2 },
                     strokeWidth: {
                       type: "spring",
                       stiffness: 500,
@@ -596,21 +602,22 @@ export const UsageRing = React.forwardRef<HTMLDivElement, UsageRingProps>(
           </svg>
           <div className="absolute inset-0 grid place-items-center">
             <p
-              className="flex items-baseline text-[32px] font-semibold leading-none tracking-tight transition-colors duration-500"
-              // Past 80% the number takes the colour of the ring's tip, a shade deeper for contrast.
+              className="flex items-baseline text-[32px] font-semibold leading-none tracking-tight text-[var(--fg)] transition-colors duration-500"
               style={
-                share >= 0.8 ? { color: wheel(share, hues, 0.56) } : undefined
+                share >= 0.8
+                  ? { color: accentColor || wheel(share, hues, 0.56) }
+                  : undefined
               }
             >
               <Odometer value={pct} label={`${Math.round(share * 100)}`} />
-              <span className="ml-0.5 text-xl text-zinc-400">%</span>
+              <span className="ml-0.5 text-xl text-[var(--muted)]">%</span>
             </p>
           </div>
         </div>
 
-        <p className="mt-4 text-center text-xs font-medium uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">
+        <p className="mt-4 text-center text-xs font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
           {m.label}{" "}
-          <span className="tabular-nums text-[#242423] dark:text-zinc-100">
+          <span className="tabular-nums text-[var(--fg)]">
             <Odometer value={amount} label={`${m.value}`} />
           </span>
           {" / "}

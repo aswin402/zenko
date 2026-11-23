@@ -37,7 +37,7 @@ export function ExpandableTabs({
     <div
       role="tablist"
       className={cn(
-        'inline-flex flex-wrap items-center gap-1 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xs',
+        'inline-flex flex-wrap items-center gap-1 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xs',
         className,
       )}
     >
@@ -53,7 +53,7 @@ export function ExpandableTabs({
             onClick={() => onValueChange(item.id)}
             transition={reduce ? { duration: 0 } : EXPAND_SPRING}
             className={cn(
-              'relative inline-flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40',
+              'relative inline-flex cursor-pointer items-center gap-1.5 rounded-[var(--radius)] px-2.5 py-1.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40',
               active
                 ? 'bg-[var(--card)] text-[var(--accent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_38%,var(--border))]'
                 : 'text-[var(--muted)] hover:bg-[var(--card)]/60 hover:text-[var(--fg)]',

@@ -17,9 +17,9 @@ export interface ToolChipProps {
 }
 
 const STATUS_CLASS: Record<ToolChipStatus, string> = {
-  running: "text-muted-foreground",
-  done: "text-success",
-  error: "text-destructive",
+  running: "text-[var(--accent)]",
+  done: "text-[var(--success)]",
+  error: "text-[var(--destructive)]",
 };
 
 /** A small pill naming a tool an agent used, with a status mark that crossfades in place. */
@@ -30,12 +30,12 @@ export function ToolChip({ icon, label, status = "done", className }: ToolChipPr
       role="status"
       aria-label={`${label}, ${status}`}
       className={cn(
-        "inline-flex h-7 items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs font-medium text-foreground",
+        "inline-flex h-7 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 text-xs font-medium text-[var(--fg)]",
         className,
       )}
     >
       {icon ? (
-        <span aria-hidden="true" className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-muted-foreground">
+        <span aria-hidden="true" className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[var(--muted)]">
           {icon}
         </span>
       ) : null}

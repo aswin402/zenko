@@ -22,7 +22,7 @@ export function Alert({ variant = "neutral", className, ...props }: AlertProps) 
     <div
       role="alert"
       className={cn(
-        "flex items-start gap-3 rounded-xl border-l-4 bg-card p-4 text-sm shadow-[0_0_0_1px_var(--border)]",
+        "flex items-start gap-3 rounded-[var(--radius)] border-l-4 bg-[var(--surface)] p-4 text-sm shadow-[0_0_0_1px_var(--border)]",
         ACCENT_CLASS[variant],
         className,
       )}

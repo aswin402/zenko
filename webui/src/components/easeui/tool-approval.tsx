@@ -59,16 +59,16 @@ export function ToolApproval({
     <motion.div
       layout={!reduce}
       transition={{ duration: 0.2, ease: EASE_OUT }}
-      className={cn("flex flex-col gap-3 rounded-2xl bg-card p-4 shadow-[0_0_0_1px_var(--border)]", className)}
+      className={cn("flex flex-col gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4", className)}
     >
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+        <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--accent)]">
           <Terminal aria-hidden="true" className="h-3.5 w-3.5" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-foreground">{title}</p>
+          <p className="text-sm font-medium text-[var(--fg)]">{title}</p>
           {description ? (
-            <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{description}</p>
+            <p className="mt-1 truncate font-mono text-xs text-[var(--muted)]">{description}</p>
           ) : null}
         </div>
       </div>
@@ -86,14 +86,14 @@ export function ToolApproval({
             <button
               type="button"
               onClick={onDeny}
-              className="inline-flex h-8 touch-manipulation items-center rounded-full px-3.5 text-sm font-medium text-muted-foreground outline-none transition-colors duration-150 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/40"
+              className="inline-flex h-8 cursor-pointer touch-manipulation items-center rounded-full px-3.5 text-sm font-medium text-[var(--muted)] outline-none transition-colors duration-150 hover:bg-[var(--surface)] hover:text-[var(--fg)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
             >
               {denyLabel}
             </button>
             <button
               type="button"
               onClick={onApprove}
-              className="inline-flex h-8 touch-manipulation items-center rounded-full bg-foreground px-3.5 text-sm font-medium text-background outline-none transition-colors duration-150 hover:bg-foreground/90 focus-visible:ring-2 focus-visible:ring-foreground/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="inline-flex h-8 cursor-pointer touch-manipulation items-center rounded-full bg-[var(--primary)] px-3.5 text-sm font-medium text-[var(--primary-fg)] outline-none transition-opacity duration-150 hover:opacity-90 focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
             >
               {approveLabel}
             </button>

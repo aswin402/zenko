@@ -276,7 +276,7 @@ function renderInline(nodes: Inline[], ctx: Ctx): React.ReactNode[] {
             ctx.i += 1
             return [
                 <Word key={`w${ctx.i}`} animate={ctx.i > ctx.from} ink={ctx.ink}>
-                    <code className="rounded-md bg-black/[0.05] px-1.5 py-0.5 font-mono text-[0.85em] dark:bg-white/[0.08]">
+                    <code className="rounded-md bg-[color-mix(in_srgb,var(--accent)_13%,var(--card))] px-1.5 py-0.5 font-mono text-[0.85em] text-[color-mix(in_srgb,var(--accent)_78%,var(--fg))]">
                         {node.text}
                     </code>
                 </Word>,
@@ -300,13 +300,12 @@ function renderInline(nodes: Inline[], ctx: Ctx): React.ReactNode[] {
                     href={node.href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="underline decoration-[1.5px] underline-offset-4"
-                    style={{ textDecorationColor: `color-mix(in srgb, ${ctx.ink ?? 'currentColor'} 40%, transparent)` }}
+                    className="zenko-prose-link"
                 >
                     {children}
                 </a>
             ) : (
-                <span key={`a${key}`} className="underline decoration-[1.5px] underline-offset-4 opacity-80">
+                <span key={`a${key}`} className="zenko-prose-link opacity-80">
                     {children}
                 </span>
             ),
@@ -372,14 +371,14 @@ function CodeBlock({ lang, text, children }: { lang: string; text: string; child
     }
 
     return (
-        <div className="overflow-hidden rounded-2xl border border-black/[0.06] bg-black/[0.03] dark:border-white/[0.08] dark:bg-white/[0.04]">
-            <div className="flex h-9 items-center justify-between pr-1.5 pl-4 text-[12px] text-black/45 dark:text-white/45">
+        <div className="overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+            <div className="flex h-9 items-center justify-between border-b border-[var(--border)]/70 pr-1.5 pl-4 text-[12px] text-[var(--muted)]">
                 <span className="font-mono">{lang || 'code'}</span>
                 <IconButton label={copied ? 'Copied' : 'Copy code'} onClick={copy} className="size-7">
                     <SwapIcon on={copied} off={<Copy className="size-3.5" />} onIcon={<Check className="size-3.5" />} />
                 </IconButton>
             </div>
-            <pre className="overflow-x-auto px-4 pb-4 font-mono text-[13px] leading-6">
+            <pre className="zenko-thin-scroll overflow-x-auto px-4 py-3 font-mono text-[13px] leading-6 text-[var(--fg)]">
                 <code>{children}</code>
             </pre>
         </div>
@@ -399,7 +398,7 @@ function IconButton({
             title={label}
             aria-pressed={pressed}
             className={cn(
-                'relative flex size-8 cursor-pointer items-center justify-center rounded-full outline-none transition-colors hover:bg-black/[0.05] hover:text-black focus-visible:ring-2 focus-visible:ring-black/20 dark:hover:bg-white/[0.08] dark:hover:text-white dark:focus-visible:ring-white/30',
+                'relative flex size-8 cursor-pointer items-center justify-center rounded-full text-[var(--muted)] outline-none transition-colors hover:bg-[var(--card)] hover:text-[var(--fg)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40',
                 className,
             )}
             {...props}
@@ -561,7 +560,7 @@ function StreamingResponse({
                         initial={reduced ? false : 'hidden'}
                         animate="show"
                         exit="hidden"
-                        className="-ml-2 mt-2 flex items-center text-black/45 dark:text-white/45"
+                        className="-ml-2 mt-2 flex items-center text-[var(--muted)]"
                     >
                         <motion.span variants={itemVariants}>
                             <IconButton label={copied ? 'Copied' : 'Copy'} onClick={copy}>
@@ -598,7 +597,7 @@ function StreamingResponse({
                                         label={value === 'up' ? 'Good response' : 'Bad response'}
                                         pressed={active}
                                         onClick={() => vote(value)}
-                                        className={active ? 'text-black dark:text-white' : undefined}
+                                        className={active ? 'text-[var(--accent)]' : undefined}
                                         style={active && ink ? { color: ink } : undefined}
                                     >
                                         <motion.span
@@ -656,7 +655,7 @@ function renderBlock(block: Block, ctx: Ctx, caret: boolean, final = true): Reac
     }
     if (block.type === 'quote') {
         return (
-            <blockquote className="border-l-2 border-black/15 pl-4 text-black/70 dark:border-white/20 dark:text-white/70">
+            <blockquote className="border-l-2 border-[var(--border)] pl-4 text-[var(--muted)]">
                 {inline(block.text, caret)}
             </blockquote>
         )
@@ -667,7 +666,7 @@ function renderBlock(block: Block, ctx: Ctx, caret: boolean, final = true): Reac
             <List
                 start={block.type === 'ol' && block.start !== 1 ? block.start : undefined}
                 className={cn(
-                    'flex flex-col gap-1.5 pl-5 marker:text-black/35 dark:marker:text-white/35',
+                    'flex flex-col gap-1.5 pl-5 marker:text-[var(--muted)]',
                     block.type === 'ul' ? 'list-disc' : 'list-decimal marker:tabular-nums',
                 )}
             >

@@ -147,7 +147,7 @@ function AiStatus({
             data-state={state}
             data-active={active || undefined}
             role="status"
-            className={cn('flex h-8 w-fit items-center gap-2 font-runde text-[14px] text-black dark:text-white', className)}
+            className={cn('flex h-8 w-fit items-center gap-2 text-[13.5px] text-[var(--fg)]', className)}
             {...props}
         >
             <span data-slot="ai-status-icon" className="relative flex size-5 shrink-0 items-center justify-center">
@@ -185,7 +185,7 @@ function AiStatus({
                                 exit="exit"
                                 transition={swap}
                                 data-slot="ai-status-label"
-                                className={cn('font-semibold', !shimmering && 'text-[#868593]')}
+                                className={cn('font-semibold', !shimmering && 'text-[var(--muted)]')}
                             >
                                 {shimmering ? <Shimmer reduced={reduced}>{text}</Shimmer> : text}
                             </motion.span>
@@ -201,7 +201,7 @@ function AiStatus({
                                 animate="center"
                                 exit="exit"
                                 transition={swap}
-                                className="flex min-w-0 items-center gap-1.5 font-medium text-[#868593]/70"
+                                className="flex min-w-0 items-center gap-1.5 font-medium text-[var(--muted)]/80"
                             >
                                 {typeof favicon === 'string' ? (
                                     // eslint-disable-next-line @next/next/no-img-element
@@ -222,7 +222,7 @@ function AiStatus({
                         )}
                     </AnimatePresence>
                     {time && active && (
-                        <span data-slot="ai-status-timer" aria-hidden className="font-medium tabular-nums text-[#868593]/70">
+                        <span data-slot="ai-status-timer" aria-hidden className="font-medium tabular-nums text-[var(--muted)]/80">
                             {time}
                         </span>
                     )}
@@ -243,7 +243,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
     switch (state) {
         case 'thinking':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[#868593]">
+                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[var(--accent)]">
                     <motion.path
                         d={SPARKLE_PATH}
                         fill="currentColor"
@@ -260,7 +260,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
             )
         case 'researching':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[#868593]">
+                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[var(--accent)]">
                     <motion.g
                         animate={reduced ? undefined : { x: [0, 2, 0, -2, 0], y: [-2, 0, 2, 0, -2] }}
                         transition={loop({ duration: 2, repeat: Infinity, ease: 'linear' })}
@@ -272,7 +272,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
             )
         case 'analyzing':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[#868593]">
+                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[var(--accent)]">
                     {[6, 12, 18].map((x, i) => (
                         <motion.line
                             key={x}
@@ -290,7 +290,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
             )
         case 'writing':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[#868593]">
+                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[var(--accent)]">
                     <g transform="translate(-1.2 -2)">
                         <motion.path
                             {...STROKE}
@@ -319,7 +319,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
             )
         case 'done':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[#868593]">
+                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[var(--muted)]">
                     <motion.path
                         {...STROKE}
                         d="M5 12.5L10 17.5L19 7"
@@ -332,7 +332,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
             )
         case 'error':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[#FF3B30]">
+                <svg viewBox="0 0 24 24" width={18} height={18} className="text-[var(--destructive)]">
                     <motion.path
                         {...STROKE}
                         d="M7 7L17 17M17 7L7 17"
@@ -345,7 +345,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
         default:
             return (
                 <motion.span
-                    className="size-2.5 rounded-full bg-[#868593]"
+                    className="size-2.5 rounded-full bg-[var(--accent)]"
                     animate={reduced ? undefined : { scale: [1, 0.7, 1], opacity: [1, 0.5, 1] }}
                     transition={loop({ duration: 1.2, ...LOOP })}
                 />
@@ -355,11 +355,11 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
 
 function Shimmer({ reduced, children }: { reduced: boolean; children: React.ReactNode }) {
     if (reduced) {
-        return <span className="text-[#868593]">{children}</span>
+        return <span className="text-[var(--muted)]">{children}</span>
     }
     return (
         <motion.span
-            className="bg-clip-text text-transparent [--ai-status-ink:#868593] [--ai-status-shine:#000] dark:[--ai-status-shine:#fff]"
+            className="bg-clip-text text-transparent [--ai-status-ink:var(--muted)] [--ai-status-shine:var(--fg)]"
             style={{ backgroundImage: SHIMMER, backgroundSize: '250% 100%' }}
             initial={{ backgroundPosition: '100% 0' }}
             animate={{ backgroundPosition: '0% 0' }}

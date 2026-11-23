@@ -102,6 +102,8 @@ export type ModelPickerProps = Omit<React.ComponentProps<'div'>, 'onChange' | 'd
     defaultValue?: string
     onChange?: (id: string) => void
     searchable?: boolean
+    triggerClassName?: string
+    headerSlot?: React.ReactNode
 }
 
 function ModelPicker({
@@ -110,6 +112,8 @@ function ModelPicker({
     defaultValue,
     onChange,
     searchable = true,
+    triggerClassName,
+    headerSlot,
     className,
     ...props
 }: ModelPickerProps) {
@@ -431,7 +435,8 @@ function ModelPicker({
                 onClick={() => (open ? close(selectedId, 'pointer') : show())}
                 onKeyDown={onTriggerKey}
                 className={cn(
-                    'flex h-8 cursor-pointer items-center gap-2 rounded-full pr-2 pl-2.5 text-[13px] font-medium text-black/90 outline-none transition-colors hover:bg-black/[0.05] focus-visible:ring-2 focus-visible:ring-black/15 dark:text-white/90 dark:hover:bg-white/[0.07] dark:focus-visible:ring-white/25',
+                    'flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-[var(--fg)] outline-none transition-colors hover:bg-[var(--card)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40',
+                    triggerClassName,
                     phase !== 'closed' && 'opacity-0',
                 )}
             >
@@ -452,8 +457,8 @@ function ModelPicker({
                 </span>
                 <RollingText text={selected.name} roll={roll} />
                 <motion.span
-                    className="grid place-items-center"
-                    animate={{ opacity: phase === 'closed' ? 0.45 : 0 }}
+                    className="grid place-items-center text-[var(--muted)]"
+                    animate={{ opacity: phase === 'closed' ? 0.75 : 0 }}
                     transition={reduced || phase !== 'closed' ? INSTANT : { duration: 0.25 }}
                 >
                     <ChevronsUpDown className="size-3.5" />
@@ -465,7 +470,7 @@ function ModelPicker({
                     <div
                         ref={surfaceRef}
                         aria-hidden
-                        className="pointer-events-none absolute top-0 left-0 z-50 border border-black/[0.08] bg-white opacity-0 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.25)] dark:border-white/[0.08] dark:bg-[#1c1c1c] dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)]"
+                        className="pointer-events-none absolute top-0 left-0 z-50 border border-[var(--border)] bg-[var(--surface)] opacity-0 shadow-[0_18px_48px_rgba(0,0,0,0.45)]"
                     />
                     <div
                         ref={contentRef}
@@ -477,8 +482,13 @@ function ModelPicker({
                         )}
                         style={{ width: PANEL_WIDTH }}
                     >
+                        {headerSlot && (
+                            <div className="border-b border-[var(--border)] px-2.5 py-2">
+                                {headerSlot}
+                            </div>
+                        )}
                         {searchable && (
-                            <div className="flex h-10 items-center gap-2 border-b border-black/[0.06] px-3.5 text-black/40 dark:border-white/[0.06] dark:text-white/40">
+                            <div className="flex h-10 items-center gap-2 border-b border-[var(--border)] px-3.5 text-[var(--muted)]">
                                 <Search className="size-3.5 shrink-0" />
                                 <input
                                     ref={inputRef}
@@ -493,7 +503,7 @@ function ModelPicker({
                                     aria-controls={listId}
                                     aria-activedescendant={current ? `${id}-option-${active}` : undefined}
                                     aria-label="Search models"
-                                    className="h-full min-w-0 flex-1 bg-transparent text-[13px] text-black outline-none placeholder:text-black/35 dark:text-white dark:placeholder:text-white/35"
+                                    className="h-full min-w-0 flex-1 bg-transparent text-[12.5px] text-[var(--fg)] outline-none placeholder:text-[var(--muted)]/60"
                                 />
                             </div>
                         )}
@@ -505,18 +515,18 @@ function ModelPicker({
                             tabIndex={searchable ? undefined : -1}
                             aria-label="Models"
                             aria-activedescendant={!searchable && current ? `${id}-option-${active}` : undefined}
-                            className="relative overflow-y-auto p-1.5 outline-none [scrollbar-width:none]"
+                            className="zenko-thin-scroll relative overflow-y-auto p-1.5 outline-none"
                             style={{ maxHeight: LIST_MAX_HEIGHT }}
                         >
                             <div
                                 ref={highlightRef}
                                 aria-hidden
-                                className="pointer-events-none absolute top-0 right-1.5 left-1.5 rounded-[10px] bg-black/[0.05] opacity-0 dark:bg-white/[0.07]"
+                                className="pointer-events-none absolute top-0 right-1.5 left-1.5 rounded-[var(--radius-sm)] bg-[var(--card)] opacity-0"
                             />
                             {groups.map((group, g) => (
                                 <div key={`${group.provider ?? ''}-${g}`} role="group" aria-label={group.provider}>
                                     {group.provider && (
-                                        <div className="px-2.5 pt-2 pb-1 text-[11px] font-medium text-black/35 dark:text-white/35">
+                                        <div className="px-2.5 pt-2 pb-1 font-mono text-[10.5px] font-medium uppercase tracking-wider text-[var(--muted)]">
                                             {group.provider}
                                         </div>
                                     )}
@@ -534,10 +544,10 @@ function ModelPicker({
                                                 onMouseDown={(event) => event.preventDefault()}
                                                 onClick={() => choose(model, 'pointer')}
                                                 className={cn(
-                                                    'relative flex h-9 cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-[13px] font-medium transition-colors',
+                                                    'relative flex h-9 cursor-pointer items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 text-[12.5px] font-medium transition-colors',
                                                     i === active || model.id === foldTo
-                                                        ? 'text-black/90 dark:text-white/90'
-                                                        : 'text-black/65 dark:text-white/65',
+                                                        ? 'text-[var(--fg)]'
+                                                        : 'text-[var(--muted)]',
                                                 )}
                                             >
                                                 <span
@@ -550,7 +560,7 @@ function ModelPicker({
                                                 {isSelected && (
                                                     <Check
                                                         className={cn(
-                                                            'relative size-3.5 shrink-0 opacity-60 transition-opacity duration-150',
+                                                            'relative size-3.5 shrink-0 text-[var(--accent)] transition-opacity duration-150',
                                                             phase === 'closing' && 'opacity-0',
                                                         )}
                                                     />
@@ -561,14 +571,14 @@ function ModelPicker({
                                 </div>
                             ))}
                             {!filtered.length && (
-                                <div className="px-2.5 py-6 text-center text-[13px] text-black/40 dark:text-white/40">
+                                <div className="px-2.5 py-6 text-center text-[12.5px] text-[var(--muted)]">
                                     No models match
                                 </div>
                             )}
                         </div>
 
                         {detailed && current && (
-                            <div className="flex flex-col gap-1.5 border-t border-black/[0.06] px-3.5 py-3 text-[12px] text-black/45 dark:border-white/[0.06] dark:text-white/45">
+                            <div className="flex flex-col gap-1.5 border-t border-[var(--border)] px-3.5 py-2.5 text-[11.5px] text-[var(--muted)]">
                                 <span className="relative grid">
                                     <AnimatePresence mode="popLayout" initial={false}>
                                         <motion.span
@@ -577,7 +587,7 @@ function ModelPicker({
                                             animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
                                             exit={{ opacity: 0, y: -4, filter: 'blur(3px)' }}
                                             transition={reduced ? INSTANT : SLIDE}
-                                            className="col-start-1 row-start-1 truncate text-black/70 dark:text-white/70"
+                                            className="col-start-1 row-start-1 truncate font-mono text-[11px] text-[var(--fg)]/85"
                                         >
                                             {current.description ?? current.name}
                                         </motion.span>

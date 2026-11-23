@@ -175,8 +175,10 @@ html, body, #root {
 /* Surface customization modes (in @layer components so Tailwind utilities win cleanly) */
 @layer components {
   .z-surface-card,
-  .z-card-item {
+  .z-card-item,
+  .zenko-mb-card {
     background: var(--card);
+    color: var(--fg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     transition: background-color var(--motion-ms) var(--motion-ease), border-color var(--motion-ms) var(--motion-ease), box-shadow var(--motion-ms) var(--motion-ease);
@@ -190,7 +192,8 @@ html, body, #root {
 
   /* Minimal Top Hairline — clean quiet surface with top divider only (no heavy box) */
   [data-surface="minimal_top"] .z-surface-card,
-  [data-surface="minimal_top"] .z-card-item {
+  [data-surface="minimal_top"] .z-card-item,
+  [data-surface="minimal_top"] .zenko-mb-card {
     background: color-mix(in srgb, var(--surface) 48%, transparent);
     border: 0;
     border-top: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
@@ -200,7 +203,8 @@ html, body, #root {
 
   /* Minimal Bottom Hairline — clean quiet surface with bottom divider only */
   [data-surface="minimal_bottom"] .z-surface-card,
-  [data-surface="minimal_bottom"] .z-card-item {
+  [data-surface="minimal_bottom"] .z-card-item,
+  [data-surface="minimal_bottom"] .zenko-mb-card {
     background: color-mix(in srgb, var(--surface) 42%, transparent);
     border: 0;
     border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
@@ -210,7 +214,8 @@ html, body, #root {
 
   /* Borderless Fill — soft surface contrast with zero borders */
   [data-surface="borderless"] .z-surface-card,
-  [data-surface="borderless"] .z-card-item {
+  [data-surface="borderless"] .z-card-item,
+  [data-surface="borderless"] .zenko-mb-card {
     background: color-mix(in srgb, var(--surface) 74%, transparent);
     border-color: transparent;
     box-shadow: none;
@@ -218,7 +223,8 @@ html, body, #root {
 
   /* Ghost Outline — transparent canvas with quiet 1px hairline only */
   [data-surface="ghost_hairline"] .z-surface-card,
-  [data-surface="ghost_hairline"] .z-card-item {
+  [data-surface="ghost_hairline"] .z-card-item,
+  [data-surface="ghost_hairline"] .zenko-mb-card {
     background: transparent;
     border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
     box-shadow: none;
@@ -226,21 +232,24 @@ html, body, #root {
 
   /* Flat Matte — solid secondary surface, no border */
   [data-surface="flat"] .z-surface-card,
-  [data-surface="flat"] .z-card-item {
+  [data-surface="flat"] .z-card-item,
+  [data-surface="flat"] .zenko-mb-card {
     border-color: transparent;
     background: var(--surface);
   }
 
   /* Framed Bordered — classic card surface + hairline */
   [data-surface="bordered"] .z-surface-card,
-  [data-surface="bordered"] .z-card-item {
+  [data-surface="bordered"] .z-card-item,
+  [data-surface="bordered"] .zenko-mb-card {
     background: var(--card);
     border: 1px solid var(--border);
   }
 
   /* Elevated Soft — floating depth shadow, borderless edges */
   [data-surface="elevated"] .z-surface-card,
-  [data-surface="elevated"] .z-card-item {
+  [data-surface="elevated"] .z-card-item,
+  [data-surface="elevated"] .zenko-mb-card {
     background: var(--card);
     border-color: transparent;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
@@ -248,7 +257,8 @@ html, body, #root {
 
   /* Frosted Glass */
   [data-surface="glass"] .z-surface-card,
-  [data-surface="glass"] .z-card-item {
+  [data-surface="glass"] .z-card-item,
+  [data-surface="glass"] .zenko-mb-card {
     background: color-mix(in srgb, var(--card) 72%, transparent);
     border-color: color-mix(in srgb, var(--border) 68%, transparent);
     backdrop-filter: blur(10px);
@@ -262,7 +272,8 @@ html, body, #root {
 
   /* Accent Edge Spotlight */
   [data-surface="spotlight"] .z-surface-card,
-  [data-surface="spotlight"] .z-card-item {
+  [data-surface="spotlight"] .z-card-item,
+  [data-surface="spotlight"] .zenko-mb-card {
     background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 7%, var(--card)), var(--card) 55%);
     border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
   }
@@ -614,11 +625,59 @@ html, body, #root {
   animation: beui-text-shimmer 2.2s linear infinite;
 }
 
-/* Native Zenko 60/30/10 surface adaptation for Motion-Brew dashboard & composer cards */
+/* Ensure node_modules Motion-Brew RecapCard obeys Zenko surface & radius rules */
 .zenko-mb-card {
-  background-color: var(--card) !important;
   color: var(--fg) !important;
-  border: 1px solid var(--border);
+  border-radius: var(--radius) !important;
+}
+[data-surface="minimal_top"] .zenko-mb-card {
+  background: color-mix(in srgb, var(--surface) 48%, transparent) !important;
+  border: 0 !important;
+  border-top: 1px solid color-mix(in srgb, var(--border) 88%, transparent) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: none !important;
+}
+[data-surface="minimal_bottom"] .zenko-mb-card {
+  background: color-mix(in srgb, var(--surface) 42%, transparent) !important;
+  border: 0 !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: none !important;
+}
+[data-surface="borderless"] .zenko-mb-card {
+  background: color-mix(in srgb, var(--surface) 74%, transparent) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+[data-surface="ghost_hairline"] .zenko-mb-card {
+  background: transparent !important;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent) !important;
+  box-shadow: none !important;
+}
+[data-surface="flat"] .zenko-mb-card {
+  background: var(--surface) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+[data-surface="bordered"] .zenko-mb-card {
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+[data-surface="elevated"] .zenko-mb-card {
+  background: var(--card) !important;
+  border-color: transparent !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34) !important;
+}
+[data-surface="glass"] .zenko-mb-card {
+  background: color-mix(in srgb, var(--card) 72%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent) !important;
+  backdrop-filter: blur(10px);
+  box-shadow: none !important;
+}
+[data-surface="spotlight"] .zenko-mb-card {
+  background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 7%, var(--card)), var(--card) 55%) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border)) !important;
   box-shadow: none !important;
 }
 

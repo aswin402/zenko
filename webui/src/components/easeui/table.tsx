@@ -8,18 +8,18 @@ const MIN_COLUMN_WIDTH = 80;
 
 export function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
   return (
-    <div className="w-full overflow-x-auto rounded-2xl shadow-[0_0_0_1px_var(--border)]">
+    <div className="zenko-thin-scroll w-full overflow-x-auto rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)]">
       <table className={cn("w-full border-collapse text-sm", className)} {...props} />
     </div>
   );
 }
 
 export function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className={cn("bg-muted/50", className)} {...props} />;
+  return <thead className={cn("bg-[var(--surface)]", className)} {...props} />;
 }
 
 export function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <tbody className={cn("divide-y divide-border", className)} {...props} />;
+  return <tbody className={cn("divide-y divide-[var(--border)]", className)} {...props} />;
 }
 
 export interface TableRowProps extends HTMLAttributes<HTMLTableRowElement> {
@@ -32,7 +32,7 @@ export function TableRow({ selected = false, className, ...props }: TableRowProp
     <tr
       data-selected={selected}
       className={cn(
-        "transition-colors duration-150 hover:bg-muted/40 data-[selected=true]:bg-accent/5",
+        "transition-colors duration-150 hover:bg-[var(--surface)]/80 data-[selected=true]:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]",
         className,
       )}
       {...props}

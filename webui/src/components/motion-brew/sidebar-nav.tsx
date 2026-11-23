@@ -27,6 +27,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { type ClassValue, clsx } from "clsx";
 import { AnimatePresence, motion, type Transition, useAnimation, useInView, useReducedMotion, type Variants } from "motion/react";
 import { twMerge } from "tailwind-merge";
+import { Trash2 } from "lucide-react";
+import { CompactScrollArea } from "@/components/ui/CompactScrollArea";
 
 // cn(): merges Tailwind classes, later ones win.
 /** Merge Tailwind classes, letting later classes win conflicts. */
@@ -2453,6 +2455,12 @@ export interface SidebarSection {
   items: SidebarItem[];
 }
 
+export type SidebarSessionItemStyle =
+  | "soft_fill"
+  | "left_accent_bar"
+  | "bordered_card"
+  | "minimal_text";
+
 export interface SidebarNavProps {
   /** The wordmark beside the logo. */
   brand?: string;
@@ -2469,8 +2477,19 @@ export interface SidebarNavProps {
   collapsed?: boolean;
   defaultCollapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
-  user?: { name: string; email?: string; avatar?: string };
+  /** Pass `null` to omit the account profile footer completely. */
+  user?: { name: string; email?: string; avatar?: string } | null;
   onSettings?: () => void;
+  /** Optional themed action button rendered below the brand row (e.g. New Session CTA). */
+  headerAction?: (collapsed: boolean) => React.ReactNode;
+  /** Optional custom footer slot replacing the default account footer. */
+  footer?: (collapsed: boolean) => React.ReactNode;
+  /** Active highlight style applied to session/child items from Theme Studio. */
+  sessionItemStyle?: SidebarSessionItemStyle;
+  /** Optional delete action shown on hover for child session rows. */
+  onDeleteChild?: (id: string) => void;
+  /** Enable Lenis smooth scrolling on the inner list. */
+  smoothScroll?: boolean;
   /**
    * How it shows on a phone. `"auto"` (default) turns it into a bottom bar of
    * icons and labels that swipes sideways when the screen is phone width (under
@@ -2731,6 +2750,11 @@ export const SidebarNav = React.forwardRef<HTMLElement, SidebarNavProps>(
       onCollapsedChange,
       user = DEFAULT_USER,
       onSettings,
+      headerAction,
+      footer,
+      sessionItemStyle = "soft_fill",
+      onDeleteChild,
+      smoothScroll = false,
       mobile = "auto",
       className,
     },
@@ -2813,26 +2837,17 @@ export const SidebarNav = React.forwardRef<HTMLElement, SidebarNavProps>(
     const pill = (layout: string, tone: string) => (
       <motion.span
         layoutId={`${id}-${layout}`}
-        className={cn("absolute inset-0 rounded-xl", tone)}
+        className={cn("absolute inset-0 rounded-[var(--radius-sm)]", tone)}
         transition={still ? { duration: 0 } : PILL}
       />
     );
 
-    // A soft fade at the foot of the list while more rows sit below.
-    const navRef = React.useRef<HTMLElement>(null);
-    const [more, setMore] = React.useState(false);
-    const measure = React.useCallback(() => {
-      const el = navRef.current;
-      if (el) setMore(el.scrollTop + el.clientHeight < el.scrollHeight - 4);
-    }, []);
-    React.useEffect(() => {
-      const el = navRef.current;
-      if (!el || typeof ResizeObserver === "undefined") return;
-      const ro = new ResizeObserver(measure);
-      ro.observe(el);
-      Array.from(el.children).forEach((c) => ro.observe(c));
-      return () => ro.disconnect();
-    }, [measure, sections]);
+    const activeChildPillTone: Record<SidebarSessionItemStyle, string | null> = {
+      soft_fill: "bg-[var(--card)]",
+      left_accent_bar: "rounded-l-none bg-[var(--card)]/70",
+      bordered_card: "border border-[var(--border)] bg-[var(--card)]",
+      minimal_text: null,
+    };
 
     const phone = usePhoneBar(mobile);
     if (phone) {
@@ -2949,340 +2964,380 @@ export const SidebarNav = React.forwardRef<HTMLElement, SidebarNavProps>(
             </motion.button>
           </motion.div>
 
-          {/* Pages. */}
-          <nav
-            ref={navRef}
-            aria-label="Main"
-            onPointerLeave={() => {
-              setHover(null);
-              setTip(null);
-            }}
-            onScroll={() => {
-              setTip(null);
-              measure();
-            }}
-            className={cn(
-              "mt-2 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pb-2 [scrollbar-width:none]",
-              more &&
-                "[mask-image:linear-gradient(to_bottom,black_calc(100%-40px),transparent)]",
-            )}
-          >
-            {sections.map((section, si) => (
-              <div key={section.label ?? si} className="pt-2">
-                {section.label !== undefined && (
-                  <motion.div
-                    variants={ROW}
-                    className="relative h-8"
-                    onPointerEnter={() => {
-                      setHover(null);
-                      setTip(null);
-                    }}
-                  >
-                    <motion.p
-                      className="absolute bottom-2 left-3 whitespace-nowrap text-xs font-medium text-zinc-400"
-                      {...fade(order++)}
-                    >
-                      {section.label}
-                    </motion.p>
-                    <motion.span
-                      aria-hidden
-                      className="absolute bottom-3.5 left-3 h-px w-4 rounded-full bg-[#242423]/15"
-                      initial={false}
-                      animate={{
-                        opacity: collapsed ? 1 : 0,
-                        scaleX: collapsed ? 1 : 0.2,
-                      }}
-                      transition={{
-                        duration: still ? 0 : 0.3,
-                        ease: GLIDE,
-                        delay: collapsed && !still ? 0.15 : 0,
-                      }}
-                    />
-                  </motion.div>
-                )}
+          {/* Optional themed header CTA (e.g. New Session Button honoring Theme Studio) */}
+          {headerAction && (
+            <div className="mt-2.5 px-3">
+              {headerAction(collapsed)}
+            </div>
+          )}
 
-                {section.items.map((item) => {
-                  const Icon = ICONS[item.icon];
-                  const kids = item.children ?? [];
-                  const groupOpen = kids.length > 0 && open.has(item.id);
-                  const childActive = kids.some((k) => k.id === value);
-                  // The parent stands in for its child whenever the child is hidden.
-                  const active =
-                    value === item.id ||
-                    (childActive && (collapsed || !groupOpen));
-                  const lit = active || hover === item.id;
-                  const note = item.badge
-                    ? `${item.badge} new`
-                    : kids.length
-                      ? `${kids.length} pages`
-                      : item.tag;
-                  const rowOrder = order++;
-                  return (
-                    <motion.div key={item.id} variants={ROW}>
-                      <motion.button
-                        type="button"
-                        data-nav-row
-                        aria-current={value === item.id ? "page" : undefined}
-                        aria-expanded={
-                          kids.length ? groupOpen && !collapsed : undefined
-                        }
-                        onPointerEnter={(e) => {
-                          setHover(item.id);
-                          showTip(e.currentTarget, item.label, note);
-                        }}
-                        onFocus={(e) => {
-                          setHover(item.id);
-                          showTip(e.currentTarget, item.label, note);
-                        }}
-                        onBlur={() => setTip(null)}
-                        onClick={() => {
-                          if (!kids.length) return go(item.id);
-                          // From the slim rail a group opens the full rail on it.
-                          if (collapsed) {
-                            setOpen((p) => new Set(p).add(item.id));
-                            setCollapsed(false);
-                          } else toggleGroup(item.id);
-                        }}
-                        whileTap={still ? undefined : { scale: 0.97 }}
-                        className="relative flex h-10 w-full cursor-pointer items-center rounded-xl text-left text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#242423]/25"
+          {/* Pages — wrapped in Zenko CompactScrollArea for slim theme-colored scrollbar */}
+          <CompactScrollArea
+            smooth={smoothScroll}
+            className="mt-1 min-h-0 flex-1"
+            viewportClassName="px-3 pb-2 pr-3.5"
+          >
+            <nav
+              aria-label="Main"
+              onPointerLeave={() => {
+                setHover(null);
+                setTip(null);
+              }}
+            >
+              {sections.map((section, si) => (
+                <div key={section.label ?? si} className="pt-2">
+                  {section.label !== undefined && (
+                    <motion.div
+                      variants={ROW}
+                      className="relative h-7"
+                      onPointerEnter={() => {
+                        setHover(null);
+                        setTip(null);
+                      }}
+                    >
+                      <motion.p
+                        className="absolute bottom-1.5 left-2 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-[var(--muted)]"
+                        {...fade(order++)}
                       >
-                        {active && pill("active", "bg-[var(--card)]")}
-                        {hover === item.id &&
-                          !active &&
-                          pill("hover", "bg-[var(--card)]/65")}
-                        <span
-                          className={cn(
-                            "relative grid size-10 shrink-0 place-items-center transition-colors duration-200",
-                            active ? "text-[var(--accent)]" : lit ? "text-[var(--fg)]" : "text-[var(--muted)]",
-                          )}
+                        {section.label}
+                      </motion.p>
+                      <motion.span
+                        aria-hidden
+                        className="absolute bottom-3 left-3 h-px w-4 rounded-full bg-[var(--border)]"
+                        initial={false}
+                        animate={{
+                          opacity: collapsed ? 1 : 0,
+                          scaleX: collapsed ? 1 : 0.2,
+                        }}
+                        transition={{
+                          duration: still ? 0 : 0.3,
+                          ease: GLIDE,
+                          delay: collapsed && !still ? 0.15 : 0,
+                        }}
+                      />
+                    </motion.div>
+                  )}
+
+                  {section.items.map((item) => {
+                    const Icon = ICONS[item.icon];
+                    const kids = item.children ?? [];
+                    const groupOpen = kids.length > 0 && open.has(item.id);
+                    const childActive = kids.some((k) => k.id === value);
+                    // The parent stands in for its child whenever the child is hidden.
+                    const active =
+                      value === item.id ||
+                      (childActive && (collapsed || !groupOpen));
+                    const lit = active || hover === item.id;
+                    const note = item.badge
+                      ? `${item.badge} new`
+                      : kids.length
+                        ? `${kids.length} sessions`
+                        : item.tag;
+                    const rowOrder = order++;
+                    return (
+                      <motion.div key={item.id} variants={ROW}>
+                        <motion.button
+                          type="button"
+                          data-nav-row
+                          aria-current={value === item.id ? "page" : undefined}
+                          aria-expanded={
+                            kids.length ? groupOpen && !collapsed : undefined
+                          }
+                          onPointerEnter={(e) => {
+                            setHover(item.id);
+                            showTip(e.currentTarget, item.label, note);
+                          }}
+                          onFocus={(e) => {
+                            setHover(item.id);
+                            showTip(e.currentTarget, item.label, note);
+                          }}
+                          onBlur={() => setTip(null)}
+                          onClick={() => {
+                            if (!kids.length) return go(item.id);
+                            // From the slim rail a group opens the full rail on it.
+                            if (collapsed) {
+                              setOpen((p) => new Set(p).add(item.id));
+                              setCollapsed(false);
+                            } else toggleGroup(item.id);
+                          }}
+                          whileTap={still ? undefined : { scale: 0.97 }}
+                          className="relative flex h-9 w-full cursor-pointer items-center rounded-[var(--radius-sm)] text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]/40"
                         >
-                          <Icon
-                            className="size-[18px]"
-                            active={hover === item.id}
-                          />
-                          {item.badge ? (
-                            <motion.span
-                              aria-hidden
-                              className="absolute right-2 top-2 size-2 rounded-full bg-[var(--accent)] ring-2 ring-[var(--surface)]"
-                              initial={false}
-                              animate={{
-                                scale: collapsed ? 1 : 0,
-                                opacity: collapsed ? 1 : 0,
-                              }}
-                              transition={
-                                still
-                                  ? { duration: 0 }
-                                  : collapsed
-                                    ? {
-                                        type: "spring",
-                                        stiffness: 500,
-                                        damping: 22,
-                                        delay: 0.25,
-                                      }
-                                    : { duration: 0.12 }
-                              }
-                            />
-                          ) : null}
-                        </span>
-                        <span className="relative min-w-0 flex-1 self-stretch overflow-hidden">
-                          <motion.span
-                            className="flex h-full items-center gap-2 pr-2"
-                            style={{ width: LABEL_W }}
-                            {...fade(rowOrder)}
-                          >
-                            <span
-                              className={cn(
-                                "min-w-0 flex-1 truncate transition-colors duration-200",
-                                lit ? "text-[var(--fg)]" : "text-[var(--muted)]",
-                              )}
-                            >
-                              {item.label}
-                            </span>
-                            {item.tag && (
-                              <span className="grid h-5 place-items-center rounded-full bg-[var(--accent)]/14 px-2 text-xs font-medium text-[var(--accent)]">
-                                {item.tag}
-                              </span>
+                          {active && pill("active", "bg-[var(--card)]")}
+                          {hover === item.id &&
+                            !active &&
+                            pill("hover", "bg-[var(--card)]/65")}
+                          <span
+                            className={cn(
+                              "relative grid size-10 shrink-0 place-items-center transition-colors duration-200",
+                              active ? "text-[var(--accent)]" : lit ? "text-[var(--fg)]" : "text-[var(--muted)]",
                             )}
+                          >
+                            <Icon
+                              className="size-[17px]"
+                              active={hover === item.id}
+                            />
                             {item.badge ? (
                               <motion.span
-                                className="grid h-5 min-w-5 place-items-center rounded-full bg-[var(--accent)] px-1.5 text-xs font-medium tabular-nums text-[var(--primary-fg)]"
+                                aria-hidden
+                                className="absolute right-2 top-2 size-2 rounded-full bg-[var(--accent)] ring-2 ring-[var(--surface)]"
+                                initial={false}
                                 animate={{
-                                  scale:
-                                    hover === item.id && !still
-                                      ? [1, 1.18, 1]
-                                      : 1,
+                                  scale: collapsed ? 1 : 0,
+                                  opacity: collapsed ? 1 : 0,
                                 }}
-                                transition={{ duration: 0.35 }}
-                              >
-                                {item.badge}
-                              </motion.span>
-                            ) : null}
-                            {kids.length > 0 && (
-                              <motion.span
-                                className="grid size-5 place-items-center text-zinc-400"
-                                animate={{ rotate: groupOpen ? 0 : -90 }}
                                 transition={
                                   still
                                     ? { duration: 0 }
-                                    : { duration: 0.3, ease: GLIDE }
-                                }
-                              >
-                                <ChevronDownIcon
-                                  className="size-4"
-                                  active={false}
-                                />
-                              </motion.span>
-                            )}
-                          </motion.span>
-                        </span>
-                      </motion.button>
-
-                      <AnimatePresence initial={false}>
-                        {groupOpen && !collapsed && (
-                          <motion.div
-                            key="kids"
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{
-                              duration: still ? 0 : 0.32,
-                              ease: GLIDE,
-                            }}
-                            className="relative overflow-hidden"
-                          >
-                            {/* The thread draws down from the parent's icon. */}
-                            <motion.span
-                              aria-hidden
-                              className="absolute bottom-3 left-[19.5px] top-0 w-px origin-top bg-[var(--border)]"
-                              initial={{ scaleY: 0 }}
-                              animate={{ scaleY: 1 }}
-                              transition={{
-                                duration: still ? 0 : 0.4,
-                                ease: GLIDE,
-                                delay: still ? 0 : 0.05,
-                              }}
-                            />
-                            <div className="py-0.5">
-                              {kids.map((kid, ki) => {
-                                const on = value === kid.id;
-                                const key = `${item.id}/${kid.id}`;
-                                return (
-                                  <motion.button
-                                    key={kid.id}
-                                    type="button"
-                                    data-nav-row
-                                    aria-current={on ? "page" : undefined}
-                                    initial={{ opacity: 0, x: -6 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{
-                                      duration: still ? 0 : 0.28,
-                                      ease: GLIDE,
-                                      delay: still ? 0 : 0.06 + ki * 0.04,
-                                    }}
-                                    onPointerEnter={() => setHover(key)}
-                                    onFocus={() => setHover(key)}
-                                    onClick={() => go(kid.id)}
-                                    className="relative flex h-9 w-full cursor-pointer items-center rounded-xl pl-10 pr-2 text-left text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]/40"
-                                  >
-                                    {on &&
-                                      pill("active", "bg-[var(--card)]")}
-                                    {hover === key &&
-                                      !on &&
-                                      pill("hover", "bg-[var(--card)]/60")}
-                                    {on && (
-                                      <motion.span
-                                        layoutId={`${id}-tick`}
-                                        aria-hidden
-                                        className="absolute left-[18.5px] top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-[var(--accent)]"
-                                        transition={
-                                          still ? { duration: 0 } : PILL
+                                    : collapsed
+                                      ? {
+                                          type: "spring",
+                                          stiffness: 500,
+                                          damping: 22,
+                                          delay: 0.25,
                                         }
-                                      />
-                                    )}
-                                    <span
-                                      className={cn(
-                                        "relative min-w-0 flex-1 truncate transition-colors duration-200",
-                                        on || hover === key
-                                          ? "text-[var(--fg)]"
-                                          : "text-[var(--muted)]",
-                                      )}
-                                    >
-                                      {kid.label}
-                                    </span>
-                                    {kid.badge ? (
-                                      <span className="relative text-xs font-medium tabular-nums text-[var(--muted)]">
-                                        {kid.badge}
-                                      </span>
-                                    ) : null}
-                                  </motion.button>
-                                );
-                              })}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            ))}
-          </nav>
+                                      : { duration: 0.12 }
+                                }
+                              />
+                            ) : null}
+                          </span>
+                          <span className="relative min-w-0 flex-1 self-stretch overflow-hidden">
+                            <motion.span
+                              className="flex h-full items-center gap-2 pr-2"
+                              style={{ width: LABEL_W }}
+                              {...fade(rowOrder)}
+                            >
+                              <span
+                                className={cn(
+                                  "min-w-0 flex-1 truncate transition-colors duration-200",
+                                  lit ? "text-[var(--fg)]" : "text-[var(--muted)]",
+                                )}
+                              >
+                                {item.label}
+                              </span>
+                              {item.tag && (
+                                <span className="grid h-5 place-items-center rounded-full bg-[var(--accent)]/14 px-2 text-xs font-medium text-[var(--accent)]">
+                                  {item.tag}
+                                </span>
+                              )}
+                              {item.badge ? (
+                                <motion.span
+                                  className="grid h-5 min-w-5 place-items-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-medium tabular-nums text-[var(--primary-fg)]"
+                                  animate={{
+                                    scale:
+                                      hover === item.id && !still
+                                        ? [1, 1.18, 1]
+                                        : 1,
+                                  }}
+                                  transition={{ duration: 0.35 }}
+                                >
+                                  {item.badge}
+                                </motion.span>
+                              ) : null}
+                              {kids.length > 0 && (
+                                <motion.span
+                                  className="grid size-5 place-items-center text-[var(--muted)]"
+                                  animate={{ rotate: groupOpen ? 0 : -90 }}
+                                  transition={
+                                    still
+                                      ? { duration: 0 }
+                                      : { duration: 0.3, ease: GLIDE }
+                                  }
+                                >
+                                  <ChevronDownIcon
+                                    className="size-4"
+                                    active={false}
+                                  />
+                                </motion.span>
+                              )}
+                            </motion.span>
+                          </span>
+                        </motion.button>
 
-          {/* Account. */}
-          <motion.div variants={ROW}>
-            <div aria-hidden className="mb-3 h-px bg-[var(--border)]" />
-            <div className="flex h-10 items-center px-3">
-              <span
-                className="relative grid size-10 shrink-0 place-items-center"
-                onPointerEnter={(e) =>
-                  showTip(e.currentTarget, user.name, user.email)
-                }
-                onPointerLeave={() => setTip(null)}
-              >
-                {user.avatar ? (
-                  <img
-                    src={user.avatar}
-                    alt=""
-                    draggable={false}
-                    className="size-8 rounded-full object-cover"
-                  />
-                ) : (
-                  <span className="grid size-8 place-items-center rounded-full bg-[var(--card)] text-xs font-semibold text-[var(--fg)]">
-                    {initialsOf(user.name)}
-                  </span>
-                )}
-                <span className="absolute bottom-1 right-1 size-2.5 rounded-full bg-[var(--accent)] ring-2 ring-[var(--surface)]" />
-              </span>
-              <div className="min-w-0 flex-1 overflow-hidden">
-                <motion.div
-                  className="flex items-center gap-2 pl-1.5"
-                  style={{ width: LABEL_W - 4 }}
-                  {...fade(order++)}
-                >
-                  <span className="min-w-0 flex-1 leading-tight">
-                    <span className="block truncate text-sm font-medium text-[var(--fg)]">
-                      {user.name}
-                    </span>
-                    {user.email && (
-                      <span className="block truncate text-xs text-[var(--muted)]">
-                        {user.email}
-                      </span>
-                    )}
-                  </span>
-                  <motion.button
-                    type="button"
-                    aria-label="Settings"
-                    tabIndex={collapsed ? -1 : 0}
-                    onClick={onSettings}
-                    whileTap={still ? undefined : { scale: 0.9 }}
-                    className="grid size-8 cursor-pointer place-items-center rounded-full text-[var(--muted)] outline-none transition-colors hover:bg-[var(--card)] hover:text-[var(--fg)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]/40"
-                  >
-                    <SettingsIcon className="size-[18px]" />
-                  </motion.button>
-                </motion.div>
-              </div>
+                        <AnimatePresence initial={false}>
+                          {groupOpen && !collapsed && (
+                            <motion.div
+                              key="kids"
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{
+                                duration: still ? 0 : 0.32,
+                                ease: GLIDE,
+                              }}
+                              className="relative overflow-hidden"
+                            >
+                              {/* The thread draws down from the parent's icon. */}
+                              <motion.span
+                                aria-hidden
+                                className="absolute bottom-3 left-[19.5px] top-0 w-px origin-top bg-[var(--border)]"
+                                initial={{ scaleY: 0 }}
+                                animate={{ scaleY: 1 }}
+                                transition={{
+                                  duration: still ? 0 : 0.4,
+                                  ease: GLIDE,
+                                  delay: still ? 0 : 0.05,
+                                }}
+                              />
+                              <div className="py-0.5">
+                                {kids.map((kid, ki) => {
+                                  const on = value === kid.id;
+                                  const key = `${item.id}/${kid.id}`;
+                                  const activeTone = activeChildPillTone[sessionItemStyle];
+                                  return (
+                                    <motion.div
+                                      key={kid.id}
+                                      initial={{ opacity: 0, x: -6 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      transition={{
+                                        duration: still ? 0 : 0.24,
+                                        ease: GLIDE,
+                                        delay: still ? 0 : Math.min(0.32, 0.04 + ki * 0.025),
+                                      }}
+                                      onPointerEnter={() => setHover(key)}
+                                      className="group/child relative flex h-8.5 w-full items-center"
+                                    >
+                                      <button
+                                        type="button"
+                                        data-nav-row
+                                        aria-current={on ? "page" : undefined}
+                                        onFocus={() => setHover(key)}
+                                        onClick={() => go(kid.id)}
+                                        className="relative flex h-full w-full cursor-pointer items-center rounded-[var(--radius-sm)] pl-9 pr-7 text-left text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]/40"
+                                      >
+                                        {on && activeTone && pill("active", activeTone)}
+                                        {hover === key &&
+                                          !on &&
+                                          pill("hover", "bg-[var(--card)]/55")}
+                                        {on &&
+                                          (sessionItemStyle === "left_accent_bar" ? (
+                                            <motion.span
+                                              layoutId={`${id}-tick`}
+                                              aria-hidden
+                                              className="absolute bottom-1 left-0 top-1 w-[2.5px] rounded-full bg-[var(--accent)]"
+                                              transition={
+                                                still ? { duration: 0 } : PILL
+                                              }
+                                            />
+                                          ) : sessionItemStyle !== "minimal_text" ? (
+                                            <motion.span
+                                              layoutId={`${id}-tick`}
+                                              aria-hidden
+                                              className="absolute left-[18.5px] top-1/2 h-3.5 w-[2.5px] -translate-y-1/2 rounded-full bg-[var(--accent)]"
+                                              transition={
+                                                still ? { duration: 0 } : PILL
+                                              }
+                                            />
+                                          ) : null)}
+                                        <span
+                                          className={cn(
+                                            "relative min-w-0 flex-1 truncate transition-colors duration-200",
+                                            on
+                                              ? sessionItemStyle === "minimal_text"
+                                                ? "font-semibold text-[var(--accent)]"
+                                                : "font-medium text-[var(--fg)]"
+                                              : hover === key
+                                                ? "text-[var(--fg)]"
+                                                : "text-[var(--muted)]",
+                                          )}
+                                        >
+                                          {kid.label}
+                                        </span>
+                                        {kid.badge ? (
+                                          <span className="relative ml-1 text-[10.5px] font-mono tabular-nums text-[var(--muted)]">
+                                            {kid.badge}
+                                          </span>
+                                        ) : null}
+                                      </button>
+                                      {onDeleteChild && (
+                                        <button
+                                          type="button"
+                                          aria-label={`Delete ${kid.label}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onDeleteChild(kid.id);
+                                          }}
+                                          className="absolute right-1.5 z-10 hidden h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--muted)] transition-colors hover:text-[var(--fg)] group-hover/child:flex"
+                                        >
+                                          <Trash2 className="size-3" />
+                                        </button>
+                                      )}
+                                    </motion.div>
+                                  );
+                                })}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              ))}
+            </nav>
+          </CompactScrollArea>
+
+          {/* Footer: custom Zenko footer slot, or optional account row when `user` is non-null */}
+          {footer ? (
+            <div className="mt-auto border-t border-[var(--border)] px-3 pt-2.5">
+              {footer(collapsed)}
             </div>
-          </motion.div>
+          ) : user ? (
+            <motion.div variants={ROW}>
+              <div aria-hidden className="mb-3 h-px bg-[var(--border)]" />
+              <div className="flex h-10 items-center px-3">
+                <span
+                  className="relative grid size-10 shrink-0 place-items-center"
+                  onPointerEnter={(e) =>
+                    showTip(e.currentTarget, user.name, user.email)
+                  }
+                  onPointerLeave={() => setTip(null)}
+                >
+                  {user.avatar ? (
+                    <img
+                      src={user.avatar}
+                      alt=""
+                      draggable={false}
+                      className="size-8 rounded-full object-cover"
+                    />
+                  ) : (
+                    <span className="grid size-8 place-items-center rounded-full bg-[var(--card)] text-xs font-semibold text-[var(--fg)]">
+                      {initialsOf(user.name)}
+                    </span>
+                  )}
+                  <span className="absolute bottom-1 right-1 size-2.5 rounded-full bg-[var(--accent)] ring-2 ring-[var(--surface)]" />
+                </span>
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <motion.div
+                    className="flex items-center gap-2 pl-1.5"
+                    style={{ width: LABEL_W - 4 }}
+                    {...fade(order++)}
+                  >
+                    <span className="min-w-0 flex-1 leading-tight">
+                      <span className="block truncate text-sm font-medium text-[var(--fg)]">
+                        {user.name}
+                      </span>
+                      {user.email && (
+                        <span className="block truncate text-xs text-[var(--muted)]">
+                          {user.email}
+                        </span>
+                      )}
+                    </span>
+                    <motion.button
+                      type="button"
+                      aria-label="Settings"
+                      tabIndex={collapsed ? -1 : 0}
+                      onClick={onSettings}
+                      whileTap={still ? undefined : { scale: 0.9 }}
+                      className="grid size-8 cursor-pointer place-items-center rounded-full text-[var(--muted)] outline-none transition-colors hover:bg-[var(--card)] hover:text-[var(--fg)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]/40"
+                    >
+                      <SettingsIcon className="size-[18px]" />
+                    </motion.button>
+                  </motion.div>
+                </div>
+              </div>
+            </motion.div>
+          ) : null}
         </motion.div>
 
         {/* The slim rail's tooltip, one for every row, sliding between them. */}

@@ -396,8 +396,9 @@ export function ModelPicker({
   }
 
   const rareModels = useMemo<PickerModel[]>(() => {
-    const providerLabel = activeDesc?.label || activeProvider
-    const list = activeModels.slice(0, 60).map((m) => {
+    const providerLabel = currentDesc?.label || browsingProvider || activeDesc?.label || activeProvider
+    const sourceModels = browsingModels.length > 0 ? browsingModels : activeModels
+    const list = sourceModels.slice(0, 60).map((m) => {
       const ctxLabel = m.context_length != null ? formatCompactTokens(m.context_length) : 'live'
       const priceLabel = formatModelPrice(m)
       return {
@@ -410,7 +411,11 @@ export function ModelPicker({
         intelligence: m.supports_reasoning ? 5 : 4,
       }
     })
-    if (activeModel && !list.some((m) => m.id === activeModel)) {
+    if (
+      browsingProvider === activeProvider &&
+      activeModel &&
+      !list.some((m) => m.id === activeModel)
+    ) {
       list.unshift({
         id: activeModel,
         name: shortModel || activeModel,
@@ -422,17 +427,63 @@ export function ModelPicker({
       })
     }
     return list
-  }, [activeModels, activeModel, activeProvider, activeDesc?.label, shortModel])
+  }, [
+    browsingModels,
+    activeModels,
+    activeModel,
+    browsingProvider,
+    activeProvider,
+    currentDesc?.label,
+    activeDesc?.label,
+    shortModel,
+  ])
 
   if (pickerStyle === 'rareui_picker' && rareModels.length > 0) {
+    const providerSwitcher =
+      providers.length > 1 ? (
+        <div className="flex flex-wrap items-center gap-1">
+          {providers.map((p) => {
+            const isBrowsing = p.id === browsingProvider
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => enterProvider(p.id)}
+                className={cn(
+                  'cursor-pointer rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors',
+                  isBrowsing
+                    ? 'border-[var(--accent)]/50 text-[var(--fg)]'
+                    : 'border-[var(--border)] text-[var(--muted)] hover:text-[var(--fg)]',
+                )}
+                style={
+                  isBrowsing
+                    ? { backgroundColor: 'color-mix(in srgb, var(--accent) 14%, transparent)' }
+                    : undefined
+                }
+              >
+                {p.label}
+              </button>
+            )
+          })}
+        </div>
+      ) : undefined
+
     return (
       <div className="inline-flex items-center gap-1">
         <RareModelPicker
           models={rareModels}
-          value={activeModel || rareModels[0]?.id}
-          onChange={(nextModelId) => onSelectProviderModel(activeProvider, nextModelId)}
+          value={
+            browsingProvider === activeProvider
+              ? activeModel || rareModels[0]?.id
+              : rareModels[0]?.id
+          }
+          onChange={(nextModelId) =>
+            onSelectProviderModel(browsingProvider || activeProvider, nextModelId)
+          }
           searchable
-          className="rounded-full border border-[var(--border)] bg-[var(--card)] text-[var(--fg)]"
+          triggerClassName={cn('h-7 rounded-full px-2.5 text-[12px]', pillClass)}
+          headerSlot={providerSwitcher}
         />
       </div>
     )

@@ -76,10 +76,10 @@ function Question({
       transition={reduced ? INSTANT : SHIFT}
       whileTap={reduced ? undefined : { scale: 0.97 }}
       className={cn(
-        "max-w-[85%] cursor-pointer self-start rounded-[18px] rounded-bl-[6px] px-4 py-2.5 text-left text-[15px] leading-[1.4] tracking-[-0.01em] text-black transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#868593]/50 dark:text-white",
+        "max-w-[85%] cursor-pointer self-start rounded-[18px] rounded-bl-[6px] border px-4 py-2.5 text-left text-[14.5px] leading-[1.4] tracking-[-0.01em] text-[var(--fg)] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40",
         open
-          ? "bg-white shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:bg-[#333333] dark:shadow-none"
-          : "bg-[#F4F4F9] dark:bg-[#262626]",
+          ? "border-[var(--accent)]/40 bg-[var(--card)]"
+          : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/30",
       )}
     >
       {item.question}
@@ -118,14 +118,14 @@ function Answer({
             id={ids.answer}
             role="region"
             aria-labelledby={ids.question}
-            className="max-w-[85%] rounded-[18px] rounded-br-[6px] bg-[var(--faq-accent)] px-4 py-2.5 text-[15px] leading-[1.45] tracking-[-0.01em] text-white"
+            className="max-w-[85%] rounded-[18px] rounded-br-[6px] bg-[var(--faq-accent)] px-4 py-2.5 text-[14.5px] leading-[1.45] tracking-[-0.01em] text-[var(--primary-fg)]"
           >
             {item.answer}
           </div>
           {avatar != null && (
             <span
               aria-hidden
-              className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/60 text-[var(--faq-accent)] shadow-[0_12px_32px_-12px_rgba(0,0,0,0.15)] backdrop-blur-2xl backdrop-saturate-150 dark:bg-white/[0.07] dark:shadow-[0_12px_32px_-12px_rgba(0,0,0,0.5)] [&>img]:size-full [&>img]:object-cover"
+              className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--card)] text-[var(--faq-accent)] shadow-xs [&>img]:size-full [&>img]:object-cover"
             >
               {avatar}
             </span>
@@ -150,7 +150,7 @@ export function Faq({
   value,
   defaultValue = null,
   onValueChange,
-  accent = "#FC4C01",
+  accent = "var(--accent)",
   avatar = <RareMark />,
   className,
   style,

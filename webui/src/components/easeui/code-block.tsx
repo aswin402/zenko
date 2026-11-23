@@ -67,18 +67,18 @@ export function CodeBlock({ code, label = "code", className }: CodeBlockProps) {
   return (
     <figure
       className={cn(
-        "overflow-hidden rounded-2xl bg-card font-mono text-[13px] leading-relaxed shadow-[0_0_0_1px_var(--border)]",
+        "overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] font-mono text-[13px] leading-relaxed",
         className,
       )}
     >
-      <figcaption className="flex h-11 items-center justify-between gap-3 border-b border-border pl-4 pr-1.5">
-        <span className="flex min-w-0 items-center gap-2 font-sans text-xs text-muted-foreground">
+      <figcaption className="flex h-10 items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--card)]/60 pl-4 pr-1.5">
+        <span className="flex min-w-0 items-center gap-2 font-sans text-xs text-[var(--muted)]">
           <FileCode aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{label}</span>
         </span>
         <CopyButton value={code} />
       </figcaption>
-      <pre className="max-h-96 overflow-x-auto overflow-y-auto py-4">
+      <pre className="zenko-thin-scroll max-h-96 overflow-x-auto overflow-y-auto py-4">
         <code>
           {lines.map((line, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: lines only append or grow in place while streaming.

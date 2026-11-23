@@ -4,6 +4,27 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9] - 2026-11-23
+
+Fixed Motion-Brew, VengeanceUI, SmoothUI, RareUI, EaseUI, and Skiper96 Theme Studio customization gaps so every component obeys Zenko's global 60/30/10 theme, slim theme scrollbar, corner radius, surface styles, and slot controls.
+
+### Fixed
+- **Motion-Brew Left Menubar (`motion-brew/sidebar-nav.tsx`, `chat/Sidebar.tsx`):**
+  - Removed the `ZA / Zenko Agent / Local Autonomous` account profile block from the sidebar footer.
+  - Replaced the raw browser vertical scrollbar with Zenko's slim theme-colored `CompactScrollArea`.
+  - Wired `left_menubar.new_session_style`, `left_menubar.session_item_style` (`soft_fill`, `left_accent_bar`, `bordered_card`, `minimal_text`), hover session deletion, and clean collapsible Settings / Clear Session actions.
+- **Motion-Brew Prompt Input & SmoothUI Context Meter (`motion-brew/prompt-input.tsx`, `chat/PromptComposer.tsx`):**
+  - Wired `composer.send_button_shape` and `composer.send_button_icon` directly into `motion_brew_prompt`, replaced dark-invisible border glows with theme-accent color-mix shimmer, and enforced `var(--radius-lg)`.
+  - Fixed SmoothUI `AIContextMeter` hover breakdown so it works immediately with fallback breakdown stats, and applied `context_meter_chrome` uniformly across all context meter styles including `compact_text`.
+- **VengeanceUI Glass Dock (`vengeanceui/glass-dock.tsx`, `beui/FloatingDock.tsx`):**
+  - Wired all 4 `right_menubar.active_indicator` modes (`vermilion_pill`, `solid_accent`, `side_bar`, `dot_indicator`) and Zenko `Tooltip` customization (`tooltip_style`, `tooltip_shape`, `tooltip_motion`, `show_hover_hints`) across dock items and trailing controls.
+- **RareUI Model Picker & Theme-Adapted RareUI / EaseUI / Skiper96 Components (`rareui/`, `easeui/`, `skiperui/`, `chat/ModelPicker.tsx`, `StudioPreviews.tsx`):**
+  - Wired `composer.action_pills` (`pillClass`) and multi-provider switching into `rareui_picker`, replaced hardcoded light/dark zinc/black/white classes and raw scrollbars across RareUI (`model-picker`, `faq`, `streaming-response`, `web-search`, `code-block`, `ai-status`), EaseUI (`command-palette`, `table`, `alert`, `toast`, `code-block`, `tool-approval`, `tool-chip`, `pixel-loader`), and Skiper96 tabs with Zenko CSS variables, `.zenko-thin-scroll`, `.zenko-prose-link`, and `var(--radius)`.
+  - Fixed Appearance Studio live previews (`OverlaysPreview`, `tabs_accordions`, `agent_activity`, `model_picker`) so every option visually updates its preview.
+- **Motion-Brew Dashboard Widgets (`index.css`, `motion-brew/{activity-grid,mix-chart,quota-gauge,usage-ring}.tsx`, `DashboardView.tsx`):**
+  - Wired `.zenko-mb-card` into all 9 `[data-surface="..."]` card styles and global `var(--radius)`.
+  - Wired `dashboard.heatmap_shape` and full `heatmap_range` (`year`/`half_year`/`quarter`) into `ActivityGrid`, replaced invisible dark-mode strokes and rainbow hues in `QuotaGauge` and `UsageRing` with theme-aware `var(--border)` / `var(--accent)`, and replaced SaaS quota labels with Zenko runtime telemetry copy.
+
 ## [0.0.8] - 2026-11-23
 
 Fixed stale embedded WebUI builds by tracking `webui/dist` in Cargo build scripts and rebuilding fresh dev & release binaries.

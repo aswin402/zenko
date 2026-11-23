@@ -190,8 +190,16 @@ export interface QuotaGaugeProps {
   unit?: string;
   /** Ticks on the gauge. Default `44`. */
   ticks?: number;
-  /** Colour of lit ticks. Default ink. */
+  /** Colour of lit ticks. Default active theme accent. */
   color?: string;
+  /** Optional primary caption shown below the gauge. */
+  captionTitle?: string;
+  /** Optional secondary caption shown below the gauge. */
+  captionSubtitle?: string;
+  /** Optional hover caption headline. */
+  hoverTitle?: string;
+  /** Optional hover caption subline. */
+  hoverSubtitle?: string;
   className?: string;
 }
 
@@ -317,7 +325,11 @@ export const QuotaGauge = React.forwardRef<HTMLDivElement, QuotaGaugeProps>(
       goal = 2500,
       unit = "credits used",
       ticks = 44,
-      color = "#242423",
+      color = "var(--accent)",
+      captionTitle,
+      captionSubtitle,
+      hoverTitle,
+      hoverSubtitle,
       className,
     },
     ref,
@@ -357,14 +369,14 @@ export const QuotaGauge = React.forwardRef<HTMLDivElement, QuotaGaugeProps>(
         animate={shown ? { opacity: 1, y: 0 } : undefined}
         transition={{ duration: 0.6, ease: GLIDE }}
         className={cn(
-          "w-[320px] max-w-full rounded-3xl bg-white p-6 text-[#242423] shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-16px_rgba(0,0,0,0.18)] dark:bg-zinc-900 dark:text-zinc-100",
+          "w-[320px] max-w-full rounded-[var(--radius)] bg-[var(--card)] p-6 text-[var(--fg)]",
           className,
         )}
       >
         <div
           className="relative mx-auto size-[240px]"
           role="img"
-          aria-label={`${value.toLocaleString()} of ${goal.toLocaleString()} ${unit}, ${Math.round(share * 100)} percent of the plan`}
+          aria-label={`${value.toLocaleString()} of ${goal.toLocaleString()} ${unit}, ${Math.round(share * 100)} percent`}
         >
           <svg
             viewBox={`0 0 ${SIZE} ${SIZE}`}
@@ -386,19 +398,19 @@ export const QuotaGauge = React.forwardRef<HTMLDivElement, QuotaGaugeProps>(
                   strokeLinecap="round"
                   initial={false}
                   animate={{
-                    stroke: on ? color : "rgba(36,36,35,0.1)",
+                    stroke: on ? color : "var(--border)",
                     x2: C + (R_OUT + long) * Math.cos(a),
                     y2: C + (R_OUT + long) * Math.sin(a),
                     opacity: on
                       ? tip
                         ? 1
                         : 0.55 + 0.45 * (i / Math.max(1, lit))
-                      : 1,
+                      : 0.72,
                   }}
                   transition={{ type: "spring", stiffness: 420, damping: 22 }}
                   style={
                     tip && !still
-                      ? { filter: `drop-shadow(0 0 6px ${color}66)` }
+                      ? { filter: `drop-shadow(0 0 6px color-mix(in srgb, ${color} 45%, transparent))` }
                       : undefined
                   }
                 />
@@ -409,7 +421,7 @@ export const QuotaGauge = React.forwardRef<HTMLDivElement, QuotaGaugeProps>(
           {/* Centre: the bolt, the amount and the unit. */}
           <div className="absolute inset-0 flex flex-col items-center justify-center pb-2">
             <motion.span
-              className="grid size-10 place-items-center rounded-full bg-[#242423]/[0.06] dark:bg-white/[0.08]"
+              className="grid size-10 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--accent)]"
               initial={still ? false : { scale: 0.6, opacity: 0 }}
               animate={shown ? { scale: 1, opacity: 1 } : undefined}
               transition={{
@@ -421,10 +433,10 @@ export const QuotaGauge = React.forwardRef<HTMLDivElement, QuotaGaugeProps>(
             >
               <ZapIcon className="size-5" active={hover} />
             </motion.span>
-            <p className="mt-3 text-[32px] font-semibold leading-none tracking-tight tabular-nums">
+            <p className="mt-3 text-[32px] font-semibold leading-none tracking-tight tabular-nums text-[var(--fg)]">
               <Odometer value={amount} label={`${value}`} />
             </p>
-            <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1.5 text-sm text-[var(--muted)]">
               {unit}
             </p>
           </div>
@@ -446,26 +458,26 @@ export const QuotaGauge = React.forwardRef<HTMLDivElement, QuotaGaugeProps>(
             >
               {hover ? (
                 <>
-                  <p className="text-sm font-semibold">
-                    {left > 0
-                      ? `${left.toLocaleString()} left`
-                      : "Limit reached"}
+                  <p className="text-sm font-semibold text-[var(--fg)]">
+                    {hoverTitle ??
+                      (left > 0 ? `${left.toLocaleString()} headroom` : "Target reached")}
                   </p>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {left === 0
-                      ? "Upgrade for more"
-                      : share >= 0.75
-                        ? "Close to your limit"
-                        : "Plenty of room"}
+                  <p className="text-sm text-[var(--muted)]">
+                    {hoverSubtitle ??
+                      (left === 0
+                        ? "Peak efficiency"
+                        : share >= 0.75
+                          ? "High utilization"
+                          : "Healthy telemetry range")}
                   </p>
                 </>
               ) : (
                 <>
-                  <p className="text-sm font-semibold">
-                    {Math.round(share * 100)}% of your plan
+                  <p className="text-sm font-semibold text-[var(--fg)]">
+                    {captionTitle ?? `${Math.round(share * 100)}% of target`}
                   </p>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    Monthly limit {goal.toLocaleString()}
+                  <p className="text-sm text-[var(--muted)]">
+                    {captionSubtitle ?? `Target ${goal.toLocaleString()}`}
                   </p>
                 </>
               )}

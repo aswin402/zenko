@@ -175,27 +175,38 @@ export const FloatingDock = memo(function FloatingDock({
         <GlassDock
           orientation="vertical"
           items={glassItems}
+          activeIndicator={slot.active_indicator}
+          layoutId={layoutId}
+          disableTooltip={inlinePreview}
           trailing={
             <>
               <div className="my-0.5 h-px w-5 bg-[var(--border)]" />
-              <ThemeToggle
-                mode={ui.mode === 'light' ? 'light' : 'dark'}
-                variant={ui.motion.theme_transition || 'circle-blur'}
-                start="top-right"
-                onToggle={onToggleMode}
-                aria-label="Toggle Dark / Light mode"
-                className="h-9 w-9 rounded-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]"
-                iconClassName="size-[17px]"
-              />
+              <ZenkoTooltip
+                label={ui.mode === 'light' ? 'Switch to Dark mode' : 'Switch to Light mode'}
+                side="left"
+                disabled={inlinePreview}
+              >
+                <ThemeToggle
+                  mode={ui.mode === 'light' ? 'light' : 'dark'}
+                  variant={ui.motion.theme_transition || 'circle-blur'}
+                  start="top-right"
+                  onToggle={onToggleMode}
+                  aria-label="Toggle Dark / Light mode"
+                  className="h-9 w-9 rounded-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]"
+                  iconClassName="size-[17px]"
+                />
+              </ZenkoTooltip>
               {!inlinePreview && (
-                <button
-                  type="button"
-                  aria-label="Collapse navigation dock"
-                  onClick={onToggleCollapse}
-                  className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]"
-                >
-                  <ZenkoIcon slot="panelRightClose" icons={ui.icons} size={17} />
-                </button>
+                <ZenkoTooltip label="Collapse navigation dock" side="left">
+                  <button
+                    type="button"
+                    aria-label="Collapse navigation dock"
+                    onClick={onToggleCollapse}
+                    className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]"
+                  >
+                    <ZenkoIcon slot="panelRightClose" icons={ui.icons} size={17} />
+                  </button>
+                </ZenkoTooltip>
               )}
             </>
           }

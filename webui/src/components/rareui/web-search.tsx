@@ -197,7 +197,7 @@ function WebSearch({
       data-status={status}
       data-open={isOpen || undefined}
       className={cn(
-        "flex w-[560px] max-w-full flex-col font-runde text-black dark:text-white",
+        "flex w-[560px] max-w-full flex-col text-[var(--fg)]",
         className,
       )}
       {...props}
@@ -207,7 +207,7 @@ function WebSearch({
         data-slot="web-search-trigger"
         onClick={toggle}
         aria-expanded={isOpen}
-        className="group flex h-10 w-fit max-w-full cursor-pointer items-center gap-2.5 rounded-full bg-[#F4F4F9] pl-1.5 pr-3.5 text-left outline-none transition-[background-color,box-shadow] hover:bg-white hover:shadow-[0_0_0_1px_rgba(0,0,0,0.04),0_1px_1px_rgba(0,0,0,0.04),0_2px_4px_-1px_rgba(0,0,0,0.08)] dark:hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#868593] dark:bg-[#1C1C1C] dark:hover:bg-[#232323]"
+        className="group flex h-10 w-fit max-w-full cursor-pointer items-center gap-2.5 rounded-full border border-[var(--border)] bg-[var(--surface)] pl-1.5 pr-3.5 text-left outline-none transition-[background-color,border-color] hover:border-[var(--accent)]/40 hover:bg-[var(--card)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]/40"
       >
         <GlobeTile searching={searching} progress={ring} reduced={reduced} />
 
@@ -244,7 +244,7 @@ function WebSearch({
         <FaviconStack sources={sources} reduced={reduced} />
 
         <motion.span
-          className="-ml-0.5 shrink-0 text-[#868593] transition-colors group-hover:text-black dark:group-hover:text-white"
+          className="-ml-0.5 shrink-0 text-[var(--muted)] transition-colors group-hover:text-[var(--fg)]"
           initial={false}
           animate={{ rotate: isOpen ? 180 : 0 }}
           transition={reduced ? INSTANT : OPEN}
@@ -305,7 +305,7 @@ function WebSearch({
                       onClick={() => setExpanded(false)}
                       className={cn(
                         CARD_SHELL,
-                        "group flex-row items-center justify-center gap-1.5 bg-transparent text-[12.5px] font-semibold text-[#868593] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.07)] group-hover/card:translate-y-0 hover:bg-[#F4F4F9] hover:text-black hover:shadow-none dark:bg-transparent dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] dark:hover:bg-[#1C1C1C] dark:hover:text-white",
+                        "group flex-row items-center justify-center gap-1.5 bg-transparent text-[12.5px] font-semibold text-[var(--muted)] group-hover/card:translate-y-0 hover:bg-[var(--surface)] hover:text-[var(--fg)]",
                       )}
                     >
                       <Chevron className="-ml-0.5 rotate-180 transition-transform duration-200 group-hover:-translate-y-px" />
@@ -368,7 +368,7 @@ function Collapse({
 // the li takes the hover and the card inside lifts, so the lift can't slide the card out from under the pointer
 // the hover shadow stays inside the 4px the collapse leaves around the cards, or its clip shows as a hard edge
 const CARD_SHELL =
-  "flex h-[84px] w-full cursor-pointer flex-col rounded-[14px] bg-[#F4F4F9] p-2.5 text-left outline-none transition-[background-color,box-shadow,translate] duration-200 group-hover/card:-translate-y-0.5 hover:bg-white hover:shadow-[0_0_0_1px_rgba(0,0,0,0.04),0_1px_1px_rgba(0,0,0,0.04),0_2px_4px_-1px_rgba(0,0,0,0.08)] dark:hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#868593] dark:bg-[#1C1C1C] dark:hover:bg-[#232323]";
+  "flex h-[84px] w-full cursor-pointer flex-col rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-2.5 text-left outline-none transition-[background-color,border-color,translate] duration-200 group-hover/card:-translate-y-0.5 hover:border-[var(--accent)]/40 hover:bg-[var(--card)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]/40";
 
 function SourceCard({
   source,
@@ -390,15 +390,15 @@ function SourceCard({
         !linked && "cursor-default",
       )}
     >
-      <span className="line-clamp-2 text-[12.5px] font-semibold leading-[17px] text-black/85 transition-colors group-hover:text-black dark:text-white/85 dark:group-hover:text-white">
+      <span className="line-clamp-2 text-[12.5px] font-semibold leading-[17px] text-[var(--fg)]/88 transition-colors group-hover:text-[var(--fg)]">
         {source.title}
       </span>
       <span className="flex items-center gap-1.5">
         <Favicon source={source} size={16} />
-        <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-[#868593]">
+        <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-[var(--muted)]">
           {siteName(source.url)}
         </span>
-        <span className="text-[11px] font-semibold tabular-nums text-[#868593]/70">
+        <span className="text-[11px] font-semibold tabular-nums text-[var(--muted)]/75">
           {index}
         </span>
       </span>
@@ -423,7 +423,7 @@ function MoreCard({
       className={cn(CARD_SHELL, "group justify-between")}
     >
       <FaviconStack sources={sources} reduced={reduced} />
-      <span className="flex items-center gap-1 whitespace-nowrap text-[12.5px] font-semibold leading-[17px] text-black/85 transition-colors group-hover:text-black dark:text-white/85 dark:group-hover:text-white">
+      <span className="flex items-center gap-1 whitespace-nowrap text-[12.5px] font-semibold leading-[17px] text-[var(--fg)]/88 transition-colors group-hover:text-[var(--fg)]">
         <span className="relative inline-grid overflow-hidden tabular-nums">
           <AnimatePresence initial={false} mode="popLayout">
             <motion.span
@@ -444,9 +444,9 @@ function MoreCard({
 }
 
 function SkeletonCard({ reduced, delay }: { reduced: boolean; delay: number }) {
-  const bar = "rounded-full bg-black/[0.06] dark:bg-white/[0.07]";
+  const bar = "rounded-full bg-[var(--border)]/70";
   return (
-    <div className="relative flex h-[84px] flex-col justify-between overflow-hidden rounded-[14px] bg-[#F4F4F9] p-2.5 dark:bg-[#1C1C1C]">
+    <div className="relative flex h-[84px] flex-col justify-between overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-2.5">
       <span className="flex flex-col gap-1.5 pt-0.5">
         <span className={cn(bar, "h-2.5 w-[88%]")} />
         <span className={cn(bar, "h-2.5 w-[60%]")} />
@@ -457,7 +457,7 @@ function SkeletonCard({ reduced, delay }: { reduced: boolean; delay: number }) {
       </span>
       {!reduced && (
         <motion.span
-          className="absolute inset-0 bg-linear-to-r from-transparent via-white/60 to-transparent dark:via-white/[0.06]"
+          className="absolute inset-0 bg-linear-to-r from-transparent via-[var(--fg)]/[0.08] to-transparent"
           initial={{ x: "-100%" }}
           animate={{ x: "100%" }}
           transition={{
@@ -542,7 +542,7 @@ function FaviconStack({
           <motion.span
             key={source.id}
             // the separator is a plate in the surface color, so the icon's soft edge blends into it instead of leaving a seam
-            className="relative rounded-full bg-[#F4F4F9] p-[2px] transition-colors group-hover:bg-white dark:bg-[#1C1C1C] dark:group-hover:bg-[#232323]"
+            className="relative rounded-full bg-[var(--surface)] p-[2px] transition-colors group-hover:bg-[var(--card)]"
             style={{ zIndex: STACK - i, marginLeft: i === 0 ? 0 : -overlap }}
             initial={{ scale: 0, opacity: 0, x: shift * i }}
             animate={{ scale: 1, opacity: 1, x: shift * i }}
@@ -627,7 +627,7 @@ function GlobeTile({
   }, [searching, progress, reduced, fill]);
 
   return (
-    <span className="relative flex size-7 shrink-0 items-center justify-center rounded-full bg-white text-[#868593] shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors group-hover:text-black dark:bg-[#2A2A2A] dark:group-hover:text-white">
+    <span className="relative flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--card)] text-[var(--muted)] transition-colors group-hover:text-[var(--fg)]">
       <svg
         aria-hidden
         viewBox="0 0 24 24"
@@ -642,7 +642,7 @@ function GlobeTile({
       <motion.svg
         aria-hidden
         viewBox="0 0 28 28"
-        className="absolute inset-0 size-full -rotate-90 text-black dark:text-white"
+        className="absolute inset-0 size-full -rotate-90 text-[var(--accent)]"
         initial={false}
         animate={{ opacity: searching ? 1 : 0 }}
         // a finished search holds the full ring for a beat before it fades
@@ -652,7 +652,7 @@ function GlobeTile({
             : { duration: 0.3, delay: searching ? 0 : RING_HOLD }
         }
       >
-        <circle {...RING_CIRCLE} className="opacity-[0.12]" />
+        <circle {...RING_CIRCLE} className="opacity-[0.18]" />
         <motion.circle {...RING_CIRCLE} style={{ pathLength: fill }} />
       </motion.svg>
     </span>
@@ -666,10 +666,10 @@ function Shimmer({
   reduced: boolean;
   children: ReactNode;
 }) {
-  if (reduced) return <span className="text-[#868593]">{children}</span>;
+  if (reduced) return <span className="text-[var(--muted)]">{children}</span>;
   return (
     <motion.span
-      className="bg-clip-text text-transparent [--web-search-ink:#868593] [--web-search-shine:#000] dark:[--web-search-shine:#fff]"
+      className="bg-clip-text text-transparent [--web-search-ink:var(--muted)] [--web-search-shine:var(--fg)]"
       style={{ backgroundImage: SHIMMER, backgroundSize: "250% 100%" }}
       initial={{ backgroundPosition: "100% 0" }}
       animate={{ backgroundPosition: "0% 0" }}
@@ -717,9 +717,8 @@ function WebSearchCitation({
         aria-label={`${source.title}, ${hostOf(source.url)}`}
         className={cn(
           !linked && "cursor-default",
-          "inline-flex h-[19px] -translate-y-px items-center gap-1 rounded-full bg-[#F4F4F9] pl-[3px] pr-1.5 font-runde text-[11px] font-semibold leading-none text-[#868593] no-underline outline-none transition-colors hover:bg-white hover:text-black hover:shadow-[0_1px_3px_rgba(0,0,0,0.1)] dark:hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#868593] dark:bg-[#1C1C1C] dark:hover:bg-[#2A2A2A] dark:hover:text-white",
-          open &&
-            "bg-white text-black shadow-[0_1px_3px_rgba(0,0,0,0.1)] dark:bg-[#2A2A2A] dark:text-white dark:shadow-none",
+          "inline-flex h-[19px] -translate-y-px items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface)] pl-[3px] pr-1.5 text-[11px] font-semibold leading-none text-[var(--muted)] no-underline outline-none transition-colors hover:border-[var(--accent)]/40 hover:bg-[var(--card)] hover:text-[var(--fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]/40",
+          open && "border-[var(--accent)]/40 bg-[var(--card)] text-[var(--fg)]",
         )}
       >
         <Favicon source={source} size={14} />
@@ -748,19 +747,19 @@ function WebSearchCitation({
             <a
               {...linkTo(source.url, linked)}
               tabIndex={-1}
-              className="block rounded-[16px] bg-white p-3 text-left font-runde no-underline shadow-[0_12px_32px_-8px_rgba(0,0,0,0.18),0_0_0_1px_rgba(0,0,0,0.05)] dark:bg-[#1C1C1C] dark:shadow-[0_12px_32px_-8px_rgba(0,0,0,0.7),0_0_0_1px_rgba(255,255,255,0.07)]"
+              className="block rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-left no-underline shadow-[0_14px_34px_rgba(0,0,0,0.45)]"
             >
               <span className="flex items-center gap-1.5">
                 <Favicon source={source} size={18} />
-                <span className="truncate text-[12px] font-medium text-[#868593]">
+                <span className="truncate text-[12px] font-medium text-[var(--muted)]">
                   {hostOf(source.url)}
                 </span>
               </span>
-              <span className="mt-1.5 line-clamp-2 block text-[13.5px] font-semibold leading-[18px] text-black dark:text-white">
+              <span className="mt-1.5 line-clamp-2 block text-[13.5px] font-semibold leading-[18px] text-[var(--fg)]">
                 {source.title}
               </span>
               {source.snippet && (
-                <span className="mt-1 line-clamp-3 block text-[12.5px] font-medium leading-[17px] text-[#868593]">
+                <span className="mt-1 line-clamp-3 block text-[12.5px] font-medium leading-[17px] text-[var(--muted)]">
                   {source.snippet}
                 </span>
               )}

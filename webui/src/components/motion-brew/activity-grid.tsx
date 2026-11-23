@@ -654,6 +654,14 @@ export const ACTIVITY_PALETTES = {
   sky: ["#cbeaff", "#7cc8ff", "#2aa8f2", "#0a72b8"],
 } as const satisfies Record<string, readonly [string, string, string, string]>;
 
+export type ActivityCellShape = "rounded" | "square" | "circle";
+
+const CELL_SHAPE_CLASS: Record<ActivityCellShape, string> = {
+  rounded: "rounded-[3px]",
+  square: "rounded-none",
+  circle: "rounded-full",
+};
+
 export interface ActivityGridProps {
   /** Card title. Default `"Focus sessions"`. */
   title?: string;
@@ -669,6 +677,8 @@ export interface ActivityGridProps {
   colors?: readonly [string, string, string, string];
   /** Preferred square size in px; squares grow up to 16px when the whole year fits. Default `11`. */
   cellSize?: number;
+  /** Cell corner silhouette synced with Zenko Heatmap Cell Shape. Default `"rounded"`. */
+  cellShape?: ActivityCellShape;
   /** Show the three streak tiles. Default `true`. */
   showStats?: boolean;
   className?: string;
@@ -741,11 +751,13 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
     palette = "ink",
     colors: colorsProp,
     cellSize = 11,
+    cellShape = "rounded",
     showStats = true,
     className,
   },
   forwardedRef,
 ) {
+  const cellRadiusClass = CELL_SHAPE_CLASS[cellShape] ?? CELL_SHAPE_CLASS.rounded;
   const ref = React.useRef<HTMLDivElement>(null);
   React.useImperativeHandle(forwardedRef, () => ref.current as HTMLDivElement);
   const colors = colorsProp ?? ACTIVITY_PALETTES[palette] ?? ACTIVITY_PALETTES.ink;
@@ -893,30 +905,29 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
         } as React.CSSProperties
       }
       className={cn(
-        // Ink would vanish on a dark card, so it turns into a light ramp there.
         !colorsProp &&
           palette === "ink" &&
           "dark:[--ag:#e4e4e7] dark:[--l1:#3f3f46] dark:[--l2:#71717a] dark:[--l3:#a1a1aa] dark:[--l4:#e4e4e7]",
-        "relative w-full min-w-[min(260px,100%)] rounded-3xl bg-white p-5 text-[#242423] sm:p-6 dark:bg-zinc-900 dark:text-zinc-100",
+        "relative w-full min-w-[min(260px,100%)] rounded-[var(--radius)] bg-[var(--card)] p-5 text-[var(--fg)] sm:p-6",
         className,
       )}
     >
       {/* Header: the title, the period, and the total with its change. */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">{title}</h3>
+          <h3 className="text-sm font-medium text-[var(--muted)]">{title}</h3>
           <p className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <span className="text-[32px] font-semibold leading-none tracking-[-0.03em]">
+            <span className="text-[32px] font-semibold leading-none tracking-[-0.03em] text-[var(--fg)]">
               <Count value={total} run={shown} still={still} delay={0.2} />
             </span>
-            <span className="text-sm text-zinc-500 dark:text-zinc-400">{unit}s</span>
+            <span className="text-sm text-[var(--muted)]">{unit}s</span>
             {change !== null && (
               <span
                 className={cn(
                   "inline-flex h-6 items-center gap-1 self-center rounded-full px-2 text-xs font-medium tabular-nums",
                   change >= 0
-                    ? "bg-[#269a5a]/10 text-[#269a5a]"
-                    : "bg-[#242423]/[0.06] text-zinc-500 dark:bg-white/[0.08] dark:text-zinc-400",
+                    ? "bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--accent)]"
+                    : "bg-[var(--surface)] text-[var(--muted)]",
                 )}
               >
                 <TrendingUpIcon className={cn("size-3", change < 0 && "-scale-y-100")} active={shown} strokeWidth={2.5} />
@@ -926,7 +937,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
             )}
           </p>
         </div>
-        <span className="shrink-0 rounded-full bg-[#242423]/[0.06] px-3 py-1 text-xs font-medium text-zinc-500 dark:bg-white/[0.08] dark:text-zinc-400">
+        <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
           {weeksLabel}
         </span>
       </div>
@@ -935,7 +946,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
       <div ref={gridRef} className="relative mt-5 w-full">
         {width > 0 && (
           <>
-            <div className="relative h-4 text-xs text-zinc-400 dark:text-zinc-500" style={{ marginLeft: DAY_LABEL_W }}>
+            <div className="relative h-4 text-xs text-[var(--muted)]" style={{ marginLeft: DAY_LABEL_W }}>
               {months.map((m) => (
                 <span key={`${m.col}-${m.label}`} className="absolute top-0" style={{ left: m.col * (cell + GAP) }}>
                   {m.label}
@@ -943,7 +954,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
               ))}
             </div>
             <div className="mt-1.5 flex">
-              <div className="relative shrink-0 text-xs text-zinc-400 dark:text-zinc-500" style={{ width: DAY_LABEL_W, height: gridH }}>
+              <div className="relative shrink-0 text-xs text-[var(--muted)]" style={{ width: DAY_LABEL_W, height: gridH }}>
                 {[0, 2, 4].map((r) => (
                   <span key={r} className="absolute left-0 leading-none" style={{ top: r * (cell + GAP) + cell / 2 - 6 }}>
                     {WEEKDAYS[r]}
@@ -957,7 +968,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
                 onKeyDown={onKey}
                 onBlur={() => setActive(null)}
                 onPointerLeave={() => setActive(null)}
-                className="relative grid rounded-md outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-4 dark:focus-visible:ring-offset-zinc-900"
+                className="relative grid rounded-md outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 focus-visible:ring-offset-4 focus-visible:ring-offset-[var(--bg)]"
                 style={{
                   gridTemplateColumns: `repeat(${cols}, ${cell}px)`,
                   gridTemplateRows: `repeat(7, ${cell}px)`,
@@ -990,8 +1001,9 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
                     >
                       <span
                         className={cn(
-                          "absolute inset-0 rounded-[3px] bg-[#242423]/[0.06] dark:bg-white/[0.07]",
-                          isToday && "ring-1 ring-[var(--ag)] ring-offset-1 ring-offset-white dark:ring-offset-zinc-900",
+                          "absolute inset-0 bg-[color-mix(in_srgb,var(--border)_65%,transparent)]",
+                          cellRadiusClass,
+                          isToday && "ring-1 ring-[var(--ag)] ring-offset-1 ring-offset-[var(--bg)]",
                         )}
                         style={{
                           opacity: shown ? 1 : 0,
@@ -1003,7 +1015,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
                         }}
                       >
                         {lv > 0 && (
-                          <span className="absolute inset-0 rounded-[3px]" style={{ backgroundColor: `var(--l${lv})` }} />
+                          <span className={cn("absolute inset-0", cellRadiusClass)} style={{ backgroundColor: `var(--l${lv})` }} />
                         )}
                       </span>
                     </span>
@@ -1022,7 +1034,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: 2, scale: 0.98, transition: { duration: 0.1 } }}
                   transition={{ duration: 0.16, ease: EASE }}
-                  className="pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap rounded-lg bg-[#242423] px-2.5 py-1.5 text-xs font-medium text-white shadow-[0_8px_20px_-8px_rgba(0,0,0,0.35)] dark:bg-zinc-100 dark:text-zinc-900"
+                  className="pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--fg)] shadow-[0_8px_20px_-8px_rgba(0,0,0,0.45)]"
                   style={{
                     left: Math.min(
                       Math.max(DAY_LABEL_W + active.col * (cell + GAP) + cell / 2, 70),
@@ -1041,7 +1053,7 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
       </div>
 
       {/* Legend: hover a step to light only the days at that level. */}
-      <div className="mt-4 flex items-center justify-end gap-1.5 text-xs text-zinc-400 dark:text-zinc-500">
+      <div className="mt-4 flex items-center justify-end gap-1.5 text-xs text-[var(--muted)]">
         <span className="mr-0.5">Less</span>
         {LEVELS.map((lv) => (
           <button
@@ -1053,11 +1065,12 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
             onFocus={() => setLevel(lv)}
             onBlur={() => setLevel(null)}
             className={cn(
-              "relative size-3 rounded-[3px] bg-[#242423]/[0.06] outline-none transition-transform duration-150 hover:scale-125 focus-visible:ring-2 focus-visible:ring-zinc-400 dark:bg-white/[0.07]",
+              "relative size-3 bg-[color-mix(in_srgb,var(--border)_65%,transparent)] outline-none transition-transform duration-150 hover:scale-125 focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40",
+              cellRadiusClass,
               level === lv && "scale-125",
             )}
           >
-            {lv > 0 && <span className="absolute inset-0 rounded-[3px]" style={{ backgroundColor: `var(--l${lv})` }} />}
+            {lv > 0 && <span className={cn("absolute inset-0", cellRadiusClass)} style={{ backgroundColor: `var(--l${lv})` }} />}
           </button>
         ))}
         <span className="ml-0.5">More</span>
@@ -1069,8 +1082,6 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
           data-narrow={narrow || undefined}
           className="group/stats mt-4 grid grid-cols-3 gap-2 data-[narrow]:grid-cols-1"
         >
-          {/* A narrow card lists the stats as rows (label and note left, number right) instead of three
-              cramped tiles. Measured, not a CSS container: the tiles help set the card's width. */}
           {stats.map((s, i) => (
             <motion.div
               key={s.label}
@@ -1079,17 +1090,17 @@ export const ActivityGrid = React.forwardRef<HTMLDivElement, ActivityGridProps>(
               initial={still ? false : { opacity: 0, y: 10 }}
               animate={shown ? { opacity: 1, y: 0 } : undefined}
               transition={{ duration: 0.5, delay: still ? 0 : 0.5 + i * 0.08, ease: EASE }}
-              className="min-w-0 rounded-2xl bg-[#242423]/[0.04] p-3 group-data-[narrow]/stats:grid group-data-[narrow]/stats:grid-cols-[minmax(0,1fr)_auto] group-data-[narrow]/stats:items-center group-data-[narrow]/stats:gap-x-3 group-data-[narrow]/stats:px-3.5 group-data-[narrow]/stats:py-2.5 transition-colors duration-200 hover:bg-[#242423]/[0.07] dark:bg-white/[0.05] dark:hover:bg-white/[0.08]"
+              className="min-w-0 rounded-[var(--radius-sm)] border border-[var(--border)]/70 bg-[var(--surface)]/75 p-3 group-data-[narrow]/stats:grid group-data-[narrow]/stats:grid-cols-[minmax(0,1fr)_auto] group-data-[narrow]/stats:items-center group-data-[narrow]/stats:gap-x-3 group-data-[narrow]/stats:px-3.5 group-data-[narrow]/stats:py-2.5 transition-colors duration-200 hover:bg-[var(--surface)]"
             >
-              <div className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 group-data-[narrow]/stats:col-start-1">
-                <s.Icon className="size-3.5 shrink-0" active={hoverStat === i} strokeWidth={2.25} />
+              <div className="flex min-w-0 items-center gap-1.5 text-xs text-[var(--muted)] group-data-[narrow]/stats:col-start-1">
+                <s.Icon className="size-3.5 shrink-0 text-[var(--accent)]" active={hoverStat === i} strokeWidth={2.25} />
                 <span className="truncate">{s.label}</span>
               </div>
-              <div className="mt-1.5 truncate text-base font-semibold tracking-tight group-data-[narrow]/stats:col-start-2 group-data-[narrow]/stats:row-span-2 group-data-[narrow]/stats:row-start-1 group-data-[narrow]/stats:mt-0">
+              <div className="mt-1.5 truncate text-base font-semibold tracking-tight text-[var(--fg)] group-data-[narrow]/stats:col-start-2 group-data-[narrow]/stats:row-span-2 group-data-[narrow]/stats:row-start-1 group-data-[narrow]/stats:mt-0">
                 <Count value={s.value} run={shown} still={still} delay={0.55 + i * 0.08} />
-                <span className="font-normal text-zinc-500 dark:text-zinc-400">{s.suffix}</span>
+                <span className="font-normal text-[var(--muted)]">{s.suffix}</span>
               </div>
-              <div className="mt-0.5 truncate text-xs text-zinc-400 dark:text-zinc-500 group-data-[narrow]/stats:col-start-1">{s.note}</div>
+              <div className="mt-0.5 truncate text-xs text-[var(--muted)]/80 group-data-[narrow]/stats:col-start-1">{s.note}</div>
             </motion.div>
           ))}
         </div>

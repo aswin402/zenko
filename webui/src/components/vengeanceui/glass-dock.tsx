@@ -2,7 +2,11 @@
 
 import React, { useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { SPRING_LAYOUT } from '@/lib/ease'
 import { cn } from '@/lib/utils'
+import { useZenkoTooltipConfig, ZenkoTooltipBadge } from '@/components/ui/Tooltip'
+
+export type GlassDockIndicator = 'vermilion_pill' | 'solid_accent' | 'side_bar' | 'dot_indicator'
 
 export interface GlassDockItem {
   id?: string
@@ -16,6 +20,9 @@ export interface GlassDockItem {
 export interface GlassDockProps {
   items: readonly GlassDockItem[]
   orientation?: 'vertical' | 'horizontal'
+  activeIndicator?: GlassDockIndicator
+  layoutId?: string
+  disableTooltip?: boolean
   className?: string
   dockClassName?: string
   trailing?: React.ReactNode
@@ -24,20 +31,77 @@ export interface GlassDockProps {
 /**
  * VengeanceUI-inspired Frosted Glass Dock (`VengeanceUI/glass-dock`) ported cleanly
  * to `motion/react` with directional spring-gliding floating tooltip, reflective glass
- * specular rim, and strict 60/30/10 Zenko theme inheritance.
+ * specular rim, active indicator customization, and strict 60/30/10 Zenko theme inheritance.
  */
 export const GlassDock = React.forwardRef<HTMLDivElement, GlassDockProps>(
-  ({ items, orientation = 'vertical', className, dockClassName, trailing }, ref) => {
+  (
+    {
+      items,
+      orientation = 'vertical',
+      activeIndicator = 'vermilion_pill',
+      layoutId = 'zenko-glass-dock-pill',
+      disableTooltip = false,
+      className,
+      dockClassName,
+      trailing,
+    },
+    ref,
+  ) => {
     const reduce = useReducedMotion()
+    const tooltipCfg = useZenkoTooltipConfig()
     const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-    const [direction, setDirection] = useState<number>(0)
     const isVertical = orientation === 'vertical'
+    const showTips = !disableTooltip && tooltipCfg.enabled
 
     const handleEnter = (index: number) => {
-      if (hoveredIndex !== null && index !== hoveredIndex) {
-        setDirection(index > hoveredIndex ? 1 : -1)
-      }
       setHoveredIndex(index)
+    }
+
+    const activeTextClass =
+      activeIndicator === 'solid_accent' ? 'text-[var(--primary-fg)]' : 'text-[var(--accent)]'
+
+    const renderIndicator = () => {
+      if (activeIndicator === 'solid_accent') {
+        return (
+          <motion.span
+            layoutId={layoutId}
+            transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+            className="pointer-events-none absolute inset-0 rounded-[13px]"
+            style={{ backgroundColor: 'var(--primary)' }}
+          />
+        )
+      }
+      if (activeIndicator === 'side_bar') {
+        return (
+          <motion.span
+            layoutId={layoutId}
+            transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+            className="pointer-events-none absolute bottom-1.5 right-0 top-1.5 w-[2.5px] rounded-full"
+            style={{ backgroundColor: 'var(--accent)' }}
+          />
+        )
+      }
+      if (activeIndicator === 'dot_indicator') {
+        return (
+          <motion.span
+            layoutId={layoutId}
+            transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+            className="pointer-events-none absolute bottom-1 h-1 w-1 rounded-full"
+            style={{ backgroundColor: 'var(--accent)' }}
+          />
+        )
+      }
+      return (
+        <motion.span
+          layoutId={layoutId}
+          transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+          className="pointer-events-none absolute inset-0 rounded-[13px] border"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--accent) 16%, transparent)',
+            borderColor: 'color-mix(in srgb, var(--accent) 48%, transparent)',
+          }}
+        />
+      )
     }
 
     return (
@@ -58,11 +122,10 @@ export const GlassDock = React.forwardRef<HTMLDivElement, GlassDockProps>(
           )}
           onMouseLeave={() => {
             setHoveredIndex(null)
-            setDirection(0)
           }}
         >
           <AnimatePresence>
-            {hoveredIndex !== null && items[hoveredIndex] && (
+            {showTips && hoveredIndex !== null && items[hoveredIndex] && (
               <motion.div
                 initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.92 }}
                 animate={{
@@ -73,35 +136,20 @@ export const GlassDock = React.forwardRef<HTMLDivElement, GlassDockProps>(
                     : { x: hoveredIndex * 42, y: -48 }),
                 }}
                 exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.92 }}
-                transition={reduce ? { duration: 0 } : { type: 'spring', stiffness: 260, damping: 24 }}
+                transition={
+                  reduce || tooltipCfg.motion === 'instant'
+                    ? { duration: 0 }
+                    : { type: 'spring', stiffness: 260, damping: 24 }
+                }
                 className={cn(
                   'pointer-events-none absolute z-30',
                   isVertical ? 'right-full top-0 mr-2.5' : 'left-2 top-0',
                 )}
               >
-                <div className="flex min-w-[76px] items-center justify-center overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]/96 px-3 py-1.5 text-[var(--fg)] shadow-lg">
-                  <AnimatePresence mode="popLayout" custom={direction}>
-                    <motion.span
-                      key={items[hoveredIndex].title}
-                      custom={direction}
-                      initial={
-                        reduce
-                          ? { opacity: 0 }
-                          : { y: direction > 0 ? 10 : -10, opacity: 0, filter: 'blur(3px)' }
-                      }
-                      animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
-                      exit={
-                        reduce
-                          ? { opacity: 0 }
-                          : { y: direction > 0 ? -10 : 10, opacity: 0, filter: 'blur(3px)' }
-                      }
-                      transition={{ duration: 0.16, ease: 'easeOut' }}
-                      className="whitespace-nowrap text-[11.5px] font-medium tracking-wide"
-                    >
-                      {items[hoveredIndex].title}
-                    </motion.span>
-                  </AnimatePresence>
-                </div>
+                <ZenkoTooltipBadge
+                  label={items[hoveredIndex].title}
+                  className="overflow-hidden"
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -119,10 +167,11 @@ export const GlassDock = React.forwardRef<HTMLDivElement, GlassDockProps>(
                 className={cn(
                   'relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-[13px] transition-colors',
                   el.active
-                    ? 'bg-[color-mix(in_srgb,var(--accent)_18%,var(--card))] text-[var(--accent)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_45%,transparent)]'
+                    ? activeTextClass
                     : 'text-[var(--muted)] hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]',
                 )}
               >
+                {el.active && renderIndicator()}
                 <motion.span
                   whileTap={reduce ? undefined : { scale: 0.92 }}
                   animate={
@@ -135,7 +184,7 @@ export const GlassDock = React.forwardRef<HTMLDivElement, GlassDockProps>(
                         }
                   }
                   transition={{ type: 'spring', stiffness: 320, damping: 24 }}
-                  className="relative inline-flex items-center justify-center"
+                  className="relative z-10 inline-flex items-center justify-center"
                 >
                   {el.icon}
                   {typeof el.badge === 'number' && el.badge > 0 && (

@@ -1267,6 +1267,8 @@ export interface PromptInputProps {
   /** Optional custom left/right toolbar slots for seamless Zenko composer integration. */
   leftToolbar?: React.ReactNode;
   rightToolbar?: React.ReactNode;
+  /** Optional custom send/stop action control honoring Theme Studio shape & icon settings. */
+  sendButton?: React.ReactNode;
   className?: string;
 }
 
@@ -1390,6 +1392,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
       onAttach,
       leftToolbar,
       rightToolbar,
+      sendButton,
       className,
     },
     ref,
@@ -1534,7 +1537,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
           {working && !still && (
             <motion.div
               aria-hidden
-              className="pointer-events-none absolute -inset-[1.5px] rounded-[29.5px]"
+              className="pointer-events-none absolute -inset-[1.5px] rounded-[calc(var(--radius-lg)+1.5px)]"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -1544,9 +1547,9 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                 className="absolute inset-0 rounded-[inherit]"
                 animate={{
                   boxShadow: [
-                    "0 0 0 1px rgba(36,36,35,0.06), 0 0 18px 2px rgba(36,36,35,0.06)",
-                    "0 0 0 1px rgba(36,36,35,0.1), 0 0 30px 6px rgba(36,36,35,0.12)",
-                    "0 0 0 1px rgba(36,36,35,0.06), 0 0 18px 2px rgba(36,36,35,0.06)",
+                    "0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 18px 2px color-mix(in srgb, var(--accent) 10%, transparent)",
+                    "0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent), 0 0 28px 4px color-mix(in srgb, var(--accent) 18%, transparent)",
+                    "0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 18px 2px color-mix(in srgb, var(--accent) 10%, transparent)",
                   ],
                 }}
                 transition={{
@@ -1560,7 +1563,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                   className="absolute left-1/2 top-1/2 aspect-square w-[160%] -translate-x-1/2 -translate-y-1/2"
                   style={{
                     background:
-                      "conic-gradient(from 0deg, transparent 0deg, transparent 250deg, rgba(36,36,35,0.08) 290deg, rgba(36,36,35,0.55) 335deg, rgba(255,255,255,0.9) 350deg, transparent 360deg)",
+                      "conic-gradient(from 0deg, transparent 0deg, transparent 250deg, color-mix(in srgb, var(--accent) 16%, transparent) 290deg, color-mix(in srgb, var(--accent) 72%, transparent) 335deg, var(--accent) 350deg, transparent 360deg)",
                   }}
                   animate={{ rotate: 360 }}
                   transition={{
@@ -1581,7 +1584,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
               : "0 0 0 1px var(--border), 0 10px 30px -16px rgba(0,0,0,0.34)",
           }}
           transition={{ duration: 0.22 }}
-          className="relative rounded-[24px] bg-[var(--surface)] p-3 text-[var(--fg)]"
+          className="relative rounded-[var(--radius-lg)] bg-[var(--surface)] p-3 text-[var(--fg)]"
         >
           {/* Attached files */}
           <AnimatePresence initial={false}>
@@ -1655,18 +1658,18 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   void send();
                 }
               }}
               style={{ height }}
-              className="block w-full resize-none bg-transparent text-base leading-6 outline-none disabled:opacity-0"
+              className="block w-full resize-none bg-transparent text-[14.5px] leading-6 text-[var(--fg)] outline-none disabled:opacity-0"
             />
             {!text && (
               <span
                 aria-hidden
-                className="pointer-events-none absolute inset-x-2 top-1 overflow-hidden text-base leading-6 text-zinc-400 dark:text-zinc-500"
+                className="pointer-events-none absolute inset-x-2 top-1 overflow-hidden text-[14.5px] leading-6 text-[var(--muted)]/60"
               >
                 {listening ? (
                   <motion.span
@@ -1922,63 +1925,67 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
               </button>
               )}
 
-              {/* Send, which becomes stop while it works */}
-              <motion.button
-                type="button"
-                aria-label={working && !ready ? "Stop" : "Send"}
-                aria-disabled={!ready && !working}
-                onClick={() => void send()}
-                whileTap={
-                  (ready || working) && !still ? { scale: 0.9 } : undefined
-                }
-                style={
-                  ready || working
-                    ? {
-                        backgroundColor: working && !ready ? "var(--destructive)" : "var(--primary)",
-                        color: "var(--primary-fg)",
-                      }
-                    : {
-                        backgroundColor: "var(--card)",
-                        color: "var(--muted)",
-                      }
-                }
-                className={cn(
-                  "relative grid size-8 place-items-center overflow-hidden rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40",
-                  ready || working ? "cursor-pointer" : "cursor-default opacity-60",
-                )}
-              >
-                <AnimatePresence mode="popLayout" initial={false}>
-                  {working && !ready ? (
-                    <motion.span
-                      key="stop"
-                      className="size-3 rounded-[3px] bg-current"
-                      initial={{ scale: 0, rotate: -45 }}
-                      animate={{ scale: 1, rotate: 0 }}
-                      exit={{ scale: 0 }}
-                      transition={POP}
-                    />
-                  ) : (
-                    <motion.span
-                      key={`arrow-${sent}`}
-                      className="grid"
-                      initial={still ? { opacity: 0 } : { y: 14, opacity: 0 }}
-                      animate={{ y: 0, opacity: 1 }}
-                      exit={
-                        still
-                          ? { opacity: 0 }
-                          : {
-                              y: -22,
-                              opacity: 0,
-                              transition: { duration: 0.22, ease: "easeIn" },
-                            }
-                      }
-                      transition={POP}
-                    >
-                      <ArrowUpIcon className="size-[16px]" strokeWidth={2.4} />
-                    </motion.span>
+              {/* Send, which becomes stop while it works — honors Theme Studio sendButton when passed */}
+              {sendButton ? (
+                sendButton
+              ) : (
+                <motion.button
+                  type="button"
+                  aria-label={working && !ready ? "Stop" : "Send"}
+                  aria-disabled={!ready && !working}
+                  onClick={() => void send()}
+                  whileTap={
+                    (ready || working) && !still ? { scale: 0.9 } : undefined
+                  }
+                  style={
+                    ready || working
+                      ? {
+                          backgroundColor: working && !ready ? "var(--destructive)" : "var(--primary)",
+                          color: "var(--primary-fg)",
+                        }
+                      : {
+                          backgroundColor: "var(--card)",
+                          color: "var(--muted)",
+                        }
+                  }
+                  className={cn(
+                    "relative grid size-8 place-items-center overflow-hidden rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40",
+                    ready || working ? "cursor-pointer" : "cursor-default opacity-60",
                   )}
-                </AnimatePresence>
-              </motion.button>
+                >
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    {working && !ready ? (
+                      <motion.span
+                        key="stop"
+                        className="size-3 rounded-[3px] bg-current"
+                        initial={{ scale: 0, rotate: -45 }}
+                        animate={{ scale: 1, rotate: 0 }}
+                        exit={{ scale: 0 }}
+                        transition={POP}
+                      />
+                    ) : (
+                      <motion.span
+                        key={`arrow-${sent}`}
+                        className="grid"
+                        initial={still ? { opacity: 0 } : { y: 14, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        exit={
+                          still
+                            ? { opacity: 0 }
+                            : {
+                                y: -22,
+                                opacity: 0,
+                                transition: { duration: 0.22, ease: "easeIn" },
+                              }
+                        }
+                        transition={POP}
+                      >
+                        <ArrowUpIcon className="size-[16px]" strokeWidth={2.4} />
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                </motion.button>
+              )}
             </div>
           </div>
         </motion.div>

@@ -369,11 +369,21 @@ function ElementStatesPreview({ ui }: { ui: UiCustomization }) {
   )
 }
 
+const ACTION_PILL_PREVIEW_CLASS: Record<
+  UiCustomization['components']['composer']['action_pills'],
+  string
+> = {
+  soft_tint: 'border border-transparent bg-[var(--card)] hover:border-[var(--border)]',
+  outline: 'border border-[var(--border)] bg-transparent hover:bg-[var(--card)]',
+  ghost: 'border border-transparent bg-transparent hover:bg-[var(--card)]',
+  solid_chip: 'border border-[var(--border)] bg-[var(--bg)] shadow-xs',
+}
+
 function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
   const { ui } = ctx
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const paletteStyle = ui.surface.command_palette_style || 'center_morph'
-  const toastStyle = ui.surface.toast_style || 'beui_alert'
+  const paletteStyle = ui.surface.command_palette_style || 'default'
+  const toastStyle = ui.surface.toast_style || 'default'
 
   return (
     <div className="flex w-full max-w-[600px] flex-col gap-4">
@@ -388,7 +398,7 @@ function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
               Popover ({ui.surface.popover_style || 'gooey'})
             </button>
           </PopoverTrigger>
-          <PopoverContent className="w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-[12px] shadow-xl">
+          <PopoverContent className="w-56 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[12px] shadow-xl">
             <div className="font-medium text-[var(--fg)]">BeUI Popover</div>
             <p className="mt-1 text-[11.5px] text-[var(--muted)]">
               Mode: <span className="font-mono text-[var(--accent)]">{ui.surface.popover_style || 'gooey'}</span>
@@ -440,27 +450,54 @@ function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
         )}
       </div>
 
-      <EaseCommandPalette
-        open={paletteOpen}
-        onOpenChange={setPaletteOpen}
-        label="Studio Preview Command Palette"
-      >
-        <EaseCommandInput placeholder="Search Zenko views..." />
-        <EaseCommandList>
-          <EaseCommandEmpty>No matching view.</EaseCommandEmpty>
-          <EaseCommandGroup heading="Navigation">
-            <EaseCommandItem value="Chat Workbench" onSelect={() => {}}>
-              Chat Workbench
-            </EaseCommandItem>
-            <EaseCommandItem value="Dashboard Telemetry" onSelect={() => {}}>
-              Dashboard Telemetry
-            </EaseCommandItem>
-            <EaseCommandItem value="Appearance Studio" onSelect={() => {}}>
-              Appearance Studio
-            </EaseCommandItem>
-          </EaseCommandGroup>
-        </EaseCommandList>
-      </EaseCommandPalette>
+      {paletteStyle === 'easeui_palette' ? (
+        <EaseCommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          label="Studio Preview Command Palette"
+        >
+          <EaseCommandInput placeholder="Search Zenko views..." />
+          <EaseCommandList>
+            <EaseCommandEmpty>No matching view.</EaseCommandEmpty>
+            <EaseCommandGroup heading="Navigation">
+              <EaseCommandItem value="Chat Workbench" onSelect={() => {}}>
+                Chat Workbench
+              </EaseCommandItem>
+              <EaseCommandItem value="Dashboard Telemetry" onSelect={() => {}}>
+                Dashboard Telemetry
+              </EaseCommandItem>
+              <EaseCommandItem value="Appearance Studio" onSelect={() => {}}>
+                Appearance Studio
+              </EaseCommandItem>
+            </EaseCommandGroup>
+          </EaseCommandList>
+        </EaseCommandPalette>
+      ) : (
+        <CenterMorphModal open={paletteOpen} onOpenChange={setPaletteOpen}>
+          <CenterMorphModalContent
+            ariaLabel="Zenko Center Morph Command Palette Preview"
+            showCloseButton={false}
+            className="max-w-[460px] rounded-[var(--radius-lg)] bg-[var(--surface)] p-4"
+          >
+            <div className="mb-2 border-b border-[var(--border)] pb-2 text-[13px] font-medium text-[var(--fg)]">
+              Zenko Center Morph Command Palette
+            </div>
+            <div className="flex flex-col gap-1 text-[12.5px] text-[var(--muted)]">
+              {['Chat Workbench', 'Dashboard Telemetry', 'Appearance Studio'].map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setPaletteOpen(false)}
+                  className="flex cursor-pointer items-center justify-between rounded-[var(--radius-sm)] px-2.5 py-2 text-left text-[var(--fg)] hover:bg-[var(--card)]"
+                >
+                  <span>{item}</span>
+                  <span className="font-mono text-[10.5px] text-[var(--muted)]">jump</span>
+                </button>
+              ))}
+            </div>
+          </CenterMorphModalContent>
+        </CenterMorphModal>
+      )}
 
       {ui.surface.alert_style === 'easeui_alert' ? (
         <EaseAlert variant="success">
@@ -471,6 +508,13 @@ function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
             </EaseAlertDescription>
           </div>
         </EaseAlert>
+      ) : ui.surface.alert_style === 'compact' ? (
+        <div
+          className="rounded-[var(--radius)] border bg-[var(--surface)] px-3.5 py-2 text-[12.5px] text-[var(--fg)]"
+          style={{ borderColor: 'color-mix(in srgb, var(--accent) 45%, var(--border))' }}
+        >
+          Compact Strip Alert · inherits active 60/30/10 theme tokens.
+        </div>
       ) : (
         <>
           <Alert
@@ -723,6 +767,7 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
           style={chatSlot.activity_style}
           diffStyle={chatSlot.diff_style}
           shellStyle={chatSlot.shell_style}
+          webSearchStyle={chatSlot.web_search_style}
           status="complete"
           statusLabel="Completed 3 steps"
           durationSeconds={3}
@@ -944,7 +989,10 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
         configuredProviders={ctx.configuredProviders}
         activeModels={ctx.models}
         pickerStyle={ui.components.composer.model_picker_style}
-        pillClass="border border-[var(--border)] bg-[var(--card)]"
+        pillClass={
+          ACTION_PILL_PREVIEW_CLASS[ui.components.composer.action_pills] ||
+          ACTION_PILL_PREVIEW_CLASS.soft_tint
+        }
         open={true}
         onOpenChange={() => {}}
         onSelectProviderModel={() => {}}
@@ -1185,6 +1233,16 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
                 },
               ]}
             />
+          ) : ui.surface.accordion_style === 'compact' ? (
+            <div className="flex flex-col gap-1.5 border-l border-[var(--border)] pl-3 text-[12.5px]">
+              <div className="flex items-center gap-1.5 font-medium text-[var(--fg)]">
+                <ChevronDown size={13} className="text-[var(--accent)]" />
+                <span>Accordion style: compact</span>
+              </div>
+              <p className="pl-5 text-[12px] text-[var(--muted)]">
+                Tight indented disclosure tree with zero outer card chrome.
+              </p>
+            </div>
           ) : (
             <BouncyAccordion
               collapsible

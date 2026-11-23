@@ -561,7 +561,7 @@ export function TabsTrigger({
           if (!event.defaultPrevented) setValue(value);
         }}
         className={cn(
-          "relative isolate inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-1.5 text-sm font-medium outline-none transition-colors",
+          "relative isolate inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--radius)] px-3 py-1.5 text-sm font-medium outline-none transition-colors",
           active
             ? "text-[var(--accent)]"
             : "text-[var(--muted)] hover:bg-[var(--card)]/60 hover:text-[var(--fg)]",
@@ -573,7 +573,7 @@ export function TabsTrigger({
             layoutId={layoutId}
             layout
             className={cn(
-              "pointer-events-none absolute inset-0 -z-10 rounded-xl border border-[color-mix(in_srgb,var(--accent)_42%,var(--border))] bg-[var(--card)]",
+              "pointer-events-none absolute inset-0 -z-10 rounded-[var(--radius)] border border-[color-mix(in_srgb,var(--accent)_42%,var(--border))] bg-[var(--card)]",
               indicatorClassName,
             )}
           />

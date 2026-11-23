@@ -121,34 +121,19 @@ function buildTheme(accent: string, mode: 'dark' | 'light' = 'dark') {
     // light mode just flips the lightness ramp
     const ramp = (lightness: number) => (dark ? lightness : 100 - lightness)
 
-    const colors = dark
-        ? {
-              accent: accentTone,
-              // Neutral chrome — matches the Rare UI preview surface (dark --card).
-              bg: 'oklch(0.1822 0 0)',
-              border: 'rgb(255 255 255 / 0.08)',
-              headerBg: 'rgb(255 255 255 / 0.03)',
-              plain: '#ffffff',
-              muted: 'rgb(255 255 255 / 0.6)',
-              gutter: 'rgb(255 255 255 / 0.28)',
-              hoverWash: 'rgb(255 255 255 / 0.08)',
-              floatBg: 'rgb(255 255 255 / 0.05)',
-              selection: hsl(h, s, 58, 0.3),
-              lineWash: hsl(h, s, 58, 0.1),
-          }
-        : {
-              accent: accentTone,
-              bg: 'oklch(0.985 0 0)',
-              border: 'rgb(0 0 0 / 0.08)',
-              headerBg: 'rgb(0 0 0 / 0.03)',
-              plain: '#171717',
-              muted: 'rgb(0 0 0 / 0.6)',
-              gutter: 'rgb(0 0 0 / 0.32)',
-              hoverWash: 'rgb(0 0 0 / 0.06)',
-              floatBg: 'rgb(0 0 0 / 0.04)',
-              selection: hsl(h, s, 45, 0.25),
-              lineWash: hsl(h, s, 45, 0.08),
-          }
+    const colors = {
+        accent: accentTone,
+        bg: 'var(--surface)',
+        border: 'var(--border)',
+        headerBg: 'var(--card)',
+        plain: 'var(--fg)',
+        muted: 'var(--muted)',
+        gutter: 'color-mix(in srgb, var(--muted) 60%, transparent)',
+        hoverWash: 'var(--card)',
+        floatBg: 'color-mix(in srgb, var(--card) 82%, transparent)',
+        selection: hsl(h, s, dark ? 58 : 45, dark ? 0.3 : 0.25),
+        lineWash: hsl(h, s, dark ? 58 : 45, dark ? 0.1 : 0.08),
+    }
 
     const theme: PrismTheme = {
         plain: { color: colors.plain, backgroundColor: 'transparent' },
@@ -321,7 +306,7 @@ export function CodeBlock({
             data-slot='code-block'
             className={cn(
                 'group relative flex flex-col overflow-hidden text-left',
-                showFrame && 'rounded-2xl border border-(--cb-border) bg-(--cb-bg)',
+                showFrame && 'rounded-[var(--radius)] border border-(--cb-border) bg-(--cb-bg)',
                 className,
             )}
             style={{ ...cssVars, ...style }}
@@ -347,7 +332,7 @@ export function CodeBlock({
                 aria-label={filename ?? `${safeLanguage} code`}
                 tabIndex={0}
                 className={cn(
-                    'min-h-0 flex-1 overflow-auto outline-none selection:bg-(--cb-selection) focus-visible:ring-2 focus-visible:ring-(--cb-accent)/40 [scrollbar-width:thin] [scrollbar-color:var(--cb-border)_transparent]',
+                    'zenko-thin-scroll min-h-0 flex-1 overflow-auto outline-none selection:bg-(--cb-selection) focus-visible:ring-2 focus-visible:ring-(--cb-accent)/40',
                     showFrame && 'py-3',
                 )}
             >
