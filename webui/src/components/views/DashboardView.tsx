@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { EChartsCoreOption } from 'echarts/core'
+import { RecapCard } from 'motion-brew/recap-card'
 import {
   Activity,
   Cpu,
@@ -25,6 +26,7 @@ import type {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { DataTable } from '@/components/assistant-ui/elements/data-table'
+import { ZenkoFoxLogo } from '@/components/beui/ZenkoFoxLogo'
 import {
   ZenkoChart,
   buildAccentHeatmapRamp,
@@ -32,6 +34,11 @@ import {
   readZenkoChartPalette,
   type ZenkoChartPalette,
 } from '@/components/charts/ZenkoChart'
+import { ActivityGrid } from '@/components/motion-brew/activity-grid'
+import { MixChart } from '@/components/motion-brew/mix-chart'
+import { QuotaGauge } from '@/components/motion-brew/quota-gauge'
+import { UsageRing } from '@/components/motion-brew/usage-ring'
+import { Faq as RareFaq, type FaqItem } from '@/components/rareui/faq'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 import { TelemetryView } from '@/components/views/SecondaryViews'
@@ -62,6 +69,77 @@ const HEATMAP_RADIUS_BY_SHAPE: Record<'rounded' | 'square' | 'circle', number> =
   rounded: 3,
   square: 0,
   circle: 99,
+}
+
+const ZENKO_DASHBOARD_FAQ: FaqItem[] = [
+  {
+    id: 'rss',
+    question: 'Why is Zenko memory (VmRSS) under 40 MB?',
+    answer:
+      'Zenko runs as a single statically compiled native Rust binary with mimalloc (no_thp), bounded Tokio worker threads, rustls, and SQLite WAL with bounded page cache — zero Node.js or Python runtimes.',
+  },
+  {
+    id: 'vault',
+    question: 'How does zenko_vault protect my API keys?',
+    answer:
+      'Every provider key and Telegram token is encrypted at rest in vault.enc with ChaCha20-Poly1305 and 0600 permissions. Only key slot names appear in telemetry — secret values are never exposed or logged.',
+  },
+  {
+    id: 'kv-cache',
+    question: 'What does KV Cache Hit measure?',
+    answer:
+      'It tracks the share of prompt tokens served from provider prompt-caching across active turns, directly cutting latency and spend on long autonomous engineering sessions.',
+  },
+  {
+    id: 'studio',
+    question: 'Can I customize every chart, dock, and chat widget?',
+    answer:
+      'Yes — open Appearance Studio (or press ⌘.) to switch between Apache ECharts and Motion-Brew widgets, toggle Recap Card, Quota Gauges, FAQ, glass docks, context meters, and full 60/30/10 palettes.',
+  },
+]
+
+function buildActivityGridSeries(points: readonly DailyActivityPoint[], days: number): number[] {
+  const byDate = new Map(points.map((p) => [p.date, p.events + p.tool_calls]))
+  const out: number[] = []
+  for (let i = days - 1; i >= 0; i -= 1) {
+    out.push(byDate.get(isoDateOffset(i)) ?? 0)
+  }
+  return out
+}
+
+function buildMixChartRanges(points: readonly DailyActivityPoint[]) {
+  const byDate = new Map(points.map((p) => [p.date, p]))
+  const makeRange = (id: string, label: string, days: number) => {
+    const pts = Array.from({ length: days }, (_, idx) => {
+      const iso = isoDateOffset(days - 1 - idx)
+      const pt = byDate.get(iso)
+      const totalK = pt ? Number((pt.tokens / 1000).toFixed(2)) : 0
+      const cachedK = pt ? Number((pt.cache_read_tokens / 1000).toFixed(2)) : 0
+      const uncachedK = Number(Math.max(0, totalK - cachedK).toFixed(2))
+      const toolWeight = pt ? Number((pt.tool_calls * 0.5).toFixed(2)) : 0
+      return {
+        label: iso.slice(8),
+        detail: iso,
+        values: [cachedK, uncachedK, toolWeight],
+      }
+    })
+    const half = Math.max(1, Math.floor(pts.length / 2))
+    const prevSum = pts.slice(0, half).reduce((a, p) => a + p.values[0] + p.values[1], 0)
+    const currSum = pts.slice(half).reduce((a, p) => a + p.values[0] + p.values[1], 0)
+    const pctChange = prevSum > 0 ? ((currSum - prevSum) / prevSum) * 100 : currSum > 0 ? 100 : 0
+    return {
+      id,
+      label,
+      points: pts,
+      change: Number(pctChange.toFixed(1)),
+      caption: `vs previous ${half}d`,
+    }
+  }
+  return [
+    makeRange('7d', '7D', 7),
+    makeRange('14d', '14D', 14),
+    makeRange('30d', '30D', 30),
+  ]
 }
 
 function buildHeatmapOption(
@@ -413,13 +491,21 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
     chart_theme: 'monochrome_accent' as const,
     heatmap_shape: 'rounded' as const,
     heatmap_range: 'year' as const,
+    widget_kit: 'echarts' as const,
     show_heatmap: true,
     show_storage_vault: true,
     show_token_trends: true,
     show_tools_table: true,
     show_subagents_jobs: true,
     show_logs: true,
+    show_recap_card: false,
+    show_quota_gauges: false,
+    show_faq: false,
   }
+  const widgetKit = dash.widget_kit || 'echarts'
+  const showRecap = dash.show_recap_card ?? widgetKit !== 'echarts'
+  const showQuota = dash.show_quota_gauges ?? widgetKit !== 'echarts'
+  const showFaq = dash.show_faq ?? false
 
   const palette = useMemo(
     () => readZenkoChartPalette(),
@@ -435,6 +521,10 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
         true,
       ),
     [palette, dash.heatmap_shape, dash.heatmap_range],
+  )
+  const previewGrid = useMemo(
+    () => buildActivityGridSeries(PREVIEW_ACTIVITY_POINTS, 98),
+    [],
   )
   const ramp = buildAccentHeatmapRamp(palette)
 
@@ -463,35 +553,57 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
         ))}
       </div>
 
-      {dash.show_heatmap && (
-        <div className="z-surface-card flex flex-col gap-1.5 !p-3">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="font-medium text-[var(--fg)]">Zenko Activity Contribution</span>
-            <div className="flex items-center gap-1 font-mono text-[9.5px] text-[var(--muted)]">
-              <span>Less</span>
-              {ramp.map((c, i) => (
-                <span
-                  key={i}
-                  className="inline-block h-2.5 w-2.5"
-                  style={{
-                    backgroundColor: c,
-                    borderRadius:
-                      dash.heatmap_shape === 'circle'
-                        ? 99
-                        : dash.heatmap_shape === 'square'
-                          ? 0
-                          : 2,
-                  }}
-                />
-              ))}
-              <span>More</span>
+      {dash.show_heatmap &&
+        (widgetKit === 'motion_brew' ? (
+          <ActivityGrid
+            title="Zenko Activity Contribution"
+            data={previewGrid}
+            unit="events"
+            cellSize={10}
+            colors={[ramp[1], ramp[2], ramp[3], ramp[4]]}
+            className="zenko-mb-card w-full"
+          />
+        ) : (
+          <div className="z-surface-card flex flex-col gap-1.5 !p-3">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-medium text-[var(--fg)]">Zenko Activity Contribution</span>
+              <div className="flex items-center gap-1 font-mono text-[9.5px] text-[var(--muted)]">
+                <span>Less</span>
+                {ramp.map((c, i) => (
+                  <span
+                    key={i}
+                    className="inline-block h-2.5 w-2.5"
+                    style={{
+                      backgroundColor: c,
+                      borderRadius:
+                        dash.heatmap_shape === 'circle'
+                          ? 99
+                          : dash.heatmap_shape === 'square'
+                            ? 0
+                            : 2,
+                    }}
+                  />
+                ))}
+                <span>More</span>
+              </div>
             </div>
+            <ZenkoChart option={heatmapOpt} height={112} />
           </div>
-          <ZenkoChart option={heatmapOpt} height={112} />
-        </div>
+        ))}
+
+      {showQuota && (
+        <QuotaGauge
+          value={82}
+          goal={100}
+          unit="% KV cache"
+          color={palette.accent}
+          className="zenko-mb-card w-full"
+        />
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-[var(--muted)]">
+        <span>kit:{widgetKit}</span>
+        <span>·</span>
         <span>layout:{dash.layout}</span>
         <span>·</span>
         <span>charts:{dash.chart_theme}</span>
@@ -500,10 +612,13 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
           modules:
           {[
             dash.show_heatmap && 'heatmap',
+            showRecap && 'recap',
+            showQuota && 'gauges',
             dash.show_token_trends && 'trends',
             dash.show_storage_vault && 'vault',
             dash.show_tools_table && 'tools',
             dash.show_logs && 'logs',
+            showFaq && 'faq',
           ]
             .filter(Boolean)
             .join(', ')}
@@ -575,13 +690,21 @@ export function DashboardView({
     chart_theme: 'monochrome_accent' as const,
     heatmap_shape: 'rounded' as const,
     heatmap_range: 'year' as const,
+    widget_kit: 'echarts' as const,
     show_heatmap: true,
     show_storage_vault: true,
     show_token_trends: true,
     show_tools_table: true,
     show_subagents_jobs: true,
     show_logs: true,
+    show_recap_card: false,
+    show_quota_gauges: false,
+    show_faq: false,
   }
+  const widgetKit = dash.widget_kit || 'echarts'
+  const showRecap = dash.show_recap_card ?? widgetKit !== 'echarts'
+  const showQuota = dash.show_quota_gauges ?? widgetKit !== 'echarts'
+  const showFaq = dash.show_faq ?? false
 
   const loadDashboard = useCallback(async () => {
     setLoading(true)
@@ -634,6 +757,79 @@ export function DashboardView({
   const toolsBarOption = useMemo(
     () => buildToolsBarOption(data?.top_tools || [], palette, dash.chart_theme),
     [data?.top_tools, palette, dash.chart_theme],
+  )
+
+  const activityGridDays = dash.heatmap_range === 'quarter' ? 91 : 182
+  const activityGridData = useMemo(
+    () => buildActivityGridSeries(data?.daily_activity || [], activityGridDays),
+    [data?.daily_activity, activityGridDays],
+  )
+  const mixRanges = useMemo(
+    () => buildMixChartRanges(data?.daily_activity || []),
+    [data?.daily_activity],
+  )
+  const mixSeries = useMemo(
+    () => [
+      { key: 'cached', label: 'KV Cached', color: palette.accent },
+      { key: 'uncached', label: 'Uncached', color: hexWithAlpha(palette.fg, 0.52) },
+      { key: 'tools', label: 'Tool Load', color: hexWithAlpha(palette.accent, 0.45) },
+    ],
+    [palette],
+  )
+  const recapPeriod = useMemo(
+    () => new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' }),
+    [],
+  )
+  const recapParts = useMemo(
+    () => [
+      'Zenko processed ',
+      { value: Math.round((data?.total_tokens ?? 0) / 1000), suffix: 'k tokens', icon: 'words' as const },
+      ' across ',
+      { value: data?.active_days ?? 0, suffix: ' active days', icon: 'sun' as const },
+      ' with a ',
+      { value: data?.streak_days ?? 0, suffix: '-day streak', icon: 'streak' as const },
+      ' and ',
+      {
+        value: Number((activeTelemetry?.cache_hit_pct ?? 0).toFixed(1)),
+        decimals: 1,
+        suffix: '% KV cache hit',
+        icon: 'trend' as const,
+      },
+      '.',
+    ],
+    [data?.total_tokens, data?.active_days, data?.streak_days, activeTelemetry?.cache_hit_pct],
+  )
+  const recapBadges = useMemo(
+    () => [
+      {
+        label: 'Tool Mastery',
+        icon: 'spark' as const,
+        note: `${data?.counts.tool_calls ?? 0} tool invocations executed cleanly.`,
+        progress: Math.min(1, (data?.counts.tool_calls ?? 0) / 100),
+      },
+      {
+        label: 'KV Cache Saver',
+        icon: 'trend' as const,
+        note: `${formatCompactTokens(data?.total_cache_read_tokens ?? 0)} tokens served from cache.`,
+        progress: Math.min(1, (activeTelemetry?.cache_hit_pct ?? 0) / 100),
+      },
+      {
+        label: 'Vault Shield',
+        icon: 'feather' as const,
+        note: vault?.encrypted
+          ? `${vault.key_count} encrypted secret slot(s) locked via ${vault.cipher}.`
+          : 'Vault initialized and ready for credentials.',
+        progress: vault?.encrypted ? 1 : 0.35,
+      },
+    ],
+    [
+      data?.counts.tool_calls,
+      data?.total_cache_read_tokens,
+      activeTelemetry?.cache_hit_pct,
+      vault?.encrypted,
+      vault?.key_count,
+      vault?.cipher,
+    ],
   )
 
   const storageRows = useMemo(() => {
@@ -805,44 +1001,101 @@ export function DashboardView({
           })}
         </div>
 
-        {/* 1. GitHub-Style Zenko Usage Activity Contribution Heatmap */}
-        {dash.show_heatmap && (
-          <div className="z-surface-card flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-[14px] font-semibold text-[var(--fg)]">
-                  Zenko Activity Contribution
-                </h2>
-                <p className="font-mono text-[11px] text-[var(--muted)]">
-                  {data?.active_days ?? 0} active days · {data?.streak_days ?? 0}-day streak ·{' '}
-                  {formatCompactTokens(data?.total_tokens ?? 0)} total tokens ·{' '}
-                  {data?.counts.tool_calls ?? 0} tool runs
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 font-mono text-[10.5px] text-[var(--muted)]">
-                <span>Less</span>
-                {ramp.map((c, idx) => (
-                  <span
-                    key={idx}
-                    className="inline-block h-3 w-3"
-                    style={{
-                      backgroundColor: c,
-                      borderRadius:
-                        dash.heatmap_shape === 'circle'
-                          ? 99
-                          : dash.heatmap_shape === 'square'
-                            ? 0
-                            : 3,
-                    }}
-                  />
-                ))}
-                <span>More</span>
-              </div>
-            </div>
-            <ZenkoChart
-              option={heatmapOption}
-              height={dash.heatmap_range === 'year' ? 168 : 184}
+        {/* 0. Motion-Brew Narrative Recap Card & Runtime Quota Gauges */}
+        {showRecap && (
+          <RecapCard
+            title="Zenko runtime recap"
+            period={recapPeriod}
+            parts={recapParts}
+            badges={recapBadges}
+            actionLabel={onOpenCustomizeDashboard ? 'Customize dashboard' : null}
+            onAction={onOpenCustomizeDashboard}
+            className="zenko-mb-card w-full"
+          />
+        )}
+
+        {showQuota && (
+          <div className={cn('grid gap-5', gridTwoCol)}>
+            <QuotaGauge
+              value={Math.round(activeTelemetry?.cache_hit_pct ?? 0)}
+              goal={100}
+              unit="% KV cache"
+              color={palette.accent}
+              className="zenko-mb-card w-full"
             />
+            <UsageRing
+              title="Runtime Budgets"
+              metrics={[
+                { label: 'VmRSS', value: Number(rssMb) || 0, goal: 64, unit: 'MB' },
+                {
+                  label: 'KV Cache',
+                  value: Math.round(activeTelemetry?.cache_hit_pct ?? 0),
+                  goal: 100,
+                  unit: '%',
+                },
+                {
+                  label: 'Skills',
+                  value: data?.counts.skills_enabled ?? 0,
+                  goal: Math.max(1, data?.counts.skills_total ?? 1),
+                  unit: 'on',
+                },
+              ]}
+              className="zenko-mb-card w-full"
+            />
+          </div>
+        )}
+
+        {/* 1. GitHub-Style Zenko Usage Activity Contribution Heatmap (ECharts | Motion-Brew | Hybrid) */}
+        {dash.show_heatmap && (
+          <div className="flex flex-col gap-4">
+            {widgetKit !== 'motion_brew' && (
+              <div className="z-surface-card flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-[14px] font-semibold text-[var(--fg)]">
+                      Zenko Activity Contribution
+                    </h2>
+                    <p className="font-mono text-[11px] text-[var(--muted)]">
+                      {data?.active_days ?? 0} active days · {data?.streak_days ?? 0}-day streak ·{' '}
+                      {formatCompactTokens(data?.total_tokens ?? 0)} total tokens ·{' '}
+                      {data?.counts.tool_calls ?? 0} tool runs
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 font-mono text-[10.5px] text-[var(--muted)]">
+                    <span>Less</span>
+                    {ramp.map((c, idx) => (
+                      <span
+                        key={idx}
+                        className="inline-block h-3 w-3"
+                        style={{
+                          backgroundColor: c,
+                          borderRadius:
+                            dash.heatmap_shape === 'circle'
+                              ? 99
+                              : dash.heatmap_shape === 'square'
+                                ? 0
+                                : 3,
+                        }}
+                      />
+                    ))}
+                    <span>More</span>
+                  </div>
+                </div>
+                <ZenkoChart
+                  option={heatmapOption}
+                  height={dash.heatmap_range === 'year' ? 168 : 184}
+                />
+              </div>
+            )}
+            {(widgetKit === 'motion_brew' || widgetKit === 'hybrid') && (
+              <ActivityGrid
+                title="Zenko Activity Grid"
+                data={activityGridData}
+                unit="events"
+                colors={[ramp[1], ramp[2], ramp[3], ramp[4]]}
+                className="zenko-mb-card w-full"
+              />
+            )}
           </div>
         )}
 
@@ -962,19 +1215,29 @@ export function DashboardView({
         {/* 3. Token & KV-Cache Trend + Top Tools Bar Chart */}
         {(dash.show_token_trends || dash.show_tools_table) && (
           <div className={cn('grid gap-5', gridTwoCol)}>
-            {dash.show_token_trends && (
-              <div className="z-surface-card flex flex-col gap-2">
-                <div>
-                  <h2 className="text-[14px] font-semibold text-[var(--fg)]">
-                    Token Volume & KV-Cache Savings
-                  </h2>
-                  <p className="font-mono text-[11px] text-[var(--muted)]">
-                    Daily total tokens vs prompt-cache hits across active turns
-                  </p>
+            {dash.show_token_trends &&
+              (widgetKit === 'motion_brew' ? (
+                <MixChart
+                  title="Token Volume & KV-Cache Mix"
+                  series={mixSeries}
+                  ranges={mixRanges}
+                  unit="k"
+                  decimals={1}
+                  className="zenko-mb-card w-full"
+                />
+              ) : (
+                <div className="z-surface-card flex flex-col gap-2">
+                  <div>
+                    <h2 className="text-[14px] font-semibold text-[var(--fg)]">
+                      Token Volume & KV-Cache Savings
+                    </h2>
+                    <p className="font-mono text-[11px] text-[var(--muted)]">
+                      Daily total tokens vs prompt-cache hits across active turns
+                    </p>
+                  </div>
+                  <ZenkoChart option={tokenTrendOption} height={210} />
                 </div>
-                <ZenkoChart option={tokenTrendOption} height={210} />
-              </div>
-            )}
+              ))}
 
             {dash.show_tools_table && (
               <div className="z-surface-card flex flex-col gap-2">
@@ -996,6 +1259,17 @@ export function DashboardView({
               </div>
             )}
           </div>
+        )}
+
+        {dash.show_token_trends && widgetKit === 'hybrid' && (
+          <MixChart
+            title="Interactive Token & Tool Mix"
+            series={mixSeries}
+            ranges={mixRanges}
+            unit="k"
+            decimals={1}
+            className="zenko-mb-card w-full"
+          />
         )}
 
         {/* 4. Tool Latency & Model Usage Tables */}
@@ -1070,6 +1344,26 @@ export function DashboardView({
               onRefresh()
             }}
           />
+        )}
+
+        {/* 6. Interactive Runtime FAQ (RareUI FAQ — opt-in via Theme Studio) */}
+        {showFaq && (
+          <div className="z-surface-card flex flex-col gap-3">
+            <div>
+              <h2 className="text-[14px] font-semibold text-[var(--fg)]">
+                Zenko Architecture &amp; FAQ
+              </h2>
+              <p className="font-mono text-[11px] text-[var(--muted)]">
+                Click any question to expand live runtime notes
+              </p>
+            </div>
+            <RareFaq
+              items={ZENKO_DASHBOARD_FAQ}
+              defaultValue={ZENKO_DASHBOARD_FAQ[0].id}
+              accent="var(--accent)"
+              avatar={<ZenkoFoxLogo size={18} variant="fox" />}
+            />
+          </div>
         )}
       </div>
     </CompactScrollArea>

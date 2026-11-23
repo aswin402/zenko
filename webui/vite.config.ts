@@ -27,6 +27,15 @@ export default defineConfig({
           if (id.includes('node_modules/echarts') || id.includes('node_modules/zrender')) {
             return 'vendor-echarts'
           }
+          if (id.includes('node_modules/gsap') || id.includes('node_modules/@gsap')) {
+            return 'vendor-gsap'
+          }
+          if (id.includes('node_modules/prism-react-renderer')) {
+            return 'vendor-prism'
+          }
+          if (id.includes('node_modules/motion-brew')) {
+            return 'vendor-motion-brew'
+          }
           if (id.includes('node_modules/motion') || id.includes('node_modules/framer-motion')) {
             return 'vendor-motion'
           }

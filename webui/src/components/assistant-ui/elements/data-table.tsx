@@ -2,6 +2,14 @@
 
 import { useEffect, useState, type ComponentProps } from "react";
 import { cn } from "@/lib/utils";
+import {
+  Table as EaseTable,
+  TableBody as EaseTableBody,
+  TableCell as EaseTableCell,
+  TableHead as EaseTableHead,
+  TableHeader as EaseTableHeader,
+  TableRow as EaseTableRow,
+} from "@/components/easeui/table";
 import { safeHref } from "../utils/href";
 import { clamp } from "../utils/range";
 import { useIsomorphicLayoutEffect } from "../utils/useIsomorphicLayoutEffect";
@@ -86,6 +94,13 @@ export interface DataTableProps extends Omit<
   locale?: string | undefined;
   emptyMessage?: string | undefined;
   relativeTo?: number | undefined;
+  tableStyle?:
+    | "borderless"
+    | "minimal"
+    | "striped"
+    | "bordered"
+    | "easeui_table"
+    | undefined;
 }
 
 const isAsciiDigit = (code: number) => code >= 48 && code <= 57;
@@ -466,6 +481,7 @@ export function DataTable({
   locale = "en-US",
   emptyMessage = "No rows",
   relativeTo,
+  tableStyle,
   className,
   ...props
 }: DataTableProps) {
@@ -473,6 +489,22 @@ export function DataTable({
     defaultSort ?? null,
   );
   const [announcement, setAnnouncement] = useState("");
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  const [docTableStyle, setDocTableStyle] = useState<string>(() =>
+    typeof document !== "undefined"
+      ? document.documentElement.dataset.tableStyle || "borderless"
+      : "borderless",
+  );
+  useEffect(() => {
+    if (tableStyle !== undefined || typeof document === "undefined") return;
+    const root = document.documentElement;
+    const sync = () => setDocTableStyle(root.dataset.tableStyle || "borderless");
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(root, { attributes: true, attributeFilter: ["data-table-style"] });
+    return () => obs.disconnect();
+  }, [tableStyle]);
+  const effectiveTableStyle = tableStyle ?? docTableStyle;
   const activeSort = sort === undefined ? internalSort : sort;
   const hasRelativeDates = columns.some(
     (column) =>
@@ -540,6 +572,149 @@ export function DataTable({
       (column.align ?? (isNumeric(column.format) ? "end" : "start")) ===
         "end" && "text-end tabular-nums",
     );
+
+  if (effectiveTableStyle === "easeui_table") {
+    return (
+      <div
+        data-slot="data-table"
+        data-variant="easeui_table"
+        className={cn("@container w-full", className)}
+        {...props}
+      >
+        <div className="hidden @sm:block">
+          <EaseTable>
+            {caption ? <caption className="sr-only">{caption}</caption> : null}
+            <EaseTableHeader>
+              <tr>
+                {columns.map((column) => {
+                  const direction =
+                    activeSort?.key === column.key
+                      ? activeSort.direction
+                      : false;
+                  const sortable = column.sortable !== false;
+                  const alignEnd =
+                    (column.align ??
+                      (isNumeric(column.format) ? "end" : "start")) === "end";
+                  const widthStyle = colWidths[column.key]
+                    ? { width: `${Math.round(colWidths[column.key])}px` }
+                    : column.width
+                      ? { width: column.width }
+                      : undefined;
+                  return (
+                    <EaseTableHead
+                      key={column.key}
+                      scope="col"
+                      sorted={direction}
+                      onSort={sortable ? () => changeSort(column) : undefined}
+                      onResize={(width) =>
+                        setColWidths((prev) => ({ ...prev, [column.key]: width }))
+                      }
+                      style={widthStyle}
+                      className={cn(alignEnd && "text-right")}
+                    >
+                      {column.label}
+                    </EaseTableHead>
+                  );
+                })}
+              </tr>
+            </EaseTableHeader>
+            <EaseTableBody>
+              {sortedRows.length === 0 ? (
+                <EaseTableRow>
+                  <EaseTableCell
+                    colSpan={Math.max(columns.length, 1)}
+                    className="py-6 text-center text-[13px] text-muted-foreground"
+                  >
+                    <span role="status">{emptyMessage}</span>
+                  </EaseTableCell>
+                </EaseTableRow>
+              ) : (
+                sortedRows.map(({ row, index }) => (
+                  <EaseTableRow key={rowIdentifier(row, rowKey, index)}>
+                    {columns.map((column) => {
+                      const alignEnd =
+                        (column.align ??
+                          (isNumeric(column.format) ? "end" : "start")) === "end";
+                      return (
+                        <EaseTableCell
+                          key={column.key}
+                          emphasis={column.key === primaryColumn?.key}
+                          className={cn(
+                            "text-[13px]",
+                            alignEnd && "text-right tabular-nums",
+                          )}
+                        >
+                          <Value
+                            column={column}
+                            row={row}
+                            locale={locale}
+                            relativeTo={relativeTime}
+                          />
+                        </EaseTableCell>
+                      );
+                    })}
+                  </EaseTableRow>
+                ))
+              )}
+            </EaseTableBody>
+          </EaseTable>
+        </div>
+        <div role="list" className="space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)]/70 p-2.5 @sm:hidden">
+          {sortedRows.length === 0 ? (
+            <div role="status" className="px-2 py-3 text-center text-[13px] text-muted-foreground">
+              {emptyMessage}
+            </div>
+          ) : (
+            sortedRows.map(({ row, index }) => (
+              <div
+                key={rowIdentifier(row, rowKey, index)}
+                role="listitem"
+                className="rounded-xl bg-foreground/[0.025] px-3 py-2"
+              >
+                {primaryColumn ? (
+                  <div className="text-[13px] font-medium leading-5 text-foreground/90">
+                    <Value
+                      column={primaryColumn}
+                      row={row}
+                      locale={locale}
+                      relativeTo={relativeTime}
+                    />
+                  </div>
+                ) : null}
+                {columns.length > 1 ? (
+                  <dl className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-[12px] leading-4 @xs:grid-cols-2">
+                    {columns
+                      .filter((column) => column.key !== primaryColumn?.key)
+                      .map((column) => (
+                        <div
+                          key={column.key}
+                          className="flex min-w-0 items-baseline justify-between gap-2"
+                        >
+                          <dt className="truncate text-muted-foreground">
+                            {column.label}
+                          </dt>
+                          <dd className="shrink-0 text-end tabular-nums text-foreground/75">
+                            <Value
+                              column={column}
+                              row={row}
+                              locale={locale}
+                              relativeTo={relativeTime}
+                            />
+                          </dd>
+                        </div>
+                      ))}
+                  </dl>
+                ) : null}
+              </div>
+            ))
+          )}
+        </div>
+        <p aria-live="polite" className="sr-only">
+          {announcement}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div

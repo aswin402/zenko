@@ -40,8 +40,16 @@ import type {
 import { safeHref } from '@/components/assistant-ui/utils/href'
 import { cn } from '@/lib/utils'
 import type { AgentActivityItem } from '@/components/agents/agent-activity'
+import { Citations } from '@/components/agents/citations'
 import { MessageScroller } from '@/components/agents/message-scroller'
 import { StreamingResponse } from '@/components/agents/streaming-response'
+import {
+  Alert as EaseAlert,
+  AlertDescription as EaseAlertDescription,
+  AlertTitle as EaseAlertTitle,
+} from '@/components/easeui/alert'
+import { StreamingResponse as EaseStreamingResponse } from '@/components/easeui/streaming-response'
+import { StreamingResponse as RareStreamingResponse } from '@/components/rareui/streaming-response'
 import { AgentDisclosure } from '@/components/beui/AgentDisclosure'
 import { AgentAvatar, UserAvatar } from '@/components/beui/ZenkoAvatars'
 import {
@@ -359,9 +367,11 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
 const MarkdownProse = memo(function MarkdownProse({
   text,
   codeBlockStyle = 'aui_code_runner',
+  tableStyle,
 }: {
   text: string
   codeBlockStyle?: ComponentSlots['chat_page']['code_block_style']
+  tableStyle?: UiCustomization['surface']['table_style']
 }) {
   const markdownComponents = useMemo(
     () => ({
@@ -380,7 +390,7 @@ const MarkdownProse = memo(function MarkdownProse({
         return <code>{children}</code>
       },
       table({ children }: { children?: React.ReactNode }) {
-        return <MarkdownDataTable>{children}</MarkdownDataTable>
+        return <MarkdownDataTable tableStyle={tableStyle}>{children}</MarkdownDataTable>
       },
       a({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
         const validated = safeHref(typeof href === 'string' ? href : undefined)
@@ -406,7 +416,7 @@ const MarkdownProse = memo(function MarkdownProse({
         )
       },
     }),
-    [codeBlockStyle],
+    [codeBlockStyle, tableStyle],
   )
 
   return (
@@ -676,6 +686,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
                             defaultOpen={true}
                             diffStyle={chatSlot.diff_style}
                             shellStyle={chatSlot.shell_style}
+                            webSearchStyle={chatSlot.web_search_style}
                             onRetryTool={onRetryTool}
                           />
                         </div>
@@ -689,7 +700,44 @@ const AssistantTurnView = memo(function AssistantTurnView({
 
         {/* Response Body + Message Actions (Copy + Retry + Citations + tok · cached) */}
         {group.text &&
-          (useBeuiInlineActions ? (
+          (chatSlot.streaming_style === 'easeui_stream' ? (
+            <>
+              <EaseStreamingResponse
+                status="complete"
+                copyText={group.text}
+                onRetry={handleRegenerate}
+                showFeedback
+              >
+                <MarkdownProse
+                  text={group.text}
+                  codeBlockStyle={codeBlockStyle}
+                  tableStyle={ui.surface.table_style}
+                />
+              </EaseStreamingResponse>
+              {(citations.length > 0 || tokenMetaNode) && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                  {citations.length > 0 && <Citations citations={citations} className="w-auto" />}
+                  {tokenMetaNode}
+                </div>
+              )}
+            </>
+          ) : chatSlot.streaming_style === 'rareui_stream' ? (
+            <>
+              <RareStreamingResponse
+                text={group.text}
+                status="done"
+                ink="var(--accent)"
+                actions={true}
+                onRetry={handleRegenerate}
+              />
+              {(citations.length > 0 || tokenMetaNode) && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                  {citations.length > 0 && <Citations citations={citations} className="w-auto" />}
+                  {tokenMetaNode}
+                </div>
+              )}
+            </>
+          ) : useBeuiInlineActions ? (
             <StreamingResponse
               status="complete"
               copyText={group.text}
@@ -699,11 +747,19 @@ const AssistantTurnView = memo(function AssistantTurnView({
               contentClassName="text-[0.94rem]"
               footerMeta={tokenMetaNode}
             >
-              <MarkdownProse text={group.text} codeBlockStyle={codeBlockStyle} />
+              <MarkdownProse
+                text={group.text}
+                codeBlockStyle={codeBlockStyle}
+                tableStyle={ui.surface.table_style}
+              />
             </StreamingResponse>
           ) : (
             <>
-              <MarkdownProse text={group.text} codeBlockStyle={codeBlockStyle} />
+              <MarkdownProse
+                text={group.text}
+                codeBlockStyle={codeBlockStyle}
+                tableStyle={ui.surface.table_style}
+              />
               <AssistantMessageFooter
                 style={actionsStyle}
                 text={group.text}
@@ -1292,6 +1348,7 @@ function LiveAssistantTurn({
                         defaultOpen={true}
                         diffStyle={chatSlot.diff_style}
                         shellStyle={chatSlot.shell_style}
+                        webSearchStyle={chatSlot.web_search_style}
                       />
                     )}
                 </div>
@@ -1300,7 +1357,7 @@ function LiveAssistantTurn({
           </div>
         )}
 
-        {/* Live Streaming Response Words (StreamingText | BeUI StreamingResponse | Editorial) */}
+        {/* Live Streaming Response Words (StreamingText | BeUI | EaseUI | RareUI | Editorial) */}
         {mergedText &&
           (chatSlot.streaming_style === 'aui_streaming_text' ? (
             (() => {
@@ -1313,17 +1370,34 @@ function LiveAssistantTurn({
                 />
               )
             })()
+          ) : chatSlot.streaming_style === 'easeui_stream' ? (
+            <EaseStreamingResponse status={isRunning ? 'streaming' : 'complete'}>
+              <MarkdownProse
+                text={mergedText}
+                codeBlockStyle={chatSlot.code_block_style || 'aui_code_runner'}
+                tableStyle={ui.surface.table_style}
+              />
+            </EaseStreamingResponse>
+          ) : chatSlot.streaming_style === 'rareui_stream' ? (
+            <RareStreamingResponse
+              text={mergedText}
+              status={isRunning ? 'streaming' : 'done'}
+              ink="var(--accent)"
+              actions={false}
+            />
           ) : chatSlot.streaming_style === 'beui_stream' ? (
             <StreamingResponse status="streaming" announce={false} showActions={false}>
               <MarkdownProse
                 text={mergedText}
                 codeBlockStyle={chatSlot.code_block_style || 'aui_code_runner'}
+                tableStyle={ui.surface.table_style}
               />
             </StreamingResponse>
           ) : (
             <MarkdownProse
               text={mergedText}
               codeBlockStyle={chatSlot.code_block_style || 'aui_code_runner'}
+              tableStyle={ui.surface.table_style}
             />
           ))}
       </div>
@@ -1471,7 +1545,25 @@ export function ChatStream({
 
           {!setupCompleted && (
             <div className="mb-7 w-full max-w-md text-left">
-              {ui.surface.alert_style !== 'compact' ? (
+              {ui.surface.alert_style === 'easeui_alert' ? (
+                <EaseAlert variant="warning">
+                  <div className="flex flex-1 flex-col gap-2">
+                    <div>
+                      <EaseAlertTitle>Connect a provider to get started</EaseAlertTitle>
+                      <EaseAlertDescription>
+                        Add your OpenRouter, MiniMax, Ollama, or Telegram credentials in Setup.
+                      </EaseAlertDescription>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onOpenSetup}
+                      className="z-btn z-btn-primary z-btn-sm w-fit"
+                    >
+                      Configure Providers &amp; Telegram
+                    </button>
+                  </div>
+                </EaseAlert>
+              ) : ui.surface.alert_style !== 'compact' ? (
                 <Alert variant="info">
                   <AlertIcon />
                   <AlertContent>

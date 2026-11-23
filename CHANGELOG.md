@@ -4,6 +4,32 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7] - 2026-11-23
+
+Expanded WebUI Theme Studio component library across SmoothUI, Skiper96, VengeanceUI, EaseUI, Motion-Brew, and RareUI, plus Left Menubar and Context Meter refinements.
+
+### Added
+- **SmoothUI Context Meter & Context Meter Chrome Customization (`webui/src/components/smoothui/ai-context-meter.tsx`, `PromptComposer.tsx`):**
+  - Added SmoothUI `AIContextMeter` (`smoothui_meter`) with hover/click token breakdown popover and Motion-Brew compact `UsageRing` (`motion_brew_ring`) as selectable Context Meter styles.
+  - Added `components.composer.context_meter_chrome` customization supporting Border + Fill (`bordered_filled`), Border Only (`border_only`), Background Only (`background_only`), and Both Hidden (`minimal_bare`) across all context meter styles.
+- **Skiper96 Expandable Tabs & VengeanceUI Glass Dock (`skiperui/expandable-tabs.tsx`, `vengeanceui/glass-dock.tsx`, `tabs.tsx`, `FloatingDock.tsx`):**
+  - Added `surface.tabs_variant = "skiper96"` expandable spring-pill tabs navigation across tabbed views and Appearance Studio.
+  - Added `components.right_menubar.dock_style = "vengeance_glass_dock"` frosted glass dock with directional spring-gliding tooltips inheriting Zenko's 60/30/10 theme tokens.
+- **9 EaseUI Theme Studio Options (`webui/src/components/easeui/`):**
+  - Integrated selectable EaseUI `Alert` (`easeui_alert`), `CommandPalette` (`easeui_palette`), sortable & drag-resizable `Table` (`easeui_table`), swipe-to-dismiss `Toast` (`easeui_toast`), `ToolApproval` (`easeui_approval`), `ToolChip` (`easeui_tool_chip`), `StreamingResponse` (`easeui_stream`), `PixelLoader` (`easeui_pixel_loader`), and `CodeBlock` (`easeui_code`) across Chat, Dashboard, App overlays, and Studio live previews.
+- **Motion-Brew Dashboard, Sidebar & Chat Input Kit (`motion-brew/recap-card`, `webui/src/components/motion-brew/`):**
+  - Integrated `RecapCard` (`@source "../node_modules/motion-brew/dist"`), `ActivityGrid`, `MixChart`, `QuotaGauge`, and `UsageRing` into `DashboardView.tsx` via `dashboard.widget_kit` (`echarts` | `motion_brew` | `hybrid`) and module toggles (`show_recap_card`, `show_quota_gauges`).
+  - Integrated Motion-Brew `SidebarNav` (`left_menubar.frame_style = "motion_brew_nav"`) into `Sidebar.tsx` and GSAP-animated `PromptInput` (`composer.shell_variant = "motion_brew_prompt"`) into `PromptComposer.tsx`.
+- **6 RareUI Component Options (`webui/src/components/rareui/`):**
+  - Integrated RareUI `Faq` (`surface.accordion_style = "rareui_faq"` + `dashboard.show_faq`), Prism-highlighted `CodeBlock` (`rareui_code`), `WebSearch` (`rareui_web_search`), `AiStatus` (`rareui_ai_status`), `StreamingResponse` (`rareui_stream`), and `ModelPicker` (`rareui_picker`).
+- **Declarative Schema & Bundling (`crates/zenko-core/src/{ui.rs, studio_schema.rs}`, `webui/vite.config.ts`):**
+  - Extended Rust `UiCustomization` persistence defaults and Appearance Studio control descriptors for all new options, added Vite `manualChunks` (`vendor-gsap`, `vendor-prism`, `vendor-motion-brew`), and extended global icon family shims in `themed-lucide.tsx`.
+
+### Changed & Fixed
+- **Left Menubar Icon Cleanup (`Sidebar.tsx`, `icon-packs.ts`):**
+  - Replaced the New Session CTA icon with a clean compose (`edit`) icon and fixed the broken `itshover.plus` SVG path (previously rendering an alarm-clock icon) to a crisp `+` glyph.
+  - Removed speech-bubble message icons from session rows in the left sidebar for a cleaner session list.
+
 ## [0.0.6] - 2026-11-23
 
 Low-RAM daemon optimization, SQLite WAL compaction, zero-copy static WebUI serving, and 60/120fps streaming UI smoothness improvements.

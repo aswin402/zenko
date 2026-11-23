@@ -16,6 +16,7 @@ import type { ModelInfo, ProviderDescriptor } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
+import { ModelPicker as RareModelPicker, type PickerModel } from '@/components/rareui/model-picker'
 
 function formatModelPrice(m: ModelInfo): string {
   if (m.is_free) return 'FREE'
@@ -29,7 +30,7 @@ interface ModelPickerProps {
   providers: ProviderDescriptor[]
   configuredProviders: Record<string, boolean>
   activeModels: ModelInfo[]
-  pickerStyle: 'drilldown' | 'split_pane' | 'compact_inline'
+  pickerStyle: 'drilldown' | 'split_pane' | 'compact_inline' | 'rareui_picker'
   pillClass: string
   open: boolean
   onOpenChange: (next: boolean) => void
@@ -390,6 +391,49 @@ export function ModelPicker({
             })
           )}
         </CompactScrollArea>
+      </div>
+    )
+  }
+
+  const rareModels = useMemo<PickerModel[]>(() => {
+    const providerLabel = activeDesc?.label || activeProvider
+    const list = activeModels.slice(0, 60).map((m) => {
+      const ctxLabel = m.context_length != null ? formatCompactTokens(m.context_length) : 'live'
+      const priceLabel = formatModelPrice(m)
+      return {
+        id: m.id,
+        name: m.name || m.id,
+        provider: providerLabel,
+        icon: <Cpu size={13} style={{ color: 'var(--accent)' }} />,
+        description: `${m.id} · ${ctxLabel}${priceLabel ? ` · ${priceLabel}` : ''}`,
+        speed: m.is_free ? 4 : 5,
+        intelligence: m.supports_reasoning ? 5 : 4,
+      }
+    })
+    if (activeModel && !list.some((m) => m.id === activeModel)) {
+      list.unshift({
+        id: activeModel,
+        name: shortModel || activeModel,
+        provider: providerLabel,
+        icon: <Cpu size={13} style={{ color: 'var(--accent)' }} />,
+        description: activeModel,
+        speed: 4,
+        intelligence: 5,
+      })
+    }
+    return list
+  }, [activeModels, activeModel, activeProvider, activeDesc?.label, shortModel])
+
+  if (pickerStyle === 'rareui_picker' && rareModels.length > 0) {
+    return (
+      <div className="inline-flex items-center gap-1">
+        <RareModelPicker
+          models={rareModels}
+          value={activeModel || rareModels[0]?.id}
+          onChange={(nextModelId) => onSelectProviderModel(activeProvider, nextModelId)}
+          searchable
+          className="rounded-full border border-[var(--border)] bg-[var(--card)] text-[var(--fg)]"
+        />
       </div>
     )
   }

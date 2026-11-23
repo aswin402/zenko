@@ -300,6 +300,10 @@ pub struct SurfaceCustomization {
     pub accordion_style: String,
     #[serde(default = "default_alert_style")]
     pub alert_style: String,
+    #[serde(default = "default_command_palette_style")]
+    pub command_palette_style: String,
+    #[serde(default = "default_toast_style")]
+    pub toast_style: String,
     #[serde(default = "default_modal_style")]
     pub modal_style: String,
     #[serde(default = "default_popover_style")]
@@ -329,6 +333,8 @@ impl Default for SurfaceCustomization {
             tabs_variant: default_tabs_variant(),
             accordion_style: default_accordion_style(),
             alert_style: default_alert_style(),
+            command_palette_style: default_command_palette_style(),
+            toast_style: default_toast_style(),
             modal_style: default_modal_style(),
             popover_style: default_popover_style(),
             element_chrome: default_element_chrome(),
@@ -358,6 +364,12 @@ fn default_accordion_style() -> String {
 }
 fn default_alert_style() -> String {
     "beui_alert".to_string()
+}
+fn default_command_palette_style() -> String {
+    "default".to_string()
+}
+fn default_toast_style() -> String {
+    "default".to_string()
 }
 fn default_modal_style() -> String {
     "center_morph".to_string()
@@ -636,6 +648,8 @@ pub struct ComposerSlotConfig {
     pub send_button_icon: String,
     #[serde(default = "default_context_meter")]
     pub context_meter: String,
+    #[serde(default = "default_context_meter_chrome")]
+    pub context_meter_chrome: String,
     #[serde(default = "default_action_pills")]
     pub action_pills: String,
     #[serde(default = "default_true_ui")]
@@ -654,6 +668,7 @@ impl Default for ComposerSlotConfig {
             send_button_shape: default_send_shape(),
             send_button_icon: default_send_icon(),
             context_meter: default_context_meter(),
+            context_meter_chrome: default_context_meter_chrome(),
             action_pills: default_action_pills(),
             show_attach: true,
             show_policy: true,
@@ -667,6 +682,7 @@ fn default_model_picker_style() -> String { "drilldown".into() }
 fn default_send_shape() -> String { "rounded_square".into() }
 fn default_send_icon() -> String { "arrow_up".into() }
 fn default_context_meter() -> String { "progress_ring".into() }
+fn default_context_meter_chrome() -> String { "bordered_filled".into() }
 fn default_action_pills() -> String { "soft_tint".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -760,6 +776,8 @@ pub struct ChatPageSlotConfig {
     pub shell_style: String,
     #[serde(default = "default_code_block_style")]
     pub code_block_style: String,
+    #[serde(default = "default_web_search_style")]
+    pub web_search_style: String,
     #[serde(default = "default_true_ui")]
     pub show_day_separators: bool,
     #[serde(default = "default_true_ui")]
@@ -792,6 +810,7 @@ impl Default for ChatPageSlotConfig {
             diff_style: default_diff_style(),
             shell_style: default_shell_style(),
             code_block_style: default_code_block_style(),
+            web_search_style: default_web_search_style(),
             show_day_separators: true,
             show_citations: true,
             skill_badge_style: default_skill_badge_style(),
@@ -814,6 +833,7 @@ fn default_message_actions_style() -> String { "aui_message_actions".into() }
 fn default_diff_style() -> String { "aui_code_diff".into() }
 fn default_shell_style() -> String { "aui_terminal_block".into() }
 fn default_code_block_style() -> String { "aui_code_runner".into() }
+fn default_web_search_style() -> String { "aui_web_search".into() }
 fn default_skill_badge_style() -> String { "aui_memory_chips".into() }
 fn default_agent_avatar_frame() -> String { "squircle".into() }
 fn default_user_avatar() -> String { "icon_user".into() }
@@ -823,12 +843,18 @@ fn default_user_avatar_frame() -> String { "circle".into() }
 pub struct DashboardSlotConfig {
     #[serde(default = "default_dashboard_layout")]
     pub layout: String,
+    #[serde(default = "default_dashboard_widget_kit")]
+    pub widget_kit: String,
     #[serde(default = "default_dashboard_chart_theme")]
     pub chart_theme: String,
     #[serde(default = "default_dashboard_heatmap_shape")]
     pub heatmap_shape: String,
     #[serde(default = "default_dashboard_heatmap_range")]
     pub heatmap_range: String,
+    #[serde(default = "default_true_ui")]
+    pub show_recap_card: bool,
+    #[serde(default = "default_true_ui")]
+    pub show_quota_gauges: bool,
     #[serde(default = "default_true_ui")]
     pub show_heatmap: bool,
     #[serde(default = "default_true_ui")]
@@ -841,26 +867,33 @@ pub struct DashboardSlotConfig {
     pub show_subagents_jobs: bool,
     #[serde(default = "default_true_ui")]
     pub show_logs: bool,
+    #[serde(default)]
+    pub show_faq: bool,
 }
 
 impl Default for DashboardSlotConfig {
     fn default() -> Self {
         Self {
             layout: default_dashboard_layout(),
+            widget_kit: default_dashboard_widget_kit(),
             chart_theme: default_dashboard_chart_theme(),
             heatmap_shape: default_dashboard_heatmap_shape(),
             heatmap_range: default_dashboard_heatmap_range(),
+            show_recap_card: true,
+            show_quota_gauges: true,
             show_heatmap: true,
             show_storage_vault: true,
             show_token_trends: true,
             show_tools_table: true,
             show_subagents_jobs: true,
             show_logs: true,
+            show_faq: false,
         }
     }
 }
 
 fn default_dashboard_layout() -> String { "bento_grid".into() }
+fn default_dashboard_widget_kit() -> String { "echarts".into() }
 fn default_dashboard_chart_theme() -> String { "monochrome_accent".into() }
 fn default_dashboard_heatmap_shape() -> String { "rounded".into() }
 fn default_dashboard_heatmap_range() -> String { "year".into() }

@@ -29,7 +29,7 @@ export const tabsMessages = {
 
 export type TabsMessages = typeof tabsMessages;
 
-type Variant = "pill" | "underline" | "segment";
+type Variant = "pill" | "underline" | "segment" | "skiper96";
 /** Whether trigger icons show on every tab or only on the selected one. */
 type IconDisplay = "always" | "selected";
 
@@ -199,6 +199,7 @@ const listClasses: Record<Variant, string> = {
   pill: "inline-flex items-center gap-1 rounded-full bg-card p-1",
   underline: "inline-flex items-center gap-1 border-b border-border",
   segment: "inline-flex items-center gap-0 rounded-lg bg-card p-0.5",
+  skiper96: "inline-flex items-center gap-1 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1 shadow-xs",
 };
 
 export function TabsList({
@@ -212,7 +213,7 @@ export function TabsList({
 } & HTMLAttributes<HTMLDivElement>) {
   const { variant, value, icons, track, placed, setPlaced, t } = useTabs();
   const reduce = useReducedMotion();
-  const tracked = icons === "selected" && variant !== "underline";
+  const tracked = icons === "selected" && variant !== "underline" && variant !== "skiper96";
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -328,7 +329,7 @@ export function TabsList({
   }, [tracked, value, children, reduce, track, setPlaced]);
 
   useLayoutEffect(() => {
-    if (variant === "underline") return;
+    if (variant === "underline" || variant === "skiper96") return;
     const list = listRef.current;
     if (!list) return;
     void children;
@@ -419,7 +420,7 @@ export function TabsList({
     if (viewport) viewport.scrollBy({ left: direction * viewport.clientWidth * 0.8, behavior: reduce ? "instant" : "smooth" });
   };
   const controlClass = "absolute inset-y-0 z-20 inline-flex w-9 items-center justify-center text-foreground transition-opacity hover:opacity-70 focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-0";
-  const surfaceClass = variant === "pill" ? "rounded-full bg-card" : variant === "segment" ? "rounded-lg bg-card" : "";
+  const surfaceClass = variant === "pill" ? "rounded-full bg-card" : variant === "segment" ? "rounded-lg bg-card" : variant === "skiper96" ? "rounded-2xl bg-[var(--surface)]" : "";
 
   return (
     <div ref={rootRef} className={cn("relative isolate flex w-full max-w-full min-w-0 items-center", edges.overflow && surfaceClass, wrapperClassName)}>
@@ -545,6 +546,42 @@ export function TabsTrigger({
   );
   // React owns the initial mask only; TabsList synchronizes subsequent masks.
   const [initialClip] = useState(() => active ? "inset(0)" : "inset(0 100% 0 0)");
+
+  if (variant === "skiper96") {
+    return (
+      <motion.button
+        {...a11y}
+        {...(props as any)}
+        type="button"
+        role="tab"
+        aria-selected={active}
+        data-tabs-value={value}
+        onClick={(event) => {
+          onClick?.(event);
+          if (!event.defaultPrevented) setValue(value);
+        }}
+        className={cn(
+          "relative isolate inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-1.5 text-sm font-medium outline-none transition-colors",
+          active
+            ? "text-[var(--accent)]"
+            : "text-[var(--muted)] hover:bg-[var(--card)]/60 hover:text-[var(--fg)]",
+          className,
+        )}
+      >
+        {active && (
+          <motion.span
+            layoutId={layoutId}
+            layout
+            className={cn(
+              "pointer-events-none absolute inset-0 -z-10 rounded-xl border border-[color-mix(in_srgb,var(--accent)_42%,var(--border))] bg-[var(--card)]",
+              indicatorClassName,
+            )}
+          />
+        )}
+        {content}
+      </motion.button>
+    );
+  }
 
   if (variant === "underline") {
     return (

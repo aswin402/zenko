@@ -1,10 +1,11 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import { EASE_DRAWER } from '@/lib/ease'
 import type { ActiveView, ComponentSlots, Session, UiCustomization } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { ZenkoFoxLogo } from '@/components/beui/ZenkoFoxLogo'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
+import { SidebarNav, type SidebarSection } from '@/components/motion-brew/sidebar-nav'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 
@@ -12,6 +13,7 @@ const FRAME_WIDTH: Record<ComponentSlots['left_menubar']['frame_style'], number>
   flush_border: 258,
   floating_card: 258,
   compact_rail: 224,
+  motion_brew_nav: 268,
 }
 
 const FRAME_CLASS: Record<ComponentSlots['left_menubar']['frame_style'], string> = {
@@ -19,6 +21,7 @@ const FRAME_CLASS: Record<ComponentSlots['left_menubar']['frame_style'], string>
   floating_card:
     'm-2.5 h-[calc(100%-20px)] rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_12px_36px_rgba(0,0,0,0.32)]',
   compact_rail: 'h-full border-r border-[var(--border)] bg-[var(--surface)]',
+  motion_brew_nav: 'h-full p-2 bg-transparent',
 }
 
 const NEW_SESSION_CLASS: Record<ComponentSlots['left_menubar']['new_session_style'], string> = {
@@ -77,7 +80,90 @@ export const Sidebar = memo(function Sidebar({
       childCounts[s.parent_session_id] = (childCounts[s.parent_session_id] || 0) + 1
     }
   }
-  const rootSessions = sessions.filter((s) => !s.parent_session_id)
+  const rootSessions = useMemo(() => sessions.filter((s) => !s.parent_session_id), [sessions])
+
+  const motionBrewSections = useMemo<SidebarSection[]>(
+    () => [
+      {
+        label: 'Workspace',
+        items: [
+          { id: '__new_session__', label: 'New Session', icon: 'explore', tag: 'New' },
+          {
+            id: '__sessions_group__',
+            label: 'Sessions',
+            icon: 'projects',
+            badge: rootSessions.length > 0 ? rootSessions.length : undefined,
+            children: rootSessions.slice(0, 18).map((s) => {
+              const subCount = Math.max(s.subagent_count ?? 0, childCounts[s.id] || 0)
+              return {
+                id: s.id,
+                label: s.title,
+                badge: subCount > 0 ? subCount : undefined,
+              }
+            }),
+          },
+        ],
+      },
+      {
+        label: 'Actions',
+        items: [{ id: '__clear_active__', label: 'Clear Active Session', icon: 'workflows' }],
+      },
+    ],
+    [rootSessions, childCounts],
+  )
+
+  if (slot.frame_style === 'motion_brew_nav') {
+    const navNode = (
+      <SidebarNav
+        brand="Zenko"
+        logo={<ZenkoFoxLogo size={24} variant="fox" />}
+        sections={motionBrewSections}
+        value={activeSessionId || '__new_session__'}
+        defaultOpen={['__sessions_group__']}
+        mobile="sidebar"
+        user={{ name: 'Zenko Agent', email: 'Local Autonomous' }}
+        onSettings={onOpenSettings}
+        onNavigate={(id) => {
+          if (id === '__new_session__') onNewSession()
+          else if (id === '__clear_active__') onClearActiveSession()
+          else onSelectSession(id)
+        }}
+        className={cn(inlinePreview ? 'h-[390px]' : 'h-full')}
+      />
+    )
+    if (inlinePreview) return navNode
+    return (
+      <>
+        {!open && (
+          <div className="fixed left-4 top-4 z-30">
+            <ZenkoTooltip label="Open sidebar" side="right">
+              <button
+                type="button"
+                onClick={onToggle}
+                aria-label="Open sidebar"
+                className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)]/90 text-[var(--muted)] backdrop-blur-md transition-colors hover:text-[var(--fg)]"
+              >
+                <ZenkoIcon slot="panelLeftOpen" icons={ui.icons} size={16} />
+              </button>
+            </ZenkoTooltip>
+          </div>
+        )}
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              initial={{ opacity: 0, x: -16 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.22, ease: EASE_DRAWER }}
+              className="flex h-full shrink-0 p-2"
+            >
+              {navNode}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </>
+    )
+  }
 
   const innerContent = (
     <>
@@ -112,7 +198,7 @@ export const Sidebar = memo(function Sidebar({
           className={newSessionClass}
           style={slot.new_session_style === 'pill_soft' ? undefined : { borderRadius: 'var(--radius)' }}
         >
-          <ZenkoIcon slot="plus" icons={ui.icons} size={15} />
+          <ZenkoIcon slot="edit" icons={ui.icons} size={15} />
           <span>New Session</span>
         </button>
       </div>
@@ -130,21 +216,12 @@ export const Sidebar = memo(function Sidebar({
                 tabIndex={0}
                 onKeyDown={(e) => e.key === 'Enter' && onSelectSession(s.id)}
                 className={cn(
-                  'group flex cursor-pointer items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-[13px] transition-colors',
+                  'group flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2 text-[13px] transition-colors',
                   isActive
                     ? activeItemClass
                     : 'text-[var(--muted)] hover:bg-[var(--card)]/60 hover:text-[var(--fg)]',
                 )}
               >
-                <ZenkoIcon
-                  slot="chat"
-                  icons={ui.icons}
-                  size={14}
-                  className={cn(
-                    'shrink-0 transition-colors',
-                    isActive ? 'text-[var(--accent)]' : 'text-[var(--muted)]/70',
-                  )}
-                />
                 <span className="min-w-0 flex-1 truncate">{s.title}</span>
                 {subCount > 0 && (
                   <span

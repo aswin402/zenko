@@ -32,6 +32,7 @@ import CheckRaw from 'lucide-react/dist/esm/icons/check.js'
 import ChevronDownRaw from 'lucide-react/dist/esm/icons/chevron-down.js'
 import ChevronLeftRaw from 'lucide-react/dist/esm/icons/chevron-left.js'
 import ChevronRightRaw from 'lucide-react/dist/esm/icons/chevron-right.js'
+import ChevronsUpDownRaw from 'lucide-react/dist/esm/icons/chevrons-up-down.js'
 import CircleAlertRaw from 'lucide-react/dist/esm/icons/circle-alert.js'
 import CircleCheckRaw from 'lucide-react/dist/esm/icons/circle-check.js'
 import CircleRaw from 'lucide-react/dist/esm/icons/circle.js'
@@ -44,6 +45,7 @@ import DownloadRaw from 'lucide-react/dist/esm/icons/download.js'
 import EarthRaw from 'lucide-react/dist/esm/icons/earth.js'
 import EllipsisRaw from 'lucide-react/dist/esm/icons/ellipsis.js'
 import ExternalLinkRaw from 'lucide-react/dist/esm/icons/external-link.js'
+import FileCodeRaw from 'lucide-react/dist/esm/icons/file-code.js'
 import FileCode2Raw from 'lucide-react/dist/esm/icons/file-code-2.js'
 import FileRaw from 'lucide-react/dist/esm/icons/file.js'
 import FileTextRaw from 'lucide-react/dist/esm/icons/file-text.js'
@@ -56,6 +58,7 @@ import HistoryRaw from 'lucide-react/dist/esm/icons/history.js'
 import ImageRaw from 'lucide-react/dist/esm/icons/image.js'
 import InfoRaw from 'lucide-react/dist/esm/icons/info.js'
 import KeyRoundRaw from 'lucide-react/dist/esm/icons/key-round.js'
+import LayersRaw from 'lucide-react/dist/esm/icons/layers.js'
 import LayoutGridRaw from 'lucide-react/dist/esm/icons/layout-grid.js'
 import ListChecksRaw from 'lucide-react/dist/esm/icons/list-checks.js'
 import LoaderCircleRaw from 'lucide-react/dist/esm/icons/loader-circle.js'
@@ -80,6 +83,7 @@ import RotateCwRaw from 'lucide-react/dist/esm/icons/rotate-cw.js'
 import SearchRaw from 'lucide-react/dist/esm/icons/search.js'
 import SendRaw from 'lucide-react/dist/esm/icons/send.js'
 import SettingsRaw from 'lucide-react/dist/esm/icons/settings.js'
+import Share2Raw from 'lucide-react/dist/esm/icons/share-2.js'
 import ShieldAlertRaw from 'lucide-react/dist/esm/icons/shield-alert.js'
 import ShieldCheckRaw from 'lucide-react/dist/esm/icons/shield-check.js'
 import ShieldRaw from 'lucide-react/dist/esm/icons/shield.js'
@@ -178,6 +182,7 @@ export const ChevronDownIcon = ChevronDown
 export const ChevronLeft = createThemedIcon('chevronLeft', ChevronLeftRaw)
 export const ChevronRight = createThemedIcon('chevronRight', ChevronRightRaw)
 export const ChevronRightIcon = ChevronRight
+export const ChevronsUpDown = createThemedIcon('chevronDown', ChevronsUpDownRaw)
 export const Circle = createThemedIcon('circle', CircleRaw)
 export const CircleX = createThemedIcon('circleX', CircleXRaw)
 export const Clock = createThemedIcon('clock', ClockRaw)
@@ -191,6 +196,7 @@ export const Pencil = createThemedIcon('edit', PencilRaw)
 export const PencilLine = createThemedIcon('edit', PencilLineRaw)
 export const EllipsisIcon = createThemedIcon('ellipsis', EllipsisRaw)
 export const ExternalLink = createThemedIcon('externalLink', ExternalLinkRaw)
+export const FileCode = createThemedIcon('fileCode', FileCodeRaw)
 export const FileCode2 = createThemedIcon('fileCode', FileCode2Raw)
 export const FileIcon = createThemedIcon('file', FileRaw)
 export const FileText = createThemedIcon('fileText', FileTextRaw)
@@ -205,9 +211,11 @@ export const ImageIcon = createThemedIcon('image', ImageRaw)
 export const Info = createThemedIcon('info', InfoRaw)
 export const KeyRound = createThemedIcon('keyRound', KeyRoundRaw)
 export const KeyRoundIcon = KeyRound
+export const Layers = createThemedIcon('grid', LayersRaw)
 export const LayoutGrid = createThemedIcon('grid', LayoutGridRaw)
 export const ListChecks = createThemedIcon('listChecks', ListChecksRaw)
 export const LoaderCircle = createThemedIcon('loader', LoaderCircleRaw)
+export const Loader2 = LoaderCircle
 export const Loader2Icon = LoaderCircle
 export const MessageSquare = createThemedIcon('chat', MessageSquareRaw)
 export const Minus = createThemedIcon('minus', MinusRaw)
@@ -229,6 +237,7 @@ export const Search = createThemedIcon('search', SearchRaw)
 export const SearchIcon = Search
 export const Send = createThemedIcon('send', SendRaw)
 export const Settings = createThemedIcon('settings', SettingsRaw)
+export const Share2 = createThemedIcon('externalLink', Share2Raw)
 export const Shield = createThemedIcon('shield', ShieldRaw)
 export const ShieldAlert = createThemedIcon('shieldAlert', ShieldAlertRaw)
 export const ShieldCheck = createThemedIcon('shieldCheck', ShieldCheckRaw)

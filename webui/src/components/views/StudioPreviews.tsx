@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { BrainIcon, ChevronDown, Clock, RotateCcw } from 'lucide-react'
+import { Activity, BrainIcon, ChevronDown, Clock, Layers, RotateCcw, Settings } from 'lucide-react'
 import { ICON_PACK_META_MAP } from '@/lib/icon-packs'
 import type {
   ActiveView,
@@ -12,7 +12,27 @@ import { cn } from '@/lib/utils'
 import { StreamingResponse } from '@/components/agents/streaming-response'
 import { FloatingDock } from '@/components/beui/FloatingDock'
 import { AgentAvatar, UserAvatar } from '@/components/beui/ZenkoAvatars'
+import { ZenkoFoxLogo } from '@/components/beui/ZenkoFoxLogo'
 import { ICON_GALLERY_SLOTS, ZenkoIcon } from '@/components/beui/ZenkoIcon'
+import {
+  Alert as EaseAlert,
+  AlertDescription as EaseAlertDescription,
+  AlertTitle as EaseAlertTitle,
+} from '@/components/easeui/alert'
+import {
+  CommandEmpty as EaseCommandEmpty,
+  CommandGroup as EaseCommandGroup,
+  CommandInput as EaseCommandInput,
+  CommandItem as EaseCommandItem,
+  CommandList as EaseCommandList,
+  CommandPalette as EaseCommandPalette,
+} from '@/components/easeui/command-palette'
+import { StreamingResponse as EaseStreamingResponse } from '@/components/easeui/streaming-response'
+import { toast as easeToast } from '@/components/easeui/toast'
+import { Faq as RareFaq } from '@/components/rareui/faq'
+import { StreamingResponse as RareStreamingResponse } from '@/components/rareui/streaming-response'
+import { WebSearch as RareWebSearch } from '@/components/rareui/web-search'
+import { ExpandableTabs } from '@/components/skiperui/expandable-tabs'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { Sidebar } from '@/components/chat/Sidebar'
@@ -254,6 +274,18 @@ function StreamingPreview({ ui }: { ui: UiCustomization }) {
             count={16}
             streaming={true}
           />
+        ) : style === 'easeui_stream' ? (
+          <EaseStreamingResponse status="complete" copyText={sample} onRetry={() => setReplayCount((c) => c + 1)} showFeedback>
+            <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/92">{sample}</p>
+          </EaseStreamingResponse>
+        ) : style === 'rareui_stream' ? (
+          <RareStreamingResponse
+            text={sample}
+            status="streaming"
+            ink="var(--accent)"
+            actions={true}
+            onRetry={() => setReplayCount((c) => c + 1)}
+          />
         ) : style === 'beui_stream' ? (
           <StreamingResponse status="complete" copyText={sample} showActions={false} announce={false}>
             <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/92">{sample}</p>
@@ -266,8 +298,9 @@ function StreamingPreview({ ui }: { ui: UiCustomization }) {
   )
 }
 
-function ElementStatesPreview() {
+function ElementStatesPreview({ ui }: { ui: UiCustomization }) {
   const [retrying, setRetrying] = useState(false)
+  const webSearchStyle = ui.components.chat_page.web_search_style || 'aui_web_search'
   return (
     <div className="grid w-full max-w-[680px] gap-3 md:grid-cols-2">
       <div className="flex flex-col gap-3">
@@ -299,17 +332,172 @@ function ElementStatesPreview() {
             { path: 'src/studio_schema.rs', name: 'studio_schema.rs', depth: 1, kind: 'file', additions: 16, deletions: 2 },
           ]}
         />
-        <WebSearch
-          query="zenko rust agent architecture"
-          searching={false}
-          visibleResults={2}
-          cycle={1}
-          results={[
-            { title: 'Zenko Native Rust Runtime', domain: 'rust-lang.org', url: 'https://rust-lang.org' },
-            { title: 'SQLite WAL Concurrency Guide', domain: 'sqlite.org', url: 'https://sqlite.org/wal.html' },
-          ]}
-        />
+        {webSearchStyle === 'rareui_web_search' ? (
+          <RareWebSearch
+            query="zenko rust agent architecture"
+            status="done"
+            defaultOpen={true}
+            sources={[
+              {
+                id: 's1',
+                title: 'Zenko Native Rust Runtime',
+                url: 'https://rust-lang.org',
+                snippet: 'Single-binary Tokio + SQLite WAL agent orchestrator under 30 MB VmRSS.',
+              },
+              {
+                id: 's2',
+                title: 'SQLite WAL Concurrency Guide',
+                url: 'https://sqlite.org/wal.html',
+                snippet: 'Concurrent readers and non-blocking writes for local-first AI state.',
+              },
+            ]}
+          />
+        ) : (
+          <WebSearch
+            query="zenko rust agent architecture"
+            searching={false}
+            visibleResults={2}
+            cycle={1}
+            results={[
+              { title: 'Zenko Native Rust Runtime', domain: 'rust-lang.org', url: 'https://rust-lang.org' },
+              { title: 'SQLite WAL Concurrency Guide', domain: 'sqlite.org', url: 'https://sqlite.org/wal.html' },
+            ]}
+          />
+        )}
       </div>
+    </div>
+  )
+}
+
+function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
+  const { ui } = ctx
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const paletteStyle = ui.surface.command_palette_style || 'center_morph'
+  const toastStyle = ui.surface.toast_style || 'beui_alert'
+
+  return (
+    <div className="flex w-full max-w-[600px] flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-center gap-2.5">
+        <Popover
+          side="bottom"
+          align="center"
+          gooStrength={ui.surface.popover_style === 'gooey' ? 7 : 0}
+        >
+          <PopoverTrigger>
+            <button type="button" className="z-btn z-btn-secondary z-btn-sm">
+              Popover ({ui.surface.popover_style || 'gooey'})
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-[12px] shadow-xl">
+            <div className="font-medium text-[var(--fg)]">BeUI Popover</div>
+            <p className="mt-1 text-[11.5px] text-[var(--muted)]">
+              Mode: <span className="font-mono text-[var(--accent)]">{ui.surface.popover_style || 'gooey'}</span>
+            </p>
+          </PopoverContent>
+        </Popover>
+
+        <CenterMorphModal>
+          <CenterMorphModalTrigger>
+            <button type="button" className="z-btn z-btn-primary z-btn-sm">
+              Modal ({ui.surface.modal_style || 'center_morph'})
+            </button>
+          </CenterMorphModalTrigger>
+          <CenterMorphModalContent ariaLabel="Center Morph Preview" className="p-6">
+            <h3 className="text-[16px] font-semibold text-[var(--fg)]">Center Morph Modal</h3>
+            <p className="mt-2 text-[13px] text-[var(--muted)]">
+              Unfolds smoothly outward from the center using Zenko&apos;s active global theme.
+            </p>
+            <div className="mt-5 flex justify-end">
+              <CenterMorphModalClose>
+                <button type="button" className="z-btn z-btn-primary z-btn-sm">
+                  Done
+                </button>
+              </CenterMorphModalClose>
+            </div>
+          </CenterMorphModalContent>
+        </CenterMorphModal>
+
+        <button
+          type="button"
+          onClick={() => setPaletteOpen(true)}
+          className="z-btn z-btn-secondary z-btn-sm"
+        >
+          ⌘K Palette ({paletteStyle === 'easeui_palette' ? 'EaseUI' : 'Morph'})
+        </button>
+
+        {toastStyle === 'easeui_toast' && (
+          <button
+            type="button"
+            onClick={() =>
+              easeToast.success('EaseUI swipe toast active', {
+                description: 'Hover to expand stack or drag down to dismiss.',
+              })
+            }
+            className="z-btn z-btn-secondary z-btn-sm"
+          >
+            Trigger EaseUI Toast
+          </button>
+        )}
+      </div>
+
+      <EaseCommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        label="Studio Preview Command Palette"
+      >
+        <EaseCommandInput placeholder="Search Zenko views..." />
+        <EaseCommandList>
+          <EaseCommandEmpty>No matching view.</EaseCommandEmpty>
+          <EaseCommandGroup heading="Navigation">
+            <EaseCommandItem value="Chat Workbench" onSelect={() => {}}>
+              Chat Workbench
+            </EaseCommandItem>
+            <EaseCommandItem value="Dashboard Telemetry" onSelect={() => {}}>
+              Dashboard Telemetry
+            </EaseCommandItem>
+            <EaseCommandItem value="Appearance Studio" onSelect={() => {}}>
+              Appearance Studio
+            </EaseCommandItem>
+          </EaseCommandGroup>
+        </EaseCommandList>
+      </EaseCommandPalette>
+
+      {ui.surface.alert_style === 'easeui_alert' ? (
+        <EaseAlert variant="success">
+          <div>
+            <EaseAlertTitle>EaseUI Accent Stripe Alert</EaseAlertTitle>
+            <EaseAlertDescription>
+              Neutral body contrast paired with a crisp theme-aware left stripe.
+            </EaseAlertDescription>
+          </div>
+        </EaseAlert>
+      ) : (
+        <>
+          <Alert
+            variant="info"
+            open={ctx.previewAlertOpen}
+            onOpenChange={ctx.setPreviewAlertOpen}
+          >
+            <AlertIcon />
+            <AlertContent>
+              <AlertTitle>Theme synchronized</AlertTitle>
+              <AlertDescription>
+                Alerts, modals, and popovers strictly inherit your active 60/30/10 palette.
+              </AlertDescription>
+            </AlertContent>
+            <AlertClose />
+          </Alert>
+          {!ctx.previewAlertOpen && (
+            <button
+              type="button"
+              onClick={() => ctx.setPreviewAlertOpen(true)}
+              className="w-fit cursor-pointer font-mono text-[11px] text-[var(--accent)] hover:underline"
+            >
+              Show preview alert again
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -709,11 +897,15 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
 
     data_tables: () => (
       <div className="w-full max-w-[620px]">
-        <DataTable columns={PREVIEW_TABLE_COLUMNS} rows={PREVIEW_TABLE_ROWS} />
+        <DataTable
+          columns={PREVIEW_TABLE_COLUMNS}
+          rows={PREVIEW_TABLE_ROWS}
+          tableStyle={ui.surface.table_style}
+        />
       </div>
     ),
 
-    element_states: () => <ElementStatesPreview />,
+    element_states: () => <ElementStatesPreview ui={ui} />,
 
     chat_input: () => (
       <div className="w-full max-w-[660px]">
@@ -955,97 +1147,62 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
 
     tabs_accordions: () => (
       <div className="flex w-full max-w-[560px] flex-col items-center gap-4">
-        <Tabs value={ctx.previewTab} onValueChange={ctx.setPreviewTab} variant={tabsVariant}>
-          <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="activity">Activity</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <div className="w-full">
-          <BouncyAccordion
-            collapsible
-            defaultValue="acc-1"
+        {tabsVariant === 'skiper96' ? (
+          <ExpandableTabs
+            value={ctx.previewTab}
+            onValueChange={ctx.setPreviewTab}
             items={[
-              {
-                id: 'acc-1',
-                title: <span className="text-[13px] font-medium">Accordion style: {ui.surface.accordion_style || 'bouncy'}</span>,
-                description: 'Click to test smooth spring disclosure transitions.',
-              },
+              { id: 'overview', label: 'Overview', icon: <Layers size={14} /> },
+              { id: 'activity', label: 'Activity', icon: <Activity size={14} /> },
+              { id: 'settings', label: 'Settings', icon: <Settings size={14} /> },
             ]}
           />
-        </div>
-      </div>
-    ),
-
-    overlays: () => (
-      <div className="flex w-full max-w-[600px] flex-col gap-4">
-        <div className="flex flex-wrap items-center justify-center gap-2.5">
-          <Popover
-            side="bottom"
-            align="center"
-            gooStrength={ui.surface.popover_style === 'gooey' ? 7 : 0}
-          >
-            <PopoverTrigger>
-              <button type="button" className="z-btn z-btn-secondary z-btn-sm">
-                Test Popover ({ui.surface.popover_style || 'gooey'})
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-[12px] shadow-xl">
-              <div className="font-medium text-[var(--fg)]">BeUI Popover</div>
-              <p className="mt-1 text-[11.5px] text-[var(--muted)]">
-                Mode: <span className="font-mono text-[var(--accent)]">{ui.surface.popover_style || 'gooey'}</span>
-              </p>
-            </PopoverContent>
-          </Popover>
-
-          <CenterMorphModal>
-            <CenterMorphModalTrigger>
-              <button type="button" className="z-btn z-btn-primary z-btn-sm">
-                Test Modal ({ui.surface.modal_style || 'center_morph'})
-              </button>
-            </CenterMorphModalTrigger>
-            <CenterMorphModalContent ariaLabel="Center Morph Preview" className="p-6">
-              <h3 className="text-[16px] font-semibold text-[var(--fg)]">Center Morph Modal</h3>
-              <p className="mt-2 text-[13px] text-[var(--muted)]">
-                Unfolds smoothly outward from the center using Zenko&apos;s active global theme.
-              </p>
-              <div className="mt-5 flex justify-end">
-                <CenterMorphModalClose>
-                  <button type="button" className="z-btn z-btn-primary z-btn-sm">
-                    Done
-                  </button>
-                </CenterMorphModalClose>
-              </div>
-            </CenterMorphModalContent>
-          </CenterMorphModal>
-        </div>
-
-        <Alert
-          variant="info"
-          open={ctx.previewAlertOpen}
-          onOpenChange={ctx.setPreviewAlertOpen}
-        >
-          <AlertIcon />
-          <AlertContent>
-            <AlertTitle>Theme synchronized</AlertTitle>
-            <AlertDescription>
-              Alerts, modals, and popovers strictly inherit your active 60/30/10 palette.
-            </AlertDescription>
-          </AlertContent>
-          <AlertClose />
-        </Alert>
-        {!ctx.previewAlertOpen && (
-          <button
-            type="button"
-            onClick={() => ctx.setPreviewAlertOpen(true)}
-            className="w-fit cursor-pointer font-mono text-[11px] text-[var(--accent)] hover:underline"
-          >
-            Show preview alert again
-          </button>
+        ) : (
+          <Tabs value={ctx.previewTab} onValueChange={ctx.setPreviewTab} variant={tabsVariant}>
+            <TabsList>
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="activity">Activity</TabsTrigger>
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+            </TabsList>
+          </Tabs>
         )}
+        <div className="w-full">
+          {ui.surface.accordion_style === 'rareui_faq' ? (
+            <RareFaq
+              defaultValue="faq-1"
+              accent="var(--accent)"
+              avatar={<ZenkoFoxLogo size={16} variant="fox" />}
+              items={[
+                {
+                  id: 'faq-1',
+                  question: 'How does RareUI FAQ animate?',
+                  answer: 'Questions pop out as conversational message bubbles with spring replies matching your 60/30/10 theme.',
+                },
+                {
+                  id: 'faq-2',
+                  question: 'Where does it appear in Zenko?',
+                  answer: 'Enable Dashboard → Show Interactive FAQ or use it across collapsible studio sections.',
+                },
+              ]}
+            />
+          ) : (
+            <BouncyAccordion
+              collapsible
+              defaultValue="acc-1"
+              items={[
+                {
+                  id: 'acc-1',
+                  title: <span className="text-[13px] font-medium">Accordion style: {ui.surface.accordion_style || 'bouncy'}</span>,
+                  description: 'Click to test smooth spring disclosure transitions.',
+                },
+              ]}
+            />
+          )}
+        </div>
       </div>
     ),
+
+    overlays: () => <OverlaysPreview ctx={ctx} />,
   }
 
   return (MAP[previewKey] || MAP.surfaces)()

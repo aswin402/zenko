@@ -60,12 +60,14 @@ const OPT_COMPOSER_SHELL: &[StudioOption] = &[
     StudioOption { value: "pill_capsule", label: "Pill Capsule", hint: "Generous rounded-3xl floating capsule" },
     StudioOption { value: "minimal_bar", label: "Minimal Bar", hint: "Clean flat dock anchored to bottom" },
     StudioOption { value: "glass_dock", label: "Glass Dock", hint: "Translucent frosted blur surface" },
+    StudioOption { value: "motion_brew_prompt", label: "Motion-Brew Prompt", hint: "Animated shimmer composer with rolling placeholder & spring edge glow" },
 ];
 
 const OPT_MODEL_PICKER: &[StudioOption] = &[
     StudioOption { value: "drilldown", label: "Provider Drilldown", hint: "Providers list -> click for live models" },
     StudioOption { value: "split_pane", label: "Split Pane", hint: "Side-by-side providers & live models" },
     StudioOption { value: "compact_inline", label: "Compact Tabs", hint: "Provider tabs above searchable models" },
+    StudioOption { value: "rareui_picker", label: "RareUI Morph Picker", hint: "Spring clip-path expanding model picker with rolling labels" },
 ];
 
 const OPT_SEND_SHAPE: &[StudioOption] = &[
@@ -83,9 +85,18 @@ const OPT_SEND_ICON: &[StudioOption] = &[
 
 const OPT_CONTEXT_METER: &[StudioOption] = &[
     StudioOption { value: "progress_ring", label: "Progress Ring", hint: "Circular ring + exact token ratio" },
+    StudioOption { value: "smoothui_meter", label: "SmoothUI AI Meter", hint: "SmoothUI threshold ring with hover context breakdown" },
+    StudioOption { value: "motion_brew_ring", label: "Motion-Brew Ring", hint: "Segmented dial indicator inspired by Motion-Brew UsageRing" },
     StudioOption { value: "linear_bar", label: "Linear Meter", hint: "Compact horizontal usage bar" },
     StudioOption { value: "compact_text", label: "Minimal Text", hint: "Monospace token count only" },
     StudioOption { value: "hidden", label: "Hidden", hint: "Hide context meter from composer" },
+];
+
+const OPT_CONTEXT_METER_CHROME: &[StudioOption] = &[
+    StudioOption { value: "bordered_filled", label: "Border + Fill", hint: "Hairline pill border with subtle tinted background (Default)" },
+    StudioOption { value: "border_only", label: "Border Only", hint: "Crisp pill border with transparent background" },
+    StudioOption { value: "background_only", label: "Background Only", hint: "Soft filled pill with no outer border" },
+    StudioOption { value: "minimal_bare", label: "Both Hidden", hint: "Zero border and zero background — pure minimal meter" },
 ];
 
 const OPT_ACTION_PILLS: &[StudioOption] = &[
@@ -99,6 +110,7 @@ const OPT_SIDEBAR_FRAME: &[StudioOption] = &[
     StudioOption { value: "flush_border", label: "Flush Panel", hint: "Full-height panel with hairline border" },
     StudioOption { value: "floating_card", label: "Floating Card", hint: "Detached inset card with rounded corners" },
     StudioOption { value: "compact_rail", label: "Compact Width", hint: "Narrower 224px minimal rail" },
+    StudioOption { value: "motion_brew_nav", label: "Motion-Brew Nav", hint: "Collapsible spring rail with animated hover icons & sliding pill" },
 ];
 
 const OPT_NEW_SESSION: &[StudioOption] = &[
@@ -119,6 +131,7 @@ const OPT_DOCK_SHELL: &[StudioOption] = &[
     StudioOption { value: "floating_capsule", label: "Floating Capsule", hint: "Elevated vertical rounded pill dock" },
     StudioOption { value: "attached_rail", label: "Attached Rail", hint: "Full-height docked right border rail" },
     StudioOption { value: "glass_pill", label: "Frosted Glass", hint: "Translucent blurred glass capsule" },
+    StudioOption { value: "vengeance_glass_dock", label: "VengeanceUI Glass Dock", hint: "Frosted specular glass dock with directional spring-gliding tooltip" },
     StudioOption { value: "minimal_strip", label: "Minimal Strip", hint: "Borderless quiet icon strip" },
 ];
 
@@ -176,6 +189,8 @@ const OPT_SCROLLER_STYLE: &[StudioOption] = &[
 
 const OPT_STREAMING_STYLE: &[StudioOption] = &[
     StudioOption { value: "beui_stream", label: "BeUI Streaming", hint: "Smooth markdown streaming container with citations" },
+    StudioOption { value: "easeui_stream", label: "EaseUI Stream", hint: "Minimal EaseUI streaming response with animated settle actions" },
+    StudioOption { value: "rareui_stream", label: "RareUI Word Blur", hint: "RareUI word-by-word sharpen stream with gliding accent caret" },
     StudioOption { value: "aui_streaming_text", label: "Word-Stream Accent", hint: "Live word-by-word accent shimmer while generating" },
     StudioOption { value: "editorial", label: "Editorial Minimal", hint: "Quiet borderless prose stream" },
 ];
@@ -189,6 +204,7 @@ const OPT_MESSAGE_ACTIONS_STYLE: &[StudioOption] = &[
 const OPT_APPROVAL_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_permission_grant", label: "Permission Grant", hint: "Clean capability reach & Deny/Session/Always receipt (Default)" },
     StudioOption { value: "beui_approval", label: "BeUI Approval Card", hint: "Structured parameter disclosure with Allow/Always/Deny" },
+    StudioOption { value: "easeui_approval", label: "EaseUI Tool Approval", hint: "Compact spring-collapsing EaseUI approval card" },
     StudioOption { value: "compact_card", label: "Compact Card", hint: "Classic inline approval strip" },
 ];
 
@@ -196,6 +212,7 @@ const OPT_ACTIVITY_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_tool_call_icon", label: "Collapsible+", hint: "Default: Collapsible tool rows with semantic icons from your active icon family" },
     StudioOption { value: "aui_tool_call", label: "Collapsible ToolCall", hint: "Minimal assistant-ui expandable chevron request/result rows" },
     StudioOption { value: "aui_smart", label: "Smart Elements", hint: "Auto-dispatches Terminal, CodeRunner, Diff, FileTree, WebSearch & ToolError" },
+    StudioOption { value: "easeui_tool_chip", label: "EaseUI Tool Chips", hint: "Compact EaseUI pill chips with crossfading status indicators" },
     StudioOption { value: "beui_tool_result", label: "BeUI Tool Result", hint: "Collapsible live log cards with syntax highlight & copy" },
     StudioOption { value: "beui_activity", label: "BeUI Activity Feed", hint: "Grouped activity feed with thinking shimmer & gliding tool rows" },
     StudioOption { value: "aui_run_activity", label: "Run Activity", hint: "Collapsible run commentary & tool activity rail" },
@@ -234,6 +251,12 @@ const OPT_DASHBOARD_LAYOUT: &[StudioOption] = &[
     StudioOption { value: "compact_ops", label: "Compact Ops", hint: "High-density telemetry & logs operations grid" },
 ];
 
+const OPT_DASHBOARD_WIDGET_KIT: &[StudioOption] = &[
+    StudioOption { value: "echarts", label: "Apache ECharts", hint: "High-density interactive ECharts heatmaps & series (Default)" },
+    StudioOption { value: "motion_brew", label: "Motion-Brew Kit", hint: "RecapCard, ActivityGrid, MixChart, QuotaGauge & UsageRing" },
+    StudioOption { value: "hybrid", label: "Hybrid Studio", hint: "Combines Motion-Brew recap & gauges with ECharts analytics" },
+];
+
 const OPT_DASHBOARD_CHART_THEME: &[StudioOption] = &[
     StudioOption { value: "monochrome_accent", label: "Monochrome Accent", hint: "Strict 60/30/10 monochrome + single theme accent ramp (Default)" },
     StudioOption { value: "soft_gradient", label: "Soft Gradient", hint: "Luminous area fills & smooth tonal transitions" },
@@ -254,6 +277,8 @@ const OPT_DASHBOARD_HEATMAP_RANGE: &[StudioOption] = &[
 
 const OPT_LOADING_STYLE: &[StudioOption] = &[
     StudioOption { value: "beui_loader", label: "BeUI Motion Loader", hint: "Animated motion glyph + shimmer status" },
+    StudioOption { value: "easeui_pixel_loader", label: "EaseUI Pixel Loader", hint: "Independent randomized 3×3 twinkling pixel grid + timer" },
+    StudioOption { value: "rareui_ai_status", label: "RareUI AI Status", hint: "Spring-morphing RareUI icon & shimmer status indicator" },
     StudioOption { value: "aui_thinking_indicator", label: "Thinking Indicator", hint: "Minimal pulsing accent dot + shimmer + live timer" },
     StudioOption { value: "aui_loading_dots", label: "3×3 Matrix Dots", hint: "Assistant-UI 3×3 dot matrix wave loader" },
     StudioOption { value: "aui_loading_squares", label: "3×3 Matrix Squares", hint: "Crisp pixel-square 3×3 wave loader" },
@@ -274,8 +299,15 @@ const OPT_SHELL_STYLE: &[StudioOption] = &[
 
 const OPT_CODE_BLOCK_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_code_runner", label: "Code Runner", hint: "Clean code runner surface with language & copy (Default)" },
+    StudioOption { value: "easeui_code", label: "EaseUI Code Block", hint: "Zero-overhead EaseUI figure with syntax tokens & copy button" },
+    StudioOption { value: "rareui_code", label: "RareUI Prism Code", hint: "Accent-tinted Prism syntax highlighting with animated copy" },
     StudioOption { value: "minimal_code", label: "Borderless Minimal", hint: "Ultra-clean subtle top-divider code block" },
     StudioOption { value: "bordered_code", label: "Classic Bordered", hint: "Framed code block with header bar" },
+];
+
+const OPT_WEB_SEARCH_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_web_search", label: "Assistant-UI Search", hint: "Compact collapsible source domain list (Default)" },
+    StudioOption { value: "rareui_web_search", label: "RareUI Web Search", hint: "Animated globe progress ring, favicon stack & expandable source cards" },
 ];
 
 const OPT_ELEMENT_CHROME: &[StudioOption] = &[
@@ -289,6 +321,7 @@ const OPT_TABLE_STYLE: &[StudioOption] = &[
     StudioOption { value: "minimal", label: "Minimal Hairlines", hint: "Quiet header divider only, no outer box" },
     StudioOption { value: "striped", label: "Soft Striped", hint: "Alternating subtle surface rows, borderless edges" },
     StudioOption { value: "bordered", label: "Framed Table", hint: "Full card frame with row rules" },
+    StudioOption { value: "easeui_table", label: "EaseUI Resizable Table", hint: "EaseUI table with hover sort arrows & drag-resizable columns" },
 ];
 
 const OPT_LOADER_VARIANT: &[StudioOption] = &[
@@ -323,16 +356,29 @@ const OPT_TABS_VARIANT: &[StudioOption] = &[
     StudioOption { value: "pill", label: "Spring Pill", hint: "Gliding pill indicator with inverted clip label" },
     StudioOption { value: "segment", label: "Segmented", hint: "Compact rounded segmented control bar" },
     StudioOption { value: "underline", label: "Underline", hint: "Minimal hairline accent underline tabs" },
+    StudioOption { value: "skiper96", label: "Skiper96 Expandable", hint: "Spring-expanding icon + label tabs inspired by Skiper UI 96" },
 ];
 
 const OPT_ACCORDION_STYLE: &[StudioOption] = &[
     StudioOption { value: "bouncy", label: "Bouncy Accordion", hint: "Spring-grouped BeUI cards that part on expand" },
     StudioOption { value: "compact", label: "Compact Tree", hint: "Tight indented disclosure rows" },
+    StudioOption { value: "rareui_faq", label: "RareUI Chat FAQ", hint: "Conversational Q&A spring bubbles with Zenko avatar" },
 ];
 
 const OPT_ALERT_STYLE: &[StudioOption] = &[
     StudioOption { value: "beui_alert", label: "BeUI Animated Alert", hint: "Spring-entering semantic alerts with dismiss" },
+    StudioOption { value: "easeui_alert", label: "EaseUI Stripe Alert", hint: "Accent-striped EaseUI alert with high-contrast neutral body" },
     StudioOption { value: "compact", label: "Compact Strip", hint: "Quiet single-line status strips" },
+];
+
+const OPT_COMMAND_PALETTE_STYLE: &[StudioOption] = &[
+    StudioOption { value: "default", label: "Zenko Center Morph", hint: "Unfolding CenterMorph command dialog (Default)" },
+    StudioOption { value: "easeui_palette", label: "EaseUI Command Palette", hint: "Native dialog command palette with grouped keyboard search" },
+];
+
+const OPT_TOAST_STYLE: &[StudioOption] = &[
+    StudioOption { value: "default", label: "Zenko Alert Stack", hint: "Compact corner notification stack (Default)" },
+    StudioOption { value: "easeui_toast", label: "EaseUI Swipe Stack", hint: "Hover-expanding & swipe-to-dismiss stacked EaseUI toaster" },
 ];
 
 const OPT_MODAL_STYLE: &[StudioOption] = &[
@@ -1038,17 +1084,30 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 label: "Borders, Errors & States",
                 description: "Global borderless/minimal chrome plus live ErrorState, StoppedRun, FileTree & WebSearch.",
                 preview: "element_states",
-                controls: &[StudioControl {
-                    path: "surface.element_chrome",
-                    label: "Element Chrome (Borderless / Minimal)",
-                    description: "Control borders across Terminal, CodeRunner, Diff, FileTree, Permission, and Error elements.",
-                    kind: ControlKind::Cards,
-                    options: OPT_ELEMENT_CHROME,
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: "",
-                }],
+                controls: &[
+                    StudioControl {
+                        path: "surface.element_chrome",
+                        label: "Element Chrome (Borderless / Minimal)",
+                        description: "Control borders across Terminal, CodeRunner, Diff, FileTree, Permission, and Error elements.",
+                        kind: ControlKind::Cards,
+                        options: OPT_ELEMENT_CHROME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.web_search_style",
+                        label: "Web Search Element",
+                        description: "Choose Assistant-UI compact search list or RareUI animated globe + source cards.",
+                        kind: ControlKind::Cards,
+                        options: OPT_WEB_SEARCH_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
             },
         ],
     },
@@ -1164,19 +1223,32 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 id: "context_meter",
                 group: "",
                 label: "Context Meter",
-                description: "Displays live session tokens against the active model's real max context.",
+                description: "Displays live session tokens against the active model's real max context — including SmoothUI AI Meter & border/background chrome toggles.",
                 preview: "chat_input",
-                controls: &[StudioControl {
-                    path: "components.composer.context_meter",
-                    label: "Meter Visualization",
-                    description: "Visual style of the live token/context indicator.",
-                    kind: ControlKind::Cards,
-                    options: OPT_CONTEXT_METER,
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: "",
-                }],
+                controls: &[
+                    StudioControl {
+                        path: "components.composer.context_meter",
+                        label: "Meter Visualization",
+                        description: "Visual style of the live token/context indicator.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CONTEXT_METER,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.context_meter_chrome",
+                        label: "Meter Border & Background",
+                        description: "Customize border and background visibility — or hide both for a pure minimal meter.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CONTEXT_METER_CHROME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
             },
             StudioSubComponent {
                 id: "action_pills",
@@ -1562,16 +1634,38 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
             StudioSubComponent {
                 id: "alerts_modals",
                 group: "Overlays & Controls",
-                label: "Alerts, Modals & Popovers",
-                description: "Customize alerts, center-morph modals, and gooey popovers.",
+                label: "Alerts, Modals, Palette & Toasts",
+                description: "Customize alerts, EaseUI command palette & swipe toasts, center-morph modals, and gooey popovers.",
                 preview: "overlays",
                 controls: &[
                     StudioControl {
                         path: "surface.alert_style",
                         label: "Alert Banner Style",
-                        description: "Animated BeUI alerts or compact inline notices.",
+                        description: "Animated BeUI alerts, EaseUI stripe alerts, or compact inline notices.",
                         kind: ControlKind::Cards,
                         options: OPT_ALERT_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.command_palette_style",
+                        label: "Command Palette (⌘K)",
+                        description: "Choose Zenko CenterMorph or EaseUI native-dialog Command Palette.",
+                        kind: ControlKind::Cards,
+                        options: OPT_COMMAND_PALETTE_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.toast_style",
+                        label: "Notification Toasts",
+                        description: "Choose Zenko Alert Stack or EaseUI hover-expanding swipe toaster.",
+                        kind: ControlKind::Cards,
+                        options: OPT_TOAST_STYLE,
                         min: None,
                         max: None,
                         step: None,
@@ -1681,6 +1775,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         unit: "",
                     },
                     StudioControl {
+                        path: "components.dashboard.widget_kit",
+                        label: "Dashboard Widget Kit",
+                        description: "Use Apache ECharts, Motion-Brew animated widgets (RecapCard, ActivityGrid, MixChart, QuotaGauge, UsageRing), or Hybrid.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DASHBOARD_WIDGET_KIT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
                         path: "components.dashboard.chart_theme",
                         label: "Chart Visual Style",
                         description: "Rendering aesthetic across ECharts heatmaps, trends, and storage breakdowns.",
@@ -1722,6 +1827,28 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 description: "Choose which analytics charts, storage/vault cards, and ops panels appear on Dashboard.",
                 preview: "dashboard_preview",
                 controls: &[
+                    StudioControl {
+                        path: "components.dashboard.show_recap_card",
+                        label: "Motion-Brew Recap Card",
+                        description: "Animated monthly telemetry narrative & earned milestone badges.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_quota_gauges",
+                        label: "Quota Gauge & Usage Ring",
+                        description: "Animated Motion-Brew radial QuotaGauge & multi-metric UsageRing dials.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
                     StudioControl {
                         path: "components.dashboard.show_heatmap",
                         label: "Activity Contribution Heatmap",
@@ -1781,6 +1908,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         path: "components.dashboard.show_logs",
                         label: "Categorized Flight Recorder",
                         description: "Searchable secret-scrubbed live daemon log stream.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_faq",
+                        label: "RareUI Interactive FAQ",
+                        description: "Conversational Q&A guide to Zenko shortcuts, vault, and daemon architecture.",
                         kind: ControlKind::Toggle,
                         options: &[],
                         min: None,

@@ -5,6 +5,7 @@ import type { ActiveView, ComponentSlots, UiCustomization } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/motion/theme-toggle'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
+import { GlassDock, type GlassDockItem } from '@/components/vengeanceui/glass-dock'
 import { ZenkoIcon } from './ZenkoIcon'
 
 interface DockEntry {
@@ -25,6 +26,7 @@ const DOCK_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_style'], st
     'fixed right-0 top-0 z-30 h-full justify-start border-l border-[var(--border)] bg-[var(--surface)] px-1.5 py-3',
   glass_pill:
     'fixed right-4 top-4 z-30 rounded-full border border-[var(--border)] bg-[var(--card)]/72 p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.36)] backdrop-blur-md',
+  vengeance_glass_dock: 'fixed right-4 top-4 z-30',
   minimal_strip:
     'fixed right-3 top-4 z-30 rounded-xl border border-transparent bg-transparent p-1',
 }
@@ -36,6 +38,7 @@ const DOCK_PREVIEW_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_sty
     'rounded-r-xl border border-[var(--border)] bg-[var(--surface)] px-1.5 py-3',
   glass_pill:
     'rounded-full border border-[var(--border)] bg-[var(--card)]/72 p-1.5 backdrop-blur-md shadow-lg',
+  vengeance_glass_dock: '',
   minimal_strip: 'rounded-xl border border-dashed border-[var(--border)]/60 bg-transparent p-1',
 }
 
@@ -139,6 +142,67 @@ export const FloatingDock = memo(function FloatingDock({
   const shellClass = inlinePreview
     ? DOCK_PREVIEW_SHELL_CLASS[slot.dock_style] || DOCK_PREVIEW_SHELL_CLASS.floating_capsule
     : DOCK_SHELL_CLASS[slot.dock_style] || DOCK_SHELL_CLASS.floating_capsule
+
+  if (slot.dock_style === 'vengeance_glass_dock') {
+    const glassItems: GlassDockItem[] = [
+      ...DOCK_ITEMS.map((item) => ({
+        id: item.id,
+        title: item.label,
+        icon: <ZenkoIcon slot={item.icon} icons={ui.icons} size={17} />,
+        active: activeView === item.id,
+        onClick: () => onSelectView(item.id),
+      })),
+      {
+        id: 'zenko_task',
+        title: activeBgCount > 0 ? `zenko_task (${activeBgCount} running)` : 'zenko_task',
+        icon: <ZenkoIcon slot="terminal" icons={ui.icons} size={17} />,
+        active: monitorOpen,
+        badge: activeBgCount,
+        onClick: onToggleMonitor,
+      },
+      {
+        id: 'appearance',
+        title: 'Customization',
+        icon: <ZenkoIcon slot="palette" icons={ui.icons} size={17} />,
+        active: activeView === 'appearance',
+        onClick: () =>
+          activeView === 'appearance' ? onOpenQuickCustomizer() : onSelectView('appearance'),
+      },
+    ]
+
+    return (
+      <aside aria-label="Workspace navigation dock" className={shellClass}>
+        <GlassDock
+          orientation="vertical"
+          items={glassItems}
+          trailing={
+            <>
+              <div className="my-0.5 h-px w-5 bg-[var(--border)]" />
+              <ThemeToggle
+                mode={ui.mode === 'light' ? 'light' : 'dark'}
+                variant={ui.motion.theme_transition || 'circle-blur'}
+                start="top-right"
+                onToggle={onToggleMode}
+                aria-label="Toggle Dark / Light mode"
+                className="h-9 w-9 rounded-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]"
+                iconClassName="size-[17px]"
+              />
+              {!inlinePreview && (
+                <button
+                  type="button"
+                  aria-label="Collapse navigation dock"
+                  onClick={onToggleCollapse}
+                  className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-[13px] text-[var(--muted)] transition-colors hover:bg-[var(--surface)]/80 hover:text-[var(--fg)]"
+                >
+                  <ZenkoIcon slot="panelRightClose" icons={ui.icons} size={17} />
+                </button>
+              )}
+            </>
+          }
+        />
+      </aside>
+    )
+  }
 
   return (
     <aside

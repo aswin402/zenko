@@ -468,24 +468,41 @@ export interface ColorTokens {
 
 export interface ComponentSlots {
   composer: {
-    shell_variant: 'floating_card' | 'pill_capsule' | 'minimal_bar' | 'glass_dock'
-    model_picker_style: 'drilldown' | 'split_pane' | 'compact_inline'
+    shell_variant:
+      | 'floating_card'
+      | 'pill_capsule'
+      | 'minimal_bar'
+      | 'glass_dock'
+      | 'motion_brew_prompt'
+    model_picker_style: 'drilldown' | 'split_pane' | 'compact_inline' | 'rareui_picker'
     send_button_shape: 'rounded_square' | 'circle' | 'pill_label'
     send_button_icon: 'arrow_up' | 'send' | 'sparkles' | 'corner_up'
-    context_meter: 'progress_ring' | 'linear_bar' | 'compact_text' | 'hidden'
+    context_meter:
+      | 'progress_ring'
+      | 'smoothui_meter'
+      | 'motion_brew_ring'
+      | 'linear_bar'
+      | 'compact_text'
+      | 'hidden'
+    context_meter_chrome?: 'bordered_filled' | 'border_only' | 'background_only' | 'minimal_bare'
     action_pills: 'soft_tint' | 'outline' | 'ghost' | 'solid_chip'
     show_attach: boolean
     show_policy: boolean
     show_streaming_toggle: boolean
   }
   left_menubar: {
-    frame_style: 'flush_border' | 'floating_card' | 'compact_rail'
+    frame_style: 'flush_border' | 'floating_card' | 'compact_rail' | 'motion_brew_nav'
     new_session_style: 'vermilion_soft' | 'solid_primary' | 'outline_minimal' | 'pill_soft'
     session_item_style: 'soft_fill' | 'left_accent_bar' | 'bordered_card' | 'minimal_text'
     show_telemetry_badge: boolean
   }
   right_menubar: {
-    dock_style: 'floating_capsule' | 'attached_rail' | 'glass_pill' | 'minimal_strip'
+    dock_style:
+      | 'floating_capsule'
+      | 'attached_rail'
+      | 'glass_pill'
+      | 'vengeance_glass_dock'
+      | 'minimal_strip'
     active_indicator: 'vermilion_pill' | 'solid_accent' | 'side_bar' | 'dot_indicator'
   }
   chat_page: {
@@ -518,15 +535,25 @@ export interface ComponentSlots {
     user_avatar_frame?: AvatarFrameStyle
     user_avatar_color?: string
     scroller_style: 'beui_rail' | 'beui_scroller' | 'smooth' | 'native'
-    streaming_style: 'beui_stream' | 'aui_streaming_text' | 'editorial'
+    streaming_style:
+      | 'beui_stream'
+      | 'easeui_stream'
+      | 'rareui_stream'
+      | 'aui_streaming_text'
+      | 'editorial'
     message_actions_style?: 'aui_message_actions' | 'beui_inline' | 'minimal'
-    approval_style: 'aui_permission_grant' | 'beui_approval' | 'compact_card'
+    approval_style:
+      | 'aui_permission_grant'
+      | 'beui_approval'
+      | 'easeui_approval'
+      | 'compact_card'
     activity_style:
       | 'aui_tool_call_icon'
       | 'aui_tool_call'
       | 'aui_smart'
       | 'beui_tool_result'
       | 'beui_activity'
+      | 'easeui_tool_chip'
       | 'aui_run_activity'
       | 'aui_tool_timeline'
       | 'aui_terminal_block'
@@ -537,13 +564,21 @@ export interface ComponentSlots {
       | 'hidden'
     loading_style?:
       | 'beui_loader'
+      | 'easeui_pixel_loader'
+      | 'rareui_ai_status'
       | 'aui_thinking_indicator'
       | 'aui_loading_dots'
       | 'aui_loading_squares'
       | 'aui_loading_rounded'
     diff_style?: 'aui_code_diff' | 'aui_reviewable_diff' | 'minimal_inline'
     shell_style?: 'aui_terminal_block' | 'aui_code_runner' | 'minimal_mono'
-    code_block_style?: 'aui_code_runner' | 'minimal_code' | 'bordered_code'
+    code_block_style?:
+      | 'aui_code_runner'
+      | 'easeui_code'
+      | 'rareui_code'
+      | 'minimal_code'
+      | 'bordered_code'
+    web_search_style?: 'aui_web_search' | 'rareui_web_search'
     show_day_separators?: boolean
     loader_variant:
       | 'dot-matrix'
@@ -574,15 +609,19 @@ export interface ComponentSlots {
   }
   dashboard?: {
     layout: 'bento_grid' | 'editorial_stack' | 'compact_ops'
+    widget_kit?: 'echarts' | 'motion_brew' | 'hybrid'
     chart_theme: 'monochrome_accent' | 'soft_gradient' | 'crisp_outline'
     heatmap_shape: 'rounded' | 'square' | 'circle'
     heatmap_range: 'year' | 'half_year' | 'quarter'
+    show_recap_card?: boolean
+    show_quota_gauges?: boolean
     show_heatmap: boolean
     show_storage_vault: boolean
     show_token_trends: boolean
     show_tools_table: boolean
     show_subagents_jobs: boolean
     show_logs: boolean
+    show_faq?: boolean
   }
 }
 
@@ -666,13 +705,15 @@ export interface UiCustomization {
     radius_px: number
     border_contrast: string
     scrollbar_style?: 'accent_thin' | 'muted_thin' | 'minimal'
-    tabs_variant?: 'pill' | 'segment' | 'underline'
-    accordion_style?: 'bouncy' | 'compact'
-    alert_style?: 'beui_alert' | 'compact'
+    tabs_variant?: 'pill' | 'segment' | 'underline' | 'skiper96'
+    accordion_style?: 'bouncy' | 'compact' | 'rareui_faq'
+    alert_style?: 'beui_alert' | 'easeui_alert' | 'compact'
+    command_palette_style?: 'default' | 'easeui_palette'
+    toast_style?: 'default' | 'easeui_toast'
     modal_style?: 'center_morph' | 'scale'
     popover_style?: 'gooey' | 'crisp'
     element_chrome?: 'borderless' | 'minimal' | 'bordered'
-    table_style?: 'borderless' | 'minimal' | 'striped' | 'bordered'
+    table_style?: 'borderless' | 'minimal' | 'striped' | 'bordered' | 'easeui_table'
     tooltip_style?: 'accent_edge' | 'minimal_glass' | 'solid_contrast' | 'accent_solid' | 'quiet_matte'
     tooltip_shape?: 'pill' | 'rounded' | 'sharp'
     tooltip_motion?: 'spring' | 'fade' | 'instant'

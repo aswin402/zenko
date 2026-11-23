@@ -1,0 +1,151 @@
+"use client";
+// easeui.dev/components/agents/streaming-response
+
+import { ArrowUpRight, RotateCcw, Share2, ThumbsDown, ThumbsUp } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { type ReactNode, useState } from "react";
+import { CopyButton } from "./copy-button";
+import { EASE_OUT } from "@/lib/ease";
+import { cn } from "@/lib/utils";
+
+export type StreamingResponseStatus = "streaming" | "complete" | "error";
+export type StreamingResponseFeedback = "up" | "down" | null;
+
+export interface StreamingResponseProps {
+  /** The response itself, such as a StreamingText or rendered markdown. Left unstyled: no card, no border. */
+  children: ReactNode;
+  /** Default "streaming". The action row fades in once this leaves "streaming". */
+  status?: StreamingResponseStatus;
+  /** Text the copy action writes to the clipboard. Omit to hide that action. */
+  copyText?: string;
+  /** Shows a replay action. Omit to hide it. */
+  onRetry?: () => void;
+  /** Shows a share action. Omit to hide it. */
+  onShare?: () => void;
+  /** Shows a thumbs up / down toggle. Default false. */
+  showFeedback?: boolean;
+  /** Controlled feedback value. */
+  feedback?: StreamingResponseFeedback;
+  /** Starting feedback when uncontrolled. Default null. */
+  defaultFeedback?: StreamingResponseFeedback;
+  onFeedbackChange?: (feedback: StreamingResponseFeedback) => void;
+  /** Suggested next prompts, listed below the actions once settled. Omit to hide the list. */
+  followUps?: string[];
+  onFollowUp?: (text: string, index: number) => void;
+  className?: string;
+}
+
+const ICON_BUTTON = cn(
+  "relative inline-flex h-8 w-8 shrink-0 touch-manipulation items-center justify-center rounded-full text-muted-foreground outline-none after:absolute after:-inset-1.5",
+  "transition-colors duration-150 ease-out hover:bg-muted hover:text-foreground",
+  "focus-visible:ring-2 focus-visible:ring-foreground/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+);
+
+/**
+ * Wraps a response with the actions people expect once it settles: copy,
+ * replay, share, a thumbs up or down. No card or border, so the answer
+ * reads as part of the page. Each action is opt-in: pass a handler to show it.
+ */
+export function StreamingResponse({
+  children,
+  status = "streaming",
+  copyText,
+  onRetry,
+  onShare,
+  showFeedback = false,
+  feedback,
+  defaultFeedback = null,
+  onFeedbackChange,
+  followUps,
+  onFollowUp,
+  className,
+}: StreamingResponseProps) {
+  const reduce = useReducedMotion();
+  const [uncontrolled, setUncontrolled] = useState(defaultFeedback);
+  const isControlled = feedback !== undefined;
+  const current = isControlled ? feedback : uncontrolled;
+
+  const setFeedback = (next: StreamingResponseFeedback) => {
+    if (!isControlled) setUncontrolled(next);
+    onFeedbackChange?.(next);
+  };
+
+  const settled = status !== "streaming";
+  const hasActions =
+    settled && (copyText !== undefined || Boolean(onRetry) || Boolean(onShare) || showFeedback);
+
+  return (
+    <div className={cn("flex flex-col gap-2", className)}>
+      <div aria-busy={!settled}>{children}</div>
+      {hasActions ? (
+        <motion.div
+          initial={reduce ? false : { opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, ease: EASE_OUT }}
+          className="-ml-2 flex items-center gap-0.5"
+        >
+          {copyText !== undefined ? (
+            <CopyButton
+              value={copyText}
+              className={cn(ICON_BUTTON, "bg-transparent shadow-none hover:bg-muted")}
+            />
+          ) : null}
+          {onRetry ? (
+            <button type="button" aria-label="Replay" onClick={onRetry} className={ICON_BUTTON}>
+              <RotateCcw aria-hidden="true" className="h-4 w-4" />
+            </button>
+          ) : null}
+          {onShare ? (
+            <button type="button" aria-label="Share" onClick={onShare} className={ICON_BUTTON}>
+              <Share2 aria-hidden="true" className="h-4 w-4" />
+            </button>
+          ) : null}
+          {showFeedback ? (
+            <>
+              <button
+                type="button"
+                aria-label="Good response"
+                aria-pressed={current === "up"}
+                onClick={() => setFeedback(current === "up" ? null : "up")}
+                className={cn(ICON_BUTTON, current === "up" && "bg-muted text-success")}
+              >
+                <ThumbsUp aria-hidden="true" className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="Bad response"
+                aria-pressed={current === "down"}
+                onClick={() => setFeedback(current === "down" ? null : "down")}
+                className={cn(ICON_BUTTON, current === "down" && "bg-muted text-destructive")}
+              >
+                <ThumbsDown aria-hidden="true" className="h-4 w-4" />
+              </button>
+            </>
+          ) : null}
+        </motion.div>
+      ) : null}
+      {settled && followUps?.length ? (
+        <div className="flex flex-col">
+          {followUps.map((text, index) => (
+            <motion.button
+              // biome-ignore lint/suspicious/noArrayIndexKey: the list is static once passed in and never reorders.
+              key={index}
+              type="button"
+              onClick={() => onFollowUp?.(text, index)}
+              initial={reduce ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2, ease: EASE_OUT, delay: reduce ? 0 : index * 0.05 }}
+              className="group flex items-center gap-2 border-b border-border py-2 text-left text-sm text-foreground transition-colors duration-150 last:border-b-0 hover:text-accent"
+            >
+              <span className="flex-1">{text}</span>
+              <ArrowUpRight
+                aria-hidden="true"
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-accent motion-reduce:transition-none"
+              />
+            </motion.button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}

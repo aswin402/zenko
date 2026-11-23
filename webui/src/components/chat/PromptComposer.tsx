@@ -23,7 +23,12 @@ import { cn } from '@/lib/utils'
 import { ProgressRing } from '@/components/beui/ProgressRing'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { PromptInput as MotionBrewPromptInput } from '@/components/motion-brew/prompt-input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/motion/popover'
+import AIContextMeter, {
+  CONTEXT_METER_CHROME_CLASS,
+  type ContextMeterChrome,
+} from '@/components/smoothui/ai-context-meter'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 
 const SHELL_VARIANT_CLASS: Record<ComponentSlots['composer']['shell_variant'], string> = {
@@ -35,6 +40,36 @@ const SHELL_VARIANT_CLASS: Record<ComponentSlots['composer']['shell_variant'], s
     'rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 pb-2.5 pt-3 focus-within:border-[var(--fg)]/30',
   glass_dock:
     'rounded-[20px] border border-[var(--border)] bg-[var(--card)]/74 px-4 pb-3 pt-3.5 backdrop-blur-md shadow-[0_16px_42px_rgba(0,0,0,0.36)] focus-within:border-[var(--accent)]/55',
+  motion_brew_prompt: '',
+}
+
+const COMPACT_SEGMENTS = 12
+function CompactSegmentedRing({ ratio }: { ratio: number }) {
+  const lit = Math.round((Math.min(100, Math.max(0, ratio)) / 100) * COMPACT_SEGMENTS)
+  const r = 6.5
+  const cx = 9
+  const cy = 9
+  const step = 360 / COMPACT_SEGMENTS
+  return (
+    <svg viewBox="0 0 18 18" className="size-4 -rotate-90" aria-hidden="true">
+      {Array.from({ length: COMPACT_SEGMENTS }, (_, i) => {
+        const a0 = ((i * step + 6) * Math.PI) / 180
+        const a1 = (((i + 1) * step - 6) * Math.PI) / 180
+        const d = `M ${cx + r * Math.cos(a0)} ${cy + r * Math.sin(a0)} A ${r} ${r} 0 0 1 ${cx + r * Math.cos(a1)} ${cy + r * Math.sin(a1)}`
+        return (
+          <path
+            key={i}
+            d={d}
+            fill="none"
+            stroke={i < lit ? 'var(--accent)' : 'currentColor'}
+            strokeOpacity={i < lit ? 1 : 0.22}
+            strokeWidth={2}
+            strokeLinecap="round"
+          />
+        )
+      })}
+    </svg>
+  )
 }
 
 const ACTION_PILL_CLASS: Record<ComponentSlots['composer']['action_pills'], string> = {
@@ -185,6 +220,10 @@ export const PromptComposer = memo(function PromptComposer({
   const modelMeta = models.find((m) => m.id === activeModel)
   const contextLimit = modelMeta?.context_length ?? null
   const usageRatio = contextLimit ? Math.min(100, (totalTokens / contextLimit) * 100) : 0
+  const meterChrome: ContextMeterChrome =
+    composerStyle.context_meter_chrome || 'bordered_filled'
+  const meterChromeClass =
+    CONTEXT_METER_CHROME_CLASS[meterChrome] || CONTEXT_METER_CHROME_CLASS.bordered_filled
 
   const shellClass = SHELL_VARIANT_CLASS[composerStyle.shell_variant] || SHELL_VARIANT_CLASS.floating_card
   const pillClass = ACTION_PILL_CLASS[composerStyle.action_pills] || ACTION_PILL_CLASS.soft_tint
@@ -196,6 +235,286 @@ export const PromptComposer = memo(function PromptComposer({
       ? 'running_orchestrating'
       : 'running_foreground'
   const modeMeta = COMPOSER_STATE_META[dispatchState]
+
+  const leftToolbarControls = (
+    <>
+      {composerStyle.show_attach && (
+        <ZenkoTooltip label="Insert workspace path" side="top">
+          <button
+            type="button"
+            aria-label="Insert workspace path hint"
+            onClick={() => onChange(value ? `${value} @` : 'Read and inspect ')}
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--card)] hover:text-[var(--fg)]"
+          >
+            <ZenkoIcon slot="attach" size={14} />
+          </button>
+        </ZenkoTooltip>
+      )}
+
+      {/* Two-Level Provider -> Live Models Picker (or RareUI Morph Picker) */}
+      <ModelPicker
+        activeProvider={activeProvider}
+        activeModel={activeModel}
+        providers={providers}
+        configuredProviders={configuredProviders}
+        activeModels={models}
+        pickerStyle={composerStyle.model_picker_style}
+        pillClass={pillClass}
+        open={modelOpen}
+        onOpenChange={(next) => {
+          setModelOpen(next)
+          if (next) setPolicyOpen(false)
+        }}
+        onSelectProviderModel={onSelectProviderModel}
+        onOpenSettings={onOpenSettings}
+      />
+
+      {/* Execution Policy Pill powered by BeUI Popover */}
+      {composerStyle.show_policy && (
+        <ZenkoTooltip label="Execution policy" side="top" disabled={policyOpen}>
+          <Popover
+            open={policyOpen}
+            onOpenChange={(next) => {
+              setPolicyOpen(next)
+              if (next) {
+                setModelOpen(false)
+                setContextOpen(false)
+              }
+            }}
+            side="top"
+            align="start"
+            sideOffset={10}
+            panelRadius={14}
+            gooStrength={popoverStyle === 'gooey' ? 7 : 0}
+          >
+            <PopoverTrigger>
+              <button
+                type="button"
+                aria-label="Execution policy"
+                className={cn(
+                  'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium transition-colors',
+                  pillClass,
+                )}
+              >
+                <ZenkoIcon slot="zap" size={11.5} className="text-[var(--muted)]" />
+                <span className="capitalize">{permissionMode}</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-2xl">
+              <div className="flex flex-col gap-0.5">
+                {POLICY_OPTIONS.map(([id, title, desc]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      onChangePermission(id)
+                      setPolicyOpen(false)
+                    }}
+                    className={cn(
+                      'flex w-full cursor-pointer flex-col rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--card)]',
+                      permissionMode === id && 'bg-[var(--card)]',
+                    )}
+                  >
+                    <span className="flex items-center justify-between text-[12px] font-medium text-[var(--fg)]">
+                      {title}
+                      {permissionMode === id && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+                      )}
+                    </span>
+                    <span className="text-[10.5px] text-[var(--muted)]">{desc}</span>
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+        </ZenkoTooltip>
+      )}
+
+      {/* Live Interactive Streaming Toggle */}
+      {composerStyle.show_streaming_toggle && (
+        <ZenkoTooltip label="Toggle live SSE streaming" side="top">
+          <button
+            type="button"
+            onClick={onToggleStreaming}
+            className={cn(
+              'hidden h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium transition-colors sm:inline-flex',
+              pillClass,
+            )}
+          >
+            <span className={streamingEnabled ? 'text-[var(--fg)]' : 'text-[var(--muted)]'}>
+              {streamingEnabled ? 'Stream ON' : 'Stream OFF'}
+            </span>
+          </button>
+        </ZenkoTooltip>
+      )}
+    </>
+  )
+
+  const contextMeterControl = composerStyle.context_meter !== 'hidden' && (
+    <ZenkoTooltip
+      label="Inspect live context & KV-cache breakdown"
+      side="top"
+      disabled={contextOpen || composerStyle.context_meter === 'smoothui_meter'}
+    >
+      <Popover
+        open={contextOpen}
+        onOpenChange={(next) => {
+          setContextOpen(next)
+          if (next) {
+            setModelOpen(false)
+            setPolicyOpen(false)
+            if (activeSessionId) refreshContextBreakdown(activeSessionId)
+          }
+        }}
+        side="top"
+        align="end"
+        sideOffset={10}
+        panelRadius={14}
+        gooStrength={popoverStyle === 'gooey' ? 7 : 0}
+      >
+        <PopoverTrigger>
+          {composerStyle.context_meter === 'smoothui_meter' ? (
+            <div className="hidden sm:inline-flex">
+              <AIContextMeter
+                used={totalTokens}
+                limit={contextLimit ?? 128000}
+                chrome={meterChrome}
+                breakdown={
+                  contextData
+                    ? [
+                        { label: 'Tier 1 (KV frozen)', tokens: contextData.tier1_tokens },
+                        { label: 'Tier 2 (Memory/Skills)', tokens: contextData.tier2_tokens },
+                        { label: 'Tool Schemas', tokens: contextData.tool_schema_tokens },
+                        { label: 'Active History', tokens: contextData.history_tokens },
+                      ]
+                    : undefined
+                }
+              />
+            </div>
+          ) : (
+            <button
+              type="button"
+              aria-label="Inspect live context & KV-cache breakdown"
+              className={cn(
+                'hidden cursor-pointer items-center gap-1.5 font-mono text-[11px] text-[var(--muted)] transition-colors hover:text-[var(--fg)] sm:inline-flex',
+                composerStyle.context_meter === 'compact_text' &&
+                  !composerStyle.context_meter_chrome
+                  ? 'px-1 py-0.5'
+                  : meterChromeClass,
+              )}
+            >
+              {composerStyle.context_meter === 'progress_ring' && contextLimit != null && (
+                <ProgressRing value={totalTokens} max={contextLimit} size={13} />
+              )}
+              {composerStyle.context_meter === 'motion_brew_ring' && (
+                <CompactSegmentedRing ratio={usageRatio} />
+              )}
+              {composerStyle.context_meter === 'linear_bar' && (
+                <div className="h-1.5 w-14 overflow-hidden rounded-full bg-[var(--border)]">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{ width: `${usageRatio}%`, backgroundColor: 'var(--accent)' }}
+                  />
+                </div>
+              )}
+              <span>
+                {formatCompactTokens(totalTokens)}
+                {contextLimit != null ? ` / ${formatCompactTokens(contextLimit)}` : ' tok'}
+              </span>
+            </button>
+          )}
+        </PopoverTrigger>
+        <PopoverContent className="w-80 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-3.5 text-[11.5px] shadow-2xl">
+          <div className="mb-2.5 flex items-center justify-between">
+            <span className="font-medium text-[var(--fg)]">Context Breakdown</span>
+            <div className="flex items-center gap-2 text-[var(--muted)]">
+              {activeSessionId && (
+                <ZenkoTooltip label="Refresh breakdown" side="top">
+                  <button
+                    type="button"
+                    aria-label="Refresh breakdown"
+                    onClick={() => refreshContextBreakdown(activeSessionId)}
+                    className="cursor-pointer hover:text-[var(--fg)]"
+                  >
+                    <RefreshCw size={11.5} className={loadingContext ? 'animate-spin' : ''} />
+                  </button>
+                </ZenkoTooltip>
+              )}
+              <button
+                type="button"
+                aria-label="Close context breakdown"
+                onClick={() => setContextOpen(false)}
+                className="cursor-pointer hover:text-[var(--fg)]"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          </div>
+
+          {!activeSessionId ? (
+            <p className="text-[var(--muted)]">Start a session to inspect live token tiers.</p>
+          ) : loadingContext && !contextData ? (
+            <p className="font-mono text-[var(--muted)]">Measuring context...</p>
+          ) : contextData ? (
+            <div className="space-y-2.5">
+              <div>
+                <div className="mb-1 flex items-center justify-between font-mono text-[11px]">
+                  <span className="text-[var(--fg)]">
+                    {formatCompactTokens(contextData.total_tokens)} /{' '}
+                    {formatCompactTokens(contextData.context_window)}
+                  </span>
+                  <span className="text-[var(--accent)]">
+                    {contextData.utilization_pct.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--border)]">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${Math.min(100, contextData.utilization_pct)}%`,
+                      backgroundColor: 'var(--accent)',
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1 border-t border-[var(--border)]/60 pt-2 font-mono text-[11px]">
+                {[
+                  ['Tier 1 (KV frozen)', `${formatCompactTokens(contextData.tier1_tokens)} tok`],
+                  ['Tier 2 (Memory/Skills)', `${formatCompactTokens(contextData.tier2_tokens)} tok`],
+                  [
+                    'Tools',
+                    `${formatCompactTokens(contextData.tool_schema_tokens)} tok (${contextData.eager_tools_count}+${contextData.deferred_active_count}/${contextData.deferred_available_count})`,
+                  ],
+                  ['Active History', `${formatCompactTokens(contextData.history_tokens)} tok`],
+                  ['KV Cache Hit', `${contextData.cache_hit_pct.toFixed(1)}%`],
+                  [
+                    'Microcompacted',
+                    `${contextData.microcompacted_tools_count} (${formatCompactTokens(contextData.microcompacted_tokens_saved)} saved)`,
+                  ],
+                  ['Checkpoints', `${contextData.checkpoints_count}`],
+                  ['Spilled Artifacts', `${contextData.spilled_artifacts_count}`],
+                ].map(([label, val]) => (
+                  <div key={label} className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--muted)]">{label}</span>
+                    <span className="text-[var(--fg)]">{val}</span>
+                  </div>
+                ))}
+              </div>
+
+              {contextData.repo_rules_loaded.length > 0 && (
+                <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10.5px] text-[var(--muted)]">
+                  Rules: {contextData.repo_rules_loaded.join(', ')}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-[var(--muted)]">Context details unavailable.</p>
+          )}
+        </PopoverContent>
+      </Popover>
+    </ZenkoTooltip>
+  )
 
   return (
     <div className={compactWrapper ? 'w-full' : 'px-4 pb-5 pt-2 sm:px-8'}>
@@ -257,6 +576,28 @@ export const PromptComposer = memo(function PromptComposer({
           </div>
         )}
 
+        {composerStyle.shell_variant === 'motion_brew_prompt' ? (
+          <MotionBrewPromptInput
+            value={value}
+            onValueChange={onChange}
+            isWorking={isRunning}
+            onStop={onStop}
+            onSubmit={() => onSend()}
+            placeholders={[
+              modeMeta.placeholder,
+              'Inspect workspace architecture & check crate tests...',
+              'Search memory snapshots and active playbooks...',
+            ]}
+            leftToolbar={leftToolbarControls}
+            rightToolbar={
+              <>
+                {extraTools}
+                {contextMeterControl}
+              </>
+            }
+            className="w-full"
+          />
+        ) : (
         <div className={cn('transition-all duration-150', shellClass)}>
           <textarea
             ref={textareaRef}
@@ -276,261 +617,13 @@ export const PromptComposer = memo(function PromptComposer({
 
           <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)]/50 pt-2.5">
             <div className="flex flex-wrap items-center gap-1.5">
-              {composerStyle.show_attach && (
-                <ZenkoTooltip label="Insert workspace path" side="top">
-                  <button
-                    type="button"
-                    aria-label="Insert workspace path hint"
-                    onClick={() => onChange(value ? `${value} @` : 'Read and inspect ')}
-                    className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--card)] hover:text-[var(--fg)]"
-                  >
-                    <ZenkoIcon slot="attach" size={14} />
-                  </button>
-                </ZenkoTooltip>
-              )}
-
-              {/* Two-Level Provider -> Live Models Picker */}
-              <ModelPicker
-                activeProvider={activeProvider}
-                activeModel={activeModel}
-                providers={providers}
-                configuredProviders={configuredProviders}
-                activeModels={models}
-                pickerStyle={composerStyle.model_picker_style}
-                pillClass={pillClass}
-                open={modelOpen}
-                onOpenChange={(next) => {
-                  setModelOpen(next)
-                  if (next) setPolicyOpen(false)
-                }}
-                onSelectProviderModel={onSelectProviderModel}
-                onOpenSettings={onOpenSettings}
-              />
-
-              {/* Execution Policy Pill powered by BeUI Popover */}
-              {composerStyle.show_policy && (
-                <ZenkoTooltip label="Execution policy" side="top" disabled={policyOpen}>
-                  <Popover
-                    open={policyOpen}
-                    onOpenChange={(next) => {
-                      setPolicyOpen(next)
-                      if (next) {
-                        setModelOpen(false)
-                        setContextOpen(false)
-                      }
-                    }}
-                    side="top"
-                    align="start"
-                    sideOffset={10}
-                    panelRadius={14}
-                    gooStrength={popoverStyle === 'gooey' ? 7 : 0}
-                  >
-                    <PopoverTrigger>
-                      <button
-                        type="button"
-                        aria-label="Execution policy"
-                        className={cn(
-                          'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium transition-colors',
-                          pillClass,
-                        )}
-                      >
-                        <ZenkoIcon slot="zap" size={11.5} className="text-[var(--muted)]" />
-                        <span className="capitalize">{permissionMode}</span>
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-56 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-2xl">
-                      <div className="flex flex-col gap-0.5">
-                        {POLICY_OPTIONS.map(([id, title, desc]) => (
-                          <button
-                            key={id}
-                            type="button"
-                            onClick={() => {
-                              onChangePermission(id)
-                              setPolicyOpen(false)
-                            }}
-                            className={cn(
-                              'flex w-full cursor-pointer flex-col rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--card)]',
-                              permissionMode === id && 'bg-[var(--card)]',
-                            )}
-                          >
-                            <span className="flex items-center justify-between text-[12px] font-medium text-[var(--fg)]">
-                              {title}
-                              {permissionMode === id && (
-                                <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
-                              )}
-                            </span>
-                            <span className="text-[10.5px] text-[var(--muted)]">{desc}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                </ZenkoTooltip>
-              )}
-
-              {/* Live Interactive Streaming Toggle */}
-              {composerStyle.show_streaming_toggle && (
-                <ZenkoTooltip label="Toggle live SSE streaming" side="top">
-                  <button
-                    type="button"
-                    onClick={onToggleStreaming}
-                    className={cn(
-                      'hidden h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium transition-colors sm:inline-flex',
-                      pillClass,
-                    )}
-                  >
-                    <span className={streamingEnabled ? 'text-[var(--fg)]' : 'text-[var(--muted)]'}>
-                      {streamingEnabled ? 'Stream ON' : 'Stream OFF'}
-                    </span>
-                  </button>
-                </ZenkoTooltip>
-              )}
+              {leftToolbarControls}
             </div>
 
             {/* Right: Workspace Tools (Tasks / Checkpoints) + Context Meter + Send / Stop */}
             <div className="relative flex items-center gap-1.5">
               {extraTools}
-              {composerStyle.context_meter !== 'hidden' && (
-                <ZenkoTooltip
-                  label="Inspect live context & KV-cache breakdown"
-                  side="top"
-                  disabled={contextOpen}
-                >
-                  <Popover
-                    open={contextOpen}
-                    onOpenChange={(next) => {
-                      setContextOpen(next)
-                      if (next) {
-                        setModelOpen(false)
-                        setPolicyOpen(false)
-                        if (activeSessionId) refreshContextBreakdown(activeSessionId)
-                      }
-                    }}
-                    side="top"
-                    align="end"
-                    sideOffset={10}
-                    panelRadius={14}
-                    gooStrength={popoverStyle === 'gooey' ? 7 : 0}
-                  >
-                    <PopoverTrigger>
-                      <button
-                        type="button"
-                        aria-label="Inspect live context & KV-cache breakdown"
-                        className={cn(
-                          'hidden cursor-pointer items-center gap-1.5 font-mono transition-colors sm:inline-flex',
-                          composerStyle.context_meter === 'compact_text'
-                            ? 'text-[11px] text-[var(--muted)] hover:text-[var(--fg)]'
-                            : 'rounded-full border border-[var(--border)] bg-[var(--bg)]/80 px-2.5 py-1 text-[11px] text-[var(--muted)] hover:border-[var(--accent)]/45 hover:text-[var(--fg)]',
-                        )}
-                      >
-                        {composerStyle.context_meter === 'progress_ring' && contextLimit != null && (
-                          <ProgressRing value={totalTokens} max={contextLimit} size={13} />
-                        )}
-                        {composerStyle.context_meter === 'linear_bar' && (
-                          <div className="h-1.5 w-14 overflow-hidden rounded-full bg-[var(--border)]">
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{ width: `${usageRatio}%`, backgroundColor: 'var(--accent)' }}
-                            />
-                          </div>
-                        )}
-                        <span>
-                          {formatCompactTokens(totalTokens)}
-                          {contextLimit != null ? ` / ${formatCompactTokens(contextLimit)}` : ' tok'}
-                        </span>
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-80 rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-3.5 text-[11.5px] shadow-2xl">
-                      <div className="mb-2.5 flex items-center justify-between">
-                        <span className="font-medium text-[var(--fg)]">Context Breakdown</span>
-                        <div className="flex items-center gap-2 text-[var(--muted)]">
-                          {activeSessionId && (
-                            <ZenkoTooltip label="Refresh breakdown" side="top">
-                              <button
-                                type="button"
-                                aria-label="Refresh breakdown"
-                                onClick={() => refreshContextBreakdown(activeSessionId)}
-                                className="cursor-pointer hover:text-[var(--fg)]"
-                              >
-                                <RefreshCw size={11.5} className={loadingContext ? 'animate-spin' : ''} />
-                              </button>
-                            </ZenkoTooltip>
-                          )}
-                          <button
-                            type="button"
-                            aria-label="Close context breakdown"
-                            onClick={() => setContextOpen(false)}
-                            className="cursor-pointer hover:text-[var(--fg)]"
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {!activeSessionId ? (
-                        <p className="text-[var(--muted)]">Start a session to inspect live token tiers.</p>
-                      ) : loadingContext && !contextData ? (
-                        <p className="font-mono text-[var(--muted)]">Measuring context...</p>
-                      ) : contextData ? (
-                        <div className="space-y-2.5">
-                          <div>
-                            <div className="mb-1 flex items-center justify-between font-mono text-[11px]">
-                              <span className="text-[var(--fg)]">
-                                {formatCompactTokens(contextData.total_tokens)} /{' '}
-                                {formatCompactTokens(contextData.context_window)}
-                              </span>
-                              <span className="text-[var(--accent)]">
-                                {contextData.utilization_pct.toFixed(1)}%
-                              </span>
-                            </div>
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--border)]">
-                              <div
-                                className="h-full rounded-full transition-all"
-                                style={{
-                                  width: `${Math.min(100, contextData.utilization_pct)}%`,
-                                  backgroundColor: 'var(--accent)',
-                                }}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1 border-t border-[var(--border)]/60 pt-2 font-mono text-[11px]">
-                            {[
-                              ['Tier 1 (KV frozen)', `${formatCompactTokens(contextData.tier1_tokens)} tok`],
-                              ['Tier 2 (Memory/Skills)', `${formatCompactTokens(contextData.tier2_tokens)} tok`],
-                              [
-                                'Tools',
-                                `${formatCompactTokens(contextData.tool_schema_tokens)} tok (${contextData.eager_tools_count}+${contextData.deferred_active_count}/${contextData.deferred_available_count})`,
-                              ],
-                              ['Active History', `${formatCompactTokens(contextData.history_tokens)} tok`],
-                              ['KV Cache Hit', `${contextData.cache_hit_pct.toFixed(1)}%`],
-                              [
-                                'Microcompacted',
-                                `${contextData.microcompacted_tools_count} (${formatCompactTokens(contextData.microcompacted_tokens_saved)} saved)`,
-                              ],
-                              ['Checkpoints', `${contextData.checkpoints_count}`],
-                              ['Spilled Artifacts', `${contextData.spilled_artifacts_count}`],
-                            ].map(([label, val]) => (
-                              <div key={label} className="flex items-center justify-between gap-2">
-                                <span className="text-[var(--muted)]">{label}</span>
-                                <span className="text-[var(--fg)]">{val}</span>
-                              </div>
-                            ))}
-                          </div>
-
-                          {contextData.repo_rules_loaded.length > 0 && (
-                            <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10.5px] text-[var(--muted)]">
-                              Rules: {contextData.repo_rules_loaded.join(', ')}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="text-[var(--muted)]">Context details unavailable.</p>
-                      )}
-                    </PopoverContent>
-                  </Popover>
-                </ZenkoTooltip>
-              )}
+              {contextMeterControl}
 
               {isRunning ? (
                 <div className="flex items-center gap-1.5">
@@ -593,6 +686,7 @@ export const PromptComposer = memo(function PromptComposer({
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   )

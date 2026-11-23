@@ -40,6 +40,20 @@ import type {
 import { FloatingDock } from '@/components/beui/FloatingDock'
 import { ZenkoIconProvider } from '@/components/beui/ZenkoIcon'
 import {
+  Alert as EaseAlert,
+  AlertDescription as EaseAlertDescription,
+} from '@/components/easeui/alert'
+import {
+  CommandEmpty as EaseCommandEmpty,
+  CommandGroup as EaseCommandGroup,
+  CommandInput as EaseCommandInput,
+  CommandItem as EaseCommandItem,
+  CommandList as EaseCommandList,
+  CommandPalette as EaseCommandPalette,
+  CommandSeparator as EaseCommandSeparator,
+} from '@/components/easeui/command-palette'
+import { Toaster as EaseToaster, toast as easeToast } from '@/components/easeui/toast'
+import {
   Alert,
   AlertContent,
   AlertDescription,
@@ -85,6 +99,16 @@ interface ToastItem {
   message: string
   kind: 'info' | 'success' | 'error'
 }
+
+const COMMAND_PALETTE_VIEWS: ReadonlyArray<[ActiveView, string]> = [
+  ['chat', 'Chat Workbench'],
+  ['gateways', 'Telegram & Gateways'],
+  ['memory', 'Memory & Prompt Snapshots'],
+  ['automation', 'Cron, Heartbeats & Policy'],
+  ['telemetry', 'Dashboard'],
+  ['appearance', 'Customization'],
+  ['setup', 'Settings & Providers Setup'],
+]
 
 export default function App() {
   const [authorized, setAuthorized] = useState(true)
@@ -180,6 +204,12 @@ export default function App() {
   )
 
   const toast = useCallback((message: string, kind: 'info' | 'success' | 'error' = 'info') => {
+    if (uiRef.current?.surface.toast_style === 'easeui_toast') {
+      if (kind === 'success') easeToast.success(message)
+      else if (kind === 'error') easeToast.error(message)
+      else easeToast(message)
+      return
+    }
     const id = Date.now() + Math.random()
     setToasts((prev) => [...prev.slice(-3), { id, message, kind }])
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3400)
@@ -1627,8 +1657,66 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Cmd+K Command Palette — BeUI CenterMorphModal (or classic scale fallback) */}
-      {ui.surface.modal_style !== 'scale' ? (
+      {/* Cmd+K Command Palette — EaseUI CommandPalette | BeUI CenterMorphModal | Classic Scale */}
+      {ui.surface.command_palette_style === 'easeui_palette' ? (
+        <EaseCommandPalette
+          open={cmdKOpen}
+          onOpenChange={setCmdKOpen}
+          label="Zenko Command Palette"
+        >
+          <EaseCommandInput placeholder="Jump to view or run action..." />
+          <EaseCommandList>
+            <EaseCommandEmpty>No matching commands.</EaseCommandEmpty>
+            <EaseCommandGroup heading="Views">
+              {COMMAND_PALETTE_VIEWS.map(([view, label]) => (
+                <EaseCommandItem
+                  key={view}
+                  value={label}
+                  keywords={[view]}
+                  onSelect={() => setActiveView(view)}
+                >
+                  <span className="flex-1">{label}</span>
+                  <span className="font-mono text-[11px] text-[var(--muted)]">{view}</span>
+                </EaseCommandItem>
+              ))}
+            </EaseCommandGroup>
+            <EaseCommandSeparator />
+            <EaseCommandGroup heading="Quick Actions">
+              <EaseCommandItem
+                value="Toggle Dark / Light Mode"
+                keywords={['theme', 'dark', 'light']}
+                onSelect={() =>
+                  selectPreset(
+                    ui.preset_id || 'zenko_vermilion',
+                    ui.mode === 'light' ? 'dark' : 'light',
+                  )
+                }
+              >
+                <span className="flex-1">Toggle Dark / Light Mode</span>
+                <span className="font-mono text-[11px] text-[var(--muted)]">{ui.mode}</span>
+              </EaseCommandItem>
+              <EaseCommandItem
+                value="Quick Theme Customizer"
+                keywords={['colors', 'palette', 'appearance']}
+                onSelect={() => setQuickCustomizerOpen(true)}
+              >
+                <span className="flex-1">Quick Theme Customizer</span>
+                <span className="font-mono text-[11px] text-[var(--muted)]">⌘.</span>
+              </EaseCommandItem>
+              <EaseCommandItem
+                value="Toggle Activity Monitor"
+                keywords={['terminal', 'jobs', 'subagents']}
+                onSelect={() => setMonitorOpen((o) => !o)}
+              >
+                <span className="flex-1">Toggle Activity Monitor</span>
+                <span className="font-mono text-[11px] text-[var(--muted)]">
+                  {activeBgCount} active
+                </span>
+              </EaseCommandItem>
+            </EaseCommandGroup>
+          </EaseCommandList>
+        </EaseCommandPalette>
+      ) : ui.surface.modal_style !== 'scale' ? (
         <CenterMorphModal open={cmdKOpen} onOpenChange={setCmdKOpen}>
           <CenterMorphModalContent
             ariaLabel="Command Palette"
@@ -1646,33 +1734,23 @@ export default function App() {
               />
             </div>
             <div className="flex flex-col p-2">
-              {(
-                [
-                  ['chat', 'Chat Workbench'],
-                  ['gateways', 'Telegram & Gateways'],
-                  ['memory', 'Memory & Prompt Snapshots'],
-                  ['automation', 'Cron, Heartbeats & Policy'],
-                  ['telemetry', 'Dashboard'],
-                  ['appearance', 'Customization'],
-                  ['setup', 'Settings & Providers Setup'],
-                ] as const
-              )
-                .filter(([, label]) => label.toLowerCase().includes(cmdQuery.toLowerCase()))
-                .map(([view, label]) => (
-                  <button
-                    key={view}
-                    type="button"
-                    onClick={() => {
-                      setActiveView(view)
-                      setCmdKOpen(false)
-                      setCmdQuery('')
-                    }}
-                    className="flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--card)]"
-                  >
-                    <span>{label}</span>
-                    <span className="font-mono text-[11px] text-[var(--muted)]">{view}</span>
-                  </button>
-                ))}
+              {COMMAND_PALETTE_VIEWS.filter(([, label]) =>
+                label.toLowerCase().includes(cmdQuery.toLowerCase()),
+              ).map(([view, label]) => (
+                <button
+                  key={view}
+                  type="button"
+                  onClick={() => {
+                    setActiveView(view)
+                    setCmdKOpen(false)
+                    setCmdQuery('')
+                  }}
+                  className="flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--card)]"
+                >
+                  <span>{label}</span>
+                  <span className="font-mono text-[11px] text-[var(--muted)]">{view}</span>
+                </button>
+              ))}
             </div>
           </CenterMorphModalContent>
         </CenterMorphModal>
@@ -1701,33 +1779,23 @@ export default function App() {
                   />
                 </div>
                 <div className="flex flex-col p-2">
-                  {(
-                    [
-                      ['chat', 'Chat Workbench'],
-                      ['gateways', 'Telegram & Gateways'],
-                      ['memory', 'Memory & Prompt Snapshots'],
-                      ['automation', 'Cron, Heartbeats & Policy'],
-                      ['telemetry', 'Dashboard'],
-                      ['appearance', 'Customization'],
-                      ['setup', 'Settings & Providers Setup'],
-                    ] as const
-                  )
-                    .filter(([, label]) => label.toLowerCase().includes(cmdQuery.toLowerCase()))
-                    .map(([view, label]) => (
-                      <button
-                        key={view}
-                        type="button"
-                        onClick={() => {
-                          setActiveView(view)
-                          setCmdKOpen(false)
-                          setCmdQuery('')
-                        }}
-                        className="flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--card)]"
-                      >
-                        <span>{label}</span>
-                        <span className="font-mono text-[11px] text-[var(--muted)]">{view}</span>
-                      </button>
-                    ))}
+                  {COMMAND_PALETTE_VIEWS.filter(([, label]) =>
+                    label.toLowerCase().includes(cmdQuery.toLowerCase()),
+                  ).map(([view, label]) => (
+                    <button
+                      key={view}
+                      type="button"
+                      onClick={() => {
+                        setActiveView(view)
+                        setCmdKOpen(false)
+                        setCmdQuery('')
+                      }}
+                      className="flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--card)]"
+                    >
+                      <span>{label}</span>
+                      <span className="font-mono text-[11px] text-[var(--muted)]">{view}</span>
+                    </button>
+                  ))}
                 </div>
               </motion.div>
             </div>
@@ -1772,45 +1840,65 @@ export default function App() {
         </CenterMorphModalContent>
       </CenterMorphModal>
 
-      {/* Toast Stack powered by BeUI Alert */}
-      <div className="pointer-events-none fixed bottom-5 right-5 z-50 flex w-80 max-w-[90vw] flex-col gap-2">
-        <AnimatePresence>
-          {toasts.map((t) =>
-            ui.surface.alert_style !== 'compact' ? (
-              <Alert
-                key={t.id}
-                variant={t.kind === 'error' ? 'destructive' : t.kind === 'success' ? 'success' : 'info'}
-                className="pointer-events-auto bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
-              >
-                <AlertIcon />
-                <AlertContent>
-                  <AlertDescription className="text-[12.5px] text-[var(--fg)]">
-                    {t.message}
-                  </AlertDescription>
-                </AlertContent>
-              </Alert>
-            ) : (
-              <motion.div
-                key={t.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 8 }}
-                className="pointer-events-auto rounded-xl border bg-[var(--surface)] px-3.5 py-2 text-[12.5px] shadow-xl"
-                style={{
-                  borderColor:
+      {/* Toast Stack powered by EaseUI Swipe Toaster or BeUI Alert */}
+      {ui.surface.toast_style === 'easeui_toast' ? (
+        <EaseToaster />
+      ) : (
+        <div className="pointer-events-none fixed bottom-5 right-5 z-50 flex w-80 max-w-[90vw] flex-col gap-2">
+          <AnimatePresence>
+            {toasts.map((t) =>
+              ui.surface.alert_style === 'easeui_alert' ? (
+                <EaseAlert
+                  key={t.id}
+                  variant={
                     t.kind === 'error'
-                      ? 'var(--destructive)'
+                      ? 'destructive'
                       : t.kind === 'success'
-                        ? 'color-mix(in srgb, var(--accent) 52%, var(--border))'
-                        : 'var(--border)',
-                }}
-              >
-                {t.message}
-              </motion.div>
-            ),
-          )}
-        </AnimatePresence>
-      </div>
+                        ? 'success'
+                        : 'neutral'
+                  }
+                  className="pointer-events-auto bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
+                >
+                  <EaseAlertDescription className="mt-0 text-[12.5px] text-[var(--fg)]">
+                    {t.message}
+                  </EaseAlertDescription>
+                </EaseAlert>
+              ) : ui.surface.alert_style !== 'compact' ? (
+                <Alert
+                  key={t.id}
+                  variant={t.kind === 'error' ? 'destructive' : t.kind === 'success' ? 'success' : 'info'}
+                  className="pointer-events-auto bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
+                >
+                  <AlertIcon />
+                  <AlertContent>
+                    <AlertDescription className="text-[12.5px] text-[var(--fg)]">
+                      {t.message}
+                    </AlertDescription>
+                  </AlertContent>
+                </Alert>
+              ) : (
+                <motion.div
+                  key={t.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  className="pointer-events-auto rounded-xl border bg-[var(--surface)] px-3.5 py-2 text-[12.5px] shadow-xl"
+                  style={{
+                    borderColor:
+                      t.kind === 'error'
+                        ? 'var(--destructive)'
+                        : t.kind === 'success'
+                          ? 'color-mix(in srgb, var(--accent) 52%, var(--border))'
+                          : 'var(--border)',
+                  }}
+                >
+                  {t.message}
+                </motion.div>
+              ),
+            )}
+          </AnimatePresence>
+        </div>
+      )}
     </div>
     </ZenkoTooltipProvider>
     </ZenkoIconProvider>

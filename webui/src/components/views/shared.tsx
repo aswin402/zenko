@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 
-export type SecondaryTabsVariant = 'pill' | 'segment' | 'underline'
+export type SecondaryTabsVariant = 'pill' | 'segment' | 'underline' | 'skiper96'
 
 export function ScrollPage({
   smoothScroll = true,

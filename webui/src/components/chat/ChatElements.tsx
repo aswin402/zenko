@@ -26,7 +26,7 @@ import {
   parseUnifiedDiff,
   parseWebSearchFromTool,
 } from '@/lib/elements'
-import type { ApprovalRecord, ComponentSlots } from '@/lib/types'
+import type { ApprovalRecord, ComponentSlots, UiCustomization } from '@/lib/types'
 import { AgentActivity, type AgentActivityItem } from '@/components/agents/agent-activity'
 import { Citations, type CitationItem } from '@/components/agents/citations'
 import { ThinkingShimmer } from '@/components/agents/loading-states/thinking-shimmer'
@@ -36,6 +36,13 @@ import {
   ToolResultOutput,
   type ToolResultKind,
 } from '@/components/agents/tool-result'
+import { CodeBlock as EaseCodeBlock } from '@/components/easeui/code-block'
+import { PixelLoader as EasePixelLoader } from '@/components/easeui/pixel-loader'
+import { ToolApproval as EaseToolApproval } from '@/components/easeui/tool-approval'
+import { ToolChip as EaseToolChip } from '@/components/easeui/tool-chip'
+import { AiStatus as RareAiStatus, type AiStatusState } from '@/components/rareui/ai-status'
+import { CodeBlock as RareCodeBlock } from '@/components/rareui/code-block'
+import { WebSearch as RareWebSearch } from '@/components/rareui/web-search'
 import { Loader, type LoaderVariant } from '@/components/motion/loader'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { CodeDiff } from '@/components/assistant-ui/elements/code-diff'
@@ -87,7 +94,42 @@ type SkillBadgeStyle = NonNullable<ComponentSlots['chat_page']['skill_badge_styl
 type DiffStyle = NonNullable<ComponentSlots['chat_page']['diff_style']>
 type ShellStyle = NonNullable<ComponentSlots['chat_page']['shell_style']>
 type CodeBlockStyle = NonNullable<ComponentSlots['chat_page']['code_block_style']>
+type WebSearchStyle = NonNullable<ComponentSlots['chat_page']['web_search_style']>
 type MessageActionsStyle = NonNullable<ComponentSlots['chat_page']['message_actions_style']>
+
+function resolveRareAiStatusState(label: string, active: boolean): AiStatusState {
+  if (!active) return 'done'
+  const lower = label.toLowerCase()
+  if (lower.includes('search') || lower.includes('web') || lower.includes('research')) {
+    return 'researching'
+  }
+  if (lower.includes('writ') || lower.includes('response')) return 'writing'
+  if (lower.includes('run') || lower.includes('tool') || lower.includes('analyz')) {
+    return 'analyzing'
+  }
+  return 'thinking'
+}
+
+function parseElapsedSeconds(label?: string): number | undefined {
+  if (!label) return undefined
+  let secs = 0
+  for (const part of label.trim().split(' ')) {
+    if (part.endsWith('m')) {
+      const n = Number.parseFloat(part.slice(0, -1))
+      if (Number.isFinite(n)) secs += n * 60
+    } else if (part.endsWith('s')) {
+      const n = Number.parseFloat(part.slice(0, -1))
+      if (Number.isFinite(n)) secs += n
+    }
+  }
+  return secs > 0 ? secs : undefined
+}
+
+function readThemeAccentHex(): string {
+  if (typeof window === 'undefined') return '#ea5829'
+  const raw = window.getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+  return raw.startsWith('#') && (raw.length === 4 || raw.length === 7) ? raw : '#ea5829'
+}
 
 const GENERATION_VARIANT_MAP: Partial<Record<LoadingStyle, GenerationLoaderVariant>> = {
   aui_loading_dots: 'dots',
@@ -95,7 +137,7 @@ const GENERATION_VARIANT_MAP: Partial<Record<LoadingStyle, GenerationLoaderVaria
   aui_loading_rounded: 'rounded',
 }
 
-/** 1. Loading & Thinking Indicator (BeUI Loader | ThinkingIndicator | GenerationLoader) */
+/** 1. Loading & Thinking Indicator (BeUI Loader | ThinkingIndicator | GenerationLoader | EaseUI PixelLoader | RareUI AiStatus) */
 export function LoadingStatusBar({
   loadingStyle = 'beui_loader',
   loaderVariant = 'dot-matrix',
@@ -117,6 +159,33 @@ export function LoadingStatusBar({
     const id = window.setInterval(() => setTick((t) => t + 1), 110)
     return () => window.clearInterval(id)
   }, [active, genVariant])
+
+  if (loadingStyle === 'easeui_pixel_loader') {
+    return (
+      <div className="inline-flex items-center gap-2.5">
+        <EasePixelLoader label={label} showElapsed={false} className="text-[13px]" />
+        {elapsedLabel && (
+          <span className="font-mono text-[11px] tabular-nums text-[var(--muted)]/80">
+            {elapsedLabel}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  if (loadingStyle === 'rareui_ai_status') {
+    const elapsedSecs = parseElapsedSeconds(elapsedLabel)
+    return (
+      <RareAiStatus
+        state={resolveRareAiStatusState(label, active)}
+        label={label}
+        elapsed={elapsedSecs}
+        timer={elapsedSecs !== undefined}
+        shimmer={active}
+        className="text-[13px]"
+      />
+    )
+  }
 
   if (loadingStyle === 'aui_thinking_indicator') {
     return <ThinkingIndicator label={label} elapsed={elapsedLabel} className="text-[13px]" />
@@ -237,6 +306,7 @@ export function ActivityDisplay({
   defaultOpen = true,
   diffStyle = 'aui_code_diff',
   shellStyle = 'aui_terminal_block',
+  webSearchStyle = 'aui_web_search',
   onRetryTool,
 }: {
   style: ComponentSlots['chat_page']['activity_style']
@@ -249,6 +319,7 @@ export function ActivityDisplay({
   defaultOpen?: boolean
   diffStyle?: DiffStyle
   shellStyle?: ShellStyle
+  webSearchStyle?: WebSearchStyle
   onRetryTool?: (toolName: string, argsPreview?: string) => void
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -320,6 +391,7 @@ export function ActivityDisplay({
             toolCardStyle={style as ComponentSlots['chat_page']['tool_card_style']}
             diffStyle={diffStyle}
             shellStyle={shellStyle}
+            webSearchStyle={webSearchStyle}
             onRetryTool={onRetryTool}
           />
         ))}
@@ -353,6 +425,29 @@ export function ActivityDisplay({
           activeLabel={statusLabel}
           stats={timelineStats}
         />
+      ),
+    easeui_tool_chip: () =>
+      tools.length === 0 ? null : (
+        <div className="flex flex-wrap gap-1.5">
+          {tools.map((t) => {
+            const IconComp = resolveToolLeadingIcon(t.name)
+            const detail =
+              extractJsonField(t.args_preview, ['path', 'command', 'cmd', 'query', 'url']) || ''
+            const chipLabel = detail
+              ? `${t.name} · ${detail.length > 26 ? `${detail.slice(0, 26)}…` : detail}`
+              : t.duration_ms !== undefined
+                ? `${t.name} · ${t.duration_ms}ms`
+                : t.name
+            return (
+              <EaseToolChip
+                key={t.id}
+                icon={<IconComp className="h-3.5 w-3.5" />}
+                label={chipLabel}
+                status={t.status === 'ok' ? 'done' : t.status}
+              />
+            )
+          })}
+        </div>
       ),
     minimal_pills: () =>
       tools.length === 0 ? null : (
@@ -501,12 +596,14 @@ export function SmartToolElement({
   toolCardStyle = 'aui_smart',
   diffStyle = 'aui_code_diff',
   shellStyle = 'aui_terminal_block',
+  webSearchStyle = 'aui_web_search',
   onRetryTool,
 }: {
   tool: NormalizedToolStep
   toolCardStyle?: ComponentSlots['chat_page']['tool_card_style']
   diffStyle?: DiffStyle
   shellStyle?: ShellStyle
+  webSearchStyle?: WebSearchStyle
   onRetryTool?: (toolName: string, argsPreview?: string) => void
 }) {
   const [retrying, setRetrying] = useState(false)
@@ -637,6 +734,21 @@ export function SmartToolElement({
     },
     web_search: () => {
       const ws = parseWebSearchFromTool(tool.args_preview, tool.content)
+      if (webSearchStyle === 'rareui_web_search') {
+        return (
+          <RareWebSearch
+            query={ws.query}
+            status={tool.status === 'running' ? 'searching' : 'done'}
+            defaultOpen={true}
+            sources={ws.results.map((r, idx) => ({
+              id: `${tool.id}-${idx}`,
+              title: r.title,
+              url: r.url || `https://${r.domain}`,
+              snippet: r.domain,
+            }))}
+          />
+        )
+      }
       return (
         <WebSearch
           query={ws.query}
@@ -888,7 +1000,7 @@ export function AssistantMessageFooter({
   )
 }
 
-/** 6. HITL Permission Grant Card (PermissionGrant default | BeUI ToolApproval | Compact Card) */
+/** 6. HITL Permission Grant Card (PermissionGrant default | BeUI ToolApproval | EaseUI ToolApproval | Compact Card) */
 export function ApprovalElement({
   approval,
   style = 'aui_permission_grant',
@@ -899,6 +1011,41 @@ export function ApprovalElement({
   onResolve: (id: string, decision: 'approve' | 'deny' | 'always_allow') => void
 }) {
   const [scope, setScope] = useState<GrantScope | 'pending'>('pending')
+  const [easeStatus, setEaseStatus] = useState<'pending' | 'approved' | 'denied'>('pending')
+
+  if (style === 'easeui_approval') {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <EaseToolApproval
+          title={`Allow ${approval.tool_name} (${approval.risk} risk)`}
+          description={approval.args_preview || '{}'}
+          status={easeStatus}
+          onApprove={() => {
+            setEaseStatus('approved')
+            onResolve(approval.id, 'approve')
+          }}
+          onDeny={() => {
+            setEaseStatus('denied')
+            onResolve(approval.id, 'deny')
+          }}
+        />
+        {easeStatus === 'pending' && (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setEaseStatus('approved')
+                onResolve(approval.id, 'always_allow')
+              }}
+              className="cursor-pointer font-mono text-[11px] text-[var(--muted)] transition-colors hover:text-[var(--accent)]"
+            >
+              Always allow {approval.tool_name} in this session
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   if (style === 'aui_permission_grant') {
     const parsed = parsePermissionGrantProps(approval)
@@ -994,7 +1141,7 @@ export function ApprovalElement({
   )
 }
 
-/** 7. Markdown Code Block Element (CodeRunner default | Borderless Minimal | Classic Bordered) */
+/** 7. Markdown Code Block Element (CodeRunner default | EaseUI CodeBlock | RareUI CodeBlock | Borderless Minimal | Classic Bordered) */
 export function MarkdownCodeBlock({
   children,
   className,
@@ -1007,6 +1154,27 @@ export function MarkdownCodeBlock({
   const [copied, setCopied] = useState(false)
   const raw = String(children).endsWith('\n') ? String(children).slice(0, -1) : String(children)
   const lang = className?.startsWith('language-') ? className.slice('language-'.length) : 'code'
+
+  if (style === 'easeui_code') {
+    return (
+      <div className="my-3">
+        <EaseCodeBlock code={raw} label={lang} />
+      </div>
+    )
+  }
+
+  if (style === 'rareui_code') {
+    return (
+      <div className="my-3">
+        <RareCodeBlock
+          code={raw}
+          language={lang === 'code' ? 'text' : lang}
+          accent={readThemeAccentHex()}
+          showLineNumbers
+        />
+      </div>
+    )
+  }
 
   if (style === 'aui_code_runner') {
     return (
@@ -1054,8 +1222,14 @@ export function MarkdownCodeBlock({
   )
 }
 
-/** 8. Markdown DataTable Wrapper (uses Assistant-UI sortable DataTable with borderless/minimal/striped/bordered styles) */
-export function MarkdownDataTable({ children }: { children?: ReactNode }) {
+/** 8. Markdown DataTable Wrapper (uses Assistant-UI sortable DataTable or EaseUI Table with resizable columns) */
+export function MarkdownDataTable({
+  children,
+  tableStyle,
+}: {
+  children?: ReactNode
+  tableStyle?: UiCustomization['surface']['table_style']
+}) {
   const extracted = useMemo(() => extractMarkdownTableData(children), [children])
   if (!extracted) {
     return (
@@ -1066,7 +1240,11 @@ export function MarkdownDataTable({ children }: { children?: ReactNode }) {
   }
   return (
     <div className="my-3.5">
-      <DataTable columns={extracted.columns} rows={extracted.rows} />
+      <DataTable
+        columns={extracted.columns}
+        rows={extracted.rows}
+        tableStyle={tableStyle}
+      />
     </div>
   )
 }
