@@ -4,6 +4,13 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8] - 2026-11-23
+
+Fixed stale embedded WebUI builds by tracking `webui/dist` in Cargo build scripts and rebuilding fresh dev & release binaries.
+
+### Fixed
+- **Automatic `rust-embed` WebUI Rebuild Tracking (`crates/zenko-webui/build.rs`):** Added a stack-based Cargo `build.rs` emitting `cargo:rerun-if-changed` across `webui/dist` so `cargo build` and `cargo build --release` always re-embed updated frontend assets even when no Rust files change.
+
 ## [0.0.7] - 2026-11-23
 
 Expanded WebUI Theme Studio component library across SmoothUI, Skiper96, VengeanceUI, EaseUI, Motion-Brew, and RareUI, plus Left Menubar and Context Meter refinements.
