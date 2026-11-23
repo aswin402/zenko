@@ -19,9 +19,10 @@ pub struct LogBuffer {
 
 impl LogBuffer {
     pub fn new(max_entries: usize, event_tx: broadcast::Sender<AgentEvent>) -> Self {
+        let cap = max_entries.max(1);
         Self {
-            inner: Arc::new(Mutex::new(VecDeque::with_capacity(max_entries.min(512)))),
-            max_entries,
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(cap.min(512)))),
+            max_entries: cap,
             event_tx,
             sink: Arc::new(RwLock::new(None)),
         }

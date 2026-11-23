@@ -13,7 +13,7 @@ members = [
 default-members = ["crates/zenko-cli"]
 
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 license = "MIT"
 authors = ["Aswin <aswin402>"]
@@ -31,7 +31,7 @@ zenko-gateways = { path = "crates/zenko-gateways" }
 zenko-webui = { path = "crates/zenko-webui" }
 
 # Async runtime & concurrency
-tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util", "io-std"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-core = "0.3"

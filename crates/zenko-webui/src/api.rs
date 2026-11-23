@@ -3148,7 +3148,7 @@ pub async fn api_run_goal_now(
     match zenko_runtime::execute_goal_iteration(
         &state.runtime,
         &id,
-        tokio_util::sync::CancellationToken::new(),
+        state.shutdown.child_token(),
     )
     .await
     {
@@ -3676,7 +3676,7 @@ pub async fn api_dashboard(State(state): State<WebState>, headers: HeaderMap) ->
     let logs_dir = state.runtime.log_sink.logs_dir().to_path_buf();
     let (db_bytes, db_files) = state.runtime.store.db_total_size_bytes();
 
-    let storage_specs: [(&str, &str, std::path::PathBuf); 5] = [
+    let storage_specs: [(&'static str, &'static str, std::path::PathBuf); 5] = [
         ("logs", "Flight Recorder Logs", logs_dir),
         ("checkpoints", "Checkpoints & Blobs", data_dir.join("checkpoints")),
         ("artifacts", "Spilled Artifacts", data_dir.join("artifacts")),
@@ -3701,33 +3701,39 @@ pub async fn api_dashboard(State(state): State<WebState>, headers: HeaderMap) ->
         },
     ];
 
-    for (id, label, path) in storage_specs {
-        let (bytes, files) = measure_dir_bounded(&path, 4, 8_000);
-        storage.push(StorageSlice {
-            id: id.into(),
-            label: label.into(),
-            path: path.display().to_string(),
-            bytes,
-            files,
-        });
-    }
-
-    // Also include top-level markdown memory snapshots (SOUL.md, USER.md, MEMORY.md, ZENKO.md)
-    let mut md_bytes = 0u64;
-    let mut md_files = 0u64;
-    for name in ["SOUL.md", "USER.md", "MEMORY.md", "ZENKO.md"] {
-        if let Ok(meta) = std::fs::metadata(data_dir.join(name)) {
-            md_bytes = md_bytes.saturating_add(meta.len());
-            md_files += 1;
+    let scanned_slices = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::with_capacity(storage_specs.len() + 1);
+        for (id, label, path) in storage_specs {
+            let (bytes, files) = measure_dir_bounded(&path, 4, 8_000);
+            out.push(StorageSlice {
+                id: id.into(),
+                label: label.into(),
+                path: path.display().to_string(),
+                bytes,
+                files,
+            });
         }
-    }
-    storage.push(StorageSlice {
-        id: "memory_docs".into(),
-        label: "Prompt & Memory Docs".into(),
-        path: data_dir.display().to_string(),
-        bytes: md_bytes,
-        files: md_files,
-    });
+        // Also include top-level markdown memory snapshots (SOUL.md, USER.md, MEMORY.md, ZENKO.md)
+        let mut md_bytes = 0u64;
+        let mut md_files = 0u64;
+        for name in ["SOUL.md", "USER.md", "MEMORY.md", "ZENKO.md"] {
+            if let Ok(meta) = std::fs::metadata(data_dir.join(name)) {
+                md_bytes = md_bytes.saturating_add(meta.len());
+                md_files += 1;
+            }
+        }
+        out.push(StorageSlice {
+            id: "memory_docs".into(),
+            label: "Prompt & Memory Docs".into(),
+            path: data_dir.display().to_string(),
+            bytes: md_bytes,
+            files: md_files,
+        });
+        out
+    })
+    .await
+    .unwrap_or_default();
+    storage.extend(scanned_slices);
 
     let total_storage_bytes: u64 = storage.iter().map(|s| s.bytes).sum();
 
@@ -4235,6 +4241,20 @@ pub struct UpsertMcpServerReq {
     pub secret_values: HashMap<String, String>,
 }
 
+fn is_reserved_system_vault_key(key: &str) -> bool {
+    matches!(
+        key,
+        VAULT_KEY_WEBUI_ADMIN
+            | VAULT_KEY_TELEGRAM
+            | VAULT_KEY_OPENROUTER
+            | VAULT_KEY_BRAVE_SEARCH
+            | VAULT_KEY_TAVILY_SEARCH
+            | VAULT_KEY_WEBHOOK_SECRET
+    ) || PROVIDER_REGISTRY
+        .iter()
+        .any(|p| !p.vault_secret_key.is_empty() && p.vault_secret_key == key)
+}
+
 pub async fn api_upsert_mcp_server(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -4242,6 +4262,51 @@ pub async fn api_upsert_mcp_server(
 ) -> Response {
     if let Some(r) = require_api_auth(&state, &headers) {
         return r;
+    }
+    let mut referenced_keys: std::collections::HashSet<&str> = req
+        .server
+        .env_secrets
+        .values()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if let Some(auth_key) = req
+        .server
+        .auth_header_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        referenced_keys.insert(auth_key);
+    }
+    for (vault_key, raw_val) in &req.secret_values {
+        let key = vault_key.trim();
+        let val = raw_val.trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
+        }
+        if !referenced_keys.contains(key) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "secret key `{key}` must be referenced by this server's `env_secrets` or `auth_header_secret`"
+                    )
+                })),
+            )
+                .into_response();
+        }
+        if is_reserved_system_vault_key(key) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "cannot overwrite reserved system or provider vault key `{key}` via MCP server config"
+                    )
+                })),
+            )
+                .into_response();
+        }
     }
     for (vault_key, raw_val) in &req.secret_values {
         let key = vault_key.trim();

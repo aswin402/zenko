@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 @import "tw-shimmer";
 
 /* Self-hosted SIL OFL 1.1 Variable Fonts: Obel Mono (typographic.systems) + Fontzz (fontzz.vercel.app) */
@@ -599,6 +600,29 @@ html, body, #root {
   background-image: linear-gradient(110deg, var(--muted) 28%, var(--fg) 50%, var(--muted) 72%);
   animation: beui-text-shimmer 2.2s linear infinite;
 }
+
+@keyframes z-enter {
+  from {
+    opacity: var(--z-enter-opacity, 1);
+    transform: translate3d(var(--z-enter-x, 0), var(--z-enter-y, 0), 0) scale(var(--z-enter-scale, 1));
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.animate-in {
+  animation-name: z-enter;
+  animation-duration: var(--tw-duration, 180ms);
+  animation-timing-function: var(--motion-ease, cubic-bezier(0.16, 1, 0.3, 1));
+}
+.fade-in { --z-enter-opacity: 0; }
+.zoom-in-90 { --z-enter-scale: 0.9; }
+.zoom-in-95 { --z-enter-scale: 0.95; }
+.slide-in-from-bottom-1 { --z-enter-y: 0.25rem; }
+.slide-in-from-left-1 { --z-enter-x: -0.25rem; }
+.fill-mode-both { animation-fill-mode: both; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

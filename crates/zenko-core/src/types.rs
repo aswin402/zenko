@@ -3068,6 +3068,26 @@ impl TriggerRateLimiter {
         let Ok(mut map) = self.buckets.lock() else {
             return Err("trigger rate limiter lock poisoned".into());
         };
+        // Bound bucket table memory: evict expired entries and enforce max bucket cap.
+        if map.len() >= crate::constants::DEFAULT_RATE_LIMITER_MAX_ENTRIES {
+            map.retain(|_, q| {
+                while q.front().is_some_and(|t| *t < hour_cutoff) {
+                    q.pop_front();
+                }
+                !q.is_empty()
+            });
+            if map.len() >= crate::constants::DEFAULT_RATE_LIMITER_MAX_ENTRIES
+                && !map.contains_key(key)
+            {
+                if let Some(oldest_key) = map
+                    .iter()
+                    .min_by_key(|(_, q)| q.back().copied())
+                    .map(|(k, _)| k.clone())
+                {
+                    map.remove(&oldest_key);
+                }
+            }
+        }
         let queue = map.entry(key.to_string()).or_default();
         while queue.front().is_some_and(|t| *t < hour_cutoff) {
             queue.pop_front();

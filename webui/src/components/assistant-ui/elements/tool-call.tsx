@@ -54,12 +54,12 @@ export function ToolCall({
         {leadingIcon ? (
           <span
             aria-hidden="true"
-            className="grid size-4 shrink-0 place-items-center text-muted-foreground transition-colors group-hover/trigger:text-foreground/85 group-data-open/trigger:text-[var(--accent)] group-data-panel-open/trigger:text-[var(--accent)]"
+            className="grid size-4 shrink-0 place-items-center text-muted-foreground transition-colors group-hover/trigger:text-foreground/85 group-data-[state=open]/trigger:text-[var(--accent)]"
           >
             {leadingIcon}
           </span>
         ) : (
-          <ChevronRightIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-open/trigger:rotate-90 group-data-panel-open/trigger:rotate-90 motion-reduce:transition-none" />
+          <ChevronRightIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none" />
         )}
         <SwapLabel
           active={running ? 0 : 1}

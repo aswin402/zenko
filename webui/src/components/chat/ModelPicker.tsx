@@ -72,7 +72,7 @@ export function ModelPicker({
     }
   }, [activeProvider, activeModels])
 
-  // Close popover on outside click (non-preview mode)
+  // Close popover on outside click or Escape key (non-preview mode)
   useEffect(() => {
     if (!open || inlinePreview) return
     const onPointer = (e: MouseEvent) => {
@@ -80,8 +80,17 @@ export function ModelPicker({
         onOpenChange(false)
       }
     }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onOpenChange(false)
+      }
+    }
     window.addEventListener('mousedown', onPointer)
-    return () => window.removeEventListener('mousedown', onPointer)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', onPointer)
+      window.removeEventListener('keydown', onKeyDown)
+    }
   }, [open, inlinePreview, onOpenChange])
 
   // Reset to Providers step every time drilldown popover opens

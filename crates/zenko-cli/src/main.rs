@@ -2152,12 +2152,16 @@ async fn run_web_daemon(config_path: PathBuf, port: Option<u16>, bind: Option<St
     let flush_logs = runtime.logs.clone();
     let stop_jobs = runtime.jobs.clone();
     let stop_runtime = runtime.clone();
-    if cfg.webui.enabled {
-        zenko_webui::serve(runtime, tg_reload, cancel).await?;
-    } else {
-        cancel.cancelled().await;
-    }
+    let serve_res = match cfg.webui.enabled {
+        true => zenko_webui::serve(runtime, tg_reload, cancel.clone()).await,
+        false => {
+            cancel.cancelled().await;
+            Ok(())
+        }
+    };
 
+    // Always cancel background tasks (cron/telegram/goal loops/IPC) and flush state even if webui bind failed
+    cancel.cancel();
     stop_runtime.subagents.kill_all(&stop_runtime).await;
     stop_runtime.shutdown_external_tools().await;
     stop_jobs.stop_all().await;
@@ -2170,5 +2174,6 @@ async fn run_web_daemon(config_path: PathBuf, port: Option<u16>, bind: Option<St
     );
     flush_logs.push(stopped_entry);
     flush_logs.flush();
+    serve_res?;
     Ok(())
 }

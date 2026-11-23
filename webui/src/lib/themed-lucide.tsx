@@ -129,6 +129,7 @@ function createThemedIcon(slot: string, Fallback: LucideIcon): LucideIcon {
 
     return (
       <ZenkoIcon
+        {...rest}
         ref={ref}
         slot={slot}
         icons={activeIcons}

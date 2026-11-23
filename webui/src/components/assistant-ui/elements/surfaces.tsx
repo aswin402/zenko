@@ -42,7 +42,7 @@ export const labelSwapOut =
   "pointer-events-none select-none opacity-0 blur-[2px]";
 
 export const collapsePanel =
-  "h-(--collapsible-panel-height) overflow-hidden transition-[height] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] data-[ending-style]:h-0 data-[starting-style]:h-0 motion-reduce:transition-none";
+  "h-(--radix-collapsible-content-height) overflow-hidden transition-[height] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=closed]:h-0 motion-reduce:transition-none";
 
 export const live = "text-[var(--accent)]";
 

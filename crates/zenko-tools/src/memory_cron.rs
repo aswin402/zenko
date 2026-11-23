@@ -8,9 +8,9 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     CronJob, CronKind, MEMORY_DEFAULT_SEARCH_LIMIT, MEMORY_SCOPE_GLOBAL, MemoryKind,
     PROJECT_MEMORY_DOC_NAME, Result, RiskLevel, SESSION_CONTEXT_DEFAULT_WINDOW,
-    SESSION_SEARCH_DEFAULT_LIMIT, SESSION_SEARCH_MAX_LIMIT, SecretVault, SessionSearchFilter,
-    TOOL_SESSION_SEARCH, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec,
-    ZenkoError, new_id,
+    SESSION_CONTEXT_MAX_WINDOW, SESSION_SEARCH_DEFAULT_LIMIT, SESSION_SEARCH_MAX_LIMIT,
+    SecretVault, SessionSearchFilter, TOOL_SESSION_SEARCH, Tool, ToolConcurrency, ToolContext,
+    ToolExposure, ToolOutput, ToolSpec, ZenkoError, new_id,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, parse_since_window, project_scope_for_workspace, resolve_git_root,
@@ -264,13 +264,15 @@ impl Tool for MemoryTool {
                     "project" => proj_scope.as_str(),
                     other => other,
                 });
-                let updated = self.store.update_memory(
+                let secrets = self.known_secrets();
+                let updated = self.store.update_memory_with_secrets(
                     id,
                     args.get("title").and_then(Value::as_str),
                     args.get("content").and_then(Value::as_str),
                     args.get("kind").and_then(Value::as_str),
                     args.get("salience").and_then(Value::as_f64),
                     scope_opt,
+                    &secrets,
                 )?;
                 match updated {
                     Some(entry) => Ok(ToolOutput {
@@ -453,10 +455,11 @@ impl Tool for SessionSearchTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            let window = args
+            let window = (args
                 .get("window")
                 .and_then(Value::as_u64)
-                .unwrap_or(SESSION_CONTEXT_DEFAULT_WINDOW as u64) as usize;
+                .unwrap_or(SESSION_CONTEXT_DEFAULT_WINDOW as u64) as usize)
+                .clamp(1, SESSION_CONTEXT_MAX_WINDOW);
             let Some(win) = self.store.get_session_event_context(anchor_id, window)? else {
                 return Ok(ToolOutput::ok(format!(
                     "No session event found for `around_event_id={anchor_id}`."

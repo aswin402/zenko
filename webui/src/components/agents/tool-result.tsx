@@ -243,15 +243,18 @@ export function ToolResult({
       }
     });
     return () => cancelAnimationFrame(frame);
-  });
+  }, [children, copyText, currentOpen, reduce, running]);
 
   const handleCopy = useCallback(async () => {
-    if (onCopy) await onCopy();
-    else if (copyText) await navigator.clipboard?.writeText(copyText);
-
-    setCopied(true);
-    if (copyTimer.current) window.clearTimeout(copyTimer.current);
-    copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
+    try {
+      if (onCopy) await onCopy();
+      else if (copyText) await navigator.clipboard?.writeText(copyText);
+      setCopied(true);
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* clipboard permission denied or unavailable */
+    }
   }, [copyText, onCopy]);
 
   return (

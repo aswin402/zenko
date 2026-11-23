@@ -13,19 +13,64 @@ use zenko_core::{
     ToolSpec, ZenkoError, sanitize_untrusted_markup,
 };
 
+struct SsrfSafeResolver;
+
+impl reqwest::dns::Resolve for SsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            if is_blocked_hostname(&host) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("blocked local/internal host `{host}` (SSRF protection)"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                .collect();
+            for sock in &resolved {
+                if is_blocked_ip(sock.ip()) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "host `{host}` resolved to private/loopback IP `{}` (SSRF protection)",
+                            sock.ip()
+                        ),
+                    )) as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+            if resolved.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("DNS returned no addresses for `{host}`"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(resolved.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+pub(crate) fn build_ssrf_safe_http_client() -> Result<Client> {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(SsrfSafeResolver))
+        .pool_max_idle_per_host(4)
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| ZenkoError::Tool(format!("failed to build SSRF-safe HTTP client: {e}")))
+}
+
 pub struct WebFetchTool {
-    client: Client,
+    client: Option<Client>,
 }
 
 impl WebFetchTool {
-    pub fn new(fallback_client: Client) -> Self {
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .pool_max_idle_per_host(4)
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or(fallback_client);
-        Self { client }
+    pub fn new(_fallback_client: Client) -> Self {
+        Self {
+            client: build_ssrf_safe_http_client().ok(),
+        }
     }
 }
 
@@ -35,6 +80,7 @@ pub(crate) struct ParsedHttpUrl {
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) origin: String,
+    pub(crate) base_dir: String,
 }
 
 pub(crate) fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl> {
@@ -49,6 +95,15 @@ pub(crate) fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl> {
         .find(['/', '?', '#'])
         .unwrap_or(rest.len());
     let authority = &rest[..authority_end];
+    let path_and_query = &rest[authority_end..];
+    let path_only = path_and_query
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("/");
+    let base_dir = match path_only.rfind('/') {
+        Some(idx) => path_only[..=idx].to_string(),
+        None => "/".to_string(),
+    };
     let host_port = authority
         .rsplit_once('@')
         .map(|(_, hp)| hp)
@@ -60,11 +115,15 @@ pub(crate) fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl> {
                 .find(']')
                 .ok_or_else(|| ZenkoError::Tool("malformed IPv6 host in URL".into()))?;
             let h = &host_port[1..close];
-            let p = match host_port[close + 1..].strip_prefix(':') {
-                Some(port_str) => port_str
-                    .parse::<u16>()
-                    .map_err(|_| ZenkoError::Tool("invalid port in URL".into()))?,
-                None => default_port,
+            let suffix = &host_port[close + 1..];
+            let p = match suffix {
+                "" => default_port,
+                s => match s.strip_prefix(':') {
+                    Some(port_str) => port_str
+                        .parse::<u16>()
+                        .map_err(|_| ZenkoError::Tool("invalid port in URL".into()))?,
+                    None => return Err(ZenkoError::Tool("malformed trailing characters after IPv6 host".into())),
+                },
             };
             (h.to_string(), p)
         }
@@ -86,6 +145,7 @@ pub(crate) fn parse_http_url(raw: &str) -> Result<ParsedHttpUrl> {
             host,
             port,
             origin: format!("{scheme}://{host_port}"),
+            base_dir,
         }),
     }
 }
@@ -182,13 +242,31 @@ pub(crate) async fn verify_url_safe(raw: &str) -> Result<ParsedHttpUrl> {
     }
 }
 
+fn has_explicit_scheme(loc: &str) -> bool {
+    let Some(colon) = loc.find(':') else {
+        return false;
+    };
+    if colon == 0 {
+        return false;
+    }
+    let bytes = loc.as_bytes();
+    bytes[0].is_ascii_alphabetic()
+        && bytes[1..colon]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
 fn resolve_redirect_url(base: &ParsedHttpUrl, location: &str) -> String {
     let loc = location.trim();
-    match (loc.starts_with("http://") || loc.starts_with("https://"), loc.starts_with("//"), loc.starts_with('/')) {
+    match (
+        has_explicit_scheme(loc),
+        loc.starts_with("//"),
+        loc.starts_with('/'),
+    ) {
         (true, _, _) => loc.to_string(),
         (_, true, _) => format!("{}:{loc}", base.scheme),
         (_, _, true) => format!("{}{loc}", base.origin),
-        _ => format!("{}/{loc}", base.origin),
+        _ => format!("{}{}{loc}", base.origin, base.base_dir),
     }
 }
 
@@ -271,13 +349,16 @@ impl WebFetchTool {
         start_url: &str,
         cancel: CancellationToken,
     ) -> Result<(String, reqwest::StatusCode, Vec<u8>, bool)> {
+        let client = self.client.as_ref().ok_or_else(|| {
+            ZenkoError::Tool("SSRF-safe HTTP client failed to initialize".into())
+        })?;
         let mut current_url = start_url.to_string();
 
         for _hop in 0..=DEFAULT_WEB_FETCH_MAX_REDIRECTS {
             let parsed = verify_url_safe(&current_url).await?;
             let resp = tokio::select! {
                 _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
-                res = self.client.get(&current_url).header("User-Agent", DEFAULT_WEB_FETCH_USER_AGENT).send() => {
+                res = client.get(&current_url).header("User-Agent", DEFAULT_WEB_FETCH_USER_AGENT).send() => {
                     res.map_err(|e| ZenkoError::Tool(format!("fetch failed: {e}")))?
                 }
             };
@@ -424,5 +505,36 @@ mod tests {
     fn html_state_machine_strips_scripts_styles_and_tags() {
         let html = "<html><style>body{color:red}</style><script>alert(1)</script><h1>Zenko</h1><p>Fast Rust</p></html>";
         assert_eq!(strip_html_to_text(html), "Zenko Fast Rust");
+    }
+
+    #[test]
+    fn parse_http_url_rejects_malformed_ipv6_trailing_garbage() {
+        let p1 = parse_http_url("https://[::1]:8080/a").expect("valid ipv6 with port");
+        assert_eq!(p1.host, "::1");
+        assert_eq!(p1.port, 8080);
+
+        let p2 = parse_http_url("https://[2606:4700::1111]/ok").expect("valid ipv6");
+        assert_eq!(p2.host, "2606:4700::1111");
+
+        assert!(parse_http_url("https://[::1]evil.com/a").is_err());
+        assert!(parse_http_url("https://[::1]:notaport/a").is_err());
+    }
+
+    #[test]
+    fn resolve_redirect_url_preserves_directory_and_passes_bad_schemes_to_validator() {
+        let base = parse_http_url("https://docs.rs/zenko/latest/index.html").expect("base");
+        assert_eq!(
+            resolve_redirect_url(&base, "guide.html"),
+            "https://docs.rs/zenko/latest/guide.html"
+        );
+        assert_eq!(resolve_redirect_url(&base, "/root"), "https://docs.rs/root");
+        assert_eq!(
+            resolve_redirect_url(&base, "HTTPS://example.com/b"),
+            "HTTPS://example.com/b"
+        );
+        let file_redir = resolve_redirect_url(&base, "file:///etc/passwd");
+        assert!(parse_http_url(&file_redir).is_err());
+        let js_redir = resolve_redirect_url(&base, "javascript:alert(1)");
+        assert!(parse_http_url(&js_redir).is_err());
     }
 }

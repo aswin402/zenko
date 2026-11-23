@@ -363,53 +363,55 @@ function MarkdownProse({
   text: string
   codeBlockStyle?: ComponentSlots['chat_page']['code_block_style']
 }) {
+  const markdownComponents = useMemo(
+    () => ({
+      pre({ children }: { children?: React.ReactNode }) {
+        return <>{children}</>
+      },
+      code({ className, children }: { className?: string; children?: React.ReactNode }) {
+        const isBlock = Boolean(className) || String(children).includes('\n')
+        if (isBlock) {
+          return (
+            <MarkdownCodeBlock className={className} style={codeBlockStyle}>
+              {children}
+            </MarkdownCodeBlock>
+          )
+        }
+        return <code>{children}</code>
+      },
+      table({ children }: { children?: React.ReactNode }) {
+        return <MarkdownDataTable>{children}</MarkdownDataTable>
+      },
+      a({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+        const validated = safeHref(typeof href === 'string' ? href : undefined)
+        const isExternal = Boolean(
+          validated && (validated.startsWith('http://') || validated.startsWith('https://')),
+        )
+        if (!validated) {
+          return <span className="zenko-prose-link">{children}</span>
+        }
+        return (
+          <a
+            {...props}
+            href={validated}
+            target={isExternal ? '_blank' : undefined}
+            rel={isExternal ? 'noopener noreferrer' : undefined}
+            className="zenko-prose-link"
+          >
+            {children}
+            {isExternal && (
+              <ArrowUpRight size={12} aria-hidden="true" className="zenko-prose-link-icon" />
+            )}
+          </a>
+        )
+      },
+    }),
+    [codeBlockStyle],
+  )
+
   return (
     <div className="zenko-prose" data-slot="message-content">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre({ children }) {
-            return <>{children}</>
-          },
-          code({ className, children }) {
-            const isBlock = Boolean(className) || String(children).includes('\n')
-            if (isBlock) {
-              return (
-                <MarkdownCodeBlock className={className} style={codeBlockStyle}>
-                  {children}
-                </MarkdownCodeBlock>
-              )
-            }
-            return <code>{children}</code>
-          },
-          table({ children }) {
-            return <MarkdownDataTable>{children}</MarkdownDataTable>
-          },
-          a({ href, children, ...props }) {
-            const validated = safeHref(typeof href === 'string' ? href : undefined)
-            const isExternal = Boolean(
-              validated && (validated.startsWith('http://') || validated.startsWith('https://')),
-            )
-            if (!validated) {
-              return <span className="zenko-prose-link">{children}</span>
-            }
-            return (
-              <a
-                {...props}
-                href={validated}
-                target={isExternal ? '_blank' : undefined}
-                rel={isExternal ? 'noopener noreferrer' : undefined}
-                className="zenko-prose-link"
-              >
-                {children}
-                {isExternal && (
-                  <ArrowUpRight size={12} aria-hidden="true" className="zenko-prose-link-icon" />
-                )}
-              </a>
-            )
-          },
-        }}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {text}
       </ReactMarkdown>
     </div>
@@ -1319,6 +1321,7 @@ function LiveAssistantTurn({
 }
 
 export function ChatStream({
+  sessionId = null,
   events,
   siblings,
   pendingApprovals,
@@ -1346,6 +1349,7 @@ export function ChatStream({
   onResolveApproval,
   onResolveClarification,
 }: {
+  sessionId?: string | null
   events: SessionEvent[]
   siblings: Record<string, string[]>
   pendingApprovals: ApprovalRecord[]
@@ -1716,6 +1720,7 @@ export function ChatStream({
   if (scrollerStyle === 'beui_rail' || scrollerStyle === 'beui_scroller') {
     return (
       <MessageScroller
+        key={sessionId || 'new'}
         navigation={scrollerStyle === 'beui_rail' ? 'rail' : undefined}
         followOutput
         smooth
@@ -1730,6 +1735,7 @@ export function ChatStream({
 
   return (
     <CompactScrollArea
+      key={sessionId || 'new'}
       smooth={scrollerStyle === 'smooth'}
       className="min-h-0 flex-1"
       viewportClassName="px-5 pb-6 pt-8 sm:px-8"

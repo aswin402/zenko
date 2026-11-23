@@ -2,7 +2,7 @@
 //! Enables ANY external AI agent (Antigravity, Claude Code, Codex, Cursor, scripts) to invoke
 //! Zenko's 24/7 autonomous runtime, persistent SQLite FTS5 memory, sessions, and cron scheduler.
 
-use crate::ipc::{ipc_call, unwrap_ipc_result};
+use crate::ipc::{ipc_call, is_daemon_offline, unwrap_ipc_result};
 use anyhow::Result;
 use chrono::Utc;
 use croner::Cron;
@@ -724,12 +724,24 @@ async fn execute_mcp_tool(
             .await
             {
                 Ok(resp) => unwrap_ipc_result(resp),
-                Err(_) => {
+                Err(e) if is_daemon_offline(&e) => {
                     let store = SqliteStore::open(cfg.db_path())?;
-                    Ok(serde_json::to_value(
-                        store.add_memory("global", kind, title, content, 1.0)?,
-                    )?)
+                    let vault = SecretVault::open(cfg.vault_path(), cfg.vault_key_path());
+                    let vault_secrets = vault.all_values();
+                    let res = store.upsert_memory_dedup_with_secrets(
+                        zenko_core::MEMORY_SCOPE_GLOBAL,
+                        kind,
+                        title,
+                        content,
+                        1.0,
+                        None,
+                        None,
+                        cfg.memory.dedup_enabled,
+                        &vault_secrets,
+                    )?;
+                    Ok(serde_json::to_value(res.entry)?)
                 }
+                Err(e) => Err(e),
             }
         }
         "zenko_cron_list" => match ipc_call(cfg, IPC_METHOD_CRON_LIST, json!({})).await {
@@ -1067,7 +1079,7 @@ async fn execute_mcp_tool(
                 .to_string();
             match ipc_call(cfg, IPC_METHOD_CHECKPOINTS_REWIND, args.clone()).await {
                 Ok(resp) => unwrap_ipc_result(resp),
-                Err(_) => {
+                Err(e) if is_daemon_offline(&e) => {
                     let rt = match lazy_runtime {
                         Some(existing) => existing.clone(),
                         None => {
@@ -1116,6 +1128,7 @@ async fn execute_mcp_tool(
                         .await?;
                     Ok(serde_json::to_value(rep)?)
                 }
+                Err(e) => Err(e),
             }
         }
         "zenko_plan_approve" => {
@@ -1191,7 +1204,7 @@ async fn execute_mcp_tool(
             let model = args.get("model").and_then(Value::as_str);
             let mode = args.get("mode").and_then(Value::as_str);
 
-            if let Ok(resp) = ipc_call(
+            match ipc_call(
                 cfg,
                 IPC_METHOD_ASK,
                 json!({
@@ -1205,7 +1218,9 @@ async fn execute_mcp_tool(
             )
             .await
             {
-                return unwrap_ipc_result(resp);
+                Ok(resp) => return unwrap_ipc_result(resp),
+                Err(e) if is_daemon_offline(&e) => {}
+                Err(e) => return Err(e),
             }
 
             let rt = match lazy_runtime {
@@ -1277,10 +1292,10 @@ async fn execute_mcp_tool(
         }
         "zenko_goal_create" => {
             let req: GoalLoopCreateRequest = serde_json::from_value(args)?;
-            if let Ok(resp) =
-                ipc_call(cfg, IPC_METHOD_GOAL_CREATE, serde_json::to_value(&req)?).await
-            {
-                return unwrap_ipc_result(resp);
+            match ipc_call(cfg, IPC_METHOD_GOAL_CREATE, serde_json::to_value(&req)?).await {
+                Ok(resp) => return unwrap_ipc_result(resp),
+                Err(e) if is_daemon_offline(&e) => {}
+                Err(e) => return Err(e),
             }
             let rt = match lazy_runtime {
                 Some(existing) => existing.clone(),

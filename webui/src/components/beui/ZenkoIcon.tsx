@@ -1,4 +1,4 @@
-import { createContext, forwardRef, useContext, type CSSProperties } from 'react'
+import { createContext, forwardRef, useContext, type CSSProperties, type SVGAttributes } from 'react'
 import { motion, useReducedMotion, type TargetAndTransition } from 'motion/react'
 import {
   ICON_PACK_META_MAP,
@@ -200,7 +200,8 @@ function renderSvgPrimitive(prim: SvgPrimitive, key: number, strokeWidth: number
   }
 }
 
-export interface ZenkoIconProps {
+export interface ZenkoIconProps
+  extends Omit<SVGAttributes<SVGSVGElement>, 'strokeWidth' | 'style' | 'className'> {
   slot: string
   icons?: UiCustomization['icons']
   className?: string
@@ -230,6 +231,7 @@ export const ZenkoIcon = forwardRef<SVGSVGElement, ZenkoIconProps>(function Zenk
     animateAlways = false,
     useGlobalSize = true,
     fallbackLucide,
+    ...rest
   },
   ref,
 ) {
@@ -270,6 +272,7 @@ export const ZenkoIcon = forwardRef<SVGSVGElement, ZenkoIconProps>(function Zenk
     const iconStyle = activeIcons?.style || 'outline'
     return (
       <motion.svg
+        {...(rest as any)}
         ref={ref}
         width={px}
         height={px}
@@ -297,6 +300,7 @@ export const ZenkoIcon = forwardRef<SVGSVGElement, ZenkoIconProps>(function Zenk
   if (pack === 'pixel') {
     return (
       <svg
+        {...rest}
         ref={ref}
         width={px}
         height={px}
@@ -335,6 +339,7 @@ export const ZenkoIcon = forwardRef<SVGSVGElement, ZenkoIconProps>(function Zenk
   const Comp = fallbackLucide || LUCIDE_SLOT_FALLBACK[resolved] || MessageSquareRaw
   return (
     <Comp
+      {...rest}
       ref={ref}
       size={px}
       strokeWidth={strokeWidth}

@@ -137,12 +137,40 @@ impl StdioMcpTransport {
         let d_clone = catalog_dirty.clone();
         let stdin_reply = stdin.clone();
         tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
             let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            while let Ok(n) = reader.read_line(&mut line).await {
+            let mut raw = Vec::with_capacity(4096);
+            loop {
+                raw.clear();
+                let n = {
+                    let mut limited = (&mut reader).take(MCP_MAX_RESPONSE_BYTES as u64);
+                    match limited.read_until(b'\n', &mut raw).await {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    }
+                };
                 if n == 0 {
                     break;
                 }
+                if !raw.ends_with(b"\n") && n == MCP_MAX_RESPONSE_BYTES {
+                    // Drain oversized corrupted JSON-RPC line without OOMing daemon
+                    loop {
+                        let Ok(buf) = reader.fill_buf().await else {
+                            break;
+                        };
+                        if buf.is_empty() {
+                            break;
+                        }
+                        if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                            reader.consume(pos + 1);
+                            break;
+                        }
+                        let len = buf.len();
+                        reader.consume(len);
+                    }
+                    continue;
+                }
+                let line = String::from_utf8_lossy(&raw);
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     if let Ok(msg) = serde_json::from_str::<Value>(trimmed) {
@@ -182,7 +210,6 @@ impl StdioMcpTransport {
                         }
                     }
                 }
-                line.clear();
             }
             a_clone.store(false, Ordering::SeqCst);
             if let Ok(mut map) = p_clone.lock() {
@@ -324,9 +351,13 @@ impl HttpMcpTransport {
                 cfg.name
             )));
         }
-        if !cfg.allow_private_url {
-            verify_url_safe(&url).await?;
-        }
+        let effective_http = match cfg.allow_private_url {
+            false => {
+                verify_url_safe(&url).await?;
+                crate::web::build_ssrf_safe_http_client()?
+            }
+            true => http,
+        };
         let bearer_token = cfg
             .auth_header_secret
             .as_deref()
@@ -345,7 +376,7 @@ impl HttpMcpTransport {
             allow_private_url: cfg.allow_private_url,
             headers,
             bearer_token,
-            http,
+            http: effective_http,
             session_id: AsyncMutex::new(None),
         })
     }
@@ -380,9 +411,10 @@ impl HttpMcpTransport {
             req = req.header(k, v);
         }
 
+        let deadline = tokio::time::Instant::now() + timeout;
         let resp = tokio::select! {
             _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
-            res = tokio::time::timeout(timeout, req.json(payload).send()) => match res {
+            res = tokio::time::timeout_at(deadline, req.json(payload).send()) => match res {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => return Err(ZenkoError::Tool(format!(
                     "MCP HTTP server `{}` request failed: {e}",
@@ -417,7 +449,12 @@ impl HttpMcpTransport {
             return Ok(HttpRpcOutcome::Value(None));
         }
         if !status.is_success() {
-            let err_body = read_bounded_http_body(resp, 4096).await.unwrap_or_default();
+            let err_body = tokio::select! {
+                _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
+                res = tokio::time::timeout_at(deadline, read_bounded_http_body(resp, 4096)) => {
+                    res.ok().and_then(|r| r.ok()).unwrap_or_default()
+                }
+            };
             return Err(ZenkoError::Tool(format!(
                 "MCP HTTP server `{}` returned HTTP {}: {}",
                 self.server_name,
@@ -432,7 +469,17 @@ impl HttpMcpTransport {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let bytes = read_bounded_http_body(resp, MCP_MAX_RESPONSE_BYTES).await?;
+        let bytes = tokio::select! {
+            _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
+            res = tokio::time::timeout_at(deadline, read_bounded_http_body(resp, MCP_MAX_RESPONSE_BYTES)) => match res {
+                Ok(inner) => inner?,
+                Err(_) => return Err(ZenkoError::Tool(format!(
+                    "MCP HTTP server `{}` response body timed out ({}s)",
+                    self.server_name,
+                    timeout.as_secs()
+                ))),
+            }
+        };
         if bytes.is_empty() {
             return Ok(HttpRpcOutcome::Value(None));
         }
@@ -730,9 +777,9 @@ impl McpClientManager {
             ZenkoError::NotFound(format!("MCP server `{server_name}` not configured"))
         })?;
         let prefix = format!("{MCP_TOOL_PREFIX}{}__", sanitize_mcp_segment(&cfg.name));
-        registry.unregister_prefix(&prefix);
 
         if !cfg.enabled {
+            registry.unregister_prefix(&prefix);
             self.disconnect_server(&cfg.name).await;
                 let status = McpServerStatus {
                 name: cfg.name.clone(),
@@ -842,6 +889,8 @@ impl McpClientManager {
             let _ = self.store.set_kv(&kv_key, &serialized);
         }
 
+        // Atomically swap proxies only AFTER `tools/list` succeeded so transient glitches keep cached tools.
+        registry.unregister_prefix(&prefix);
         let tool_names: Vec<String> = discovered.iter().map(|t| t.full_name.clone()).collect();
         for dt in discovered {
             registry.register(Arc::new(McpProxyTool::new(self.clone(), cfg.clone(), dt)));
@@ -1114,8 +1163,25 @@ impl McpClientManager {
             }
         }
         let fresh = McpSession::connect(cfg.clone(), &self.vault, self.http.clone()).await?;
-        let mut map = self.sessions.lock().await;
-        map.insert(cfg.name.clone(), fresh.clone());
+        let winner = {
+            let mut map = self.sessions.lock().await;
+            if let Some(existing) = map.get(&cfg.name) {
+                if existing.is_alive() {
+                    existing.touch();
+                    Some(existing.clone())
+                } else {
+                    map.insert(cfg.name.clone(), fresh.clone());
+                    None
+                }
+            } else {
+                map.insert(cfg.name.clone(), fresh.clone());
+                None
+            }
+        };
+        if let Some(existing) = winner {
+            fresh.close().await;
+            return Ok(existing);
+        }
         Ok(fresh)
     }
 }

@@ -9,6 +9,25 @@ use zenko_core::{
     LogFilter, ZenkoConfig,
 };
 
+#[derive(Debug, Clone)]
+pub struct DaemonOfflineError(pub String);
+
+impl std::fmt::Display for DaemonOfflineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DaemonOfflineError {}
+
+/// Returns `true` ONLY when connecting to the local `zenko web` daemon socket failed because
+/// no daemon is listening (`NotFound` / `ConnectionRefused`, or non-Unix). Distinguishes an
+/// offline daemon from an in-flight RPC timeout/transport error so non-idempotent commands never
+/// double-execute after a timeout!
+pub fn is_daemon_offline(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<DaemonOfflineError>().is_some()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Text,
@@ -29,9 +48,26 @@ pub async fn ipc_call_timeout(
     timeout: Option<Duration>,
 ) -> Result<Value> {
     let sock = cfg.socket_path();
-    let stream = tokio::net::UnixStream::connect(&sock)
-        .await
-        .with_context(|| format!("failed to connect to daemon socket {}", sock.display()))?;
+    let stream = match tokio::net::UnixStream::connect(&sock).await {
+        Ok(s) => s,
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Err(anyhow::Error::new(DaemonOfflineError(format!(
+                "daemon socket {} offline: {e}",
+                sock.display()
+            ))));
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!(
+                "failed to connect to daemon socket {}",
+                sock.display()
+            )));
+        }
+    };
     let (reader, mut writer) = stream.into_split();
     let payload = json!({ "method": method, "params": params });
     let mut line = serde_json::to_string(&payload)?;
@@ -53,7 +89,9 @@ pub async fn ipc_call_timeout(
 
 #[cfg(not(unix))]
 pub async fn ipc_call(_cfg: &ZenkoConfig, _method: &str, _params: Value) -> Result<Value> {
-    anyhow::bail!("Unix IPC not available on this OS")
+    Err(anyhow::Error::new(DaemonOfflineError(
+        "Unix IPC not available on this OS".into(),
+    )))
 }
 
 #[cfg(not(unix))]
@@ -63,7 +101,9 @@ pub async fn ipc_call_timeout(
     _params: Value,
     _timeout: Option<Duration>,
 ) -> Result<Value> {
-    anyhow::bail!("Unix IPC not available on this OS")
+    Err(anyhow::Error::new(DaemonOfflineError(
+        "Unix IPC not available on this OS".into(),
+    )))
 }
 
 pub fn unwrap_ipc_result(resp: Value) -> Result<Value> {

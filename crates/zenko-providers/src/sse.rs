@@ -9,6 +9,7 @@ use zenko_core::{LlmDelta, Result, ToolCall, UsageStats, ZenkoError};
 
 const THINK_OPEN: &str = "<think>";
 const THINK_CLOSE: &str = "</think>";
+const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
 
 /// Byte-safe SSE line framer that buffers raw TCP bytes until `\n` before
 /// decoding UTF-8, preventing multi-byte characters (emojis, CJK, box-drawing)
@@ -26,14 +27,26 @@ impl SseByteLineDecoder {
     }
 
     /// Appends raw network bytes and yields every complete `\n`-terminated line
-    /// with optional trailing `\r` stripped.
-    pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+    /// with optional trailing `\r` stripped. Caps unterminated lines at `MAX_SSE_LINE_BYTES`.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
+        if self.raw_buf.len().saturating_add(bytes.len()) > MAX_SSE_LINE_BYTES
+            && !bytes.contains(&b'\n')
+        {
+            return Err(ZenkoError::Provider(format!(
+                "SSE line exceeded maximum allowed size ({MAX_SSE_LINE_BYTES} bytes)"
+            )));
+        }
         self.raw_buf.extend_from_slice(bytes);
         let mut lines = Vec::new();
         let mut start = 0usize;
 
         while let Some(rel) = self.raw_buf[start..].iter().position(|&b| b == b'\n') {
             let end = start + rel;
+            if end - start > MAX_SSE_LINE_BYTES {
+                return Err(ZenkoError::Provider(format!(
+                    "SSE line exceeded maximum allowed size ({MAX_SSE_LINE_BYTES} bytes)"
+                )));
+            }
             let trimmed_end = match end > start && self.raw_buf[end - 1] == b'\r' {
                 true => end - 1,
                 false => end,
@@ -45,7 +58,12 @@ impl SseByteLineDecoder {
         if start > 0 {
             self.raw_buf.drain(..start);
         }
-        lines
+        if self.raw_buf.len() > MAX_SSE_LINE_BYTES {
+            return Err(ZenkoError::Provider(format!(
+                "SSE line exceeded maximum allowed size ({MAX_SSE_LINE_BYTES} bytes)"
+            )));
+        }
+        Ok(lines)
     }
 
     /// Flushes any trailing unterminated bytes at EOF.
@@ -153,6 +171,9 @@ impl SseAccumulator {
         self.flushed_tools = true;
         let calls = std::mem::take(&mut self.tool_calls);
         for (idx, pending) in calls {
+            if pending.name.trim().is_empty() {
+                continue;
+            }
             let parsed_args = match pending.args_buf.trim().is_empty() {
                 true => json!({}),
                 false => serde_json::from_str(&pending.args_buf)
@@ -251,6 +272,8 @@ fn extract_usage(val: &Value) -> Option<UsageStats> {
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
         .and_then(Value::as_u64)
+        .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
+        .or_else(|| usage.get("cache_read_input_tokens").and_then(Value::as_u64))
         .unwrap_or(0);
     let cost_usd = usage.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
     Some(UsageStats {
@@ -261,27 +284,28 @@ fn extract_usage(val: &Value) -> Option<UsageStats> {
     })
 }
 
+/// Returns `Ok(true)` when `[DONE]` is received so callers can terminate keep-alive streams promptly.
 pub async fn process_sse_line(
     line: &str,
     acc: &mut SseAccumulator,
     tx: &mpsc::Sender<Result<LlmDelta>>,
-) -> Result<()> {
+) -> Result<bool> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with(':') {
-        return Ok(());
+        return Ok(false);
     }
     let Some(data) = trimmed.strip_prefix("data:") else {
-        return Ok(());
+        return Ok(false);
     };
     let payload = data.trim();
     if payload == "[DONE]" {
         acc.flush_all(tx).await;
-        return Ok(());
+        return Ok(true);
     }
 
     let val: Value = match serde_json::from_str(payload) {
         Ok(v) => v,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(false),
     };
 
     check_provider_error(&val)?;
@@ -314,12 +338,32 @@ pub async fn process_sse_line(
 
             if let Some(tcs) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in tcs {
-                    let idx = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                    let entry = acc.tool_calls.entry(idx).or_default();
-                    if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                        if !id.is_empty() {
-                            entry.id = id.to_string();
+                    let incoming_id = tc.get("id").and_then(Value::as_str).unwrap_or("");
+                    let idx = match tc.get("index").and_then(Value::as_u64) {
+                        Some(n) => n as usize,
+                        None => {
+                            // Some providers (e.g. Ollama) omit `index` on parallel tool calls;
+                            // match existing call by ID or allocate a fresh slot instead of colliding on 0.
+                            if !incoming_id.is_empty() {
+                                acc.tool_calls
+                                    .iter()
+                                    .find(|(_, p)| p.id == incoming_id)
+                                    .map(|(&k, _)| k)
+                                    .unwrap_or_else(|| {
+                                        acc.tool_calls
+                                            .keys()
+                                            .next_back()
+                                            .map(|k| k + 1)
+                                            .unwrap_or(0)
+                                    })
+                            } else {
+                                acc.tool_calls.keys().next_back().copied().unwrap_or(0)
+                            }
                         }
+                    };
+                    let entry = acc.tool_calls.entry(idx).or_default();
+                    if !incoming_id.is_empty() {
+                        entry.id = incoming_id.to_string();
                     }
                     if let Some(func) = tc.get("function") {
                         if let Some(name) = func.get("name").and_then(Value::as_str) {
@@ -336,7 +380,7 @@ pub async fn process_sse_line(
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// Parses a non-streaming JSON chat completion response into the same `LlmDelta` stream.
@@ -527,7 +571,7 @@ mod tests {
 
         // Feed 1 byte at a time so every 4-byte UTF-8 emoji is split across chunks.
         for chunk in bytes.chunks(1) {
-            for line in decoder.push(chunk) {
+            for line in decoder.push(chunk).expect("push") {
                 process_sse_line(&line, &mut acc, &tx).await.expect("parse");
             }
         }
@@ -545,5 +589,40 @@ mod tests {
         }
         assert_eq!(text, "Hey! 👋🦊✨");
         assert!(!text.contains('\u{FFFD}'));
+    }
+
+    #[tokio::test]
+    async fn sse_done_terminates_extracts_cache_tokens_and_separates_unindexed_tools() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut acc = SseAccumulator::default();
+
+        // Parallel tool calls omitting `index` must allocate separate slots by ID
+        let line1 = r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"read_file","arguments":"{\"path\":\"a.rs\"}"}},{"id":"call_b","function":{"name":"read_file","arguments":"{\"path\":\"b.rs\"}"}}]}}]}"#;
+        assert!(!process_sse_line(line1, &mut acc, &tx).await.expect("line1"));
+
+        // DeepSeek prompt_cache_hit_tokens extraction
+        let line2 = r#"data: {"usage":{"prompt_tokens":200,"completion_tokens":40,"prompt_cache_hit_tokens":150}}"#;
+        assert!(!process_sse_line(line2, &mut acc, &tx).await.expect("line2"));
+
+        // [DONE] signals immediate stream termination
+        assert!(process_sse_line("data: [DONE]", &mut acc, &tx).await.expect("done"));
+        acc.flush_all(&tx).await;
+        drop(tx);
+
+        let mut tool_ids = Vec::new();
+        let mut cache_hits = 0u64;
+        while let Some(Ok(ev)) = rx.recv().await {
+            match ev {
+                LlmDelta::ToolCallComplete(tc) => tool_ids.push(tc.id),
+                LlmDelta::Usage(u) => cache_hits = u.cache_read_tokens,
+                _ => {}
+            }
+        }
+        assert_eq!(tool_ids, vec!["call_a", "call_b"]);
+        assert_eq!(cache_hits, 150);
+
+        // Anthropic cache_read_input_tokens extraction
+        let anth = json!({"usage": {"prompt_tokens": 100, "completion_tokens": 20, "cache_read_input_tokens": 80}});
+        assert_eq!(extract_usage(&anth).expect("usage").cache_read_tokens, 80);
     }
 }

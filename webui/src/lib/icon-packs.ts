@@ -60,6 +60,7 @@ const PACK_TO_DATASET: Readonly<Record<string, string>> = {
   tabler: 'tabler',
   aicanvas: 'ph',
   phosphor: 'ph',
+  heroicons: 'humbleicons',
   humbleicons: 'humbleicons',
   majesticons: 'majesticons',
   dooicons: 'solar',

@@ -1178,7 +1178,14 @@ impl AgentRuntime {
     }
 
     fn is_monitoring_tool_active(&self, session_id: &str) -> bool {
-        let ctrl = self.session_control(session_id);
+        let ctrl_opt = self
+            .session_controls
+            .lock()
+            .ok()
+            .and_then(|map| map.get(session_id).cloned());
+        let Some(ctrl) = ctrl_opt else {
+            return false;
+        };
         ctrl.active_tools
             .lock()
             .map(|map| {
@@ -1330,6 +1337,9 @@ impl AgentRuntime {
         if let Ok(mut deltas) = self.memory_deltas.lock() {
             deltas.remove(session_id);
         }
+        if let Ok(mut ctrls) = self.session_controls.lock() {
+            ctrls.remove(session_id);
+        }
     }
 
     /// Freezes a session's initial `WorkspaceSnapshot` at session boot (Hermes / Oh My Pi pattern)
@@ -1358,7 +1368,21 @@ impl AgentRuntime {
         let arc = Arc::new(loaded);
         if let Ok(mut map) = self.frozen_snapshots.lock() {
             if map.len() > 64 {
-                map.clear();
+                let active_sids: HashSet<String> = self
+                    .active_cancels
+                    .lock()
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                map.retain(|sid, _| active_sids.contains(sid));
+                if map.len() > 64 {
+                    if let Some(evict_key) = map
+                        .keys()
+                        .find(|k| k.as_str() != session_id && !active_sids.contains(k.as_str()))
+                        .cloned()
+                    {
+                        map.remove(&evict_key);
+                    }
+                }
             }
             map.insert(session_id.to_string(), (workspace_dir.to_path_buf(), arc.clone()));
         }
@@ -2536,12 +2560,13 @@ impl AgentRuntime {
             }
 
             // Emergency pair-preserving hard ceiling (covers Stage-B cooldown edge cases)
+            let before_hard_len = messages.len();
             messages = compact_messages_to_budget(messages, context_window, prefix_tokens);
-            let was_compacted = compacted_this_iter
-                || ckpt_slice.checkpoint.is_some()
-                || messages
+            let hard_compacted_now = messages.len() < before_hard_len
+                && messages
                     .first()
-                    .map_or(false, |m| m.content.contains("<compacted_history>"));
+                    .is_some_and(|m| m.content.contains("<compacted_history>"));
+            let compacted_now = compacted_this_iter || hard_compacted_now;
 
             // Collect all volatile turn guidance, hints, plan continuity, and background job notices
             // into a single cache-safe `<system_reminder>` (never injecting mid-array `role: "system"`
@@ -2594,20 +2619,22 @@ impl AgentRuntime {
                     }
                 }
             }
-            if was_compacted {
-                let live_tasks = self
-                    .clarifications
-                    .list_session_tasks(&session_id)
-                    .unwrap_or_default();
-                if let Some(dag_block) = format_session_tasks_prompt_block(&live_tasks) {
-                    tail_reminders.push(format!(
-                        "Context compacted — resume directly from the durable SQLite Task DAG below without re-planning:\n{dag_block}"
-                    ));
-                } else if let Some(plan) = orch.guard.active_plan() {
-                    tail_reminders.push(format!(
-                        "<active_execution_plan>\nContext compacted — treat existing plan as DECIDED work and resume directly without re-planning: {}\n</active_execution_plan>",
-                        format_plan_summary(plan)
-                    ));
+            if compacted_now {
+                if iter_idx > 0 {
+                    let live_tasks = self
+                        .clarifications
+                        .list_session_tasks(&session_id)
+                        .unwrap_or_default();
+                    if let Some(dag_block) = format_session_tasks_prompt_block(&live_tasks) {
+                        tail_reminders.push(format!(
+                            "Context compacted — resume directly from the durable SQLite Task DAG below without re-planning:\n{dag_block}"
+                        ));
+                    } else if let Some(plan) = orch.guard.active_plan() {
+                        tail_reminders.push(format!(
+                            "<active_execution_plan>\nContext compacted — treat existing plan as DECIDED work and resume directly without re-planning: {}\n</active_execution_plan>",
+                            format_plan_summary(plan)
+                        ));
+                    }
                 }
                 // Oh My Pi post-compaction recall (placed in Tier-3 tail so Tier-1 KV cache stays frozen!)
                 if let Ok(proj_mems) = self.store.search_memory_hybrid(
@@ -3171,7 +3198,7 @@ impl AgentRuntime {
                 false => {
                     let calls_to_run: Vec<ToolCall> =
                         allowed_indexed.iter().map(|(_, tc)| tc.clone()).collect();
-                    execute_tool_waves(
+                    match execute_tool_waves(
                         calls_to_run,
                         MAX_PARALLEL_TOOLS,
                         |tc| self.classify_tool_call(cfg, effective_permission, tc),
@@ -3193,7 +3220,59 @@ impl AgentRuntime {
                             }
                         },
                     )
-                    .await?
+                    .await
+                    {
+                        Ok(results) => results,
+                        Err(err) => {
+                            // Keep SQLite protocol-valid: every emitted `Assistant(tool_calls)` MUST
+                            // have matching `Tool(ToolResult)` events so future turns never 400!
+                            let abort_msg = match err {
+                                ZenkoError::Cancelled => {
+                                    "Skipped: tool execution cancelled by user.".to_string()
+                                }
+                                ref other => format!("Skipped: tool wave aborted ({other})."),
+                            };
+                            for (_, tc) in &allowed_indexed {
+                                if let Ok(skip_ev) = self.store.append_event(
+                                    &session_id,
+                                    head_id.as_deref(),
+                                    EventRole::Tool,
+                                    EventKind::ToolResult,
+                                    json!({
+                                        "tool_call_id": tc.id,
+                                        "tool_name": tc.name,
+                                        "content": abort_msg,
+                                        "is_error": true,
+                                        "diff": Value::Null,
+                                        "duration_ms": 0,
+                                    }),
+                                    &UsageStats::default(),
+                                ) {
+                                    head_id = Some(skip_ev.id);
+                                }
+                            }
+                            for (_, redir) in &redirected_indexed {
+                                if let Ok(skip_ev) = self.store.append_event(
+                                    &session_id,
+                                    head_id.as_deref(),
+                                    EventRole::Tool,
+                                    EventKind::ToolResult,
+                                    json!({
+                                        "tool_call_id": redir.tool_call_id,
+                                        "tool_name": redir.tool_name,
+                                        "content": redir.output.content,
+                                        "is_error": true,
+                                        "diff": Value::Null,
+                                        "duration_ms": 0,
+                                    }),
+                                    &UsageStats::default(),
+                                ) {
+                                    head_id = Some(skip_ev.id);
+                                }
+                            }
+                            return Err(err);
+                        }
+                    }
                 }
             };
 
@@ -3519,7 +3598,7 @@ impl AgentRuntime {
                 session_id: session_id.clone(),
                 model: model.clone(),
                 fallbacks: cfg.provider.fallbacks.clone(),
-                system_prompt: snapshot.system_prompt.clone(),
+                system_prompt: effective_system_prompt.clone(),
                 messages,
                 tools: Vec::new(),
                 temperature: cfg.provider.temperature,
@@ -3538,9 +3617,10 @@ impl AgentRuntime {
                 let mut synth_thinking = String::new();
                 let mut synth_text = String::new();
                 let mut synth_usage = UsageStats::default();
+                let mut synth_stream_err: Option<String> = None;
                 while let Some(item) = stream.next().await {
-                    if let Ok(delta) = item {
-                        match delta {
+                    match item {
+                        Ok(delta) => match delta {
                             LlmDelta::Thinking(t) => {
                                 let now = std::time::Instant::now();
                                 synth_think_start.get_or_insert(now);
@@ -3562,6 +3642,10 @@ impl AgentRuntime {
                             }
                             LlmDelta::Usage(u) => synth_usage = u,
                             LlmDelta::ToolCallComplete(_) | LlmDelta::Done { .. } => {}
+                        },
+                        Err(err) => {
+                            synth_stream_err = Some(err.to_string());
+                            break;
                         }
                     }
                 }
@@ -3580,7 +3664,13 @@ impl AgentRuntime {
                         &synth_usage,
                     );
                 }
-                if !synth_text.trim().is_empty() {
+                if let Some(err_msg) = synth_stream_err {
+                    warn!(
+                        session_id = %session_id,
+                        error = %err_msg,
+                        "wrap-up synthesis stream failed; skipping partial assistant persistence"
+                    );
+                } else if !cancel.is_cancelled() && !synth_text.trim().is_empty() {
                     let synth_duration_ms = synth_started.elapsed().as_millis() as u64;
                     let synth_thinking_ms = match (synth_think_start, synth_think_end) {
                         (Some(start), Some(end)) if !synth_thinking.is_empty() => {

@@ -76,6 +76,9 @@ impl CheckpointManager {
             .workspace_locks
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if guard.len() > 64 {
+            guard.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
         guard
             .entry(key)
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
@@ -1242,16 +1245,17 @@ async fn run_git_env(
     let mut child = cmd
         .spawn()
         .map_err(|e| ZenkoError::Tool(format!("git spawn failed: {e}")))?;
-    if let Some(bytes) = stdin_bytes {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(bytes).await;
-            let _ = stdin.shutdown().await;
-        }
-    }
-    let out = tokio::time::timeout(
-        Duration::from_secs(CHECKPOINT_GIT_TIMEOUT_SECS),
-        child.wait_with_output(),
-    )
+    let stdin_opt = child.stdin.take();
+    let out = tokio::time::timeout(Duration::from_secs(CHECKPOINT_GIT_TIMEOUT_SECS), async move {
+        let write_fut = async {
+            if let (Some(bytes), Some(mut stdin)) = (stdin_bytes, stdin_opt) {
+                let _ = stdin.write_all(bytes).await;
+                let _ = stdin.shutdown().await;
+            }
+        };
+        let (_, out_res) = tokio::join!(write_fut, child.wait_with_output());
+        out_res
+    })
     .await
     .map_err(|_| ZenkoError::Tool("shadow git command timed out".into()))?
     .map_err(|e| ZenkoError::Tool(format!("shadow git wait failed: {e}")))?;

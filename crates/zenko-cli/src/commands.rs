@@ -4,13 +4,13 @@
 
 use crate::ipc::{
     OutputMode, ipc_attach_session, ipc_call, ipc_call_timeout, ipc_follow_job, ipc_follow_logs,
-    unwrap_ipc_result,
+    is_daemon_offline, unwrap_ipc_result,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
 use croner::Cron;
 use serde_json::{Value, json};
-use std::io::{BufRead, IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -112,9 +112,13 @@ pub async fn run_ask(config_path: &Path, params: AskParams) -> Result<()> {
             "mode": perm_override.map(PermissionMode::as_str),
             "headless_no_wait": !params.wait_approval,
         });
-        if let Ok(resp) = ipc_call_timeout(&cfg, IPC_METHOD_ASK, ipc_params, timeout).await {
-            let data = unwrap_ipc_result(resp)?;
-            return emit_ask_output(&data, params.output);
+        match ipc_call_timeout(&cfg, IPC_METHOD_ASK, ipc_params, timeout).await {
+            Ok(resp) => {
+                let data = unwrap_ipc_result(resp)?;
+                return emit_ask_output(&data, params.output);
+            }
+            Err(e) if is_daemon_offline(&e) => {}
+            Err(e) => return Err(e),
         }
     }
 
@@ -369,7 +373,7 @@ pub async fn run_chat(
         active_mode.as_str()
     );
 
-    let stdin = std::io::stdin();
+    let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
     let mut stdout = std::io::stdout();
 
     loop {
@@ -377,7 +381,7 @@ pub async fn run_chat(
         let _ = std::io::stderr().flush();
 
         let mut line = String::new();
-        let bytes = stdin.lock().read_line(&mut line)?;
+        let bytes = tokio::io::AsyncBufReadExt::read_line(&mut stdin_reader, &mut line).await?;
         if bytes == 0 {
             break;
         }
@@ -524,7 +528,7 @@ async fn run_daemon_chat(
         active_mode.as_str()
     );
 
-    let stdin = std::io::stdin();
+    let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
     let mut stdout = std::io::stdout();
 
     loop {
@@ -532,7 +536,7 @@ async fn run_daemon_chat(
         let _ = std::io::stderr().flush();
 
         let mut line = String::new();
-        let bytes = stdin.lock().read_line(&mut line)?;
+        let bytes = tokio::io::AsyncBufReadExt::read_line(&mut stdin_reader, &mut line).await?;
         if bytes == 0 {
             break;
         }
@@ -980,14 +984,16 @@ pub async fn run_memory_add(
     .await
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let store = SqliteStore::open(cfg.db_path())?;
+            let vault = SecretVault::open(cfg.vault_path(), cfg.vault_key_path());
+            let vault_secrets = vault.all_values();
             let resolved_scope = match scope.trim() {
                 "project" => project_scope_for_workspace(&cfg.resolved_workspace_dir()),
                 "" => MEMORY_SCOPE_GLOBAL.to_string(),
                 other => other.to_string(),
             };
-            let res = store.upsert_memory_dedup(
+            let res = store.upsert_memory_dedup_with_secrets(
                 &resolved_scope,
                 kind,
                 title,
@@ -996,9 +1002,11 @@ pub async fn run_memory_add(
                 None,
                 None,
                 cfg.memory.dedup_enabled,
+                &vault_secrets,
             )?;
             serde_json::to_value(res.entry)?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),
@@ -1041,13 +1049,24 @@ pub async fn run_memory_update(
     .await
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let store = SqliteStore::open(cfg.db_path())?;
+            let vault = SecretVault::open(cfg.vault_path(), cfg.vault_key_path());
+            let vault_secrets = vault.all_values();
             let entry = store
-                .update_memory(id, title, content, kind, None, resolved_scope.as_deref())?
+                .update_memory_with_secrets(
+                    id,
+                    title,
+                    content,
+                    kind,
+                    None,
+                    resolved_scope.as_deref(),
+                    &vault_secrets,
+                )?
                 .ok_or_else(|| anyhow::anyhow!("memory `{id}` not found"))?;
             serde_json::to_value(entry)?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),
@@ -1083,11 +1102,12 @@ pub async fn run_memory_dream(config_path: &Path, force: bool, json_out: bool) -
     .await
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let (rt, _logs) = AgentRuntime::build(config_path.to_path_buf(), cfg)?;
             let rec = rt.run_dream_now("cli", force).await?;
             serde_json::to_value(rec)?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),
@@ -2590,7 +2610,7 @@ pub async fn run_agents_spawn(
     .await
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let (rt, _) = AgentRuntime::build(config_path.to_path_buf(), cfg)?;
             let rec = rt
                 .subagents
@@ -2614,6 +2634,7 @@ pub async fn run_agents_spawn(
                 .await?;
             serde_json::to_value(rec)?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),
@@ -3254,7 +3275,7 @@ pub async fn run_checkpoints_rewind(
     .await
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let cp_cfg = cfg.checkpoints.clone();
             let (rt, _) = AgentRuntime::build(config_path.to_path_buf(), cfg)?;
             serde_json::to_value(
@@ -3272,6 +3293,7 @@ pub async fn run_checkpoints_rewind(
                     .await?,
             )?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),
@@ -3358,7 +3380,10 @@ pub async fn run_doctor(config_path: &Path, json_out: bool) -> Result<()> {
     let has_provider_key = vault.has(provider_desc.vault_secret_key).unwrap_or(false);
     let has_tg = vault.has(VAULT_KEY_TELEGRAM).unwrap_or(false);
 
-    let http = reqwest::Client::builder().build()?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let provider_check = match vault.get(provider_desc.vault_secret_key).ok().flatten() {
         Some(key) => {
             let p = UnifiedLlmProvider::for_provider(
@@ -4075,11 +4100,12 @@ pub async fn run_goal_create(
     let payload = serde_json::to_value(&req)?;
     let data = match ipc_call(&cfg, IPC_METHOD_GOAL_CREATE, payload).await {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let (rt, _) = AgentRuntime::build(config_path.to_path_buf(), cfg)?;
             let goal = rt.create_goal_loop(req)?;
             serde_json::to_value(goal)?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),
@@ -4138,12 +4164,13 @@ pub async fn run_goal_run_now(config_path: &Path, id: &str, json_out: bool) -> R
     .await
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
-        Err(_) => {
+        Err(e) if is_daemon_offline(&e) => {
             let (rt, _) = AgentRuntime::build(config_path.to_path_buf(), cfg)?;
             let updated =
                 zenko_runtime::execute_goal_iteration(&rt, id, CancellationToken::new()).await?;
             serde_json::to_value(updated)?
         }
+        Err(e) => return Err(e),
     };
     match json_out {
         true => println!("{}", serde_json::to_string_pretty(&data)?),

@@ -1,7 +1,7 @@
 use crate::algorithms::{
     build_fts5_query_plan, compute_simhash64, extract_searchable_event_text,
     find_missing_workspace_paths, hamming_distance, hybrid_memory_score, relaxed_term_overlap,
-    sanitize_memory_text, sanitize_memory_text_with_secrets, shingle_jaccard,
+    sanitize_memory_text_with_secrets, shingle_jaccard,
 };
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -1148,31 +1148,40 @@ impl SqliteStore {
         let normalized = code.trim().to_ascii_uppercase();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-        let role_opt: Option<String> = self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT role FROM pairing_codes WHERE code = ?1 AND channel = ?2 AND used_at IS NULL AND expires_at > ?3",
-                params![normalized, channel, now_str],
-                |r| r.get(0),
-            )
-            .optional()
-        })?;
-        let Some(role_str) = role_opt else {
-            return Ok(None);
-        };
-        let role = PeerRole::from_str_loose(&role_str);
-        self.with_conn(|conn| {
-            conn.execute(
-                "UPDATE pairing_codes SET used_at = ?1 WHERE code = ?2",
-                params![now_str, normalized],
+        let redeemed_role: Option<PeerRole> = self.with_conn(|conn| {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
             )?;
-            conn.execute(
+            let role_opt: Option<String> = tx
+                .query_row(
+                    "SELECT role FROM pairing_codes WHERE code = ?1 AND channel = ?2 AND used_at IS NULL AND expires_at > ?3",
+                    params![normalized, channel, now_str],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(role_str) = role_opt else {
+                tx.rollback()?;
+                return Ok(None);
+            };
+            let updated = tx.execute(
+                "UPDATE pairing_codes SET used_at = ?1 WHERE code = ?2 AND channel = ?3 AND used_at IS NULL AND expires_at > ?1",
+                params![now_str, normalized, channel],
+            )?;
+            if updated != 1 {
+                tx.rollback()?;
+                return Ok(None);
+            }
+            let role = PeerRole::from_str_loose(&role_str);
+            tx.execute(
                 "INSERT OR REPLACE INTO gateway_peers (channel, peer_id, username, display_name, role, paired_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![channel, peer_id, username, display_name, role.as_str(), now_str],
             )?;
-            Ok(())
+            tx.commit()?;
+            Ok(Some(role))
         })?;
-        Ok(Some(GatewayPeer {
+        Ok(redeemed_role.map(|role| GatewayPeer {
             channel: channel.to_string(),
             peer_id: peer_id.to_string(),
             username: username.map(String::from),
@@ -1451,14 +1460,27 @@ impl SqliteStore {
         salience: Option<f64>,
         scope: Option<&str>,
     ) -> Result<Option<MemoryEntry>> {
+        self.update_memory_with_secrets(id, title, content, kind, salience, scope, &[])
+    }
+
+    pub fn update_memory_with_secrets(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        content: Option<&str>,
+        kind: Option<&str>,
+        salience: Option<f64>,
+        scope: Option<&str>,
+        known_secrets: &[String],
+    ) -> Result<Option<MemoryEntry>> {
         let Some(mut cur) = self.get_memory(id)? else {
             return Ok(None);
         };
         if let Some(t) = title.map(str::trim).filter(|s| !s.is_empty()) {
-            cur.title = sanitize_memory_text(t);
+            cur.title = sanitize_memory_text_with_secrets(t, known_secrets);
         }
         if let Some(c) = content.map(str::trim).filter(|s| !s.is_empty()) {
-            cur.content = sanitize_memory_text(c);
+            cur.content = sanitize_memory_text_with_secrets(c, known_secrets);
         }
         if let Some(k) = kind.map(str::trim).filter(|s| !s.is_empty()) {
             cur.kind = MemoryKind::from_str_loose(k).as_str().to_string();
@@ -1474,7 +1496,11 @@ impl SqliteStore {
         cur.content_simhash = compute_simhash64(&format!("{} {}", cur.title, cur.content));
 
         self.with_conn(|conn| {
-            conn.execute(
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            tx.execute(
                 "UPDATE memory_entries
                  SET scope = ?1, kind = ?2, title = ?3, content = ?4, salience = ?5, updated_at = ?6, content_simhash = ?7
                  WHERE id = ?8",
@@ -1489,13 +1515,14 @@ impl SqliteStore {
                     cur.id,
                 ],
             )?;
-            conn.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![cur.id])?;
+            tx.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![cur.id])?;
             if !cur.archived {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO memory_fts (entry_id, title, content) VALUES (?1, ?2, ?3)",
                     params![cur.id, cur.title, cur.content],
                 )?;
             }
+            tx.commit()?;
             Ok(())
         })?;
         Ok(Some(cur))
@@ -1516,11 +1543,17 @@ impl SqliteStore {
     pub fn archive_memory(&self, id: &str) -> Result<bool> {
         let now = Utc::now().to_rfc3339();
         let n = self.with_conn(|conn| {
-            conn.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![id])?;
-            conn.execute(
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            tx.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![id])?;
+            let changed = tx.execute(
                 "UPDATE memory_entries SET archived = 1, updated_at = ?1 WHERE id = ?2 AND archived = 0",
                 params![now, id],
-            )
+            )?;
+            tx.commit()?;
+            Ok(changed)
         })?;
         Ok(n > 0)
     }
@@ -1598,18 +1631,78 @@ impl SqliteStore {
                            out: &mut Vec<MemoryEntry>,
                            seen: &mut std::collections::HashSet<String>|
              -> rusqlite::Result<()> {
-                let mut stmt = conn.prepare(
-                    "SELECT m.id, m.scope, m.kind, m.title, m.content, m.salience, m.access_count,
-                            m.last_accessed_at, m.updated_at, m.content_simhash,
-                            m.source_session_id, m.source_event_id, m.archived, m.created_at
-                     FROM memory_fts f
-                     JOIN memory_entries m ON m.id = f.entry_id
-                     WHERE memory_fts MATCH ?1 AND m.archived = 0
-                     ORDER BY bm25(memory_fts) ASC
-                     LIMIT ?2",
-                )?;
-                let rows = stmt.query_map(params![fts_q, candidate_cap], row_to_memory)?;
-                for row in rows.flatten() {
+                let collected: Vec<MemoryEntry> = match (project_scope, include_global) {
+                    (Some(ps), true) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT m.id, m.scope, m.kind, m.title, m.content, m.salience, m.access_count,
+                                    m.last_accessed_at, m.updated_at, m.content_simhash,
+                                    m.source_session_id, m.source_event_id, m.archived, m.created_at
+                             FROM memory_fts f
+                             JOIN memory_entries m ON m.id = f.entry_id
+                             WHERE memory_fts MATCH ?1 AND m.archived = 0
+                               AND (m.scope = ?2 OR m.scope = ?3)
+                             ORDER BY bm25(memory_fts) ASC
+                             LIMIT ?4",
+                        )?;
+                        stmt.query_map(
+                            params![fts_q, ps, MEMORY_SCOPE_GLOBAL, candidate_cap],
+                            row_to_memory,
+                        )?
+                        .flatten()
+                        .collect()
+                    }
+                    (Some(ps), false) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT m.id, m.scope, m.kind, m.title, m.content, m.salience, m.access_count,
+                                    m.last_accessed_at, m.updated_at, m.content_simhash,
+                                    m.source_session_id, m.source_event_id, m.archived, m.created_at
+                             FROM memory_fts f
+                             JOIN memory_entries m ON m.id = f.entry_id
+                             WHERE memory_fts MATCH ?1 AND m.archived = 0
+                               AND m.scope = ?2
+                             ORDER BY bm25(memory_fts) ASC
+                             LIMIT ?3",
+                        )?;
+                        stmt.query_map(params![fts_q, ps, candidate_cap], row_to_memory)?
+                            .flatten()
+                            .collect()
+                    }
+                    (None, true) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT m.id, m.scope, m.kind, m.title, m.content, m.salience, m.access_count,
+                                    m.last_accessed_at, m.updated_at, m.content_simhash,
+                                    m.source_session_id, m.source_event_id, m.archived, m.created_at
+                             FROM memory_fts f
+                             JOIN memory_entries m ON m.id = f.entry_id
+                             WHERE memory_fts MATCH ?1 AND m.archived = 0
+                             ORDER BY bm25(memory_fts) ASC
+                             LIMIT ?2",
+                        )?;
+                        stmt.query_map(params![fts_q, candidate_cap], row_to_memory)?
+                            .flatten()
+                            .collect()
+                    }
+                    (None, false) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT m.id, m.scope, m.kind, m.title, m.content, m.salience, m.access_count,
+                                    m.last_accessed_at, m.updated_at, m.content_simhash,
+                                    m.source_session_id, m.source_event_id, m.archived, m.created_at
+                             FROM memory_fts f
+                             JOIN memory_entries m ON m.id = f.entry_id
+                             WHERE memory_fts MATCH ?1 AND m.archived = 0
+                               AND m.scope = ?2
+                             ORDER BY bm25(memory_fts) ASC
+                             LIMIT ?3",
+                        )?;
+                        stmt.query_map(
+                            params![fts_q, MEMORY_SCOPE_GLOBAL, candidate_cap],
+                            row_to_memory,
+                        )?
+                        .flatten()
+                        .collect()
+                    }
+                };
+                for row in collected {
                     if !scope_matches(&row.scope) {
                         continue;
                     }
@@ -2353,7 +2446,7 @@ impl SqliteStore {
             Some(p) => Ok(p),
             None => Ok(UiProfile {
                 id: "default".into(),
-                name: "Obsidian Zinc (Default)".into(),
+                name: "Zenko Vermilion (Default)".into(),
                 is_active: true,
                 config: UiCustomization::default(),
                 updated_at: Utc::now(),
@@ -2374,10 +2467,14 @@ impl SqliteStore {
     pub fn save_ui_profile(&self, profile: &UiProfile) -> Result<()> {
         let json = serde_json::to_string(&profile.config)?;
         self.with_conn(|conn| {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
             if profile.is_active {
-                conn.execute("UPDATE ui_profiles SET is_active = 0", [])?;
+                tx.execute("UPDATE ui_profiles SET is_active = 0", [])?;
             }
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO ui_profiles (id, name, is_active, config_json, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
@@ -2388,6 +2485,7 @@ impl SqliteStore {
                     profile.updated_at.to_rfc3339(),
                 ],
             )?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -2395,11 +2493,28 @@ impl SqliteStore {
     pub fn activate_ui_profile(&self, id: &str) -> Result<bool> {
         let now = Utc::now().to_rfc3339();
         let n = self.with_conn(|conn| {
-            conn.execute("UPDATE ui_profiles SET is_active = 0", [])?;
-            conn.execute(
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM ui_profiles WHERE id = ?1 LIMIT 1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                tx.rollback()?;
+                return Ok(0);
+            }
+            tx.execute("UPDATE ui_profiles SET is_active = 0", [])?;
+            let changed = tx.execute(
                 "UPDATE ui_profiles SET is_active = 1, updated_at = ?1 WHERE id = ?2",
                 params![now, id],
-            )
+            )?;
+            tx.commit()?;
+            Ok(changed)
         })?;
         Ok(n > 0)
     }
@@ -4693,6 +4808,67 @@ mod tests {
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].id, "cp_1");
         assert_eq!(store.list_checkpoints(Some(&s.id), 10).expect("list").len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn phase2_p1_regressions_pairing_scope_filter_ui_profile_and_secret_scrub() {
+        let dir = std::env::temp_dir().join(format!("zenko_p1_mem_{}", new_id()));
+        let store = SqliteStore::open(dir.join("zenko.db")).expect("open");
+
+        // 1. Pairing code is strictly single-use
+        let code = store
+            .create_pairing_code("telegram", PeerRole::Owner, 15)
+            .expect("create pairing");
+        let first_peer = store
+            .redeem_pairing_code("telegram", &code.code, "u1", None, None)
+            .expect("first")
+            .expect("first redeem succeeds");
+        assert_eq!(first_peer.role, PeerRole::Owner);
+        assert!(
+            store
+                .redeem_pairing_code("telegram", &code.code, "u2", None, None)
+                .expect("second")
+                .is_none()
+        );
+
+        // 2. Multi-project scope filter executes in SQL before LIMIT (no starvation)
+        for i in 0..25 {
+            store
+                .add_memory("project:alpha", "fact", &format!("Alpha deploy {i}"), "rust deploy pipeline alpha", 0.9)
+                .expect("alpha mem");
+        }
+        store
+            .add_memory("project:beta", "fact", "Beta deploy", "rust deploy pipeline beta", 0.9)
+            .expect("beta mem");
+        let hits = store
+            .search_memory_hybrid("rust deploy pipeline", Some("project:beta"), false, None, 5)
+            .expect("hybrid beta");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.scope, "project:beta");
+
+        // 3. update_memory_with_secrets scrubs vault secrets
+        let secrets = vec!["super-secret-token-xyz987".to_string()];
+        let updated = store
+            .update_memory_with_secrets(
+                &hits[0].entry.id,
+                None,
+                Some("deploy key is super-secret-token-xyz987"),
+                None,
+                None,
+                None,
+                &secrets,
+            )
+            .expect("update")
+            .expect("some");
+        assert!(!updated.content.contains("super-secret-token-xyz987"));
+
+        // 4. activate_ui_profile with nonexistent id preserves existing active profile
+        let active_before = store.get_active_ui_profile().expect("active");
+        assert!(!store.activate_ui_profile("nonexistent_profile_id").expect("activate"));
+        let active_after = store.get_active_ui_profile().expect("active after");
+        assert_eq!(active_before.id, active_after.id);
 
         let _ = std::fs::remove_dir_all(dir);
     }

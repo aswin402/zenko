@@ -26,15 +26,31 @@ pub fn unified_diff(path: &str, old: &str, new: &str) -> String {
         .to_string()
 }
 
+const MAX_EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SINGLE_READ_LINE_BYTES: usize = 128 * 1024;
+
+fn detect_line_ending(text: &str) -> &'static str {
+    match text.contains("\r\n") {
+        true => "\r\n",
+        false => "\n",
+    }
+}
+
 /// Deterministic canonical resource-lock key for file mutation tools.
-/// Disjoint workspace files receive distinct `ToolConcurrency::Keyed(...)` keys so
+/// Disjoint relative workspace files receive distinct `ToolConcurrency::Keyed(...)` keys so
 /// independent edits execute concurrently while same-file edits serialize strictly.
-/// Any path containing parent traversal (`..`) falls back conservatively to `Global`.
+/// Absolute, tilde, `hub:`, or parent-traversal (`..`) paths fall back conservatively to `Global`
+/// so relative vs absolute references to the same file can never race.
 fn file_lock_key(args: &Value) -> ToolConcurrency {
     let Some(raw) = args.get("path").and_then(Value::as_str).map(str::trim) else {
         return ToolConcurrency::Global;
     };
-    if raw.is_empty() {
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.starts_with('\\')
+        || raw.starts_with('~')
+        || raw.contains(':')
+    {
         return ToolConcurrency::Global;
     }
     let mut parts: Vec<&str> = Vec::new();
@@ -109,10 +125,10 @@ impl Tool for ReadFileTool {
             .map(|v| v as usize)
             .unwrap_or(start.saturating_add(DEFAULT_READ_FILE_LINE_WINDOW));
 
-        // Stream line-by-line with bounded memory so giant files never spike RAM.
+        // Stream line-by-line with strict per-line and total RAM bounds so giant or minified files never spike RAM.
         let file = tokio::fs::File::open(&path).await?;
         let mut reader = BufReader::with_capacity(16 * 1024, file);
-        let mut line_buf = String::new();
+        let mut raw_line = Vec::with_capacity(512);
         let mut line_no = 0usize;
         let mut captured = Vec::new();
         let mut out_bytes = 0usize;
@@ -125,16 +141,44 @@ impl Tool for ReadFileTool {
         let stop_early = file_bytes > DEFAULT_READ_FILE_MAX_BYTES;
 
         loop {
-            line_buf.clear();
-            let n = reader.read_line(&mut line_buf).await?;
+            raw_line.clear();
+            let mut truncated_line = false;
+            let n = {
+                use tokio::io::AsyncReadExt;
+                let mut limited = (&mut reader).take(MAX_SINGLE_READ_LINE_BYTES as u64);
+                limited.read_until(b'\n', &mut raw_line).await?
+            };
             if n == 0 {
                 break;
             }
+            if !raw_line.ends_with(b"\n") && n == MAX_SINGLE_READ_LINE_BYTES {
+                truncated_line = true;
+                // Drain remaining bytes of this oversized single line without buffering them in RAM.
+                let mut discard = [0u8; 4096];
+                loop {
+                    let buf = reader.fill_buf().await?;
+                    if buf.is_empty() {
+                        break;
+                    }
+                    if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        reader.consume(pos + 1);
+                        break;
+                    }
+                    let len = buf.len().min(discard.len());
+                    discard[..len].copy_from_slice(&buf[..len]);
+                    reader.consume(len);
+                }
+            }
             line_no += 1;
             if line_no >= start && line_no <= requested_end && out_bytes < byte_budget {
-                let clean = line_buf.trim_end_matches(['\r', '\n']);
+                let line_str = String::from_utf8_lossy(&raw_line);
+                let clean = line_str.trim_end_matches(['\r', '\n']);
                 let h = line_hash(clean);
-                let formatted = format!("{line_no}:{h}| {clean}\n");
+                let suffix = match truncated_line {
+                    true => " ...[line truncated]",
+                    false => "",
+                };
+                let formatted = format!("{line_no}:{h}| {clean}{suffix}\n");
                 out_bytes += formatted.len();
                 captured.push(formatted);
             }
@@ -225,7 +269,15 @@ impl Tool for HashEditTool {
             .ok_or_else(|| ZenkoError::Tool("missing `replacement`".into()))?;
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
+        let file_len = tokio::fs::metadata(&path).await?.len();
+        if file_len > MAX_EDIT_FILE_BYTES {
+            return Ok(ToolOutput::err(format!(
+                "Refused to hash_edit '{}': file size ({file_len} bytes) exceeds edit safety limit ({MAX_EDIT_FILE_BYTES} bytes).",
+                req_path
+            )));
+        }
         let old = tokio::fs::read_to_string(&path).await?;
+        let eol = detect_line_ending(&old);
         let mut lines: Vec<String> = old.lines().map(String::from).collect();
 
         if start_line == 0 || end_line < start_line || end_line > lines.len() {
@@ -251,9 +303,9 @@ impl Tool for HashEditTool {
         };
         lines.splice((start_line - 1)..end_line, replacement_lines);
 
-        let mut new = lines.join("\n");
+        let mut new = lines.join(eol);
         if old.ends_with('\n') && !new.ends_with('\n') {
-            new.push('\n');
+            new.push_str(eol);
         }
 
         atomic_write(&path, &new).await?;
@@ -311,8 +363,22 @@ impl Tool for ApplyPatchTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ZenkoError::Tool("missing `new_text`".into()))?;
 
+        if old_text.is_empty() {
+            return Ok(ToolOutput::err(
+                "apply_patch requires a non-empty `old_text` block to prevent accidental prepending.",
+            ));
+        }
+
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
+        let file_len = tokio::fs::metadata(&path).await?.len();
+        if file_len > MAX_EDIT_FILE_BYTES {
+            return Ok(ToolOutput::err(format!(
+                "Refused to apply_patch '{}': file size ({file_len} bytes) exceeds edit safety limit ({MAX_EDIT_FILE_BYTES} bytes).",
+                req_path
+            )));
+        }
         let old = tokio::fs::read_to_string(&path).await?;
+        let eol = detect_line_ending(&old);
 
         let new = if let Some(idx) = old.find(old_text) {
             let mut out = String::with_capacity(old.len() + new_text.len());
@@ -331,9 +397,9 @@ impl Tool for ApplyPatchTool {
             let mut rebuilt: Vec<String> = file_lines.iter().map(|s| (*s).to_string()).collect();
             let rep: Vec<String> = new_text.lines().map(String::from).collect();
             rebuilt.splice(start..(start + pattern_lines.len()), rep);
-            let mut joined = rebuilt.join("\n");
+            let mut joined = rebuilt.join(eol);
             if old.ends_with('\n') && !joined.ends_with('\n') {
-                joined.push('\n');
+                joined.push_str(eol);
             }
             joined
         };

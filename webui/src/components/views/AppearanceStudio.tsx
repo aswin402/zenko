@@ -421,14 +421,11 @@ export function AppearanceStudio({
         activeCategory.sub_components[0]
       : null
 
-  // Deterministic preview transition key so changing ANY page or option smoothly animates the live preview!
+  // Transition only when switching pages so live previews & ECharts update smoothly in-place without unmounting on every slider/color drag tick.
   const previewAnimKey = useMemo(() => {
     if (!activeCategory || !activeSub) return 'global'
-    const controlSig = activeSub.controls
-      .map((ctrl) => `${ctrl.path}=${JSON.stringify(getByPath(ui, ctrl.path))}`)
-      .join('|')
-    return `${activeCategory.id}::${activeSub.id}::${controlSig}`
-  }, [activeCategory, activeSub, ui])
+    return `${activeCategory.id}::${activeSub.id}`
+  }, [activeCategory, activeSub])
 
   const toggleMode = () => {
     onSelectPreset(ui.preset_id || 'zenko_vermilion', activeMode === 'light' ? 'dark' : 'light')

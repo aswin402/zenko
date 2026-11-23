@@ -40,6 +40,7 @@ export function CompactScrollArea({
   const viewportRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const lenisRef = useRef<Lenis | null>(null)
+  const wakeLenisRef = useRef<(() => void) | null>(null)
   const pinnedBottomRef = useRef(true)
   const [metrics, setMetrics] = useState({
     overflow: false,
@@ -85,10 +86,12 @@ export function CompactScrollArea({
     )
   }, [stickToBottom])
 
-  // Optional Lenis smooth wheel scrolling bound directly to viewportRef (zero native scrollbar!)
+  // Optional Lenis smooth wheel scrolling bound directly to viewportRef with on-demand rAF
+  // (0% idle CPU — stops automatically once smooth scroll velocity settles).
   useEffect(() => {
     if (!smooth || reduceMotion) {
       lenisRef.current = null
+      wakeLenisRef.current = null
       return
     }
     const wrapper = viewportRef.current
@@ -107,14 +110,41 @@ export function CompactScrollArea({
     lenisRef.current = lenis
 
     let rafId = 0
+    let idleFrames = 0
     const tick = (time: number) => {
       lenis.raf(time)
-      rafId = requestAnimationFrame(tick)
+      const moving =
+        Boolean(lenis.isScrolling) ||
+        Math.abs(lenis.velocity) > 0.01 ||
+        Math.abs(lenis.targetScroll - lenis.animatedScroll) > 0.5
+      if (moving) {
+        idleFrames = 0
+        rafId = requestAnimationFrame(tick)
+      } else if (idleFrames < 4) {
+        idleFrames += 1
+        rafId = requestAnimationFrame(tick)
+      } else {
+        rafId = 0
+      }
     }
-    rafId = requestAnimationFrame(tick)
+    const wake = () => {
+      idleFrames = 0
+      if (!rafId) {
+        rafId = requestAnimationFrame(tick)
+      }
+    }
+    wakeLenisRef.current = wake
+
+    wrapper.addEventListener('wheel', wake, { passive: true })
+    wrapper.addEventListener('touchstart', wake, { passive: true })
+    wrapper.addEventListener('scroll', wake, { passive: true })
 
     return () => {
-      cancelAnimationFrame(rafId)
+      wrapper.removeEventListener('wheel', wake)
+      wrapper.removeEventListener('touchstart', wake)
+      wrapper.removeEventListener('scroll', wake)
+      if (rafId) cancelAnimationFrame(rafId)
+      wakeLenisRef.current = null
       lenis.destroy()
       lenisRef.current = null
     }
@@ -126,22 +156,30 @@ export function CompactScrollArea({
     const content = contentRef.current
     if (!el) return
 
-    const onChange = () => {
+    let pendingRaf = 0
+    const runChange = () => {
+      pendingRaf = 0
       if (stickToBottom && pinnedBottomRef.current && !dragStateRef.current) {
         el.scrollTop = el.scrollHeight
       }
       lenisRef.current?.resize()
       syncMetrics()
     }
+    const scheduleChange = () => {
+      if (!pendingRaf) {
+        pendingRaf = requestAnimationFrame(runChange)
+      }
+    }
 
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onChange) : null
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleChange) : null
     ro?.observe(el)
     if (content) ro?.observe(content)
 
-    const mo = typeof MutationObserver !== 'undefined' ? new MutationObserver(onChange) : null
+    const mo = typeof MutationObserver !== 'undefined' ? new MutationObserver(scheduleChange) : null
     mo?.observe(content ?? el, { childList: true, subtree: true, characterData: stickToBottom })
 
     return () => {
+      if (pendingRaf) cancelAnimationFrame(pendingRaf)
       ro?.disconnect()
       mo?.disconnect()
     }
@@ -167,6 +205,7 @@ export function CompactScrollArea({
     const clamped = Math.max(0, Math.min(top, Math.max(0, el.scrollHeight - el.clientHeight)))
     if (lenisRef.current) {
       lenisRef.current.scrollTo(clamped, { immediate })
+      wakeLenisRef.current?.()
     } else if (immediate) {
       el.scrollTop = clamped
     } else {
@@ -234,7 +273,9 @@ export function CompactScrollArea({
               if (dragStateRef.current?.pointerId === e.pointerId) {
                 dragStateRef.current = null
                 setDragging(false)
-                e.currentTarget.releasePointerCapture(e.pointerId)
+                if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                }
               }
             }}
             onPointerCancel={() => {

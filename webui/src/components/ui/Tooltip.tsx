@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { UiCustomization } from '@/lib/types'
@@ -32,12 +32,14 @@ export function ZenkoTooltipProvider({
   surface?: UiCustomization['surface']
   children: React.ReactNode
 }) {
-  const value: ZenkoTooltipConfig = {
-    style: surface?.tooltip_style || 'accent_edge',
-    shape: surface?.tooltip_shape || 'pill',
-    motion: surface?.tooltip_motion || 'spring',
-    enabled: surface?.show_hover_hints !== false,
-  }
+  const style = surface?.tooltip_style || 'accent_edge'
+  const shape = surface?.tooltip_shape || 'pill'
+  const motion = surface?.tooltip_motion || 'spring'
+  const enabled = surface?.show_hover_hints !== false
+  const value = useMemo<ZenkoTooltipConfig>(
+    () => ({ style, shape, motion, enabled }),
+    [style, shape, motion, enabled],
+  )
   return <ZenkoTooltipContext.Provider value={value}>{children}</ZenkoTooltipContext.Provider>
 }
 

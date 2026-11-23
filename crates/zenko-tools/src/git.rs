@@ -370,15 +370,36 @@ async fn exec_stage(ws: &Path, args: &Value, cancel: CancellationToken) -> Resul
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if !allow_sensitive {
-        let sensitive: Vec<&String> = paths
+        let mut sensitive: Vec<String> = paths
             .iter()
             .filter(|p| is_sensitive_git_path(p))
+            .cloned()
             .collect();
+        // Expand directory / glob pathspecs via `git status --porcelain -uall -z` so `paths: ["."]`
+        // cannot bypass sensitive credential/env guards.
+        let mut status_argv: Vec<String> = vec![
+            "status".into(),
+            "--porcelain".into(),
+            "-uall".into(),
+            "-z".into(),
+            "--".into(),
+        ];
+        status_argv.extend(paths.iter().cloned());
+        let status_refs: Vec<&str> = status_argv.iter().map(String::as_str).collect();
+        if let Ok((true, status_out, _)) = run_git(ws, &status_refs, cancel.clone()).await {
+            for entry in status_out.split('\0') {
+                if entry.len() >= 4 {
+                    let rel = entry[3..].trim();
+                    if !rel.is_empty() && is_sensitive_git_path(rel) && !sensitive.iter().any(|s| s == rel) {
+                        sensitive.push(rel.to_string());
+                    }
+                }
+            }
+        }
         if !sensitive.is_empty() {
-            let list: Vec<&str> = sensitive.iter().map(|s| s.as_str()).collect();
             return Ok(ToolOutput::err(format!(
                 "Refused to stage potentially sensitive credential/env path(s): {}. Pass `allow_sensitive: true` if you explicitly intend to commit them.",
-                list.join(", ")
+                sensitive.join(", ")
             )));
         }
     }

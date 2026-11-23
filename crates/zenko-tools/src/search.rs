@@ -102,7 +102,8 @@ impl Tool for CodeSearchTool {
                 }
                 let file_path = dent.path();
                 let rel = file_path
-                    .strip_prefix(&ws_root)
+                    .strip_prefix(&root)
+                    .or_else(|_| file_path.strip_prefix(&ws_root))
                     .unwrap_or(file_path)
                     .display()
                     .to_string();

@@ -335,6 +335,8 @@ impl ActivityTracker {
                 message,
             } => {
                 self.step_starts.remove(session_id);
+                self.logged_thinking.remove(session_id);
+                self.logged_streaming.remove(session_id);
                 Some(RenderedActivity {
                     dir: LogDirection::Err,
                     channel: LogChannel::Agent,

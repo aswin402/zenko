@@ -34,6 +34,7 @@ impl WebSearchTool {
         vault: Arc<SecretVault>,
     ) -> Self {
         let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(4)
             .connect_timeout(Duration::from_secs(10))
             .build()

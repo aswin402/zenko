@@ -196,16 +196,17 @@ impl UnifiedLlmProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_bounded_error_text(resp, None).await;
             return Err(ZenkoError::Provider(format!(
                 "MiniMax verification failed ({status}): {}",
                 truncate(&text, 240)
             )));
         }
 
-        if let Ok(val) = resp.json::<Value>().await {
-            check_provider_error(&val)?;
-        }
+        let val = resp.json::<Value>().await.map_err(|e| {
+            ZenkoError::Provider(format!("MiniMax probe returned non-JSON response: {e}"))
+        })?;
+        check_provider_error(&val)?;
         Ok(())
     }
 }
@@ -242,9 +243,13 @@ impl LlmProvider for UnifiedLlmProvider {
             .map_err(|e| ZenkoError::Provider(format!("connection failed: {e}")))?;
 
         if resp.status().is_success() {
-            if let Ok(val) = resp.json::<Value>().await {
-                check_provider_error(&val)?;
-            }
+            let val = resp.json::<Value>().await.map_err(|e| {
+                ZenkoError::Provider(format!(
+                    "{} verification returned invalid JSON (possible proxy/HTML page): {e}",
+                    desc.label
+                ))
+            })?;
+            check_provider_error(&val)?;
             return Ok(());
         }
 
@@ -257,7 +262,7 @@ impl LlmProvider for UnifiedLlmProvider {
         }
 
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_bounded_error_text(resp, None).await;
         Err(ZenkoError::Provider(format!(
             "{} verification failed ({status}): {}",
             desc.label,
@@ -312,7 +317,10 @@ impl LlmProvider for UnifiedLlmProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let err_body = resp.text().await.unwrap_or_default();
+            let err_body = read_bounded_error_text(resp, Some(&cancel)).await;
+            if cancel.is_cancelled() {
+                return Err(ZenkoError::Cancelled);
+            }
             return Err(ZenkoError::Provider(format!(
                 "LLM API error ({status}): {}",
                 truncate(&err_body, 400)
@@ -363,10 +371,28 @@ impl LlmProvider for UnifiedLlmProvider {
 
                 match next_chunk {
                     Some(Ok(bytes)) => {
-                        for line in decoder.push(&bytes) {
-                            if let Err(e) = process_sse_line(&line, &mut acc, &tx).await {
+                        let lines = match decoder.push(&bytes) {
+                            Ok(l) => l,
+                            Err(e) => {
                                 let _ = tx.send(Err(e)).await;
                                 return;
+                            }
+                        };
+                        for line in lines {
+                            match process_sse_line(&line, &mut acc, &tx).await {
+                                Ok(true) => {
+                                    let _ = tx
+                                        .send(Ok(LlmDelta::Done {
+                                            finish_reason: acc.finish_reason.take(),
+                                        }))
+                                        .await;
+                                    return;
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    let _ = tx.send(Err(e)).await;
+                                    return;
+                                }
                             }
                         }
                     }
@@ -397,6 +423,39 @@ impl LlmProvider for UnifiedLlmProvider {
 
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
+}
+
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+
+async fn read_bounded_error_text(
+    mut resp: reqwest::Response,
+    cancel: Option<&CancellationToken>,
+) -> String {
+    let mut buf = Vec::with_capacity(1024);
+    loop {
+        let next = match cancel {
+            Some(c) => tokio::select! {
+                _ = c.cancelled() => break,
+                chunk = resp.chunk() => chunk,
+            },
+            None => resp.chunk().await,
+        };
+        match next {
+            Ok(Some(bytes)) => {
+                let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(buf.len());
+                if remaining == 0 {
+                    break;
+                }
+                let take = bytes.len().min(remaining);
+                buf.extend_from_slice(&bytes[..take]);
+                if take < bytes.len() {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn truncate(s: &str, max: usize) -> String {

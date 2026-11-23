@@ -1052,13 +1052,20 @@ pub async fn run_hooks_with_context(
             continue;
         };
 
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(&input).await;
-            let _ = stdin.shutdown().await;
-        }
-
         let timeout = Duration::from_secs(hook.timeout_secs.clamp(1, 30));
-        if let Ok(Ok(output)) = tokio::time::timeout(timeout, child.wait_with_output()).await {
+        let stdin_opt = child.stdin.take();
+        let io_res = tokio::time::timeout(timeout, async move {
+            let write_fut = async {
+                if let Some(mut stdin) = stdin_opt {
+                    let _ = stdin.write_all(&input).await;
+                    let _ = stdin.shutdown().await;
+                }
+            };
+            let (_, out_res) = tokio::join!(write_fut, child.wait_with_output());
+            out_res
+        })
+        .await;
+        if let Ok(Ok(output)) = io_res {
             if output.status.code() == Some(2) {
                 let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 let fallback = String::from_utf8_lossy(&output.stdout).trim().to_string();

@@ -152,12 +152,21 @@ export default function App() {
 
   const activeSidRef = useRef<string | null>(null)
   activeSidRef.current = activeSessionId
+  const uiRef = useRef<UiCustomization | null>(null)
+  uiRef.current = ui
   const loadSessionSeqRef = useRef<number>(0)
   const loadSessionAbortRef = useRef<AbortController | null>(null)
   const lastPromptRef = useRef<string>('')
   const liveTextRef = useRef<string>('')
   liveTextRef.current = liveText
   const saveUiTimer = useRef<number | undefined>(undefined)
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(saveUiTimer.current)
+    },
+    [],
+  )
 
   const toast = useCallback((message: string, kind: 'info' | 'success' | 'error' = 'info') => {
     const id = Date.now() + Math.random()
@@ -527,57 +536,53 @@ export default function App() {
     return () => es.close()
   }, [authorized, loaded, loadSession, toast])
 
-  // Live UI Customization patcher (instant zero-reload + debounced SQLite persist)
-  const patchUi = useCallback(
-    (mutator: (draft: UiCustomization) => void) => {
-      setUi((prev) => {
-        if (!prev) return prev
-        const next: UiCustomization = structuredClone(prev)
-        mutator(next)
-        applyUiCustomization(next)
-        window.clearTimeout(saveUiTimer.current)
-        saveUiTimer.current = window.setTimeout(() => {
-          api('/api/ui/active', { method: 'PUT', body: JSON.stringify(next) }).catch(() => {})
-        }, 220)
-        return next
-      })
-    },
-    [],
-  )
+  // Live UI Customization patcher (pure state update + synchronous DOM apply + debounced SQLite persist)
+  const patchUi = useCallback((mutator: (draft: UiCustomization) => void) => {
+    const prev = uiRef.current
+    if (!prev) return
+    const next: UiCustomization = structuredClone(prev)
+    mutator(next)
+    uiRef.current = next
+    setUi(next)
+    applyUiCustomization(next)
+    window.clearTimeout(saveUiTimer.current)
+    saveUiTimer.current = window.setTimeout(() => {
+      api('/api/ui/active', { method: 'PUT', body: JSON.stringify(next) }).catch(() => {})
+    }, 220)
+  }, [])
 
   const selectPreset = useCallback(
     async (presetId: string, mode?: 'dark' | 'light') => {
       // Optimistically apply CSS tokens synchronously so BeUI ThemeToggle's
       // View Transitions API circle-blur animation snapshots old vs new DOM cleanly!
       const family = presets.find((p) => p.id === presetId)
-      if (family) {
-        setUi((prev) => {
-          if (!prev) return prev
-          const targetMode: 'dark' | 'light' = mode ?? (prev.mode === 'light' ? 'light' : 'dark')
-          const sw = targetMode === 'light' ? family.light : family.dark
-          const isLight = targetMode === 'light'
-          const optimistic: UiCustomization = {
-            ...prev,
-            mode: targetMode,
-            preset_id: family.id,
-            colors: {
-              background: sw.bg,
-              surface: sw.surface,
-              card: sw.card,
-              border: sw.border,
-              foreground: sw.fg,
-              muted: sw.muted,
-              primary: sw.primary,
-              primary_foreground: sw.primary_fg,
-              accent: sw.primary,
-              destructive: isLight ? '#dc2626' : '#ef4444',
-              success: isLight ? '#16a34a' : '#22c55e',
-              warning: isLight ? '#d97706' : '#f59e0b',
-            },
-          }
-          applyUiCustomization(optimistic)
-          return optimistic
-        })
+      const prev = uiRef.current
+      if (family && prev) {
+        const targetMode: 'dark' | 'light' = mode ?? (prev.mode === 'light' ? 'light' : 'dark')
+        const sw = targetMode === 'light' ? family.light : family.dark
+        const isLight = targetMode === 'light'
+        const optimistic: UiCustomization = {
+          ...prev,
+          mode: targetMode,
+          preset_id: family.id,
+          colors: {
+            background: sw.bg,
+            surface: sw.surface,
+            card: sw.card,
+            border: sw.border,
+            foreground: sw.fg,
+            muted: sw.muted,
+            primary: sw.primary,
+            primary_foreground: sw.primary_fg,
+            accent: sw.primary,
+            destructive: isLight ? '#dc2626' : '#ef4444',
+            success: isLight ? '#16a34a' : '#22c55e',
+            warning: isLight ? '#d97706' : '#f59e0b',
+          },
+        }
+        uiRef.current = optimistic
+        setUi(optimistic)
+        applyUiCustomization(optimistic)
       }
 
       try {
@@ -588,6 +593,7 @@ export default function App() {
         )
         if (res.config) {
           const normalized = normalizeUiCustomization(res.config)
+          uiRef.current = normalized
           setUi(normalized)
           applyUiCustomization(normalized)
           const label =
@@ -773,14 +779,19 @@ export default function App() {
             setClearConfirmOpen(true)
           }}
           onDeleteSession={async (id) => {
-            await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
-            const remaining = sessions.filter((s) => s.id !== id)
-            setSessions(remaining)
-            if (activeSessionId === id) {
-              const nextId = remaining[0]?.id || null
-              setActiveSessionId(nextId)
-              if (nextId) loadSession(nextId)
-              else setEvents([])
+            try {
+              await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+              const remaining = sessions.filter((s) => s.id !== id)
+              setSessions(remaining)
+              if (activeSessionId === id) {
+                const nextId = remaining[0]?.id || null
+                activeSidRef.current = nextId
+                setActiveSessionId(nextId)
+                if (nextId) loadSession(nextId)
+                else setEvents([])
+              }
+            } catch (e: any) {
+              toast(e?.message || 'Failed to delete session', 'error')
             }
           }}
           onOpenSettings={() => setActiveView('setup')}
@@ -850,6 +861,7 @@ export default function App() {
               }}
             />
             <ChatStream
+              sessionId={activeSessionId}
               events={events}
               siblings={siblings}
               pendingApprovals={pendingApprovals}
@@ -894,28 +906,40 @@ export default function App() {
               }}
               onSwitchBranch={async (eventId) => {
                 if (!activeSessionId) return
-                await api(`/api/sessions/${encodeURIComponent(activeSessionId)}/branch`, {
-                  method: 'POST',
-                  body: JSON.stringify({ event_id: eventId }),
-                })
-                loadSession(activeSessionId)
+                try {
+                  await api(`/api/sessions/${encodeURIComponent(activeSessionId)}/branch`, {
+                    method: 'POST',
+                    body: JSON.stringify({ event_id: eventId }),
+                  })
+                  loadSession(activeSessionId)
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to switch branch', 'error')
+                }
               }}
               onResolveApproval={async (id, decision) => {
-                await api(`/api/approvals/${encodeURIComponent(id)}`, {
-                  method: 'POST',
-                  body: JSON.stringify({ decision }),
-                })
-                setPendingApprovals((prev) => prev.filter((a) => a.id !== id))
+                try {
+                  await api(`/api/approvals/${encodeURIComponent(id)}`, {
+                    method: 'POST',
+                    body: JSON.stringify({ decision }),
+                  })
+                  setPendingApprovals((prev) => prev.filter((a) => a.id !== id))
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to resolve approval', 'error')
+                }
               }}
               onResolveClarification={async (id, selectedOptionId, customAnswer) => {
-                await api(`/api/clarifications/${encodeURIComponent(id)}`, {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    selected_option_id: selectedOptionId,
-                    custom_answer: customAnswer || null,
-                  }),
-                })
-                setPendingClarifications((prev) => prev.filter((c) => c.id !== id))
+                try {
+                  await api(`/api/clarifications/${encodeURIComponent(id)}`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      selected_option_id: selectedOptionId,
+                      custom_answer: customAnswer || null,
+                    }),
+                  })
+                  setPendingClarifications((prev) => prev.filter((c) => c.id !== id))
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to resolve clarification', 'error')
+                }
               }}
             />
 
@@ -926,15 +950,19 @@ export default function App() {
               onStop={async () => {
                 if (!activeSessionId) return
                 const partial = liveTextRef.current.trim()
-                await api(`/api/sessions/${encodeURIComponent(activeSessionId)}/stop`, { method: 'POST' })
-                setIsRunning(false)
-                setLiveThinking('')
-                setLiveText('')
-                setLiveTools([])
-                setStoppedRun({
-                  words: partial ? partial.split(' ').filter(Boolean).slice(0, 60) : [],
-                  reason: 'Stopped by user',
-                })
+                try {
+                  await api(`/api/sessions/${encodeURIComponent(activeSessionId)}/stop`, { method: 'POST' })
+                  setIsRunning(false)
+                  setLiveThinking('')
+                  setLiveText('')
+                  setLiveTools([])
+                  setStoppedRun({
+                    words: partial ? partial.split(' ').filter(Boolean).slice(0, 60) : [],
+                    reason: 'Stopped by user',
+                  })
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to stop active turn', 'error')
+                }
               }}
               queuedPrompts={queuedPrompts}
               onCancelQueued={async (qid) => {
@@ -970,32 +998,37 @@ export default function App() {
               configuredProviders={configuredProviders}
               models={models}
               onSelectProviderModel={async (providerId, modelId) => {
-                let sid = activeSessionId
-                if (!sid) {
-                  const created = await api<Session>('/api/sessions', {
-                    method: 'POST',
-                    body: JSON.stringify({ title: 'New Session' }),
-                  })
-                  setSessions((prev) => [created, ...prev])
-                  setActiveSessionId(created.id)
-                  sid = created.id
+                try {
+                  let sid = activeSessionId
+                  if (!sid) {
+                    const created = await api<Session>('/api/sessions', {
+                      method: 'POST',
+                      body: JSON.stringify({ title: 'New Session' }),
+                    })
+                    setSessions((prev) => [created, ...prev])
+                    activeSidRef.current = created.id
+                    setActiveSessionId(created.id)
+                    sid = created.id
+                  }
+                  const res = await api<{ ok: boolean; config?: any }>(
+                    `/api/sessions/${encodeURIComponent(sid)}`,
+                    {
+                      method: 'PATCH',
+                      body: JSON.stringify({ provider_kind: providerId, model_override: modelId }),
+                    },
+                  )
+                  if (res.config) setConfig(res.config)
+                  setSessions((prev) =>
+                    prev.map((s) => (s.id === sid ? { ...s, model_override: modelId } : s)),
+                  )
+                  api<ModelInfo[]>(`/api/models?provider=${encodeURIComponent(providerId)}`)
+                    .then(setModels)
+                    .catch(() => {})
+                  const label = providers.find((p) => p.id === providerId)?.label || providerId
+                  toast(`Active: ${label} · ${modelId}`, 'success')
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to switch model', 'error')
                 }
-                const res = await api<{ ok: boolean; config?: any }>(
-                  `/api/sessions/${encodeURIComponent(sid)}`,
-                  {
-                    method: 'PATCH',
-                    body: JSON.stringify({ provider_kind: providerId, model_override: modelId }),
-                  },
-                )
-                if (res.config) setConfig(res.config)
-                setSessions((prev) =>
-                  prev.map((s) => (s.id === sid ? { ...s, model_override: modelId } : s)),
-                )
-                api<ModelInfo[]>(`/api/models?provider=${encodeURIComponent(providerId)}`)
-                  .then(setModels)
-                  .catch(() => {})
-                const label = providers.find((p) => p.id === providerId)?.label || providerId
-                toast(`Active: ${label} · ${modelId}`, 'success')
               }}
               permissionMode={activePolicy}
               onChangePermission={async (p) => {
@@ -1004,36 +1037,45 @@ export default function App() {
                   toast(`Execution policy: ${p}`, 'info')
                   return
                 }
-                await api(`/api/sessions/${encodeURIComponent(activeSessionId)}`, {
-                  method: 'PATCH',
-                  body: JSON.stringify({ permission_mode: p }),
-                })
-                setSessions((prev) =>
-                  prev.map((s) => (s.id === activeSessionId ? { ...s, permission_mode: p } : s)),
-                )
+                try {
+                  await api(`/api/sessions/${encodeURIComponent(activeSessionId)}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ permission_mode: p }),
+                  })
+                  setSessions((prev) =>
+                    prev.map((s) => (s.id === activeSessionId ? { ...s, permission_mode: p } : s)),
+                  )
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to update permission mode', 'error')
+                }
               }}
               streamingEnabled={streamingEnabled}
               onToggleStreaming={async () => {
-                let targetSid = activeSessionId || sessions[0]?.id || null
-                if (!targetSid) {
-                  const created = await api<Session>('/api/sessions', {
-                    method: 'POST',
-                    body: JSON.stringify({ title: 'New Session' }),
-                  })
-                  setSessions((prev) => [created, ...prev])
-                  setActiveSessionId(created.id)
-                  targetSid = created.id
+                try {
+                  let targetSid = activeSessionId || sessions[0]?.id || null
+                  if (!targetSid) {
+                    const created = await api<Session>('/api/sessions', {
+                      method: 'POST',
+                      body: JSON.stringify({ title: 'New Session' }),
+                    })
+                    setSessions((prev) => [created, ...prev])
+                    activeSidRef.current = created.id
+                    setActiveSessionId(created.id)
+                    targetSid = created.id
+                  }
+                  const next = !streamingEnabled
+                  const res = await api<{ ok: boolean; config?: any }>(
+                    `/api/sessions/${encodeURIComponent(targetSid)}`,
+                    {
+                      method: 'PATCH',
+                      body: JSON.stringify({ enable_streaming: next }),
+                    },
+                  )
+                  if (res.config) setConfig(res.config)
+                  toast(`Streaming ${next ? 'ON' : 'OFF'}`, 'info')
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to toggle streaming', 'error')
                 }
-                const next = !streamingEnabled
-                const res = await api<{ ok: boolean; config?: any }>(
-                  `/api/sessions/${encodeURIComponent(targetSid)}`,
-                  {
-                    method: 'PATCH',
-                    body: JSON.stringify({ enable_streaming: next }),
-                  },
-                )
-                if (res.config) setConfig(res.config)
-                toast(`Streaming ${next ? 'ON' : 'OFF'}`, 'info')
               }}
               activeSessionId={activeSessionId}
               totalTokens={activeSession?.total_tokens ?? 0}
@@ -1616,12 +1658,16 @@ export default function App() {
               onClick={async () => {
                 setClearConfirmOpen(false)
                 if (!activeSessionId) return
-                await api(`/api/sessions/${encodeURIComponent(activeSessionId)}/clear`, { method: 'POST' })
-                setEvents([])
-                setLiveText('')
-                setLiveThinking('')
-                setLiveTools([])
-                toast('Session cleared', 'success')
+                try {
+                  await api(`/api/sessions/${encodeURIComponent(activeSessionId)}/clear`, { method: 'POST' })
+                  setEvents([])
+                  setLiveText('')
+                  setLiveThinking('')
+                  setLiveTools([])
+                  toast('Session cleared', 'success')
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to clear session', 'error')
+                }
               }}
               className="z-btn z-btn-danger z-btn-sm"
             >

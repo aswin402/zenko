@@ -122,12 +122,20 @@ export function ZenkoChart({
     const chart = echarts.init(el, undefined, { renderer: 'canvas' })
     instanceRef.current = chart
 
+    let resizeRaf = 0
     const ro = new ResizeObserver(() => {
-      chart.resize()
+      if (resizeRaf) return
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0
+        if (!chart.isDisposed()) {
+          chart.resize()
+        }
+      })
     })
     ro.observe(el)
 
     return () => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf)
       ro.disconnect()
       chart.dispose()
       instanceRef.current = null

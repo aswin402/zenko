@@ -577,9 +577,16 @@ impl LspPoolManager {
                         "LSP server `{id}` is disabled in zenko.toml"
                     )));
                 }
+                let inferred_lang = abs_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(find_lsp_server_by_extension)
+                    .or_else(|| find_lsp_server_by_id(&ov.id))
+                    .map(|r| r.language_id.to_string())
+                    .unwrap_or_else(|| ov.id.clone());
                 return Ok(ResolvedServerSpec {
                     id: ov.id.clone(),
-                    language_id: ov.id.clone(),
+                    language_id: inferred_lang,
                     command: ov.command.clone(),
                     args: ov.args.clone(),
                     root_markers: ov.root_markers.clone(),
@@ -608,9 +615,13 @@ impl LspPoolManager {
                     .iter()
                     .any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext))
         }) {
+            let inferred_lang = find_lsp_server_by_extension(&ext)
+                .or_else(|| find_lsp_server_by_id(&ov.id))
+                .map(|r| r.language_id.to_string())
+                .unwrap_or_else(|| ov.id.clone());
             return Ok(ResolvedServerSpec {
                 id: ov.id.clone(),
-                language_id: ov.id.clone(),
+                language_id: inferred_lang,
                 command: ov.command.clone(),
                 args: ov.args.clone(),
                 root_markers: ov.root_markers.clone(),
@@ -670,8 +681,25 @@ impl LspPoolManager {
             }
         }
         let fresh = LspClientSession::start(spec, root).await?;
-        let mut map = self.sessions.lock().await;
-        map.insert(key, fresh.clone());
+        let winner = {
+            let mut map = self.sessions.lock().await;
+            if let Some(existing) = map.get(&key) {
+                if existing.is_alive() {
+                    existing.touch();
+                    Some(existing.clone())
+                } else {
+                    map.insert(key, fresh.clone());
+                    None
+                }
+            } else {
+                map.insert(key, fresh.clone());
+                None
+            }
+        };
+        if let Some(existing) = winner {
+            fresh.shutdown().await;
+            return Ok(existing);
+        }
         Ok(fresh)
     }
 
@@ -866,7 +894,14 @@ impl Tool for LspTool {
                     .resolve_server_for_file(&cfg, &ws_canon, Some(id))?;
                 self.pool.get_or_spawn(&spec, ws_canon.clone()).await?
             } else {
-                let active = self.pool.sessions.lock().await.values().next().cloned();
+                let active = self
+                    .pool
+                    .sessions
+                    .lock()
+                    .await
+                    .values()
+                    .find(|s| s.is_alive())
+                    .cloned();
                 match active {
                     Some(s) => s,
                     None => {
@@ -954,7 +989,7 @@ impl Tool for LspTool {
                                 cancel,
                             )
                             .await?;
-                        Ok(format_locations_output(&ws_canon, &res, "Definition"))
+                        Ok(format_locations_output(&ws_canon, &res, "Definition").await)
                     }
                     LspAction::TypeDefinition => {
                         let res = sess
@@ -965,7 +1000,7 @@ impl Tool for LspTool {
                                 cancel,
                             )
                             .await?;
-                        Ok(format_locations_output(&ws_canon, &res, "Type Definition"))
+                        Ok(format_locations_output(&ws_canon, &res, "Type Definition").await)
                     }
                     LspAction::Implementation => {
                         let res = sess
@@ -976,7 +1011,7 @@ impl Tool for LspTool {
                                 cancel,
                             )
                             .await?;
-                        Ok(format_locations_output(&ws_canon, &res, "Implementation"))
+                        Ok(format_locations_output(&ws_canon, &res, "Implementation").await)
                     }
                     LspAction::References => {
                         let res = sess
@@ -991,7 +1026,7 @@ impl Tool for LspTool {
                                 cancel,
                             )
                             .await?;
-                        Ok(format_locations_output(&ws_canon, &res, "References"))
+                        Ok(format_locations_output(&ws_canon, &res, "References").await)
                     }
                     LspAction::Hover => {
                         let res = sess
@@ -1331,7 +1366,9 @@ fn format_diagnostics_output(path: &str, file_text: &str, items: &[Value]) -> To
     out
 }
 
-fn format_locations_output(ws_root: &Path, res: &Value, label: &str) -> ToolOutput {
+const LSP_LOCATION_SNIPPET_MAX_BYTES: u64 = 256 * 1024;
+
+async fn format_locations_output(ws_root: &Path, res: &Value, label: &str) -> ToolOutput {
     let locs: Vec<&Value> = match res {
         Value::Array(arr) => arr.iter().collect(),
         Value::Object(_) => vec![res],
@@ -1341,36 +1378,53 @@ fn format_locations_output(ws_root: &Path, res: &Value, label: &str) -> ToolOutp
         return ToolOutput::ok(format!("{label}: (none)"));
     }
     let mut line_cache: HashMap<String, Vec<String>> = HashMap::new();
-    let lines: Vec<String> = locs
-        .iter()
-        .take(LSP_MAX_RESULTS)
-        .filter_map(|loc| {
-            let uri = loc
-                .get("uri")
-                .or_else(|| loc.get("targetUri"))
-                .and_then(Value::as_str)?;
-            let range = loc
-                .get("range")
-                .or_else(|| loc.get("targetSelectionRange"))
-                .or_else(|| loc.get("targetRange"))?;
-            let line_0 = range.pointer("/start/line").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let utf16_col = range
-                .pointer("/start/character")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            let decoded_path = decode_uri_path(uri.strip_prefix("file://").unwrap_or(uri));
-            let file_lines = line_cache.entry(decoded_path.clone()).or_insert_with(|| {
-                std::fs::read_to_string(&decoded_path)
-                    .map(|s| s.lines().map(String::from).collect())
-                    .unwrap_or_default()
-            });
-            let col_1 = file_lines
-                .get(line_0)
-                .map(|l| utf16_col_to_utf8_char(l, utf16_col) + 1)
-                .unwrap_or(utf16_col + 1);
-            Some(format!("{}:{}:{col_1}", file_uri_to_display(ws_root, uri), line_0 + 1))
-        })
-        .collect();
+    let mut lines: Vec<String> = Vec::new();
+    for loc in locs.iter().take(LSP_MAX_RESULTS) {
+        let Some(uri) = loc
+            .get("uri")
+            .or_else(|| loc.get("targetUri"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(range) = loc
+            .get("range")
+            .or_else(|| loc.get("targetSelectionRange"))
+            .or_else(|| loc.get("targetRange"))
+        else {
+            continue;
+        };
+        let line_0 = range
+            .pointer("/start/line")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let utf16_col = range
+            .pointer("/start/character")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let decoded_path = decode_uri_path(uri.strip_prefix("file://").unwrap_or(uri));
+        if !line_cache.contains_key(&decoded_path) {
+            let loaded = match tokio::fs::canonicalize(&decoded_path).await {
+                Ok(canon) if canon.starts_with(ws_root) => match tokio::fs::metadata(&canon).await {
+                    Ok(meta) if meta.is_file() && meta.len() <= LSP_LOCATION_SNIPPET_MAX_BYTES => {
+                        tokio::fs::read_to_string(&canon)
+                            .await
+                            .map(|s| s.lines().map(String::from).collect())
+                            .unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            line_cache.insert(decoded_path.clone(), loaded);
+        }
+        let col_1 = line_cache
+            .get(&decoded_path)
+            .and_then(|file_lines| file_lines.get(line_0))
+            .map(|l| utf16_col_to_utf8_char(l, utf16_col) + 1)
+            .unwrap_or(utf16_col + 1);
+        lines.push(format!("{}:{}:{col_1}", file_uri_to_display(ws_root, uri), line_0 + 1));
+    }
     let mut out = ToolOutput::ok(format!("{label} ({}):\n{}", lines.len(), lines.join("\n")));
     out.metadata = Some(json!({ "locations": lines }));
     out

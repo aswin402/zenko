@@ -97,11 +97,19 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                 messages.push(Value::Object(obj));
             }
             EventRole::Tool => {
-                messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": msg.tool_call_id.as_deref().unwrap_or(""),
-                    "content": msg.content
-                }));
+                let mut obj = serde_json::Map::new();
+                obj.insert("role".into(), Value::String("tool".into()));
+                obj.insert(
+                    "tool_call_id".into(),
+                    Value::String(msg.tool_call_id.clone().unwrap_or_default()),
+                );
+                if let Some(ref tool_name) = msg.name {
+                    if !tool_name.trim().is_empty() {
+                        obj.insert("name".into(), Value::String(tool_name.clone()));
+                    }
+                }
+                obj.insert("content".into(), Value::String(msg.content.clone()));
+                messages.push(Value::Object(obj));
             }
         }
     }
@@ -157,7 +165,8 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
         }
 
         // OpenRouter/Anthropic multi-breakpoint KV caching: place a 3rd cache breakpoint on the
-        // penultimate stable user/tool message so long multi-turn histories reuse cached prefixes.
+        // penultimate stable user message (avoid converting `role: "tool"` content into array blocks
+        // which non-Anthropic upstreams behind OpenRouter can reject with HTTP 400).
         if dialect == ProviderDialect::OpenRouter && req.enable_prompt_caching {
             if let Some(arr) = obj.get_mut("messages").and_then(Value::as_array_mut) {
                 if arr.len() >= 4 {
@@ -167,12 +176,7 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                         .take(arr.len() - 1)
                         .skip(1)
                         .rev()
-                        .find(|(_, m)| {
-                            matches!(
-                                m.get("role").and_then(Value::as_str),
-                                Some("user" | "tool")
-                            )
-                        })
+                        .find(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
                         .map(|(i, _)| i);
                     if let Some(idx) = target_idx {
                         if let Some(mobj) = arr[idx].as_object_mut() {
@@ -352,9 +356,13 @@ mod tests {
         let body = build_request_body(ProviderDialect::OpenRouter, &req);
         assert!(body["messages"][0]["content"].is_array());
         assert_eq!(body["tools"][0]["cache_control"]["type"], "ephemeral");
-        assert!(body["messages"][3]["content"].is_array());
+        // Tool messages must remain string content (never array blocks) and preserve `name`
+        assert!(body["messages"][3]["content"].is_string());
+        assert_eq!(body["messages"][3]["name"], Value::String("read_file".into()));
+        // Penultimate user message receives the 3rd KV cache breakpoint
+        assert!(body["messages"][1]["content"].is_array());
         assert_eq!(
-            body["messages"][3]["content"][0]["cache_control"]["type"],
+            body["messages"][1]["content"][0]["cache_control"]["type"],
             "ephemeral"
         );
         assert_eq!(body["session_id"], Value::String("sess_1".into()));

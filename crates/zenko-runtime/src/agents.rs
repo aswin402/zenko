@@ -18,7 +18,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -39,6 +39,7 @@ use zenko_core::{
 use zenko_memory::SqliteStore;
 
 struct ActiveSubagentHandle {
+    run_gen: u64,
     parent_session_id: String,
     cancel: CancellationToken,
     status_rx: watch::Receiver<SubagentStatus>,
@@ -98,6 +99,8 @@ impl Drop for SlotReservation {
 #[derive(Default)]
 pub struct SubagentSupervisor {
     state: Arc<Mutex<SupervisorState>>,
+    /// Monotonic generation counter preventing stale exit cleanup from clobbering a killed or resumed run.
+    next_gen: AtomicU64,
     /// Keeps completed worktree handles so parent/user can inspect diff, merge, or discard after completion.
     worktrees: Mutex<HashMap<String, WorktreeHandle>>,
 }
@@ -347,7 +350,13 @@ impl SubagentSupervisor {
                                 Some(wt),
                             )
                         }
-                        Err(e) if explicit_worktree => {
+                        Err(e)
+                            if explicit_worktree
+                                || (!role.read_only
+                                    && zenko_memory::resolve_git_root(&parent_ws)
+                                        .join(".git")
+                                        .exists()) =>
+                        {
                             let _ = rt.store.delete_session(&child_id);
                             return Err(e);
                         }
@@ -493,11 +502,13 @@ impl SubagentSupervisor {
     ) -> watch::Receiver<SubagentStatus> {
         let child_id_bg = record_bg.id.clone();
         let parent_sid_bg = record_bg.parent_session_id.clone();
+        let my_gen = self.next_gen.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         let child_cancel = CancellationToken::new();
         let (status_tx, status_rx) = watch::channel(SubagentStatus::Running);
         slot.activate(
             child_id_bg.clone(),
             ActiveSubagentHandle {
+                run_gen: my_gen,
                 parent_session_id: parent_sid_bg.clone(),
                 cancel: child_cancel.clone(),
                 status_rx: status_rx.clone(),
@@ -620,12 +631,27 @@ impl SubagentSupervisor {
                 }
             }
 
-            record_bg.finished_at = Some(Utc::now());
-            let _ = rt_bg.store.upsert_subagent(&record_bg);
-            if let Ok(mut st) = rt_bg.subagents.state.lock() {
-                st.active.remove(&child_id_bg);
+            let is_current_gen = rt_bg
+                .subagents
+                .state
+                .lock()
+                .ok()
+                .map(|mut st| match st.active.get(&child_id_bg) {
+                    Some(h) if h.run_gen == my_gen => {
+                        st.active.remove(&child_id_bg);
+                        true
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false);
+            if is_current_gen {
+                record_bg.finished_at = Some(Utc::now());
+                let _ = rt_bg.store.upsert_subagent(&record_bg);
             }
             let _ = status_tx.send_replace(record_bg.status);
+            if !is_current_gen {
+                return;
+            }
 
             let hydrated = rt_bg
                 .store
@@ -799,7 +825,12 @@ impl SubagentSupervisor {
                 .into_iter()
                 .map(|r| r.id)
                 .collect(),
-            false => agent_ids.to_vec(),
+            false => {
+                for id in agent_ids {
+                    ensure_subtree_owner(&rt.store, parent_session_id, id, "wait on")?;
+                }
+                agent_ids.to_vec()
+            }
         };
 
         if target_ids.is_empty() {
@@ -1779,6 +1810,7 @@ mod tests {
         s2.activate(
             "child_1".into(),
             ActiveSubagentHandle {
+                run_gen: 1,
                 parent_session_id: "root_1".into(),
                 cancel: CancellationToken::new(),
                 status_rx: rx,

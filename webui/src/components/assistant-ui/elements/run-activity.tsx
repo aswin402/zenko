@@ -77,7 +77,7 @@ export function RunActivity({
           >
             <ChevronRightIcon
               aria-hidden="true"
-              className="size-3.5 shrink-0 transition-transform duration-200 group-data-open/trigger:rotate-90 group-data-panel-open/trigger:rotate-90 motion-reduce:transition-none"
+              className="size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/trigger:rotate-90 motion-reduce:transition-none"
             />
             {summary}
           </CollapsibleTrigger>

@@ -33,6 +33,18 @@ pub struct WebState {
 
 async fn serve_spa(uri: Uri) -> Response {
     let raw_path = uri.path().trim_start_matches('/');
+    // Never mask missing `/api/*` or `/v1/*` endpoints with `200 OK index.html`
+    if raw_path == "api"
+        || raw_path.starts_with("api/")
+        || raw_path == "v1"
+        || raw_path.starts_with("v1/")
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "not found" })),
+        )
+            .into_response();
+    }
     let path = if raw_path.is_empty() {
         "index.html"
     } else {
@@ -515,6 +527,54 @@ mod tests {
             .await
             .expect("wh unsigned resp");
         assert_eq!(wh_unsigned.status(), StatusCode::UNAUTHORIZED);
+
+        // Regression test: missing /api/* and /v1/* routes must return JSON 404 (not 200 index.html)
+        for missing_uri in ["/api/does-not-exist", "/v1/unknown"] {
+            let miss = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(missing_uri)
+                        .body(Body::empty())
+                        .expect("miss req"),
+                )
+                .await
+                .expect("miss resp");
+            assert_eq!(miss.status(), StatusCode::NOT_FOUND, "expected 404 for {missing_uri}");
+        }
+
+        // Regression test: /api/mcp/servers rejects unreferenced and reserved vault secret overwrites
+        let bad_unreferenced = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mcp/servers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"demo","transport":"stdio","command":"echo","secret_values":{"WEBUI_ADMIN_TOKEN":"evil"}}"#,
+                    ))
+                    .expect("mcp bad req"),
+            )
+            .await
+            .expect("mcp bad resp");
+        assert_eq!(bad_unreferenced.status(), StatusCode::BAD_REQUEST);
+
+        let bad_reserved = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mcp/servers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"demo","transport":"stdio","command":"echo","env_secrets":{"X":"WEBUI_ADMIN_TOKEN"},"secret_values":{"WEBUI_ADMIN_TOKEN":"evil"}}"#,
+                    ))
+                    .expect("mcp reserved req"),
+            )
+            .await
+            .expect("mcp reserved resp");
+        assert_eq!(bad_reserved.status(), StatusCode::FORBIDDEN);
 
         // Regression test: an open /api/events SSE stream must terminate immediately on shutdown
         let sse_resp = app
