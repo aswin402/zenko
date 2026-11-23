@@ -1294,9 +1294,27 @@ impl UiCustomization {
 }
 
 fn sanitize_css_value(raw: &str) -> String {
-    raw.chars()
+    let trimmed = raw.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    // Strictly allow only safe CSS color/value syntax; reject url(...), expression(...), @import, or escapes.
+    let forbidden = lower.contains("url(")
+        || lower.contains("expression(")
+        || lower.contains("javascript:")
+        || lower.contains("data:")
+        || lower.contains("//")
+        || lower.contains("/*");
+    if forbidden {
+        return String::from("transparent");
+    }
+    let cleaned: String = trimmed
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '#' | '(' | ')' | '%' | '.' | ',' | ' ' | '-' | '/'))
-        .collect()
+        .collect();
+    if cleaned.is_empty() {
+        String::from("transparent")
+    } else {
+        cleaned
+    }
 }
 
 #[cfg(test)]

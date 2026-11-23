@@ -1981,10 +1981,13 @@ async fn run_web_daemon(config_path: PathBuf, port: Option<u16>, bind: Option<St
     if cfg.webui.require_auth && !runtime.vault.has(VAULT_KEY_WEBUI_ADMIN)? {
         let tok = SecretVault::generate_token(16);
         runtime.vault.set(VAULT_KEY_WEBUI_ADMIN, &tok)?;
+        // Print generated admin token ONLY to operator stderr on first boot; never write plaintext
+        // credentials into SQLite logs, JSONL files, in-memory ring buffers, or SSE broadcasts.
+        eprintln!("  [vault] Initial WebUI admin token generated (saved to vault.enc): {tok}");
         let entry = emit_hono_line(
             LogDirection::Warn,
             LogChannel::System,
-            &format!("admin token generated: {tok}"),
+            "initial WebUI admin token generated and saved to vault.enc (printed once to stderr)",
             Some(("vault", LogStatusTone::Warn)),
             Some("saved"),
         );

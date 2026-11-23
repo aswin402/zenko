@@ -13,6 +13,7 @@ import { AgentDisclosure } from "@/components/agents/agent-disclosure";
 import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/ease";
 import { useFavicon } from "@/lib/hooks/use-favicon";
 import { useMessages } from "@/lib/i18n";
+import { safeHref } from "@/components/assistant-ui/utils/href";
 import { cn } from "@/lib/utils";
 
 export const citationsMessages = {
@@ -195,10 +196,11 @@ function CitationRow({
     "group/citation flex items-center gap-2 rounded-md px-1.5 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const id = citationTargetId(idPrefix, citation.id);
 
-  return citation.url ? (
+  const safeUrl = safeHref(citation.url);
+  return safeUrl ? (
     <a
       id={id}
-      href={citation.url}
+      href={safeUrl}
       target="_blank"
       rel="noreferrer noopener"
       className={className}

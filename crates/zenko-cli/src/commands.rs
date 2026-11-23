@@ -1407,7 +1407,7 @@ fn print_log_entry_line(entry: &LogEntry, json_out: bool) {
     let sid_tag = entry
         .session_id
         .as_deref()
-        .map(|s| format!(" [{}]", &s[..s.len().min(8)]))
+        .map(|s| format!(" [{}]", zenko_core::truncate_utf8_prefix(s, 8)))
         .unwrap_or_default();
     let cols: Vec<&str> = entry.message.split('\t').collect();
     match cols.len() {
@@ -2421,7 +2421,7 @@ pub async fn run_session_context(
             println!(
                 "  Tier 1 (KV):  {} tok (hash={})",
                 format_tokens(t1),
-                &t1_hash[..t1_hash.len().min(12)]
+                zenko_core::truncate_utf8_prefix(&t1_hash, 12)
             );
             println!("  Tier 2:       {} tok", format_tokens(t2));
             println!(

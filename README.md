@@ -12,7 +12,7 @@
   </p>
 
   <p>
-    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.2-ea5829?style=flat-square" alt="Version 0.0.2" /></a>
+    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.3-ea5829?style=flat-square" alt="Version 0.0.3" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88%2B-141417?style=flat-square&logo=rust&logoColor=f5f5f6" alt="Rust 1.88+" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141417?style=flat-square" alt="MIT License" /></a>
     <img src="https://img.shields.io/badge/runtime-Zero%20Node%20%7C%20Zero%20Python%20%7C%20rustls-141417?style=flat-square" alt="Zero Runtime Dependencies" />

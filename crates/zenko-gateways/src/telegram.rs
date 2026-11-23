@@ -60,11 +60,10 @@ impl RateLimiter {
         let wait_global = {
             let mut g = self.global_last.lock().await;
             let now = Instant::now();
-            let delay = g
-                .and_then(|prev| Duration::from_millis(35).checked_sub(now.duration_since(prev)))
-                .unwrap_or(Duration::ZERO);
-            *g = Some(now + delay);
-            delay
+            let interval = Duration::from_millis(35);
+            let scheduled = g.map(|prev| (prev + interval).max(now)).unwrap_or(now);
+            *g = Some(scheduled);
+            scheduled.saturating_duration_since(now)
         };
         if !wait_global.is_zero() {
             tokio::time::sleep(wait_global).await;
@@ -77,12 +76,13 @@ impl RateLimiter {
                 let ttl = Duration::from_secs(DEFAULT_RATE_LIMITER_TTL_SECS);
                 map.retain(|_, ts| now.saturating_duration_since(*ts) < ttl);
             }
-            let delay = map
+            let interval = Duration::from_millis(950);
+            let scheduled = map
                 .get(&chat_id)
-                .and_then(|prev| Duration::from_millis(950).checked_sub(now.duration_since(*prev)))
-                .unwrap_or(Duration::ZERO);
-            map.insert(chat_id, now + delay);
-            delay
+                .map(|prev| (*prev + interval).max(now))
+                .unwrap_or(now);
+            map.insert(chat_id, scheduled);
+            scheduled.saturating_duration_since(now)
         };
         if !wait_chat.is_zero() {
             tokio::time::sleep(wait_chat).await;
@@ -516,7 +516,7 @@ impl TelegramGateway {
                 let done_sig = turn_done.clone();
                 Some(tokio::spawn(async move {
                     let mut acc = String::new();
-                    let mut last_flush = Instant::now() - Duration::from_secs(2);
+                    let mut last_flush: Option<Instant> = None;
                     let draft_id: i64 = (chrono::Utc::now().timestamp_millis() % 1_000_000).max(1);
                     let mut draft_supported = true;
                     let mut fallback_msg_id: Option<i64> = None;
@@ -538,7 +538,8 @@ impl TelegramGateway {
                                     true => Duration::from_millis(450),
                                     false => Duration::from_millis(1200),
                                 };
-                                if last_flush.elapsed() >= cadence && !acc.trim().is_empty() {
+                                let due = last_flush.is_none_or(|t| t.elapsed() >= cadence);
+                                if due && !acc.trim().is_empty() {
                                     let preview = truncate_telegram(&acc, 3900);
                                     if draft_supported {
                                         if this
@@ -556,7 +557,9 @@ impl TelegramGateway {
                                                     .send_message(&tok, chat_id, thread_id, &preview, None)
                                                     .await
                                                 {
-                                                    fallback_msg_id = Some(mid);
+                                                    if mid > 0 {
+                                                        fallback_msg_id = Some(mid);
+                                                    }
                                                 }
                                             }
                                             Some(mid) => {
@@ -566,7 +569,7 @@ impl TelegramGateway {
                                             }
                                         }
                                     }
-                                    last_flush = Instant::now();
+                                    last_flush = Some(Instant::now());
                                 }
                             }
                             AgentEvent::ToolCallStarted { session_id, .. } if session_id == s_id => {
@@ -598,11 +601,14 @@ impl TelegramGateway {
                 let chunks = split_telegram_chunks(&text_out, 4000);
                 for (idx, chunk) in chunks.iter().enumerate() {
                     if idx == 0 {
-                        if let Some(mid) = fallback_mid {
-                            let _ = self
+                        if let Some(mid) = fallback_mid.filter(|&m| m > 0) {
+                            if self
                                 .edit_message_text(token, chat_id, mid, chunk, None)
-                                .await;
-                            continue;
+                                .await
+                                .is_ok()
+                            {
+                                continue;
+                            }
                         }
                     }
                     let _ = self.send_message(token, chat_id, thread_id, chunk, None).await;
@@ -837,7 +843,8 @@ impl TelegramGateway {
                 _ = cancel.cancelled() => break,
                 item = rx.recv() => match item {
                     Ok(e) => e,
-                    Err(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             };
             let Some(token) = self.runtime.vault.get(VAULT_KEY_TELEGRAM).ok().flatten() else {
@@ -1001,15 +1008,25 @@ impl TelegramGateway {
             .send()
             .await
             .map_err(|e| ZenkoError::Gateway(e.to_string()))?;
+        let status = resp.status();
         let val: Value = resp
             .json()
             .await
             .map_err(|e| ZenkoError::Gateway(e.to_string()))?;
-        Ok(val
+        if !status.is_success() || !val.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            let desc = val
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("telegram sendMessage failed");
+            return Err(ZenkoError::Gateway(format!("sendMessage ({status}): {desc}")));
+        }
+        let mid = val
             .get("result")
             .and_then(|r| r.get("message_id"))
             .and_then(Value::as_i64)
-            .unwrap_or(0))
+            .filter(|&id| id > 0)
+            .ok_or_else(|| ZenkoError::Gateway("sendMessage returned missing/zero message_id".into()))?;
+        Ok(mid)
     }
 
     async fn edit_message_text(
@@ -1020,6 +1037,9 @@ impl TelegramGateway {
         text: &str,
         reply_markup: Option<Value>,
     ) -> Result<()> {
+        if message_id <= 0 {
+            return Err(ZenkoError::Gateway("invalid telegram message_id".into()));
+        }
         self.limiter.wait_slot(chat_id).await;
         let url = format!("https://api.telegram.org/bot{token}/editMessageText");
         let mut payload = json!({
@@ -1030,8 +1050,32 @@ impl TelegramGateway {
         if let (Some(rm), Some(obj)) = (reply_markup, payload.as_object_mut()) {
             obj.insert("reply_markup".into(), rm);
         }
-        let _ = self.runtime.http.post(&url).json(&payload).send().await;
-        Ok(())
+        let resp = self
+            .runtime
+            .http
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| ZenkoError::Gateway(e.to_string()))?;
+        let status = resp.status();
+        let val: Value = resp
+            .json()
+            .await
+            .map_err(|e| ZenkoError::Gateway(e.to_string()))?;
+        if status.is_success() && val.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            return Ok(());
+        }
+        let desc = val
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("telegram editMessageText failed");
+        if desc.to_ascii_lowercase().contains("message is not modified") {
+            return Ok(());
+        }
+        Err(ZenkoError::Gateway(format!(
+            "editMessageText ({status}): {desc}"
+        )))
     }
 
     async fn answer_callback_query(&self, token: &str, cb_id: &str, text: &str) -> Result<()> {
@@ -1068,7 +1112,10 @@ pub fn split_telegram_chunks(text: &str, max: usize) -> Vec<String> {
             break;
         }
         let cut = remaining.floor_char_boundary(max);
-        let split_at = remaining[..cut].rfind('\n').unwrap_or(cut).max(1);
+        let split_at = match cut {
+            0 => remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1),
+            n => remaining[..n].rfind('\n').filter(|&p| p > 0).unwrap_or(n),
+        };
         chunks.push(remaining[..split_at].to_string());
         remaining = remaining[split_at..].trim_start_matches('\n');
     }

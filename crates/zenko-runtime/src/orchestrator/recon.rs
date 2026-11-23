@@ -247,7 +247,7 @@ pub async fn run_parallel_recon(
             .map(|sh| {
                 format!(
                     "session={} ({}): {}",
-                    &sh.session_id[..sh.session_id.len().min(12)],
+                    zenko_core::truncate_utf8_prefix(&sh.session_id, 12),
                     compact_preview(&sh.session_title, 36),
                     compact_preview(&sh.snippet.replace('\n', " "), 84)
                 )
@@ -264,7 +264,7 @@ pub async fn run_parallel_recon(
             .map(|j| {
                 format!(
                     "{} [{}][{}] `{}`",
-                    &j.id[..j.id.len().min(14)],
+                    zenko_core::truncate_utf8_prefix(&j.id, 14),
                     j.kind.as_str(),
                     j.status.as_str(),
                     compact_preview(&j.command, 48)

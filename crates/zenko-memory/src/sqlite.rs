@@ -2090,13 +2090,18 @@ impl SqliteStore {
     // ─── Autonomous Dream Consolidation Lease, Watermark & Audit Log ───────────
 
     /// Transactional time-bounded SQLite lease (Codex `codex-rs` pattern — self-heals on crash,
-    /// immune to stale lockfiles).
+    /// immune to stale lockfiles). Uses an RAII `IMMEDIATE` transaction so any error automatically
+    /// rolls back without leaving the shared connection stuck inside an open transaction.
     pub fn try_claim_dream_lease(&self, owner_token: &str, lease_secs: i64) -> Result<bool> {
         let now = Utc::now();
-        let expires = now + Duration::seconds(lease_secs.max(30));
+        let clamped_secs = lease_secs.clamp(30, 86_400 * 7);
+        let expires = now + Duration::seconds(clamped_secs);
         self.with_conn(|conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")?;
-            let existing: Option<String> = conn
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let existing: Option<String> = tx
                 .query_row(
                     "SELECT v FROM kv_state WHERE k = ?1",
                     params![DREAM_KV_LEASE_KEY],
@@ -2106,13 +2111,13 @@ impl SqliteStore {
             let occupied = existing
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                .map_or(false, |v| {
+                .is_some_and(|v| {
                     let owner = v["owner"].as_str().unwrap_or("");
                     let exp = v["expires_at"].as_str().map(parse_dt).unwrap_or(now);
                     owner != owner_token && exp > now
                 });
             if occupied {
-                let _ = conn.execute_batch("ROLLBACK");
+                tx.rollback()?;
                 return Ok(false);
             }
             let payload = serde_json::json!({
@@ -2120,11 +2125,11 @@ impl SqliteStore {
                 "expires_at": expires.to_rfc3339(),
             })
             .to_string();
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO kv_state (k, v, updated_at) VALUES (?1, ?2, ?3)",
                 params![DREAM_KV_LEASE_KEY, payload, now.to_rfc3339()],
             )?;
-            conn.execute_batch("COMMIT")?;
+            tx.commit()?;
             Ok(true)
         })
     }

@@ -190,7 +190,7 @@ impl Tool for MemoryTool {
                         let cite = m
                             .source_session_id
                             .as_deref()
-                            .map(|s| format!(" (session={})", &s[..s.len().min(12)]))
+                            .map(|s| format!(" (session={})", zenko_core::truncate_utf8_prefix(s, 12)))
                             .unwrap_or_default();
                         format!(
                             "- [id={}] [{}][{}] {}: {}{}{}",

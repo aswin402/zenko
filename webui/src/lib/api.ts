@@ -105,26 +105,32 @@ export function getByPath(obj: any, path: string): any {
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj)
 }
 
+const FORBIDDEN_PATH_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
 export function setByPath(obj: any, path: string, value: any): void {
   const parts = path.split('.')
   let cur = obj
   for (let i = 0; i < parts.length - 1; i += 1) {
     const key = parts[i]
+    if (FORBIDDEN_PATH_KEYS.has(key)) return
     if (cur[key] == null || typeof cur[key] !== 'object') {
       cur[key] = {}
     }
     cur = cur[key]
   }
-  cur[parts[parts.length - 1]] = value
+  const leaf = parts[parts.length - 1]
+  if (FORBIDDEN_PATH_KEYS.has(leaf)) return
+  cur[leaf] = value
 }
 
 export async function api<T = any>(url: string, opts: RequestInit = {}): Promise<T> {
+  const { headers, ...rest } = opts
   const res = await fetch(url, {
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...(opts.headers || {}),
+      ...(headers || {}),
     },
-    ...opts,
   })
   const text = await res.text()
   let data: any = {}
@@ -213,9 +219,37 @@ export function applyUiCustomization(cfg: UiCustomization) {
   updateDynamicFoxFavicon(c.accent)
 }
 
+function sanitizeSvgColor(raw: string): string {
+  const trimmed = String(raw || '').trim()
+  if (!trimmed || trimmed.length > 64) return '#ea5829'
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed.charCodeAt(i)
+    const ok =
+      (ch >= 48 && ch <= 57) || // 0-9
+      (ch >= 65 && ch <= 90) || // A-Z
+      (ch >= 97 && ch <= 122) || // a-z
+      ch === 35 || // #
+      ch === 40 || // (
+      ch === 41 || // )
+      ch === 37 || // %
+      ch === 44 || // ,
+      ch === 46 || // .
+      ch === 32 || // space
+      ch === 45 || // -
+      ch === 47 // /
+    if (!ok) return '#ea5829'
+  }
+  const lower = trimmed.toLowerCase()
+  if (lower.includes('url(') || lower.includes('expression(') || lower.includes('//')) {
+    return '#ea5829'
+  }
+  return trimmed
+}
+
 function updateDynamicFoxFavicon(accent: string) {
   if (typeof document === 'undefined') return
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M16 8.2C19.2 8.2 22.8 5.2 25.4 3.2C26.2 2.6 27.1 3.1 27.2 4.1C27.4 7.4 27 10.6 26.5 12.5C28.5 14.3 29.6 16.5 29 18.8C28.1 22.1 22.4 26.6 17.4 28.4C16.5 28.7 15.5 28.7 14.6 28.4C9.6 26.6 3.9 22.1 3 18.8C2.4 16.5 3.5 14.3 5.5 12.5C5 10.6 4.6 7.4 4.8 4.1C4.9 3.1 5.8 2.6 6.6 3.2C9.2 5.2 12.8 8.2 16 8.2Z" fill="${accent}"/></svg>`
+  const safeAccent = sanitizeSvgColor(accent)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M16 8.2C19.2 8.2 22.8 5.2 25.4 3.2C26.2 2.6 27.1 3.1 27.2 4.1C27.4 7.4 27 10.6 26.5 12.5C28.5 14.3 29.6 16.5 29 18.8C28.1 22.1 22.4 26.6 17.4 28.4C16.5 28.7 15.5 28.7 14.6 28.4C9.6 26.6 3.9 22.1 3 18.8C2.4 16.5 3.5 14.3 5.5 12.5C5 10.6 4.6 7.4 4.8 4.1C4.9 3.1 5.8 2.6 6.6 3.2C9.2 5.2 12.8 8.2 16 8.2Z" fill="${safeAccent}"/></svg>`
   let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
   if (!link) {
     link = document.createElement('link')
@@ -239,6 +273,24 @@ export function formatCompactTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}
+
+export function escapeHtml(raw: string): string {
+  const s = String(raw)
+  let out = ''
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i]
+    out += HTML_ESCAPE_MAP[ch] ?? ch
+  }
+  return out
 }
 
 export function formatBytes(bytes: number): string {

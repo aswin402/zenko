@@ -7,6 +7,19 @@ pub fn new_id() -> String {
     Ulid::new().to_string()
 }
 
+/// Returns `len` characters drawn exclusively from the 80-bit random tail of a ULID
+/// (chars `10..26`), preventing timestamp-prefix collisions within the same second/millisecond.
+pub fn new_random_suffix(len: usize) -> String {
+    let id = new_id();
+    let take = len.clamp(1, 16);
+    id[id.len().saturating_sub(take)..].to_string()
+}
+
+/// UTF-8 safe byte-bounded prefix slice (never panics on multi-byte character boundaries).
+pub fn truncate_utf8_prefix(s: &str, max_bytes: usize) -> &str {
+    &s[..s.floor_char_boundary(max_bytes.min(s.len()))]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -2070,7 +2083,7 @@ pub const SESSION_TASK_STATUSES: &[&str] = &[
 ];
 
 pub fn new_session_task_id() -> String {
-    format!("{}{}", crate::constants::SESSION_TASK_ID_PREFIX, &new_id()[..8])
+    format!("{}{}", crate::constants::SESSION_TASK_ID_PREFIX, new_random_suffix(8))
 }
 
 /// Declarative action set for the `session_task` tool (zero magic strings).
@@ -2908,7 +2921,7 @@ pub fn is_goal_loop_args_mutating(args: &serde_json::Value) -> bool {
 }
 
 pub fn new_goal_loop_id() -> String {
-    format!("{}{}", crate::constants::GOAL_LOOP_ID_PREFIX, &new_id()[..10])
+    format!("{}{}", crate::constants::GOAL_LOOP_ID_PREFIX, new_random_suffix(10))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

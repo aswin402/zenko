@@ -853,7 +853,6 @@ pub const READ_ONLY_SHELL_CMD_PREFIXES: &[&[&str]] = &[
     &["which"],
     &["whoami"],
     &["uname"],
-    &["env"],
     &["printenv"],
     &["ps"],
     &["ss"],

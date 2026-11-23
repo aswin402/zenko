@@ -15,6 +15,7 @@ import { useDismiss } from "@/lib/hooks/use-dismiss";
 import { useHoverGesture } from "@/lib/hooks/use-hover-gesture";
 import { useTapGesture } from "@/lib/hooks/use-tap-gesture";
 import { useMessages } from "@/lib/i18n";
+import { safeHref } from "@/components/assistant-ui/utils/href";
 import { cn } from "@/lib/utils";
 
 /** English defaults. Override per instance with `labels`, or app-wide with `LocaleProvider`. */
@@ -259,11 +260,12 @@ export function PreviewRail({
             onItemSelect?.(item);
           };
 
-          return item.href ? (
+          const validatedHref = safeHref(item.href);
+          return validatedHref ? (
             <a
               key={item.id}
               data-slot="preview-rail-item"
-              href={item.href}
+              href={validatedHref}
               target={item.target}
               rel={
                 item.rel ??

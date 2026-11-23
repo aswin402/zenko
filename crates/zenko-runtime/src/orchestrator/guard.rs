@@ -17,9 +17,13 @@ use zenko_core::{
     ORCH_RESEARCH_EXPLORE_SOFT_LIMIT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_PHASE_GATE,
     ORCH_TEXT_DOOM_MIN_LINE_CHARS, ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD,
     OrchestratorPhase, PLANNING_TOOLS, READ_ONLY_FIND_MUTATING_FLAGS,
-    READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, TOOL_JOB_WAIT, TOOL_PLAN_UPDATE,
-    TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS,
-    VERIFICATION_SPOOF_FLAGS_CI, VERIFICATION_SPOOF_FLAGS_EXACT, compact_preview,
+    READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, TOOL_AGENT_KILL, TOOL_AGENT_WORKTREE,
+    TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_JOB_WAIT, TOOL_MEMORY, TOOL_PLAN_UPDATE,
+    TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
+    VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
+    VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
+    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_memory_mutating_action,
+    is_skill_manage_args_mutating,
 };
 
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -59,10 +63,41 @@ struct CallFingerprint {
     is_error: bool,
 }
 
+/// Declarative classifier for built-in scoped tools that mutate state on specific actions.
+fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
+    match tool_name {
+        TOOL_GIT => is_git_tool_args_mutating(arguments),
+        TOOL_SKILL_MANAGE => is_skill_manage_args_mutating(arguments),
+        TOOL_GOAL_LOOP => is_goal_loop_args_mutating(arguments),
+        TOOL_MEMORY => {
+            let action = arguments.get("action").and_then(Value::as_str).unwrap_or("");
+            is_memory_mutating_action(action)
+        }
+        TOOL_CRON => arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .map(|a| !a.eq_ignore_ascii_case("list"))
+            .unwrap_or(true),
+        TOOL_SPAWN_AGENT => {
+            let role_id = arguments.get("role").and_then(Value::as_str).unwrap_or("");
+            !find_subagent_role(role_id).is_some_and(|r| r.read_only)
+        }
+        TOOL_AGENT_WORKTREE => {
+            arguments
+                .get("action")
+                .and_then(Value::as_str)
+                .and_then(WorktreeAction::parse)
+                != Some(WorktreeAction::Diff)
+        }
+        TOOL_AGENT_KILL => true,
+        _ => false,
+    }
+}
+
 /// Deterministic tool classifier driving the `OrchestratorPhase` state machine.
 pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategory {
     match (
-        MUTATING_FILE_TOOLS.contains(&tool_name),
+        MUTATING_FILE_TOOLS.contains(&tool_name) || is_mutating_scoped_tool_call(tool_name, arguments),
         PLANNING_TOOLS.contains(&tool_name),
         READ_ONLY_TOOLS.contains(&tool_name),
         VERIFICATION_SHELL_TOOLS.contains(&tool_name),
@@ -917,6 +952,19 @@ fn split_shell_segments(cmd: &str) -> Vec<(String, ShellChainOp)> {
                 cur.clear();
                 i += 2;
             }
+            (false, false, b'&') => {
+                // Keep fd redirections (`2>&1`, `>&2`, `<&0`) intact; split background separator `&`!
+                if matches!(cur.last(), Some(b'>' | b'<')) {
+                    cur.push(b'&');
+                } else {
+                    out.push((
+                        String::from_utf8_lossy(&cur).into_owned(),
+                        ShellChainOp::Semi,
+                    ));
+                    cur.clear();
+                }
+                i += 1;
+            }
             (false, false, b'|') if i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
                 out.push((
                     String::from_utf8_lossy(&cur).into_owned(),
@@ -934,6 +982,14 @@ fn split_shell_segments(cmd: &str) -> Vec<(String, ShellChainOp)> {
                 i += 1;
             }
             (false, false, b';') => {
+                out.push((
+                    String::from_utf8_lossy(&cur).into_owned(),
+                    ShellChainOp::Semi,
+                ));
+                cur.clear();
+                i += 1;
+            }
+            (false, false, b'\r') if pending_heredocs.is_empty() => {
                 out.push((
                     String::from_utf8_lossy(&cur).into_owned(),
                     ShellChainOp::Semi,

@@ -10,7 +10,7 @@ import {
   Terminal,
   Zap,
 } from 'lucide-react'
-import { api, formatBytes, formatCompactTokens } from '@/lib/api'
+import { api, escapeHtml, formatBytes, formatCompactTokens } from '@/lib/api'
 import type {
   BackgroundJob,
   DaemonTelemetry,
@@ -104,16 +104,21 @@ function buildHeatmapOption(
       },
       formatter: (params: any) => {
         const [date, val] = params.value as [string, number]
+        const safeDate = escapeHtml(String(date ?? ''))
+        const safeFg = escapeHtml(palette.fg)
+        const safeMuted = escapeHtml(palette.muted)
         const pt = byDate.get(date)
         if (!pt || val === 0) {
-          return `<div style="line-height:1.5"><b>${date}</b><br/><span style="color:${palette.muted}">No recorded activity</span></div>`
+          return `<div style="line-height:1.5"><b>${safeDate}</b><br/><span style="color:${safeMuted}">No recorded activity</span></div>`
         }
         return [
           `<div style="line-height:1.55">`,
-          `<b style="color:${palette.fg}">${date}</b>`,
+          `<b style="color:${safeFg}">${safeDate}</b>`,
           `<br/>Events: <b>${pt.events}</b> · Tools: <b>${pt.tool_calls}</b>`,
-          `<br/>Tokens: <b>${formatCompactTokens(pt.tokens)}</b>`,
-          pt.cache_read_tokens > 0 ? ` (${formatCompactTokens(pt.cache_read_tokens)} cached)` : '',
+          `<br/>Tokens: <b>${escapeHtml(formatCompactTokens(pt.tokens))}</b>`,
+          pt.cache_read_tokens > 0
+            ? ` (${escapeHtml(formatCompactTokens(pt.cache_read_tokens))} cached)`
+            : '',
           pt.cost_usd > 0 ? `<br/>Spend: <b>$${pt.cost_usd.toFixed(4)}</b>` : '',
           `</div>`,
         ].join('')
@@ -306,7 +311,7 @@ function buildStorageDonutOption(
       borderWidth: 1,
       textStyle: { color: palette.fg, fontFamily: palette.fontMono, fontSize: 11 },
       formatter: (p: any) =>
-        `<b>${p.name}</b><br/>${formatBytes(Number(p.value || 0))} (${p.percent}%)`,
+        `<b>${escapeHtml(String(p?.name ?? ''))}</b><br/>${escapeHtml(formatBytes(Number(p?.value || 0)))} (${escapeHtml(String(p?.percent ?? 0))}%)`,
     },
     series: [
       {

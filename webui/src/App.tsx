@@ -152,6 +152,8 @@ export default function App() {
 
   const activeSidRef = useRef<string | null>(null)
   activeSidRef.current = activeSessionId
+  const loadSessionSeqRef = useRef<number>(0)
+  const loadSessionAbortRef = useRef<AbortController | null>(null)
   const lastPromptRef = useRef<string>('')
   const liveTextRef = useRef<string>('')
   liveTextRef.current = liveText
@@ -164,6 +166,10 @@ export default function App() {
   }, [])
 
   const loadSession = useCallback(async (sid: string, opts?: { preserveLive?: boolean }) => {
+    const seq = ++loadSessionSeqRef.current
+    loadSessionAbortRef.current?.abort()
+    const controller = new AbortController()
+    loadSessionAbortRef.current = controller
     try {
       const data = await api<{
         session: Session
@@ -174,7 +180,10 @@ export default function App() {
         queued_prompts?: QueuedPrompt[]
         tasks?: SessionTask[]
         checkpoints?: WorkspaceCheckpoint[]
-      }>(`/api/sessions/${encodeURIComponent(sid)}`)
+      }>(`/api/sessions/${encodeURIComponent(sid)}`, { signal: controller.signal })
+      if (seq !== loadSessionSeqRef.current || activeSidRef.current !== sid) {
+        return
+      }
       const running =
         data.session.status === 'running' || data.session.status === 'waiting_approval'
       setEvents(data.events)
@@ -199,7 +208,8 @@ export default function App() {
           ? prev.map((s) => (s.id === sid ? data.session : s))
           : [...prev, data.session],
       )
-    } catch {
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return
       /* session might have been deleted */
     }
   }, [])
@@ -356,7 +366,9 @@ export default function App() {
       tool_approval_requested: (ev, sid) => {
         toast(`Approval needed: ${ev.approval.tool_name}`, 'info')
         if (sid && ev.approval.session_id === sid) {
-          setPendingApprovals((prev) => [...prev, ev.approval])
+          setPendingApprovals((prev) =>
+            prev.some((a) => a.id === ev.approval.id) ? prev : [...prev, ev.approval],
+          )
         }
       },
       tool_approval_resolved: (ev) => {
@@ -433,7 +445,9 @@ export default function App() {
         if (!ev.clarification) return
         toast(`Decision needed: ${ev.clarification.question}`, 'info')
         if (sid && ev.clarification.session_id === sid) {
-          setPendingClarifications((prev) => [...prev, ev.clarification])
+          setPendingClarifications((prev) =>
+            prev.some((c) => c.id === ev.clarification.id) ? prev : [...prev, ev.clarification],
+          )
         }
       },
       clarification_resolved: (ev) => {
@@ -487,6 +501,19 @@ export default function App() {
         const cat = ev.category || 'system'
         setLogCounts((prev) => ({ ...prev, [cat]: (prev[cat] || 0) + 1 }))
       },
+    }
+
+    let openedOnce = false
+    es.onopen = () => {
+      if (openedOnce) {
+        api<Session[]>('/api/sessions').then(setSessions).catch(() => {})
+        api<BackgroundJob[]>('/api/jobs').then(setJobs).catch(() => {})
+        api<DaemonTelemetry>('/api/telemetry').then(setTelemetry).catch(() => {})
+        if (activeSidRef.current) {
+          loadSession(activeSidRef.current)
+        }
+      }
+      openedOnce = true
     }
 
     es.onmessage = (msg) => {
@@ -589,41 +616,44 @@ export default function App() {
     lastPromptRef.current = text
     setLiveTurnError(null)
     setStoppedRun(null)
+    const wasRunning = isRunning
+    const restoreComposer = overrideText === undefined ? composerText : undefined
     let sid = activeSessionId
-    if (!sid) {
-      const created = await api<Session>('/api/sessions', {
-        method: 'POST',
-        body: JSON.stringify({
-          title: 'New Session',
-          ...(draftPolicy ? { permission_mode: draftPolicy } : {}),
-          ...(activeModel ? { model_override: activeModel } : {}),
-        }),
-      })
-      setDraftPolicy(null)
-      setSessions((prev) => [created, ...prev])
-      setActiveSessionId(created.id)
-      sid = created.id
-    }
-    setComposerText('')
-    if (!isRunning) {
-      setIsRunning(true)
-      setTurnStartedAt(Date.now())
-      setLiveThinking('')
-      setLiveText('')
-      setLiveTools([])
-      setLiveOrchestrator(null)
-    }
-    const payload: any = {
-      text,
-      mode: 'auto',
-      ...(activeModel ? { model: activeModel } : {}),
-    }
-    const effectiveParent = overrideParentId !== undefined ? overrideParentId : branchParent
-    if (effectiveParent !== undefined) {
-      payload.parent_event_id = effectiveParent
-      if (overrideParentId === undefined) setBranchParent(undefined)
-    }
     try {
+      if (!sid) {
+        const created = await api<Session>('/api/sessions', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: 'New Session',
+            ...(draftPolicy ? { permission_mode: draftPolicy } : {}),
+            ...(activeModel ? { model_override: activeModel } : {}),
+          }),
+        })
+        setDraftPolicy(null)
+        setSessions((prev) => [created, ...prev])
+        // Update ref synchronously BEFORE POST /messages so early SSE deltas are never dropped!
+        activeSidRef.current = created.id
+        setActiveSessionId(created.id)
+        sid = created.id
+      }
+      if (!wasRunning) {
+        setIsRunning(true)
+        setTurnStartedAt(Date.now())
+        setLiveThinking('')
+        setLiveText('')
+        setLiveTools([])
+        setLiveOrchestrator(null)
+      }
+      const payload: any = {
+        text,
+        mode: 'auto',
+        ...(activeModel ? { model: activeModel } : {}),
+      }
+      const effectiveParent = overrideParentId !== undefined ? overrideParentId : branchParent
+      if (effectiveParent !== undefined) {
+        payload.parent_event_id = effectiveParent
+        if (overrideParentId === undefined) setBranchParent(undefined)
+      }
       const res = await api<{
         steered?: boolean
         queued?: boolean
@@ -633,14 +663,23 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify(payload),
       })
+      if (overrideText === undefined) {
+        setComposerText('')
+      }
       if (res.steered) {
         toast('Steered active orchestrator live', 'info')
       } else if (res.queued) {
         toast(`Queued follow-up (#${res.queued_count ?? 1})`, 'info')
       }
     } catch (e: any) {
-      if (!isRunning) setIsRunning(false)
-      toast(e.message, 'error')
+      if (!wasRunning) {
+        setIsRunning(false)
+        setTurnStartedAt(null)
+      }
+      if (restoreComposer !== undefined) {
+        setComposerText((cur) => (cur === '' ? restoreComposer : cur))
+      }
+      toast(e?.message || 'Failed to send message', 'error')
     }
   }
 
@@ -687,13 +726,31 @@ export default function App() {
             setLiveTurnError(null)
             setStoppedRun(null)
             setActiveView('chat')
+            activeSidRef.current = id
             setActiveSessionId(id)
+            setEvents([])
+            setSiblings({})
+            setPendingApprovals([])
+            setPendingClarifications([])
+            setQueuedPrompts([])
+            setSessionTasks([])
+            setSessionCheckpoints([])
+            setLiveThinking('')
+            setLiveText('')
+            setLiveTools([])
+            setLiveOrchestrator(null)
+            setIsRunning(false)
+            setTurnStartedAt(null)
+            setBranchParent(undefined)
             loadSession(id)
           }}
           onNewSession={() => {
+            loadSessionSeqRef.current += 1
+            loadSessionAbortRef.current?.abort()
             setDraftPolicy(null)
             setLiveTurnError(null)
             setStoppedRun(null)
+            activeSidRef.current = null
             setActiveSessionId(null)
             setEvents([])
             setSiblings({})

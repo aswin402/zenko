@@ -20,4 +20,4 @@ pub use studio_schema::*;
 pub use traits::*;
 pub use types::*;
 pub use ui::*;
-pub use vault::{SecretVault, VaultStats};
+pub use vault::{SecretVault, VaultStats, write_owner_only_atomic};

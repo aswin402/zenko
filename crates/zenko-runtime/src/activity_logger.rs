@@ -386,7 +386,10 @@ impl ActivityTracker {
                 Some(RenderedActivity {
                     dir,
                     channel: LogChannel::Tool,
-                    subject: format!("job {}  {cmd_preview}", &job.id[..job.id.len().min(12)]),
+                    subject: format!(
+                        "job {}  {cmd_preview}",
+                        zenko_core::truncate_utf8_prefix(&job.id, 12)
+                    ),
                     status: Some((job.status.as_str().to_string(), tone)),
                     meta,
                     session_id: Some(job.session_id.clone()),
@@ -543,7 +546,7 @@ impl ActivityTracker {
                 subject: format!(
                     "subagent[{}] {} · {}",
                     agent.role,
-                    &agent.id[..agent.id.len().min(10)],
+                    zenko_core::truncate_utf8_prefix(&agent.id, 10),
                     compact_preview(&agent.goal, LOG_PREVIEW_ARGS_CHARS)
                 ),
                 status: Some(("spawn".to_string(), LogStatusTone::Info)),
@@ -589,7 +592,7 @@ impl ActivityTracker {
                     subject: format!(
                         "subagent[{}] {}",
                         agent.role,
-                        &agent.id[..agent.id.len().min(10)]
+                        zenko_core::truncate_utf8_prefix(&agent.id, 10)
                     ),
                     status: Some((agent.status.as_str().to_string(), tone)),
                     meta,
@@ -612,8 +615,8 @@ impl ActivityTracker {
                 channel: LogChannel::Agent,
                 subject: format!(
                     "mail {} -> {} · {}",
-                    &message.from_session_id[..message.from_session_id.len().min(10)],
-                    &message.to_session_id[..message.to_session_id.len().min(10)],
+                    zenko_core::truncate_utf8_prefix(&message.from_session_id, 10),
+                    zenko_core::truncate_utf8_prefix(&message.to_session_id, 10),
                     compact_preview(&message.body, LOG_PREVIEW_ARGS_CHARS)
                 ),
                 status: Some(("mail".to_string(), LogStatusTone::Info)),
@@ -654,7 +657,7 @@ impl ActivityTracker {
                 channel: LogChannel::Agent,
                 subject: format!(
                     "checkpoint {} · {}",
-                    &checkpoint.id[..checkpoint.id.len().min(8)],
+                    zenko_core::truncate_utf8_prefix(&checkpoint.id, 8),
                     compact_preview(&checkpoint.label, LOG_PREVIEW_ARGS_CHARS)
                 ),
                 status: Some((checkpoint.backend.as_str().to_string(), LogStatusTone::Info)),
@@ -675,7 +678,7 @@ impl ActivityTracker {
                 channel: LogChannel::Agent,
                 subject: format!(
                     "rewind {} ({} restored, {} deleted)",
-                    &report.checkpoint_id[..report.checkpoint_id.len().min(8)],
+                    zenko_core::truncate_utf8_prefix(&report.checkpoint_id, 8),
                     report.restored_files.len(),
                     report.deleted_files.len()
                 ),

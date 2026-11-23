@@ -47,29 +47,34 @@ impl SecretVault {
         }
     }
 
+    fn load_key(&self) -> Result<Zeroizing<[u8; 32]>> {
+        let raw = Zeroizing::new(std::fs::read_to_string(&self.key_path).map_err(|e| {
+            ZenkoError::Vault(format!("vault key missing or unreadable: {e}"))
+        })?);
+        let bytes = Zeroizing::new(
+            B64.decode(raw.trim())
+                .map_err(|e| ZenkoError::Vault(format!("corrupt vault key: {e}")))?,
+        );
+        match bytes.len() {
+            32 => {
+                let mut key = Zeroizing::new([0u8; 32]);
+                key.copy_from_slice(&bytes);
+                Ok(key)
+            }
+            _ => Err(ZenkoError::Vault("invalid vault key length".into())),
+        }
+    }
+
     fn ensure_key(&self) -> Result<Zeroizing<[u8; 32]>> {
         match self.key_path.exists() {
-            true => {
-                let raw = std::fs::read_to_string(&self.key_path)?;
-                let bytes = B64
-                    .decode(raw.trim())
-                    .map_err(|e| ZenkoError::Vault(format!("corrupt vault key: {e}")))?;
-                match bytes.len() {
-                    32 => {
-                        let mut key = Zeroizing::new([0u8; 32]);
-                        key.copy_from_slice(&bytes);
-                        Ok(key)
-                    }
-                    _ => Err(ZenkoError::Vault("invalid vault key length".into())),
-                }
-            }
+            true => self.load_key(),
             false => {
                 if let Some(parent) = self.key_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
                 let mut key = Zeroizing::new([0u8; 32]);
                 rand::thread_rng().fill_bytes(&mut key[..]);
-                let encoded = B64.encode(&key[..]);
+                let encoded = Zeroizing::new(B64.encode(&key[..]));
                 write_owner_only_atomic(&self.key_path, encoded.as_bytes())?;
                 Ok(key)
             }
@@ -80,10 +85,18 @@ impl SecretVault {
         match self.vault_path.exists() {
             false => Ok(BTreeMap::new()),
             true => {
-                let key = self.ensure_key()?;
+                let key = self.load_key()?;
                 let raw = std::fs::read_to_string(&self.vault_path)?;
                 let env: VaultEnvelope = serde_json::from_str(&raw)
                     .map_err(|e| ZenkoError::Vault(format!("corrupt vault file: {e}")))?;
+                match env.version {
+                    1 => {}
+                    v => {
+                        return Err(ZenkoError::Vault(format!(
+                            "unsupported vault envelope version: {v}"
+                        )));
+                    }
+                }
                 let nonce_bytes = B64
                     .decode(&env.nonce_b64)
                     .map_err(|e| ZenkoError::Vault(format!("invalid nonce: {e}")))?;
@@ -236,7 +249,7 @@ impl SecretVault {
 
 /// Atomically writes `bytes` into a unique sibling temp file created directly with `0o600`
 /// permissions (preventing any world-readable TOCTOU window), then renames into `target`.
-fn write_owner_only_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+pub fn write_owner_only_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let file_name = target
         .file_name()
@@ -294,6 +307,26 @@ mod tests {
         assert!(h2.join().is_ok());
         assert_eq!(vault.get("K1").ok().flatten().as_deref().map(String::as_str), Some("V1"));
         assert_eq!(vault.get("K2").ok().flatten().as_deref().map(String::as_str), Some("V2"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_only_ops_do_not_create_key_when_vault_exists_without_key() {
+        let dir = std::env::temp_dir().join(format!("zenko_vault_nokey_{}", crate::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let vault_path = dir.join("vault.enc");
+        let key_path = dir.join("vault.key");
+        let vault = SecretVault::open(&vault_path, &key_path);
+        vault.set("SECRET", "top-secret-value").expect("set");
+        std::fs::remove_file(&key_path).expect("remove key");
+        assert!(!key_path.exists());
+
+        assert!(vault.get("SECRET").is_err(), "get must fail closed when key is missing");
+        assert!(vault.has("SECRET").is_err(), "has must fail closed when key is missing");
+        let stats = vault.stats();
+        assert!(!stats.encrypted, "stats must not claim encrypted without key");
+        assert!(!key_path.exists(), "read-only vault ops must NEVER generate a bogus vault.key");
 
         let _ = std::fs::remove_dir_all(dir);
     }

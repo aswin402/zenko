@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { EASE_OUT, SPRING_LAYOUT } from "@/lib/ease";
+import { safeHref } from "@/components/assistant-ui/utils/href";
 import { cn } from "@/lib/utils";
 import type { AgentActivityTranslate } from "./messages";
 import type {
@@ -102,8 +103,9 @@ function SearchResultRow({
     result.url && "focus-visible:ring-2 focus-visible:ring-ring",
   );
 
-  return result.url ? (
-    <a href={result.url} target="_blank" rel="noreferrer noopener" className={className}>
+  const safeUrl = safeHref(result.url);
+  return safeUrl ? (
+    <a href={safeUrl} target="_blank" rel="noreferrer noopener" className={className}>
       {content}
     </a>
   ) : (

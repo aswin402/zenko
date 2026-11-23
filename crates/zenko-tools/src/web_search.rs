@@ -706,7 +706,10 @@ pub fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<WebSearchResultIte
 
     let bytes = html.as_bytes();
     let mut i = 0usize;
-    while i < bytes.len() && results.len() < limit {
+    while i < bytes.len() {
+        if results.len() >= limit && results.last().is_some_and(|r| !r.snippet.is_empty()) {
+            break;
+        }
         if bytes[i] == b'<' {
             let Some(rel_end) = html[i..].find('>') else {
                 break;
@@ -725,6 +728,9 @@ pub fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<WebSearchResultIte
                 (false, "a", _) => {
                     let class_val = extract_html_attr(attrs, "class").unwrap_or_default();
                     if class_contains_token(&class_val, "result__a") {
+                        if results.len() >= limit {
+                            break;
+                        }
                         let href = extract_html_attr(attrs, "href").unwrap_or_default();
                         cur_url = unwrap_ddg_redirect(&decode_basic_entities(&href));
                         cur_buf.clear();
@@ -790,8 +796,11 @@ fn extract_html_attr(attrs: &str, want: &str) -> Option<String> {
     let bytes = attrs.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
             i += 1;
+        }
+        if i >= bytes.len() {
+            break;
         }
         let name_start = i;
         while i < bytes.len()
@@ -802,6 +811,10 @@ fn extract_html_attr(attrs: &str, want: &str) -> Option<String> {
             i += 1;
         }
         let name = &attrs[name_start..i];
+        if name.is_empty() {
+            i += 1;
+            continue;
+        }
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
@@ -981,6 +994,22 @@ mod tests {
         assert!(items[0].snippet.contains("ownership & async"));
         assert_eq!(items[1].title, "Tokio Async Runtime");
         assert_eq!(items[1].url, "https://tokio.rs");
+
+        // Self-closing tag / bare slash in attrs must never infinite-loop, and limit=1 must keep its snippet!
+        let tricky = r##"
+        <div class="result">
+          <a rel="nofollow"/ class="result__a" href="https://example.com/a">First</a>
+          <a class="result__snippet" href="#"/>First snippet text</a>
+        </div>
+        <div class="result">
+          <a class="result__a" href="https://example.com/b">Second</a>
+          <div class="result__snippet">Second snippet</div>
+        </div>
+        "##;
+        let one = parse_duckduckgo_html(tricky, 1);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].title, "First");
+        assert_eq!(one[0].snippet, "First snippet text");
     }
 
     #[test]

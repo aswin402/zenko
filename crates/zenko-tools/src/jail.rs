@@ -72,15 +72,22 @@ pub fn resolve_workspace_or_hub_path(
         }
     }
 
-    resolve_jailed_path(workspace_root, trimmed, must_exist)
+    let expanded_str = expanded.to_string_lossy();
+    let target = match expanded.is_absolute() {
+        true => expanded_str.as_ref(),
+        false => trimmed,
+    };
+    resolve_jailed_path(workspace_root, target, must_exist)
 }
 
+const MAX_SYMLINK_HOPS: usize = 32;
+
 /// Ensures a requested path stays strictly inside the target root,
-/// blocking `..` traversal and symlink escapes.
+/// blocking `..` traversal AND both live and dangling symlink escapes.
 pub fn resolve_jailed_path(workspace_root: &Path, requested: &str, must_exist: bool) -> Result<PathBuf> {
     let root = workspace_root
         .canonicalize()
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
+        .unwrap_or_else(|_| normalize_lexical(workspace_root));
 
     let req_path = Path::new(requested);
     let candidate = if req_path.is_absolute() {
@@ -99,36 +106,105 @@ pub fn resolve_jailed_path(workspace_root: &Path, requested: &str, must_exist: b
         )));
     }
 
-    if must_exist || normalized.exists() {
-        let canonical = normalized.canonicalize().map_err(|e| {
-            ZenkoError::Tool(format!("cannot access '{}': {e}", requested))
-        })?;
-        if !canonical.starts_with(&root) {
-            return Err(ZenkoError::PolicyDenied(format!(
-                "symlink '{}' escapes workspace root",
-                requested
-            )));
-        }
-        return Ok(canonical);
-    }
+    // Component-by-component symlink-aware walk (catches dangling symlinks even when
+    // `Path::exists()` returns `false`).
+    let mut pending: std::collections::VecDeque<std::ffi::OsString> = normalized
+        .strip_prefix(&root)
+        .map_err(|_| {
+            ZenkoError::PolicyDenied(format!(
+                "path '{}' escapes workspace root '{}'",
+                requested,
+                root.display()
+            ))
+        })?
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_os_string()),
+            _ => None,
+        })
+        .collect();
 
-    // For new files, verify nearest existing ancestor is inside root
-    let mut ancestor = normalized.parent();
-    while let Some(dir) = ancestor {
-        if dir.exists() {
-            let canon_dir = dir.canonicalize()?;
-            if !canon_dir.starts_with(&root) {
-                return Err(ZenkoError::PolicyDenied(format!(
-                    "parent directory of '{}' escapes workspace root",
-                    requested
-                )));
+    let mut cur = root.clone();
+    let mut hops = 0usize;
+
+    while let Some(comp) = pending.pop_front() {
+        let next = cur.join(&comp);
+        match std::fs::symlink_metadata(&next) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                hops += 1;
+                if hops > MAX_SYMLINK_HOPS {
+                    return Err(ZenkoError::PolicyDenied(format!(
+                        "symlink loop while resolving '{}'",
+                        requested
+                    )));
+                }
+                let link_target = std::fs::read_link(&next).map_err(|e| {
+                    ZenkoError::Tool(format!("cannot read symlink '{}': {e}", requested))
+                })?;
+                let resolved_link = match link_target.is_absolute() {
+                    true => normalize_lexical(&link_target),
+                    false => normalize_lexical(&cur.join(&link_target)),
+                };
+                if !resolved_link.starts_with(&root) {
+                    return Err(ZenkoError::PolicyDenied(format!(
+                        "symlink '{}' escapes workspace root",
+                        requested
+                    )));
+                }
+                // Re-walk resolved link target components from `root` before remaining components
+                let target_comps: Vec<std::ffi::OsString> = resolved_link
+                    .strip_prefix(&root)
+                    .map_err(|_| {
+                        ZenkoError::PolicyDenied(format!(
+                            "symlink '{}' escapes workspace root",
+                            requested
+                        ))
+                    })?
+                    .components()
+                    .filter_map(|c| match c {
+                        Component::Normal(s) => Some(s.to_os_string()),
+                        _ => None,
+                    })
+                    .collect();
+                for tc in target_comps.into_iter().rev() {
+                    pending.push_front(tc);
+                }
+                cur = root.clone();
             }
-            break;
+            Ok(_) => {
+                cur = next;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if must_exist {
+                    return Err(ZenkoError::Tool(format!("cannot access '{}': {e}", requested)));
+                }
+                cur = next;
+                while let Some(rem) = pending.pop_front() {
+                    cur.push(rem);
+                }
+                break;
+            }
+            Err(e) => {
+                return Err(ZenkoError::Tool(format!("cannot access '{}': {e}", requested)));
+            }
         }
-        ancestor = dir.parent();
     }
 
-    Ok(normalized)
+    if must_exist && !cur.exists() {
+        return Err(ZenkoError::Tool(format!(
+            "cannot access '{}': path does not exist",
+            requested
+        )));
+    }
+    if !cur.starts_with(&root) {
+        return Err(ZenkoError::PolicyDenied(format!(
+            "path '{}' escapes workspace root '{}'",
+            requested,
+            root.display()
+        )));
+    }
+
+    Ok(cur)
 }
 
 fn normalize_lexical(path: &Path) -> PathBuf {
@@ -177,6 +253,27 @@ mod tests {
         let art_ok = resolve_readable_path(&dir, &hub, &data, "artifact:s1/c1.txt", true);
         assert!(art_ok.is_ok());
         assert!(resolve_readable_path(&dir, &hub, &data, "artifact:../../etc/passwd", false).is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside_missing = std::env::temp_dir().join(format!(
+                "zenko_outside_missing_{}/pwn.txt",
+                zenko_core::new_id()
+            ));
+            let dangling = dir.join("dangling_escape.txt");
+            symlink(&outside_missing, &dangling).expect("dangling symlink");
+            assert!(
+                resolve_jailed_path(&dir, "dangling_escape.txt", false).is_err(),
+                "dangling symlink pointing outside root must be rejected even for non-existent writes"
+            );
+            let dangling_dir = dir.join("dangling_dir");
+            symlink(outside_missing.parent().expect("parent"), &dangling_dir).expect("dangling dir");
+            assert!(
+                resolve_jailed_path(&dir, "dangling_dir/sub/file.txt", false).is_err(),
+                "dangling directory symlink pointing outside root must be rejected"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(hub);

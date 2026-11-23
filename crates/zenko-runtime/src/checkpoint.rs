@@ -126,7 +126,7 @@ impl CheckpointManager {
             event_id,
             workspace_dir: ws_canon.display().to_string(),
             backend,
-            pre_ref,
+            pre_ref: pre_ref.clone(),
             post_ref: None,
             trigger_tool: trigger_tool.to_string(),
             label,
@@ -134,6 +134,10 @@ impl CheckpointManager {
             is_safety_backup,
             created_at: Utc::now(),
         };
+        if backend == CheckpointBackend::ShadowGit {
+            self.pin_shadow_git_ref(&ws_canon, &cp.id, "pre", &pre_ref)
+                .await;
+        }
         self.store.insert_checkpoint(&cp)?;
 
         // Enforce rolling per-session retention ceiling asynchronously (with mark-and-sweep GC)
@@ -142,6 +146,11 @@ impl CheckpointManager {
                 .store
                 .prune_session_checkpoints(session_id, cfg.max_per_session)
             {
+                for old in &stale {
+                    if old.backend == CheckpointBackend::ShadowGit {
+                        self.unpin_shadow_git_refs(old).await;
+                    }
+                }
                 if stale.iter().any(|c| c.backend == CheckpointBackend::ContentBlobs) {
                     let _ = self.gc_content_blobs().await;
                 }
@@ -175,6 +184,10 @@ impl CheckpointManager {
         let post_ref = self
             .capture_tree_for_backend(&ws_dir, cp.backend, cfg.max_file_bytes)
             .await?;
+        if cp.backend == CheckpointBackend::ShadowGit {
+            self.pin_shadow_git_ref(&ws_dir, &cp.id, "post", &post_ref)
+                .await;
+        }
         let pre_map = self
             .read_tree_map(&ws_dir, cp.backend, &cp.pre_ref)
             .await?;
@@ -453,13 +466,18 @@ impl CheckpointManager {
         Ok(report)
     }
 
-    /// Prunes expired checkpoints and runs Mark-and-Sweep GC on `ContentBlobs` + `git gc --auto`.
+    /// Prunes expired checkpoints, unpins their shadow-git refs, and runs Mark-and-Sweep GC.
     pub async fn prune_checkpoints(&self, cfg: &CheckpointsConfig) -> Result<CheckpointPruneReport> {
         let expired = self.store.prune_expired_checkpoints(cfg.retention_days)?;
         let removed_checkpoints = expired.len();
+        for old in &expired {
+            if old.backend == CheckpointBackend::ShadowGit {
+                self.unpin_shadow_git_refs(old).await;
+            }
+        }
         let reclaimed_bytes = self.gc_content_blobs().await;
 
-        // Run `git gc --auto` across existing shadow repos quietly
+        // Run `git gc --auto` across existing shadow repos quietly (active checkpoints remain pinned via refs)
         let git_root = self
             .data_dir
             .join(CHECKPOINTS_DIR_NAME)
@@ -594,8 +612,53 @@ impl CheckpointManager {
                 None,
             )
             .await;
+            let _ = run_git_env(
+                &[("GIT_DIR", repo.as_os_str())],
+                &["config", "gc.pruneExpire", "never"],
+                None,
+            )
+            .await;
+            let _ = run_git_env(
+                &[("GIT_DIR", repo.as_os_str())],
+                &["config", "gc.auto", "0"],
+                None,
+            )
+            .await;
         }
         Ok(repo)
+    }
+
+    async fn pin_shadow_git_ref(&self, ws_dir: &Path, cp_id: &str, suffix: &str, tree_sha: &str) {
+        if tree_sha.is_empty() || tree_sha == GIT_EMPTY_TREE_SHA {
+            return;
+        }
+        let repo = self.shadow_repo_path(ws_dir);
+        if !repo.join("HEAD").exists() {
+            return;
+        }
+        let ref_name = format!("refs/zenko/checkpoints/{cp_id}/{suffix}");
+        let _ = run_git_env(
+            &[("GIT_DIR", repo.as_os_str())],
+            &["update-ref", &ref_name, tree_sha],
+            None,
+        )
+        .await;
+    }
+
+    async fn unpin_shadow_git_refs(&self, cp: &WorkspaceCheckpoint) {
+        let repo = self.shadow_repo_path(Path::new(&cp.workspace_dir));
+        if !repo.join("HEAD").exists() {
+            return;
+        }
+        for suffix in ["pre", "post"] {
+            let ref_name = format!("refs/zenko/checkpoints/{}/{suffix}", cp.id);
+            let _ = run_git_env(
+                &[("GIT_DIR", repo.as_os_str())],
+                &["update-ref", "-d", &ref_name],
+                None,
+            )
+            .await;
+        }
     }
 
     async fn capture_shadow_git_tree(&self, ws_dir: &Path, max_file_bytes: u64) -> Result<String> {

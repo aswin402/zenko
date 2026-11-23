@@ -37,6 +37,7 @@ import type {
   SessionEvent,
   UiCustomization,
 } from '@/lib/types'
+import { safeHref } from '@/components/assistant-ui/utils/href'
 import { cn } from '@/lib/utils'
 import type { AgentActivityItem } from '@/components/agents/agent-activity'
 import { MessageScroller } from '@/components/agents/message-scroller'
@@ -385,14 +386,17 @@ function MarkdownProse({
             return <MarkdownDataTable>{children}</MarkdownDataTable>
           },
           a({ href, children, ...props }) {
-            const safeHref = typeof href === 'string' ? href : undefined
+            const validated = safeHref(typeof href === 'string' ? href : undefined)
             const isExternal = Boolean(
-              safeHref && (safeHref.startsWith('http://') || safeHref.startsWith('https://')),
+              validated && (validated.startsWith('http://') || validated.startsWith('https://')),
             )
+            if (!validated) {
+              return <span className="zenko-prose-link">{children}</span>
+            }
             return (
               <a
                 {...props}
-                href={safeHref}
+                href={validated}
                 target={isExternal ? '_blank' : undefined}
                 rel={isExternal ? 'noopener noreferrer' : undefined}
                 className="zenko-prose-link"
@@ -443,8 +447,8 @@ function CompactionCheckpointPill({
       />
       {open && summary && (
         <div className="zenko-aui-paper mt-2 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-3.5 text-[12px] text-[var(--muted)]">
-          <div className="zenko-prose text-[12px]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
+          <div className="text-[12px]">
+            <MarkdownProse text={summary} />
           </div>
         </div>
       )}
@@ -1377,10 +1381,20 @@ export function ChatStream({
 
   // Unified single-turn merge: if the session is actively running and earlier iterations
   // of THIS turn were already persisted into SQLite, merge that trailing assistant block
-  // into LiveAssistantTurn so we NEVER render duplicate Zenko headers for one prompt!
+  // into LiveAssistantTurn so we NEVER render duplicate Zenko headers for one prompt —
+  // while guarding against stealing a previous completed turn before the new user prompt lands!
   const hasLiveTurn = isRunning || Boolean(liveText || liveThinking || liveTools.length > 0)
   const lastBlock = blocks[blocks.length - 1]
-  const mergeLastIntoLive = hasLiveTurn && lastBlock?.kind === 'assistant'
+  const lastAssistantStartedMs =
+    lastBlock?.kind === 'assistant' && lastBlock.group.startedAt
+      ? Date.parse(lastBlock.group.startedAt)
+      : NaN
+  const belongsToCurrentTurn =
+    !turnStartedAt ||
+    !Number.isFinite(lastAssistantStartedMs) ||
+    lastAssistantStartedMs >= turnStartedAt - 1500
+  const mergeLastIntoLive =
+    hasLiveTurn && lastBlock?.kind === 'assistant' && belongsToCurrentTurn
   const historicalBlocks = mergeLastIntoLive ? blocks.slice(0, -1) : blocks
   const activePersistedGroup = mergeLastIntoLive ? lastBlock.group : null
 

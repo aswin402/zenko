@@ -498,19 +498,20 @@ pub fn parse_since_window(raw: &str) -> Option<DateTime<Utc>> {
         }
     }
     let lower = trimmed.to_ascii_lowercase();
-    let (num_str, unit) = lower.split_at(lower.len().saturating_sub(1));
+    let unit = lower.chars().last()?;
+    let num_str = &lower[..lower.len().saturating_sub(unit.len_utf8())];
     let n: i64 = num_str.trim().parse().ok()?;
     if n <= 0 {
         return None;
     }
     let delta = match unit {
-        "m" => Duration::minutes(n),
-        "h" => Duration::hours(n),
-        "d" => Duration::days(n),
-        "w" => Duration::weeks(n),
+        'm' => Duration::try_minutes(n)?,
+        'h' => Duration::try_hours(n)?,
+        'd' => Duration::try_days(n)?,
+        'w' => Duration::try_weeks(n)?,
         _ => return None,
     };
-    Some(Utc::now() - delta)
+    Utc::now().checked_sub_signed(delta)
 }
 
 /// Extracts clean, high-signal searchable text from a `session_events` row for `session_events_fts`,
@@ -703,5 +704,9 @@ mod tests {
         let diff_hours = (Utc::now() - d7).num_hours();
         assert!((167..=169).contains(&diff_hours));
         assert!(parse_since_window("2026-01-15").is_some());
+        // Multi-byte UTF-8 trailing char & huge duration overflow must safely return None (zero panic)
+        assert!(parse_since_window("7日").is_none());
+        assert!(parse_since_window("30分").is_none());
+        assert!(parse_since_window("99999999999999999w").is_none());
     }
 }

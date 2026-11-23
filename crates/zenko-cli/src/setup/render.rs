@@ -106,10 +106,20 @@ fn render_menu(
     ]);
     frame.render_widget(heading, sections[0]);
 
-    let mut lines = Vec::with_capacity(items.len() * 2);
     let inner_w = sections[1].width as usize;
+    let visible_items = ((sections[1].height as usize) / 2).max(1);
+    let scroll_start = if items.len() <= visible_items {
+        0
+    } else {
+        let half = visible_items / 2;
+        cursor
+            .saturating_sub(half)
+            .min(items.len().saturating_sub(visible_items))
+    };
+    let scroll_end = (scroll_start + visible_items).min(items.len());
+    let mut lines = Vec::with_capacity((scroll_end - scroll_start) * 2);
 
-    for (idx, item) in items.iter().enumerate() {
+    for (idx, item) in items.iter().enumerate().skip(scroll_start).take(scroll_end - scroll_start) {
         let selected = idx == cursor;
         let pointer = match selected {
             true => Span::styled("▸ ", theme.accent_bold()),
@@ -259,8 +269,8 @@ fn render_footer(frame: &mut Frame, area: Rect, is_input: bool, theme: &SetupThe
 }
 
 fn centered_box(area: Rect, max_w: u16, max_h: u16) -> Rect {
-    let w = area.width.min(max_w).max(36);
-    let h = area.height.min(max_h).max(16);
+    let w = area.width.min(max_w);
+    let h = area.height.min(max_h);
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area.y + area.height.saturating_sub(h) / 2;
     Rect::new(x, y, w, h)

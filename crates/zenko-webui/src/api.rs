@@ -91,24 +91,43 @@ pub struct LoginReq {
     token: String,
 }
 
+fn is_safe_cookie_token(tok: &str) -> bool {
+    !tok.is_empty()
+        && tok.len() <= 512
+        && tok
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'))
+}
+
 pub async fn api_login(State(state): State<WebState>, Json(req): Json<LoginReq>) -> Response {
-    let expected = state.runtime.vault.get(VAULT_KEY_WEBUI_ADMIN).ok().flatten();
-    let ok = match expected {
-        Some(exp) => SecretVault::verify_secret_eq(req.token.trim(), exp.as_str()),
-        None => true,
-    };
-    if ok {
-        let cookie = format!(
-            "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000",
-            req.token.trim()
-        );
-        return ([(header::SET_COOKIE, cookie)], Json(json!({"ok": true}))).into_response();
+    let provided = req.token.trim();
+    // Fail-closed on vault read/decryption errors, mirroring `is_authorized`.
+    match state.runtime.vault.get(VAULT_KEY_WEBUI_ADMIN) {
+        Ok(Some(exp)) if !exp.trim().is_empty() => {
+            if is_safe_cookie_token(provided)
+                && SecretVault::verify_secret_eq(provided, exp.as_str())
+            {
+                let cookie = format!(
+                    "{SESSION_COOKIE}={provided}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
+                );
+                return ([(header::SET_COOKIE, cookie)], Json(json!({"ok": true}))).into_response();
+            }
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "Invalid admin token"})),
+            )
+                .into_response()
+        }
+        Ok(_) => {
+            // No admin token configured in vault yet: do not set an untrusted cookie header.
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Vault unavailable; authentication failed closed"})),
+        )
+            .into_response(),
     }
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({"error": "Invalid admin token"})),
-    )
-        .into_response()
 }
 
 pub async fn api_bootstrap(State(state): State<WebState>, headers: HeaderMap) -> Response {

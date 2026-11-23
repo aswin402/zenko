@@ -1,5 +1,3 @@
-const RELATIVE = /^(?:[/?#]|\.{1,2}\/)/;
-
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 const parse = (url: string) => {
@@ -9,6 +7,17 @@ const parse = (url: string) => {
     return undefined;
   }
 };
+
+function isSafeRelativeHref(trimmed: string): boolean {
+  if (trimmed.startsWith("//")) return false;
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("?") ||
+    trimmed.startsWith("#") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../")
+  );
+}
 
 /**
  * `url` when a browser following it runs no script: an `http:`, `https:`, or
@@ -23,12 +32,13 @@ export function safeHref(url: string | undefined): string | undefined {
   if (parsed) {
     return ALLOWED_PROTOCOLS.has(parsed.protocol) ? trimmed : undefined;
   }
-  return RELATIVE.test(trimmed) ? trimmed : undefined;
+  return isSafeRelativeHref(trimmed) ? trimmed : undefined;
 }
 
 /** The host `url` points at, without a leading `www.`, or `undefined`. */
 export function hostOf(url: string | undefined): string | undefined {
   const href = safeHref(url);
   const hostname = href === undefined ? "" : (parse(href)?.hostname ?? "");
-  return hostname.replace(/^www\./, "") || undefined;
+  const clean = hostname.startsWith("www.") ? hostname.slice(4) : hostname;
+  return clean || undefined;
 }

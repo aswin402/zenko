@@ -469,7 +469,7 @@ pub fn merge_and_rank_models(
     desc: &ProviderDescriptor,
 ) -> Vec<ModelInfo> {
     let ext_index = build_external_lookup(&external);
-    let is_local_free = !desc.requires_api_key;
+    let is_local_free = desc.is_local_free;
 
     let mut resolved: Vec<ModelInfo> = match (live.is_empty(), external.is_empty()) {
         // Provider returned live `/models`: treat as authoritative working inventory and hydrate missing metadata.

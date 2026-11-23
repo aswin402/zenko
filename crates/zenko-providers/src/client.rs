@@ -23,11 +23,16 @@ use zenko_core::{
 };
 
 #[derive(Clone)]
+struct ProviderState {
+    provider_id: String,
+    base_url: String,
+    api_key: Option<Zeroizing<String>>,
+}
+
+#[derive(Clone)]
 pub struct UnifiedLlmProvider {
     client: Client,
-    provider_id: Arc<RwLock<String>>,
-    base_url: Arc<RwLock<String>>,
-    api_key: Arc<RwLock<Option<Zeroizing<String>>>>,
+    state: Arc<RwLock<ProviderState>>,
     metadata_cache: Arc<RwLock<Option<(Instant, Value)>>>,
 }
 
@@ -40,9 +45,11 @@ impl UnifiedLlmProvider {
     ) -> Self {
         Self {
             client,
-            provider_id: Arc::new(RwLock::new(provider_id.into())),
-            base_url: Arc::new(RwLock::new(base_url.into())),
-            api_key: Arc::new(RwLock::new(api_key)),
+            state: Arc::new(RwLock::new(ProviderState {
+                provider_id: provider_id.into(),
+                base_url: base_url.into(),
+                api_key,
+            })),
             metadata_cache: Arc::new(RwLock::new(None)),
         }
     }
@@ -56,7 +63,7 @@ impl UnifiedLlmProvider {
         let inferred_id = match resolve_dialect("custom", &url_str) {
             ProviderDialect::MiniMax => "minimax",
             ProviderDialect::OpenRouter => "openrouter",
-            ProviderDialect::OpenAiCompat => DEFAULT_PROVIDER_ID,
+            ProviderDialect::OpenAiCompat => "custom",
         };
         Self::for_provider(client, inferred_id, url_str, api_key)
     }
@@ -73,18 +80,14 @@ impl UnifiedLlmProvider {
         base_url: Option<String>,
         api_key: Option<Zeroizing<String>>,
     ) {
-        if let Some(pid) = provider_id {
-            if let Ok(mut guard) = self.provider_id.write() {
-                *guard = pid;
+        if let Ok(mut guard) = self.state.write() {
+            if let Some(pid) = provider_id {
+                guard.provider_id = pid;
             }
-        }
-        if let Some(url) = base_url {
-            if let Ok(mut guard) = self.base_url.write() {
-                *guard = url;
+            if let Some(url) = base_url {
+                guard.base_url = url;
             }
-        }
-        if let Ok(mut guard) = self.api_key.write() {
-            *guard = api_key;
+            guard.api_key = api_key;
         }
     }
 
@@ -93,29 +96,30 @@ impl UnifiedLlmProvider {
     }
 
     pub fn current_kind(&self) -> String {
-        self.provider_id
+        self.state
             .read()
-            .map(|g| g.clone())
+            .map(|g| g.provider_id.clone())
             .unwrap_or_else(|_| DEFAULT_PROVIDER_ID.to_string())
     }
 
-    fn current_base_url(&self) -> String {
-        let kind = self.current_kind();
-        let default_url = find_provider(&kind).default_base_url;
-        self.base_url
+    fn snapshot_state(&self) -> (String, String, ProviderDialect, Option<Zeroizing<String>>) {
+        let state = self
+            .state
             .read()
-            .ok()
-            .map(|g| g.trim_end_matches('/').to_string())
-            .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| default_url.to_string())
-    }
-
-    fn current_api_key(&self) -> Option<Zeroizing<String>> {
-        self.api_key.read().ok().and_then(|g| g.clone())
-    }
-
-    fn current_dialect(&self, base_url: &str) -> ProviderDialect {
-        resolve_dialect(&self.current_kind(), base_url)
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| ProviderState {
+                provider_id: DEFAULT_PROVIDER_ID.to_string(),
+                base_url: String::new(),
+                api_key: None,
+            });
+        let default_url = find_provider(&state.provider_id).default_base_url;
+        let trimmed = state.base_url.trim_end_matches('/').to_string();
+        let base_url = match trimmed.is_empty() {
+            true => default_url.to_string(),
+            false => trimmed,
+        };
+        let dialect = resolve_dialect(&state.provider_id, &base_url);
+        (state.provider_id, base_url, dialect, state.api_key)
     }
 
     /// Fetches or reuses the live `models.dev/api.json` registry snapshot.
@@ -213,11 +217,8 @@ impl LlmProvider for UnifiedLlmProvider {
     }
 
     async fn verify_key(&self) -> Result<()> {
-        let kind = self.current_kind();
+        let (kind, base, dialect, key) = self.snapshot_state();
         let desc = find_provider(&kind);
-        let base = self.current_base_url();
-        let dialect = self.current_dialect(&base);
-        let key = self.current_api_key();
 
         let key_missing = key.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
         if desc.requires_api_key && key_missing {
@@ -265,19 +266,14 @@ impl LlmProvider for UnifiedLlmProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let kind = self.current_kind();
-        let base = self.current_base_url();
-        let key = self.current_api_key();
+        let (kind, base, _, key) = self.snapshot_state();
         self.discover_models_for(&kind, Some(&base), key.as_deref().map(|z| z.as_str()), false)
             .await
     }
 
     async fn stream_chat(&self, req: ChatRequest, cancel: CancellationToken) -> Result<DeltaStream> {
-        let kind = self.current_kind();
+        let (kind, base, dialect, key) = self.snapshot_state();
         let desc = find_provider(&kind);
-        let base = self.current_base_url();
-        let dialect = self.current_dialect(&base);
-        let key = self.current_api_key();
 
         let key_missing = key.as_deref().map(|k| k.trim().is_empty()).unwrap_or(true);
         if desc.requires_api_key && key_missing {

@@ -1125,42 +1125,64 @@ export function MemoryView({
   const [sessionWs, setSessionWs] = useState<'current' | 'all'>('current')
   const [sessionHits, setSessionHits] = useState<SessionSearchHit[]>([])
   const [sessionSearching, setSessionSearching] = useState(false)
+  const docDirtyRef = useRef<boolean>(false)
+  const loadSeqRef = useRef<number>(0)
+  const loadAbortRef = useRef<AbortController | null>(null)
+  const searchDebounceRef = useRef<number | undefined>(undefined)
 
   const pickDoc = (name: MemoryDocName, s: WorkspaceSnapshot) => {
+    docDirtyRef.current = false
     setActiveDoc(name)
     setDocContent(getDocText(name, s))
   }
 
-  const load = async (q = query, sc: MemoryScopeFilter = scopeFilter, preserveDoc = activeDoc) => {
+  const load = async (
+    q = query,
+    sc: MemoryScopeFilter = scopeFilter,
+    preserveDoc = activeDoc,
+    opts?: { forceSyncDoc?: boolean },
+  ) => {
+    const seq = ++loadSeqRef.current
+    loadAbortRef.current?.abort()
+    const controller = new AbortController()
+    loadAbortRef.current = controller
     const params = new URLSearchParams()
     if (q.trim()) params.set('q', q.trim())
     if (sc !== 'all') params.set('scope', sc)
     const qs = params.toString()
-    const res = await api<{
-      snapshot: WorkspaceSnapshot
-      entries: MemoryEntry[]
-      hits?: ScoredMemoryHit[]
-      memory_kinds?: MemoryKindMeta[]
-      project_scope?: string
-      dream?: DreamStatus
-      history?: MemoryDocSnapshot[]
-      skill_history?: SkillVersionSnapshot[]
-    }>(`/api/memory${qs ? `?${qs}` : ''}`)
-    setSnap(res.snapshot)
-    setHits(
-      res.hits ??
-        res.entries.map((entry) => ({
-          entry,
-          score: 0,
-          stale_paths: [],
-        })),
-    )
-    if (res.memory_kinds?.length) setMemoryKinds(res.memory_kinds)
-    if (res.project_scope) setProjectScope(res.project_scope)
-    if (res.dream) setDream(res.dream)
-    if (res.history) setHistory(res.history)
-    if (res.skill_history) setSkillHistory(res.skill_history)
-    pickDoc(preserveDoc, res.snapshot)
+    try {
+      const res = await api<{
+        snapshot: WorkspaceSnapshot
+        entries: MemoryEntry[]
+        hits?: ScoredMemoryHit[]
+        memory_kinds?: MemoryKindMeta[]
+        project_scope?: string
+        dream?: DreamStatus
+        history?: MemoryDocSnapshot[]
+        skill_history?: SkillVersionSnapshot[]
+      }>(`/api/memory${qs ? `?${qs}` : ''}`, { signal: controller.signal })
+      if (seq !== loadSeqRef.current) return
+      setSnap(res.snapshot)
+      setHits(
+        res.hits ??
+          res.entries.map((entry) => ({
+            entry,
+            score: 0,
+            stale_paths: [],
+          })),
+      )
+      if (res.memory_kinds?.length) setMemoryKinds(res.memory_kinds)
+      if (res.project_scope) setProjectScope(res.project_scope)
+      if (res.dream) setDream(res.dream)
+      if (res.history) setHistory(res.history)
+      if (res.skill_history) setSkillHistory(res.skill_history)
+      if (opts?.forceSyncDoc || !docDirtyRef.current) {
+        pickDoc(preserveDoc, res.snapshot)
+      }
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return
+      toast(e?.message || 'Failed to load memory', 'error')
+    }
   }
 
   const searchSessions = async (q = sessionQuery, since = sessionSince, ws = sessionWs) => {
@@ -1182,7 +1204,11 @@ export function MemoryView({
   }
 
   useEffect(() => {
-    load('', 'all', 'MEMORY.md')
+    load('', 'all', 'MEMORY.md', { forceSyncDoc: true })
+    return () => {
+      if (searchDebounceRef.current) window.clearTimeout(searchDebounceRef.current)
+      loadAbortRef.current?.abort()
+    }
   }, [])
 
   const activeDocHistory = history.filter((h) => h.doc_name === activeDoc)
@@ -1284,12 +1310,17 @@ export function MemoryView({
                 type="button"
                 className="z-btn z-btn-primary z-btn-sm"
                 onClick={async () => {
-                  await api(`/api/memory/doc/${encodeURIComponent(activeDoc)}`, {
-                    method: 'PUT',
-                    body: JSON.stringify({ content: docContent }),
-                  })
-                  toast(`Saved ${activeDoc} (snapshot archived)`, 'success')
-                  load(query, scopeFilter, activeDoc)
+                  try {
+                    await api(`/api/memory/doc/${encodeURIComponent(activeDoc)}`, {
+                      method: 'PUT',
+                      body: JSON.stringify({ content: docContent }),
+                    })
+                    docDirtyRef.current = false
+                    toast(`Saved ${activeDoc} (snapshot archived)`, 'success')
+                    load(query, scopeFilter, activeDoc, { forceSyncDoc: true })
+                  } catch (e: any) {
+                    toast(e?.message || `Failed to save ${activeDoc}`, 'error')
+                  }
                 }}
               >
                 Save {activeDoc}
@@ -1326,7 +1357,8 @@ export function MemoryView({
                             body: JSON.stringify({ snapshot_id: s.id }),
                           })
                           toast(`Restored ${activeDoc} from ${s.id}`, 'success')
-                          await load(query, scopeFilter, activeDoc)
+                          docDirtyRef.current = false
+                          await load(query, scopeFilter, activeDoc, { forceSyncDoc: true })
                         } catch (e: any) {
                           toast(e.message || 'Rollback failed', 'error')
                         }
@@ -1342,7 +1374,10 @@ export function MemoryView({
 
           <textarea
             value={docContent}
-            onChange={(e) => setDocContent(e.target.value)}
+            onChange={(e) => {
+              docDirtyRef.current = true
+              setDocContent(e.target.value)
+            }}
             rows={10}
             className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] p-3 font-mono text-[12.5px] leading-relaxed text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
           />
@@ -1378,8 +1413,12 @@ export function MemoryView({
               <input
                 value={query}
                 onChange={(e) => {
-                  setQuery(e.target.value)
-                  load(e.target.value, scopeFilter, activeDoc)
+                  const nextVal = e.target.value
+                  setQuery(nextVal)
+                  if (searchDebounceRef.current) window.clearTimeout(searchDebounceRef.current)
+                  searchDebounceRef.current = window.setTimeout(() => {
+                    load(nextVal, scopeFilter, activeDoc)
+                  }, 250)
                 }}
                 placeholder="Hybrid RRF search..."
                 className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] py-1.5 pl-8 pr-3 text-[12.5px] focus:border-[var(--accent)] focus:outline-none"
@@ -1702,7 +1741,13 @@ export function MemoryView({
                 return
               }
               try {
-                const raw = `---\nname: ${slug}\ndescription: Reusable Zenko procedural skill\nenabled: true\nstatus: active\nauthor: user\n---\n\n${body}\n`
+                let safeSlugName = ''
+                for (let i = 0; i < slug.length; i += 1) {
+                  const ch = slug[i]
+                  safeSlugName += ch === '\r' || ch === '\n' ? ' ' : ch === ':' ? '-' : ch
+                }
+                safeSlugName = safeSlugName.trim()
+                const raw = `---\nname: ${safeSlugName}\ndescription: Reusable Zenko procedural skill\nenabled: true\nstatus: active\nauthor: user\n---\n\n${body}\n`
                 await api(`/api/skills/${encodeURIComponent(slug)}`, {
                   method: 'PUT',
                   body: JSON.stringify({ content: raw }),

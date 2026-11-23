@@ -65,12 +65,19 @@ pub fn export_batch(
         .limit
         .unwrap_or(EXPORT_DEFAULT_BATCH_LIMIT)
         .clamp(1, EXPORT_MAX_BATCH_LIMIT);
-    let sessions = store.list_sessions_for_export(opts.since, opts.channel.as_deref(), limit)?;
+    let fetch_limit = match opts.verified_only || opts.min_turns > 0 {
+        true => EXPORT_MAX_BATCH_LIMIT,
+        false => limit,
+    };
+    let sessions = store.list_sessions_for_export(opts.since, opts.channel.as_deref(), fetch_limit)?;
     let mut chunks = Vec::new();
     let mut sessions_exported = 0usize;
     let mut events_exported = 0usize;
 
     for session in sessions {
+        if sessions_exported >= limit {
+            break;
+        }
         let verification = store.latest_goal_run_for_session(&session.id).ok().flatten();
         if opts.verified_only {
             let passed = verification
@@ -142,6 +149,90 @@ fn render_single_session(
     }
 }
 
+fn format_tool_args_str(args: Option<&Value>, clean: &impl Fn(&str) -> String) -> String {
+    match args {
+        Some(Value::String(s)) => clean(s),
+        Some(other) => clean(&other.to_string()),
+        None => "{}".into(),
+    }
+}
+
+fn format_tool_args_pretty(args: Option<&Value>, clean: &impl Fn(&str) -> String) -> String {
+    match args {
+        Some(Value::String(s)) => match serde_json::from_str::<Value>(s) {
+            Ok(parsed) => clean(&serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| s.clone())),
+            Err(_) => clean(s),
+        },
+        Some(other) => clean(&serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string())),
+        None => "{}".into(),
+    }
+}
+
+struct ExtractedToolCall {
+    id: String,
+    name: String,
+    arguments: Option<Value>,
+}
+
+/// Extracts canonical tool calls from either Zenko's array payload (`tool_calls: [...]`)
+/// or legacy single-call rows (`{name, call_id, arguments}`).
+fn extract_event_tool_calls(content_json: &Value, fallback_id: &str) -> Vec<ExtractedToolCall> {
+    if let Some(calls) = content_json.get("tool_calls").and_then(Value::as_array) {
+        if !calls.is_empty() {
+            return calls
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| {
+                    let func = c.get("function");
+                    let name = c
+                        .get("name")
+                        .or_else(|| func.and_then(|f| f.get("name")))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let id = c
+                        .get("id")
+                        .or_else(|| c.get("call_id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("{fallback_id}_{idx}"));
+                    let arguments = c
+                        .get("arguments")
+                        .or_else(|| func.and_then(|f| f.get("arguments")))
+                        .cloned();
+                    ExtractedToolCall {
+                        id,
+                        name,
+                        arguments,
+                    }
+                })
+                .collect();
+        }
+    }
+    if let Some(name) = content_json.get("name").and_then(Value::as_str) {
+        let id = content_json
+            .get("call_id")
+            .or_else(|| content_json.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or(fallback_id)
+            .to_string();
+        return vec![ExtractedToolCall {
+            id,
+            name: name.to_string(),
+            arguments: content_json.get("arguments").cloned(),
+        }];
+    }
+    Vec::new()
+}
+
+fn extract_tool_result_name(content_json: &Value) -> &str {
+    content_json
+        .get("tool_name")
+        .or_else(|| content_json.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
 fn render_openai_jsonl(
     session: &Session,
     events: &[SessionEvent],
@@ -162,7 +253,7 @@ fn render_openai_jsonl(
                     "created_at": ev.created_at.to_rfc3339(),
                 }));
             }
-            (EventRole::Assistant, EventKind::Message) => {
+            (EventRole::Assistant, EventKind::Message | EventKind::ToolCall) => {
                 let text = ev.content_json.get("text").and_then(Value::as_str).unwrap_or("");
                 let mut msg = json!({
                     "role": "assistant",
@@ -180,27 +271,21 @@ fn render_openai_jsonl(
                         msg["reasoning_content"] = json!(clean(thinking));
                     }
                 }
-                if let Some(calls) = ev.content_json.get("tool_calls").and_then(Value::as_array) {
-                    if !calls.is_empty() {
-                        tool_calls_total += calls.len();
-                        let scrubbed_calls: Vec<Value> = calls
-                            .iter()
-                            .map(|c| {
-                                let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-                                let id = c.get("id").and_then(Value::as_str).unwrap_or("");
-                                let args = c
-                                    .get("arguments")
-                                    .map(|a| clean(&a.to_string()))
-                                    .unwrap_or_else(|| "{}".into());
-                                json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": { "name": name, "arguments": args }
-                                })
+                let calls = extract_event_tool_calls(&ev.content_json, &ev.id);
+                if !calls.is_empty() {
+                    tool_calls_total += calls.len();
+                    let scrubbed_calls: Vec<Value> = calls
+                        .iter()
+                        .map(|c| {
+                            let args = format_tool_args_str(c.arguments.as_ref(), clean);
+                            json!({
+                                "id": c.id,
+                                "type": "function",
+                                "function": { "name": c.name, "arguments": args }
                             })
-                            .collect();
-                        msg["tool_calls"] = Value::Array(scrubbed_calls);
-                    }
+                        })
+                        .collect();
+                    msg["tool_calls"] = Value::Array(scrubbed_calls);
                 }
                 messages.push(msg);
             }
@@ -214,33 +299,8 @@ fn render_openai_jsonl(
                     }));
                 }
             }
-            (EventRole::Assistant, EventKind::ToolCall) => {
-                tool_calls_total += 1;
-                let name = ev.content_json.get("name").and_then(Value::as_str).unwrap_or("");
-                let call_id = ev
-                    .content_json
-                    .get("call_id")
-                    .or_else(|| ev.content_json.get("id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or(&ev.id);
-                let args = ev
-                    .content_json
-                    .get("arguments")
-                    .map(|a| clean(&a.to_string()))
-                    .unwrap_or_else(|| "{}".into());
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": call_id,
-                        "type": "function",
-                        "function": { "name": name, "arguments": args }
-                    }],
-                    "created_at": ev.created_at.to_rfc3339(),
-                }));
-            }
             (EventRole::Tool, EventKind::ToolResult) => {
-                let name = ev.content_json.get("name").and_then(Value::as_str).unwrap_or("");
+                let name = extract_tool_result_name(&ev.content_json);
                 let call_id = ev
                     .content_json
                     .get("call_id")
@@ -323,7 +383,7 @@ fn render_sharegpt(
                 let text = ev.content_json.get("text").and_then(Value::as_str).unwrap_or("");
                 conversations.push(json!({ "from": "human", "value": clean(text) }));
             }
-            (EventRole::Assistant, EventKind::Message) => {
+            (EventRole::Assistant, EventKind::Message | EventKind::ToolCall) => {
                 let text = clean(ev.content_json.get("text").and_then(Value::as_str).unwrap_or(""));
                 let value = match opts.include_thinking {
                     true => match ev
@@ -341,13 +401,14 @@ fn render_sharegpt(
                 if !value.trim().is_empty() {
                     conversations.push(json!({ "from": "gpt", "value": value }));
                 }
-                if let Some(calls) = ev.content_json.get("tool_calls").and_then(Value::as_array) {
-                    for c in calls {
-                        let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-                        let args = c.get("arguments").cloned().unwrap_or(json!({}));
-                        let payload = clean(&json!({"name": name, "arguments": args}).to_string());
-                        conversations.push(json!({ "from": "function_call", "value": payload }));
-                    }
+                for c in extract_event_tool_calls(&ev.content_json, &ev.id) {
+                    let args_val = match c.arguments {
+                        Some(Value::String(s)) => serde_json::from_str::<Value>(&s).unwrap_or(Value::String(s)),
+                        Some(other) => other,
+                        None => json!({}),
+                    };
+                    let payload = clean(&json!({"name": c.name, "arguments": args_val}).to_string());
+                    conversations.push(json!({ "from": "function_call", "value": payload }));
                 }
             }
             (EventRole::Assistant, EventKind::Thinking) if opts.include_thinking => {
@@ -357,12 +418,6 @@ fn render_sharegpt(
                         "value": format!("<think>\n{}\n</think>", clean(th)),
                     }));
                 }
-            }
-            (EventRole::Assistant, EventKind::ToolCall) => {
-                let name = ev.content_json.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = ev.content_json.get("arguments").cloned().unwrap_or(json!({}));
-                let payload = clean(&json!({"name": name, "arguments": args}).to_string());
-                conversations.push(json!({ "from": "function_call", "value": payload }));
             }
             (EventRole::Tool, EventKind::ToolResult) => {
                 let output = ev
@@ -420,22 +475,43 @@ fn render_markdown(
                 let text = ev.content_json.get("text").and_then(Value::as_str).unwrap_or("");
                 out.push_str(&format!("## User ({})\n\n{}\n\n", ev.created_at.format("%H:%M:%S UTC"), clean(text)));
             }
-            (EventRole::Assistant, EventKind::Message) => {
+            (EventRole::Assistant, EventKind::Message | EventKind::ToolCall) => {
                 let text = ev.content_json.get("text").and_then(Value::as_str).unwrap_or("");
-                out.push_str(&format!("## Assistant ({})\n\n", ev.created_at.format("%H:%M:%S UTC")));
-                if opts.include_thinking {
-                    if let Some(th) = ev
+                let calls = extract_event_tool_calls(&ev.content_json, &ev.id);
+                let thinking = match opts.include_thinking {
+                    true => ev
                         .content_json
                         .get("reasoning_content")
                         .or_else(|| ev.content_json.get("thinking"))
                         .and_then(Value::as_str)
-                        .filter(|s| !s.trim().is_empty())
-                    {
-                        out.push_str(&format!("<details><summary>Reasoning</summary>\n\n{}\n\n</details>\n\n", clean(th)));
+                        .filter(|s| !s.trim().is_empty()),
+                    false => None,
+                };
+                if !text.trim().is_empty() || thinking.is_some() {
+                    out.push_str(&format!(
+                        "## Assistant ({})\n\n",
+                        ev.created_at.format("%H:%M:%S UTC")
+                    ));
+                    if let Some(th) = thinking {
+                        out.push_str(&format!(
+                            "<details><summary>Reasoning</summary>\n\n{}\n\n</details>\n\n",
+                            clean(th)
+                        ));
+                    }
+                    if !text.trim().is_empty() {
+                        out.push_str(&format!("{}\n\n", clean(text)));
                     }
                 }
-                if !text.trim().is_empty() {
-                    out.push_str(&format!("{}\n\n", clean(text)));
+                for c in calls {
+                    let name = match c.name.is_empty() {
+                        true => "tool",
+                        false => c.name.as_str(),
+                    };
+                    let args = format_tool_args_pretty(c.arguments.as_ref(), clean);
+                    let fence = markdown_code_fence(&args);
+                    out.push_str(&format!(
+                        "### Tool Call: `{name}`\n{fence}json\n{args}\n{fence}\n\n"
+                    ));
                 }
             }
             (EventRole::Assistant, EventKind::Thinking) if opts.include_thinking => {
@@ -447,18 +523,12 @@ fn render_markdown(
                     ));
                 }
             }
-            (EventRole::Assistant, EventKind::ToolCall) => {
-                let name = ev.content_json.get("name").and_then(Value::as_str).unwrap_or("tool");
-                let args = ev
-                    .content_json
-                    .get("arguments")
-                    .map(|a| clean(&serde_json::to_string_pretty(a).unwrap_or_else(|_| a.to_string())))
-                    .unwrap_or_else(|| "{}".into());
-                let fence = markdown_code_fence(&args);
-                out.push_str(&format!("### Tool Call: `{name}`\n{fence}json\n{args}\n{fence}\n\n"));
-            }
             (EventRole::Tool, EventKind::ToolResult) => {
-                let name = ev.content_json.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let raw_name = extract_tool_result_name(&ev.content_json);
+                let name = match raw_name.is_empty() {
+                    true => "tool",
+                    false => raw_name,
+                };
                 let output = ev
                     .content_json
                     .get("output")
@@ -744,6 +814,79 @@ mod tests {
             "markdown fence must dynamically widen to 4 backticks around triple backticks: {}",
             md.content
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn export_handles_canonical_runtime_tool_calls_array_and_tool_name() {
+        let dir = std::env::temp_dir().join(format!("zenko_export_canon_{}", new_id()));
+        let store = SqliteStore::open(dir.join("zenko.db")).expect("open db");
+        let sess = store
+            .create_session("Canonical Tool Export", "webui", None, None, PermissionMode::Balanced)
+            .expect("session");
+        let e1 = store
+            .append_event(
+                &sess.id,
+                None,
+                EventRole::User,
+                EventKind::Message,
+                json!({"text": "Read Cargo.toml"}),
+                &UsageStats::default(),
+            )
+            .expect("e1");
+        let e2 = store
+            .append_event(
+                &sess.id,
+                Some(&e1.id),
+                EventRole::Assistant,
+                EventKind::ToolCall,
+                json!({
+                    "text": "Checking Cargo.toml",
+                    "thinking": "Need to read workspace manifest",
+                    "tool_calls": [
+                        { "id": "call_1", "name": "read_file", "arguments": "{\"path\":\"Cargo.toml\"}" },
+                        { "id": "call_2", "name": "list_dir", "arguments": {"path": "."} }
+                    ]
+                }),
+                &UsageStats::default(),
+            )
+            .expect("e2");
+        let _e3 = store
+            .append_event(
+                &sess.id,
+                Some(&e2.id),
+                EventRole::Tool,
+                EventKind::ToolResult,
+                json!({"tool_call_id": "call_1", "tool_name": "read_file", "output": "[workspace]", "is_error": false}),
+                &UsageStats::default(),
+            )
+            .expect("e3");
+
+        let rep = export_session(
+            &store,
+            &sess.id,
+            &ExportOptions {
+                format: ExportFormat::Jsonl,
+                include_thinking: true,
+                anonymize_paths: false,
+                ..ExportOptions::default()
+            },
+            &[],
+            None,
+        )
+        .expect("export");
+        let parsed: Value = serde_json::from_str(rep.content.trim()).expect("valid jsonl");
+        assert_eq!(parsed["usage"]["tool_calls"], 2);
+        let assistant = &parsed["messages"][1];
+        assert_eq!(assistant["content"], "Checking Cargo.toml");
+        assert_eq!(assistant["reasoning_content"], "Need to read workspace manifest");
+        assert_eq!(assistant["tool_calls"][0]["function"]["name"], "read_file");
+        assert_eq!(assistant["tool_calls"][0]["function"]["arguments"], "{\"path\":\"Cargo.toml\"}");
+        assert_eq!(assistant["tool_calls"][1]["function"]["name"], "list_dir");
+        let tool_msg = &parsed["messages"][2];
+        assert_eq!(tool_msg["name"], "read_file");
+        assert_eq!(tool_msg["tool_call_id"], "call_1");
 
         let _ = std::fs::remove_dir_all(dir);
     }
