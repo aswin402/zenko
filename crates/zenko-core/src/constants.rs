@@ -1016,9 +1016,19 @@ pub const PIPE_TO_SHELL_BINS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "
 pub const MODEL_METADATA_REGISTRY_URL: &str = "https://models.dev/api.json";
 pub const MODEL_CACHE_TTL_SECS: u64 = 3_600;
 pub const MODEL_KV_REGISTRY_KEY: &str = "models_dev_registry_v1";
+pub const MODEL_KV_COMPACT_REGISTRY_KEY: &str = "models_dev_compact_v2";
+pub const MODEL_KV_LEGACY_COMPACT_THRESHOLD_BYTES: usize = 512 * 1024;
 pub const MODEL_KV_PROVIDER_PREFIX: &str = "models_cache_v1:";
 pub const OLLAMA_SHOW_TIMEOUT_SECS: u64 = 4;
 pub const OLLAMA_SHOW_CONCURRENCY: usize = 6;
+
+// Low-RAM runtime, ring-buffer, SQLite WAL & idle compaction budgets
+pub const DEFAULT_EVENT_BROADCAST_CAPACITY: usize = 128;
+pub const DEFAULT_LOG_BUFFER_CAPACITY: usize = 200;
+pub const SQLITE_JOURNAL_SIZE_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+pub const SQLITE_VACUUM_FREELIST_MIN_BYTES: u64 = 2 * 1024 * 1024;
+pub const EXTERNAL_TOOL_REAPER_INTERVAL_SECS: u64 = 60;
+pub const IDLE_DB_COMPACT_EVERY_TICKS: u64 = 5;
 
 pub const DEPRECATED_MODEL_STATUSES: &[&str] = &[
     "deprecated",

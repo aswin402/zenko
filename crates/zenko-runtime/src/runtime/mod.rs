@@ -48,14 +48,16 @@ use zenko_core::{
     CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS, ChatMessage, ChatRequest,
     ClarificationOption, CompactionCheckpointPayload, ContextBreakdown, ContextBridge, CronJob,
     CronKind, DEFAULT_APPROVAL_TIMEOUT_SECS, DEFAULT_CONTEXT_WINDOW_FALLBACK,
-    DEFAULT_PAIRING_TTL_MINS, DaemonTelemetry, DreamRunRecord, DreamStatus, ESCALATION_OPT_PIVOT,
-    ESCALATION_OPT_STOP, EventKind, EventRole, ExecutionPlan, ExportOptions, ExportReport,
-    FILE_MODE_OWNER_ONLY, GOAL_LOOP_DEFAULT_INTERVAL_SECS, GOAL_LOOP_DEFAULT_MAX_BUDGET_USD,
-    GOAL_LOOP_DEFAULT_MAX_ITERATIONS, GOAL_LOOP_DEFAULT_NOTIFY_CHANNEL,
-    GOAL_LOOP_DEFAULT_STALL_LIMIT, GOAL_LOOP_LIST_DEFAULT_LIMIT, GOAL_LOOP_MAX_ITERATIONS_CAP,
-    GOAL_LOOP_MAX_STALL_CAP, GOAL_LOOP_RUNS_DEFAULT_LIMIT, GoalLoopBridge,
-    GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun, GoalLoopStatus,
-    HUB_CATEGORIES, HUB_SUBDIR_SCRIPTS, HookEvent, HubEntry, IPC_FRAME_CHUNK, IPC_FRAME_DONE,
+    DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_PAIRING_TTL_MINS,
+    DaemonTelemetry, DreamRunRecord, DreamStatus, ESCALATION_OPT_PIVOT, ESCALATION_OPT_STOP,
+    EXTERNAL_TOOL_REAPER_INTERVAL_SECS, EventKind, EventRole, ExecutionPlan, ExportOptions,
+    ExportReport, FILE_MODE_OWNER_ONLY, GOAL_LOOP_DEFAULT_INTERVAL_SECS,
+    GOAL_LOOP_DEFAULT_MAX_BUDGET_USD, GOAL_LOOP_DEFAULT_MAX_ITERATIONS,
+    GOAL_LOOP_DEFAULT_NOTIFY_CHANNEL, GOAL_LOOP_DEFAULT_STALL_LIMIT, GOAL_LOOP_LIST_DEFAULT_LIMIT,
+    GOAL_LOOP_MAX_ITERATIONS_CAP, GOAL_LOOP_MAX_STALL_CAP, GOAL_LOOP_RUNS_DEFAULT_LIMIT,
+    GoalLoopBridge, GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun,
+    GoalLoopStatus, HUB_CATEGORIES, HUB_SUBDIR_SCRIPTS, HookEvent, HubEntry,
+    IDLE_DB_COMPACT_EVERY_TICKS, IPC_FRAME_CHUNK, IPC_FRAME_DONE,
     IPC_FRAME_EVENT, IPC_FRAME_SNAPSHOT, IPC_METHOD_AGENTS_DIFF, IPC_METHOD_AGENTS_DISCARD,
     IPC_METHOD_AGENTS_GET, IPC_METHOD_AGENTS_KILL, IPC_METHOD_AGENTS_LIST, IPC_METHOD_AGENTS_MERGE,
     IPC_METHOD_AGENTS_MESSAGE, IPC_METHOD_AGENTS_PRUNE, IPC_METHOD_AGENTS_SPAWN,
@@ -87,6 +89,7 @@ use zenko_core::{
     JOB_NOTICE_CMD_PREVIEW_CHARS, JOB_WAKE_COALESCE_MS, JobSupervisor, LOG_CATEGORIES, LlmDelta,
     LlmProvider, LogFilter, LspConfig, MAX_PARALLEL_TOOLS, MEMORY_AUTO_RECALL_LIMIT,
     MEMORY_AUTO_RECALL_MIN_SCORE, MEMORY_SCOPE_GLOBAL, MODEL_CACHE_TTL_SECS,
+    MODEL_KV_COMPACT_REGISTRY_KEY, MODEL_KV_LEGACY_COMPACT_THRESHOLD_BYTES,
     MODEL_KV_PROVIDER_PREFIX, MODEL_KV_REGISTRY_KEY, MUTATING_FILE_TOOLS, McpServerConfig,
     McpServerStatus, ModelInfo, NOTE_KIND_BRAINSTORM_SPEC, NOTE_KIND_CLARIFICATION_DECISION,
     NOTE_KIND_DEFERRED_TOOLS, NOTE_KIND_EXECUTION_PLAN, NOTE_KIND_MEMORY_RECALL,
@@ -117,7 +120,7 @@ use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
     project_scope_for_workspace, resolve_git_root,
 };
-use zenko_providers::UnifiedLlmProvider;
+use zenko_providers::{CompactModelRegistry, UnifiedLlmProvider};
 use zenko_tools::{
     ToolRegistry, lsp::LspPoolManager, mcp_client::McpClientManager, memory_cron::MemoryTool,
 };
@@ -315,13 +318,9 @@ impl AgentRuntime {
             config.provider.base_url.clone(),
             api_key,
         );
-        if let Ok(Some(raw_reg)) = store.get_kv(MODEL_KV_REGISTRY_KEY)
-            && let Ok(parsed) = serde_json::from_str::<Value>(&raw_reg) {
-                provider.seed_metadata_registry(parsed);
-            }
 
-        let (events, _) = broadcast::channel(512);
-        let logs = LogBuffer::new(300, events.clone());
+        let (events, _) = broadcast::channel(DEFAULT_EVENT_BROADCAST_CAPACITY);
+        let logs = LogBuffer::new(DEFAULT_LOG_BUFFER_CAPACITY, events.clone());
         let log_sink = CategorizedLogSink::start(&data_dir, store.clone(), vault.clone());
         logs.attach_sink(log_sink.clone());
         install_panic_hook(log_sink.logs_dir().to_path_buf());
@@ -461,11 +460,32 @@ impl AgentRuntime {
             let art_dir = data_dir.clone();
             let cp_mgr = rt.checkpoints.clone();
             let cp_cfg = rt.config().checkpoints;
+            let bg_store = rt.store.clone();
             handle.spawn(async move {
                 artifacts::prune_old_artifacts(&art_dir).await;
                 if cp_cfg.enabled {
                     let _ = cp_mgr.prune_checkpoints(&cp_cfg).await;
                 }
+                // One-time migration of oversized legacy raw `models.dev` JSON (~6.8 MB) into
+                // compact Zenko-only index (~145 KB), reclaiming DB + WAL disk & RAM overhead.
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Ok(Some(len)) = bg_store.kv_value_len(MODEL_KV_REGISTRY_KEY) {
+                        if len >= MODEL_KV_LEGACY_COMPACT_THRESHOLD_BYTES {
+                            if let Ok(Some(raw)) = bg_store.get_kv(MODEL_KV_REGISTRY_KEY)
+                                && let Some(compact) =
+                                    CompactModelRegistry::parse_raw_models_dev_bytes(raw.as_bytes())
+                                && let Some(compact_json) = compact.to_compact_json()
+                            {
+                                let _ = bg_store.set_kv(MODEL_KV_COMPACT_REGISTRY_KEY, &compact_json);
+                            }
+                            let _ = bg_store.delete_kv(MODEL_KV_REGISTRY_KEY);
+                        } else {
+                            let _ = bg_store.delete_kv(MODEL_KV_REGISTRY_KEY);
+                        }
+                    }
+                    let _ = bg_store.vacuum_if_bloated();
+                })
+                .await;
             });
         }
 
@@ -584,21 +604,45 @@ impl AgentRuntime {
         Ok(removed)
     }
 
-    /// Low-RAM periodic idle reaper evicting idle LSP servers and external MCP client sessions,
-    /// plus refreshing any MCP servers that emitted `notifications/tools/list_changed`.
+    /// Low-RAM periodic idle reaper evicting idle LSP servers, external MCP client sessions,
+    /// expired model metadata caches, and truncating idle SQLite WAL files.
     pub async fn run_external_tool_reaper(self: Arc<Self>, cancel: CancellationToken) {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(EXTERNAL_TOOL_REAPER_INTERVAL_SECS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut ticks: u64 = 0;
         loop {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => break,
                 _ = interval.tick() => {
+                    ticks = ticks.wrapping_add(1);
                     for dirty_name in self.mcp_clients.dirty_servers().await {
                         let _ = self.sync_mcp_server(&dirty_name).await;
                     }
                     let _ = self.lsp.evict_idle().await;
                     let _ = self.mcp_clients.evict_idle().await;
+                    if ticks.is_multiple_of(IDLE_DB_COMPACT_EVERY_TICKS) {
+                        self.provider.evict_expired_metadata_cache();
+                        if let Ok(mut guard) = self.cached_models.lock()
+                            && let Some((ts, _)) = guard.as_ref()
+                            && ts.elapsed() >= Duration::from_secs(MODEL_CACHE_TTL_SECS)
+                        {
+                            *guard = None;
+                        }
+                        let is_idle = self
+                            .active_cancels
+                            .lock()
+                            .map(|g| g.is_empty())
+                            .unwrap_or(false);
+                        if is_idle {
+                            let st = self.store.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let _ = st.compact_wal();
+                            })
+                            .await;
+                        }
+                    }
                 }
             }
         }
@@ -796,6 +840,16 @@ impl AgentRuntime {
             });
         let api_key = self.vault.get(desc.vault_secret_key).ok().flatten();
 
+        // Lazily hydrate compact `models.dev` index (~145 KB) only on demand (never at daemon boot)
+        if !force_refresh
+            && !desc.metadata_keys.is_empty()
+            && self.provider.cached_metadata_registry().is_none()
+            && let Ok(Some(compact_raw)) = self.store.get_kv(MODEL_KV_COMPACT_REGISTRY_KEY)
+            && let Some(compact) = CompactModelRegistry::from_compact_json(&compact_raw)
+        {
+            self.provider.seed_compact_registry(Arc::new(compact));
+        }
+
         let kv_key = format!("{MODEL_KV_PROVIDER_PREFIX}{}", desc.id);
         match self
             .provider
@@ -815,9 +869,9 @@ impl AgentRuntime {
                 if let Ok(serialized) = serde_json::to_string(&models) {
                     let _ = self.store.set_kv(&kv_key, &serialized);
                 }
-                if let Some(reg) = self.provider.load_metadata_registry(false).await
-                    && let Ok(reg_str) = serde_json::to_string(&reg) {
-                        let _ = self.store.set_kv(MODEL_KV_REGISTRY_KEY, &reg_str);
+                if let Some(reg) = self.provider.cached_metadata_registry()
+                    && let Some(reg_str) = reg.to_compact_json() {
+                        let _ = self.store.set_kv(MODEL_KV_COMPACT_REGISTRY_KEY, &reg_str);
                     }
                 Ok(models)
             }

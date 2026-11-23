@@ -319,10 +319,76 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // Live Daemon SSE Subscription (declarative event dispatch table — zero if/else ladders)
+  // Live Daemon SSE Subscription with rAF-coalesced streaming buffers (max 1 React commit/frame)
   useEffect(() => {
     if (!authorized || !loaded) return
     const es = new EventSource('/api/events')
+
+    let pendingThinking = ''
+    let pendingText = ''
+    let pendingJobChunks: Record<string, { chunk: string; bytes?: number }> = {}
+    let pendingLogs: LogEntry[] = []
+    let flushRafId: number | null = null
+
+    const flushStreamBuffers = () => {
+      flushRafId = null
+      if (pendingThinking) {
+        const delta = pendingThinking
+        pendingThinking = ''
+        setLiveThinking((t) => t + delta)
+      }
+      if (pendingText) {
+        const delta = pendingText
+        pendingText = ''
+        setLiveText((t) => t + delta)
+      }
+      const jobKeys = Object.keys(pendingJobChunks)
+      if (jobKeys.length > 0) {
+        const batch = pendingJobChunks
+        pendingJobChunks = {}
+        setTerminalBuffers((prev) => {
+          const next = { ...prev }
+          for (const jid of jobKeys) {
+            next[jid] = appendBoundedTerminal(next[jid] || '', batch[jid].chunk)
+          }
+          return next
+        })
+        const bytesUpdates = jobKeys.filter((jid) => typeof batch[jid].bytes === 'number')
+        if (bytesUpdates.length > 0) {
+          setJobs((prev) =>
+            prev.map((j) =>
+              batch[j.id] && typeof batch[j.id].bytes === 'number'
+                ? { ...j, bytes_written: batch[j.id].bytes! }
+                : j,
+            ),
+          )
+        }
+      }
+      if (pendingLogs.length > 0) {
+        const batch = pendingLogs
+        pendingLogs = []
+        setLogs((prev) => [...prev.slice(-(240 - Math.min(batch.length, 240))), ...batch])
+        setLogCounts((prev) => {
+          const next = { ...prev }
+          for (const entry of batch) {
+            const cat = entry.category || 'system'
+            next[cat] = (next[cat] || 0) + 1
+          }
+          return next
+        })
+      }
+    }
+
+    const scheduleFlush = () => {
+      if (flushRafId === null) {
+        flushRafId = window.requestAnimationFrame(flushStreamBuffers)
+      }
+    }
+
+    const discardLiveTextBuffers = () => {
+      pendingThinking = ''
+      pendingText = ''
+    }
 
     const handlers: Record<string, (ev: any, sid: string | null) => void> = {
       session_updated: (ev, sid) => {
@@ -339,6 +405,7 @@ export default function App() {
           if (running) {
             setTurnStartedAt((prev) => prev ?? Date.now())
           } else {
+            discardLiveTextBuffers()
             setTurnStartedAt(null)
             loadSession(sid)
           }
@@ -350,13 +417,20 @@ export default function App() {
         loadSession(sid, { preserveLive: true })
       },
       thinking_delta: (ev, sid) => {
-        if (sid && ev.session_id === sid) setLiveThinking((t) => t + ev.text)
+        if (sid && ev.session_id === sid && typeof ev.text === 'string') {
+          pendingThinking += ev.text
+          scheduleFlush()
+        }
       },
       text_delta: (ev, sid) => {
-        if (sid && ev.session_id === sid) setLiveText((t) => t + ev.text)
+        if (sid && ev.session_id === sid && typeof ev.text === 'string') {
+          pendingText += ev.text
+          scheduleFlush()
+        }
       },
       tool_call_started: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
+        flushStreamBuffers()
         setLiveTools((prev) => [
           ...prev,
           {
@@ -396,12 +470,14 @@ export default function App() {
       },
       turn_completed: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
+        discardLiveTextBuffers()
         setLiveTurnError(null)
         loadSession(sid)
         api<DaemonTelemetry>('/api/telemetry').then(setTelemetry).catch(() => {})
       },
       turn_error: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
+        flushStreamBuffers()
         setIsRunning(false)
         setLiveTurnError({
           title: 'Agent turn interrupted',
@@ -425,15 +501,12 @@ export default function App() {
       },
       job_output_delta: (ev) => {
         if (!ev.job_id || typeof ev.chunk !== 'string') return
-        setTerminalBuffers((prev) => ({
-          ...prev,
-          [ev.job_id]: appendBoundedTerminal(prev[ev.job_id] || '', ev.chunk),
-        }))
-        if (typeof ev.bytes_written === 'number') {
-          setJobs((prev) =>
-            prev.map((j) => (j.id === ev.job_id ? { ...j, bytes_written: ev.bytes_written } : j)),
-          )
+        const cur = pendingJobChunks[ev.job_id]
+        pendingJobChunks[ev.job_id] = {
+          chunk: cur ? cur.chunk + ev.chunk : ev.chunk,
+          bytes: typeof ev.bytes_written === 'number' ? ev.bytes_written : cur?.bytes,
         }
+        scheduleFlush()
       },
       steering_accepted: (ev) => {
         toast(`Steered active turn: ${ev.preview}`, 'info')
@@ -517,9 +590,9 @@ export default function App() {
         }
       },
       log: (ev) => {
-        setLogs((prev) => [...prev.slice(-240), ev])
-        const cat = ev.category || 'system'
-        setLogCounts((prev) => ({ ...prev, [cat]: (prev[cat] || 0) + 1 }))
+        pendingLogs.push(ev)
+        if (pendingLogs.length > 120) pendingLogs = pendingLogs.slice(-120)
+        scheduleFlush()
       },
     }
 
@@ -544,7 +617,10 @@ export default function App() {
         /* ignore malformed SSE frame */
       }
     }
-    return () => es.close()
+    return () => {
+      if (flushRafId !== null) window.cancelAnimationFrame(flushRafId)
+      es.close()
+    }
   }, [authorized, loaded, loadSession, toast])
 
   // Live UI Customization patcher (pure state update + synchronous DOM apply + debounced SQLite persist)

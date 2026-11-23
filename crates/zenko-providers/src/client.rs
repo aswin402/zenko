@@ -2,7 +2,7 @@
 //! Gemini, Ollama, and custom OpenAI-compatible endpoints with live model discovery.
 
 use crate::dialect::{apply_chat_headers, build_request_body, resolve_dialect, verify_endpoint};
-use crate::discovery::{discover_provider_models, fetch_metadata_registry};
+use crate::discovery::{CompactModelRegistry, discover_provider_models, fetch_metadata_registry};
 use crate::sse::{
     SseAccumulator, SseByteLineDecoder, check_provider_error, emit_non_streaming_response,
     process_sse_line,
@@ -29,11 +29,13 @@ struct ProviderState {
     api_key: Option<Zeroizing<String>>,
 }
 
+type MetadataCache = Arc<RwLock<Option<(Instant, Arc<CompactModelRegistry>)>>>;
+
 #[derive(Clone)]
 pub struct UnifiedLlmProvider {
     client: Client,
     state: Arc<RwLock<ProviderState>>,
-    metadata_cache: Arc<RwLock<Option<(Instant, Value)>>>,
+    metadata_cache: MetadataCache,
 }
 
 impl UnifiedLlmProvider {
@@ -68,9 +70,25 @@ impl UnifiedLlmProvider {
         Self::for_provider(client, inferred_id, url_str, api_key)
     }
 
-    pub fn seed_metadata_registry(&self, val: Value) {
+    pub fn seed_compact_registry(&self, reg: Arc<CompactModelRegistry>) {
         if let Ok(mut guard) = self.metadata_cache.write() {
-            *guard = Some((Instant::now(), val));
+            *guard = Some((Instant::now(), reg));
+        }
+    }
+
+    pub fn cached_metadata_registry(&self) -> Option<Arc<CompactModelRegistry>> {
+        self.metadata_cache
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().map(|(_, v)| Arc::clone(v)))
+    }
+
+    pub fn evict_expired_metadata_cache(&self) {
+        if let Ok(mut guard) = self.metadata_cache.write()
+            && let Some((ts, _)) = guard.as_ref()
+            && ts.elapsed() >= Duration::from_secs(MODEL_CACHE_TTL_SECS)
+        {
+            *guard = None;
         }
     }
 
@@ -122,24 +140,21 @@ impl UnifiedLlmProvider {
         (state.provider_id, base_url, dialect, state.api_key)
     }
 
-    /// Fetches or reuses the live `models.dev/api.json` registry snapshot.
-    pub async fn load_metadata_registry(&self, force_refresh: bool) -> Option<Value> {
+    /// Fetches or reuses the compact `models.dev` registry snapshot (`Arc`-shared, zero deep clones).
+    pub async fn load_metadata_registry(&self, force_refresh: bool) -> Option<Arc<CompactModelRegistry>> {
         if !force_refresh
             && let Ok(guard) = self.metadata_cache.read()
                 && let Some((ts, val)) = guard.as_ref()
                     && ts.elapsed() < Duration::from_secs(MODEL_CACHE_TTL_SECS) {
-                        return Some(val.clone());
+                        return Some(Arc::clone(val));
                     }
         if let Some(fresh) = fetch_metadata_registry(&self.client).await {
             if let Ok(mut guard) = self.metadata_cache.write() {
-                *guard = Some((Instant::now(), fresh.clone()));
+                *guard = Some((Instant::now(), Arc::clone(&fresh)));
             }
             return Some(fresh);
         }
-        self.metadata_cache
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, v)| v.clone()))
+        self.cached_metadata_registry()
     }
 
     /// Discovers live working models for ANY provider (free models sorted first) without
@@ -160,7 +175,7 @@ impl UnifiedLlmProvider {
             true => None,
             false => self.load_metadata_registry(force_refresh).await,
         };
-        discover_provider_models(&self.client, desc, resolved_url, api_key, registry.as_ref()).await
+        discover_provider_models(&self.client, desc, resolved_url, api_key, registry.as_deref()).await
     }
 
     /// MiniMax fallback verification when `/models` returns 404/405: discovers a real live

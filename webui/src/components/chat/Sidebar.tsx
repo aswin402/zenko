@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import { EASE_DRAWER } from '@/lib/ease'
 import type { ActiveView, ComponentSlots, Session, UiCustomization } from '@/lib/types'
@@ -36,7 +37,7 @@ const SESSION_ACTIVE_CLASS: Record<ComponentSlots['left_menubar']['session_item_
   minimal_text: 'text-[var(--fg)] font-semibold',
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   open,
   onToggle,
   sessions,
@@ -254,4 +255,4 @@ export function Sidebar({
       </AnimatePresence>
     </>
   )
-}
+})

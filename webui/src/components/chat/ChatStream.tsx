@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -356,7 +356,7 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
   return blocks
 }
 
-function MarkdownProse({
+const MarkdownProse = memo(function MarkdownProse({
   text,
   codeBlockStyle = 'aui_code_runner',
 }: {
@@ -416,9 +416,9 @@ function MarkdownProse({
       </ReactMarkdown>
     </div>
   )
-}
+})
 
-function CompactionCheckpointPill({
+const CompactionCheckpointPill = memo(function CompactionCheckpointPill({
   compacted_events_count,
   estimated_tokens_before,
   estimated_tokens_after,
@@ -456,19 +456,30 @@ function CompactionCheckpointPill({
       )}
     </div>
   )
-}
+})
 
-function AssistantTurnView({
+const AssistantTurnView = memo(function AssistantTurnView({
   group,
   ui,
+  promptForRegen,
+  parentForRegen,
   onRegenerate,
   onRetryTool,
 }: {
   group: AssistantGroup
   ui: UiCustomization
-  onRegenerate?: () => void
+  promptForRegen?: string
+  parentForRegen?: string | null
+  onRegenerate?: (prompt: string, parentId?: string | null) => void
   onRetryTool?: (toolName: string, argsPreview?: string) => void
 }) {
+  const handleRegenerate = useMemo(
+    () =>
+      onRegenerate && promptForRegen
+        ? () => onRegenerate(promptForRegen, parentForRegen)
+        : undefined,
+    [onRegenerate, promptForRegen, parentForRegen],
+  )
   const [stepsOpen, setStepsOpen] = useState(false)
   const hasThinking = Boolean(ui.widgets.show_thinking && group.thinking)
   const stepCount = group.tools.length + (hasThinking ? 1 : 0)
@@ -682,7 +693,7 @@ function AssistantTurnView({
             <StreamingResponse
               status="complete"
               copyText={group.text}
-              onRetry={onRegenerate}
+              onRetry={handleRegenerate}
               sources={citations}
               announce={false}
               contentClassName="text-[0.94rem]"
@@ -698,7 +709,7 @@ function AssistantTurnView({
                 text={group.text}
                 citations={citations}
                 tokenMeta={tokenMetaNode}
-                onRegenerate={onRegenerate}
+                onRegenerate={handleRegenerate}
                 onToggleSteps={stepCount > 0 ? () => setStepsOpen((v) => !v) : undefined}
               />
             </>
@@ -706,7 +717,7 @@ function AssistantTurnView({
       </div>
     </motion.div>
   )
-}
+})
 
 function BrainstormCard({
   spec,
@@ -1575,7 +1586,7 @@ export function ChatStream({
             const sibs = siblings[ev.id] || []
             const idx = sibs.indexOf(ev.id)
             return (
-              <div key={ev.id} className="flex flex-col gap-5">
+              <div key={ev.id} className="zenko-turn-item flex flex-col gap-5">
                 {dayNode}
                 <div
                   data-slot="message"
@@ -1645,16 +1656,14 @@ export function ChatStream({
           const promptForRegen = prevUserPrompt
           const parentForRegen = prevUserParentId
           return (
-            <div key={block.group.key} className="flex flex-col gap-5">
+            <div key={block.group.key} className="zenko-turn-item flex flex-col gap-5">
               {dayNode}
               <AssistantTurnView
                 group={block.group}
                 ui={ui}
-                onRegenerate={
-                  onRegenerate && promptForRegen
-                    ? () => onRegenerate(promptForRegen, parentForRegen)
-                    : undefined
-                }
+                promptForRegen={promptForRegen}
+                parentForRegen={parentForRegen}
+                onRegenerate={onRegenerate}
                 onRetryTool={onRetryTool}
               />
             </div>

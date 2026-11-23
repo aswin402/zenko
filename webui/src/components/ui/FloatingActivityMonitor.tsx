@@ -312,7 +312,7 @@ export function FloatingActivityMonitor({
               ? TERMINAL_MONITOR_CONFIG.collapsedHeight
               : Math.min(TERMINAL_MONITOR_CONFIG.height, window.innerHeight - 32),
           }}
-          className="fixed z-40 flex flex-col overflow-hidden rounded-[20px] border border-[var(--border)] bg-[var(--surface)]/96 text-[var(--fg)] shadow-[0_20px_56px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl"
+          className="fixed z-40 flex flex-col overflow-hidden rounded-[20px] border border-[var(--border)] bg-[var(--surface)]/98 text-[var(--fg)] shadow-[0_20px_56px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.04)]"
         >
           {/* Draggable Top Bar */}
           <div

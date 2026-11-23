@@ -447,6 +447,27 @@ impl SqliteStore {
         })
     }
 
+    pub fn delete_kv(&self, key: &str) -> Result<bool> {
+        self.with_conn(|conn| {
+            let rows = conn.execute("DELETE FROM kv_state WHERE k = ?1", params![key])?;
+            Ok(rows > 0)
+        })
+    }
+
+    /// Returns the stored byte/character length of a `kv_state` value without allocating it in Rust.
+    pub fn kv_value_len(&self, key: &str) -> Result<Option<usize>> {
+        self.with_conn(|conn| {
+            let len: Option<i64> = conn
+                .query_row(
+                    "SELECT length(v) FROM kv_state WHERE k = ?1",
+                    params![key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(len.map(|n| n.max(0) as usize))
+        })
+    }
+
     // ─── Categorized Persistent Debug Logs (Indexed Ring Table) ────────────────
 
     pub fn insert_log(&self, entry: &LogEntry) -> Result<()> {

@@ -38,6 +38,7 @@ Wants=network-online.target\n\
 \n\
 [Service]\n\
 Type=simple\n\
+Environment=\"MIMALLOC_PURGE_DELAY=10\" \"MIMALLOC_ALLOW_LARGE_OS_PAGES=0\" \"MIMALLOC_ARENA_EAGER_COMMIT=0\"\n\
 ExecStart=\"{exe_escaped}\" --config \"{cfg_escaped}\" web\n\
 Restart=on-failure\n\
 RestartSec=3\n\

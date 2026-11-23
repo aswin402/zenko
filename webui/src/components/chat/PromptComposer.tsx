@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowUp,
   CornerDownLeft,
@@ -34,7 +34,7 @@ const SHELL_VARIANT_CLASS: Record<ComponentSlots['composer']['shell_variant'], s
   minimal_bar:
     'rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 pb-2.5 pt-3 focus-within:border-[var(--fg)]/30',
   glass_dock:
-    'rounded-[20px] border border-[var(--border)] bg-[var(--card)]/68 px-4 pb-3 pt-3.5 backdrop-blur-xl shadow-[0_16px_42px_rgba(0,0,0,0.36)] focus-within:border-[var(--accent)]/55',
+    'rounded-[20px] border border-[var(--border)] bg-[var(--card)]/74 px-4 pb-3 pt-3.5 backdrop-blur-md shadow-[0_16px_42px_rgba(0,0,0,0.36)] focus-within:border-[var(--accent)]/55',
 }
 
 const ACTION_PILL_CLASS: Record<ComponentSlots['composer']['action_pills'], string> = {
@@ -92,7 +92,7 @@ const COMPOSER_STATE_META: Record<
  * strictly inheriting the global theme colors. Uses automatic async dispatch (Queue during
  * focused foreground work, Steer while orchestrating background jobs or subagents).
  */
-export function PromptComposer({
+export const PromptComposer = memo(function PromptComposer({
   value,
   onChange,
   onSend,
@@ -596,4 +596,4 @@ export function PromptComposer({
       </div>
     </div>
   )
-}
+})

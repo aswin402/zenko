@@ -3,17 +3,19 @@ pub mod middleware;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use rust_embed::Embed;
+use std::borrow::Cow;
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use tower_http::CompressionLevel;
 use tower_http::compression::CompressionLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::info;
@@ -31,7 +33,51 @@ pub struct WebState {
     pub shutdown: CancellationToken,
 }
 
-async fn serve_spa(uri: Uri) -> Response {
+fn asset_etag(hash: [u8; 32]) -> String {
+    let mut out = String::with_capacity(18);
+    out.push('"');
+    for b in &hash[..8] {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out.push('"');
+    out
+}
+
+fn serve_embedded_asset(
+    req_headers: &HeaderMap,
+    asset: rust_embed::EmbeddedFile,
+    mime: &str,
+    cache_control: &str,
+) -> Response {
+    let etag = asset_etag(asset.metadata.sha256_hash());
+    if let Some(inm) = req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        && (inm.trim() == etag || inm.split(',').any(|t| t.trim() == etag))
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, etag)
+            .header(header::CACHE_CONTROL, cache_control)
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response());
+    }
+    // Zero-copy static body from binary `.rodata` in release builds (`Cow::Borrowed`)
+    let body = match asset.data {
+        Cow::Borrowed(slice) => Body::from(slice),
+        Cow::Owned(vec) => Body::from(vec),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, cache_control)
+        .header(header::ETAG, etag)
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_spa(headers: HeaderMap, uri: Uri) -> Response {
     let raw_path = uri.path().trim_start_matches('/');
     // Never mask missing `/api/*` or `/v1/*` endpoints with `200 OK index.html`
     if raw_path == "api"
@@ -58,22 +104,12 @@ async fn serve_spa(uri: Uri) -> Response {
         } else {
             "no-cache"
         };
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, mime.as_ref())
-            .header(header::CACHE_CONTROL, cache)
-            .body(Body::from(asset.data.into_owned()))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        return serve_embedded_asset(&headers, asset, mime.as_ref(), cache);
     }
 
     // SPA client-route fallback to index.html
     if let Some(index) = EmbeddedWebAssets::get("index.html") {
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .body(Body::from(index.data.into_owned()))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        return serve_embedded_asset(&headers, index, "text/html; charset=utf-8", "no-cache");
     }
 
     (
@@ -337,7 +373,7 @@ pub fn build_router(state: WebState) -> Router {
             middleware::hono_logger_middleware,
         ))
         .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
-        .layer(CompressionLayer::new())
+        .layer(CompressionLayer::new().quality(CompressionLevel::Fastest))
         .with_state(state)
 }
 
@@ -413,6 +449,32 @@ mod tests {
             telegram_reload: Arc::new(Notify::new()),
             shutdown: shutdown.clone(),
         });
+
+        // Verify zero-copy static asset ETag & 304 Not Modified roundtrip
+        let root_resp = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).expect("root req"))
+            .await
+            .expect("root resp");
+        assert_eq!(root_resp.status(), StatusCode::OK);
+        let etag = root_resp
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("root asset must include ETag")
+            .to_string();
+        let not_mod = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::IF_NONE_MATCH, etag)
+                    .body(Body::empty())
+                    .expect("304 req"),
+            )
+            .await
+            .expect("304 resp");
+        assert_eq!(not_mod.status(), StatusCode::NOT_MODIFIED);
 
         for path in [
             "/",

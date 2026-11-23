@@ -4,6 +4,25 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] - 2026-11-23
+
+Low-RAM daemon optimization, SQLite WAL compaction, zero-copy static WebUI serving, and 60/120fps streaming UI smoothness improvements.
+
+### Changed
+- **Streaming Compact `models.dev` Metadata Index (~46× Smaller on Disk, ~200× Less RAM):**
+  - Replaced raw 6.78 MB `serde_json::Value` caching and deep `.clone()` calls in `crates/zenko-providers/src/{discovery,client}.rs` with `Arc<CompactModelRegistry>`, streamed via a custom `serde::de::Visitor` (`IgnoredAny`) that skips ~316 non-Zenko provider blocks without materializing the full JSON tree.
+  - Stopped eagerly deserializing `models.dev` at daemon boot (`crates/zenko-runtime/src/runtime/mod.rs`); lazily hydrates compact `models_dev_compact_v2` (~145 KB) only on demand, automatically migrates & deletes legacy 6.78 MB `models_dev_registry_v1` rows in the background, and evicts expired model caches during idle reaper ticks.
+- **SQLite WAL Size Cap & Automatic Idle Compaction (`crates/zenko-memory/src/sqlite/`):**
+  - Enforced `PRAGMA journal_size_limit = 4 MiB` (`SQLITE_JOURNAL_SIZE_LIMIT_BYTES`), added `compact_wal()` (`PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize; PRAGMA shrink_memory;`) and `vacuum_if_bloated()`, and wired periodic idle WAL compaction into `run_external_tool_reaper`.
+- **Zero-Copy Static WebUI Assets & ETag `304 Not Modified` (`crates/zenko-webui/src/lib.rs`):**
+  - Served embedded release assets zero-copy directly from binary `.rodata` (`Cow::Borrowed`) with SHA-256 `ETag` / `If-None-Match` (`304 Not Modified`) handling and switched `CompressionLayer` to `CompressionLevel::Fastest`.
+- **Bounded Event Ring Buffers & Low-RAM `mimalloc` (`no_thp`) Tuning:**
+  - Enabled `mimalloc`'s `no_thp` compile-time feature in `Cargo.toml` (disabling 2 MiB Transparent Huge Page pinning on Linux with zero `unsafe` code), centralized `DEFAULT_EVENT_BROADCAST_CAPACITY` (`128`) and `DEFAULT_LOG_BUFFER_CAPACITY` (`200`) in `crates/zenko-core/src/constants.rs`, and added `MIMALLOC_PURGE_DELAY=10` / `MIMALLOC_ALLOW_LARGE_OS_PAGES=0` / `MIMALLOC_ARENA_EAGER_COMMIT=0` defaults to generated systemd units (`crates/zenko-cli/src/service.rs`).
+- **60/120fps WebUI Streaming & Scrolling Smoothness (`webui/src/`):**
+  - Coalesced high-frequency SSE `text_delta`, `thinking_delta`, `job_output_delta`, and `log` streams into `requestAnimationFrame` batches in `App.tsx` (max 1 React commit per display frame).
+  - Wrapped `MarkdownProse`, `AssistantTurnView`, `CompactionCheckpointPill`, `Sidebar`, `FloatingDock`, and `PromptComposer` in `React.memo` with stable callbacks so streaming tokens never re-render historical turns or surrounding chrome.
+  - Added CSS `content-visibility: auto` (`.zenko-turn-item`) on historical chat turns and toned down heavy `backdrop-blur-xl`/`backdrop-blur-2xl` GPU compositing layers on matte overlays (`FloatingDock`, `FloatingActivityMonitor`, `PromptComposer`, `index.css`).
+
 ## [0.0.5] - 2026-11-23
 
 Phase 3 (P2) modular architecture refactoring, centralized Axum auth middleware, DRY & zero-hardcoding cleanup, frontend code splitting, dead code & dependency pruning, and strict zero-warning Clippy sweep across the entire workspace.

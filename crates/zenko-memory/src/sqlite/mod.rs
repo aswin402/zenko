@@ -22,7 +22,8 @@ use zenko_core::{
     MemoryUpsertResult, ModelUsageStat, PairingCode, PeerRole, PermissionMode, QueuedPrompt,
     Result, RiskLevel, SESSION_CONTEXT_MAX_WINDOW, SESSION_QUEUE_MAX_ITEMS,
     SESSION_SEARCH_DEFAULT_LIMIT, SESSION_SEARCH_MAX_LIMIT, SESSION_TASK_MAX_ITEMS,
-    SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAILBOX_MAX_MESSAGES, ScoredMemoryHit, Session,
+    SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAILBOX_MAX_MESSAGES, SQLITE_JOURNAL_SIZE_LIMIT_BYTES,
+    SQLITE_VACUUM_FREELIST_MIN_BYTES, ScoredMemoryHit, Session,
     SessionContextTurn, SessionContextWindow, SessionEvent, SessionRolloutSummary,
     SessionSearchFilter, SessionSearchHit, SessionStatus, SessionTask, SessionTaskStatus,
     SubagentRecord, SubagentStatus, SubagentWorkspaceMode, TaskKind, ToolUsageStat,
@@ -58,17 +59,16 @@ impl SqliteStore {
         let conn = Connection::open(&path_buf)
             .map_err(|e| ZenkoError::Storage(format!("failed to open sqlite: {e}")))?;
 
-        conn.execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA foreign_keys = ON;
-            PRAGMA busy_timeout = 5000;
-            PRAGMA cache_size = -2000;
-            PRAGMA mmap_size = 0;
-            PRAGMA temp_store = MEMORY;
-            "#,
-        )
+        conn.execute_batch(&format!(
+            "PRAGMA journal_mode = WAL;\n\
+             PRAGMA synchronous = NORMAL;\n\
+             PRAGMA foreign_keys = ON;\n\
+             PRAGMA busy_timeout = 5000;\n\
+             PRAGMA cache_size = -2000;\n\
+             PRAGMA mmap_size = 0;\n\
+             PRAGMA temp_store = MEMORY;\n\
+             PRAGMA journal_size_limit = {SQLITE_JOURNAL_SIZE_LIMIT_BYTES};"
+        ))
         .map_err(|e| ZenkoError::Storage(format!("failed to apply pragmas: {e}")))?;
 
         let store = Self {
@@ -95,6 +95,35 @@ impl SqliteStore {
 
     pub fn db_path(&self) -> &Path {
         &self.path
+    }
+
+    /// Truncates the WAL file back to disk and asks SQLite to release idle page-cache memory.
+    pub fn compact_wal(&self) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute_batch(
+                "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize; PRAGMA shrink_memory;",
+            )
+        })
+    }
+
+    /// Reclaims deleted SQLite pages via `VACUUM` only when the freelist exceeds
+    /// `SQLITE_VACUUM_FREELIST_MIN_BYTES`, followed by WAL truncation & page-cache shrink.
+    pub fn vacuum_if_bloated(&self) -> Result<bool> {
+        let reclaimable_bytes: u64 = self.with_conn(|conn| {
+            let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+            let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+            Ok((page_size.max(0) as u64).saturating_mul(freelist.max(0) as u64))
+        })?;
+        if reclaimable_bytes < SQLITE_VACUUM_FREELIST_MIN_BYTES {
+            let _ = self.compact_wal();
+            return Ok(false);
+        }
+        self.with_conn(|conn| {
+            conn.execute_batch(
+                "VACUUM; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize; PRAGMA shrink_memory;",
+            )
+        })?;
+        Ok(true)
     }
 
     /// Total disk footprint of SQLite DB + WAL + SHM files.

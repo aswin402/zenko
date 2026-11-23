@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 import { SPRING_LAYOUT, SPRING_PRESS } from '@/lib/ease'
 import type { ActiveView, ComponentSlots, UiCustomization } from '@/lib/types'
@@ -19,22 +20,22 @@ const DOCK_ITEMS: DockEntry[] = [
 
 const DOCK_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_style'], string> = {
   floating_capsule:
-    'fixed right-4 top-4 z-30 rounded-[18px] border border-[var(--border)] bg-[var(--surface)]/94 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.42)] backdrop-blur-xl',
+    'fixed right-4 top-4 z-30 rounded-[18px] border border-[var(--border)] bg-[var(--surface)]/96 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.42)]',
   attached_rail:
     'fixed right-0 top-0 z-30 h-full justify-start border-l border-[var(--border)] bg-[var(--surface)] px-1.5 py-3',
   glass_pill:
-    'fixed right-4 top-4 z-30 rounded-full border border-[var(--border)] bg-[var(--card)]/65 p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.36)] backdrop-blur-2xl',
+    'fixed right-4 top-4 z-30 rounded-full border border-[var(--border)] bg-[var(--card)]/72 p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.36)] backdrop-blur-md',
   minimal_strip:
     'fixed right-3 top-4 z-30 rounded-xl border border-transparent bg-transparent p-1',
 }
 
 const DOCK_PREVIEW_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_style'], string> = {
   floating_capsule:
-    'rounded-[18px] border border-[var(--border)] bg-[var(--surface)]/94 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.38)]',
+    'rounded-[18px] border border-[var(--border)] bg-[var(--surface)]/96 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.38)]',
   attached_rail:
     'rounded-r-xl border border-[var(--border)] bg-[var(--surface)] px-1.5 py-3',
   glass_pill:
-    'rounded-full border border-[var(--border)] bg-[var(--card)]/70 p-1.5 backdrop-blur-2xl shadow-lg',
+    'rounded-full border border-[var(--border)] bg-[var(--card)]/72 p-1.5 backdrop-blur-md shadow-lg',
   minimal_strip: 'rounded-xl border border-dashed border-[var(--border)]/60 bg-transparent p-1',
 }
 
@@ -42,7 +43,7 @@ const DOCK_PREVIEW_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_sty
  * Minimal floating vertical right-edge icon dock powered by spring-gliding `layoutId` highlight
  * and theme-inheriting `<ZenkoTooltip />` hover hints.
  */
-export function FloatingDock({
+export const FloatingDock = memo(function FloatingDock({
   activeView,
   onSelectView,
   ui,
@@ -79,7 +80,7 @@ export function FloatingDock({
             type="button"
             onClick={onToggleCollapse}
             aria-label="Expand navigation dock"
-            className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)]/92 text-[var(--muted)] backdrop-blur-xl transition-colors hover:text-[var(--fg)]"
+            className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)]/96 text-[var(--muted)] transition-colors hover:text-[var(--fg)]"
           >
             <ZenkoIcon slot="panelRightOpen" icons={ui.icons} size={17} />
           </button>
@@ -267,4 +268,4 @@ export function FloatingDock({
       )}
     </aside>
   )
-}
+})

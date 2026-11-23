@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-cli"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3290,7 +3290,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3314,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-gateways"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "chrono",
  "hex",
@@ -3334,7 +3334,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-memory"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "chrono",
  "hex",
@@ -3348,12 +3348,13 @@ dependencies = [
 
 [[package]]
 name = "zenko-providers"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "async-trait",
  "chrono",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
@@ -3364,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-runtime"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3389,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-tools"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3411,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "zenko-webui"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "axum",
  "chrono",

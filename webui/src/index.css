@@ -246,9 +246,15 @@ html, body, #root {
   /* Frosted Glass */
   [data-surface="glass"] .z-surface-card,
   [data-surface="glass"] .z-card-item {
-    background: color-mix(in srgb, var(--card) 66%, transparent);
+    background: color-mix(in srgb, var(--card) 72%, transparent);
     border-color: color-mix(in srgb, var(--border) 68%, transparent);
-    backdrop-filter: blur(18px);
+    backdrop-filter: blur(10px);
+  }
+
+  /* Skip off-screen layout & paint for historical chat turns (locked 60/120fps scrolling) */
+  .zenko-turn-item {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 120px;
   }
 
   /* Accent Edge Spotlight */
