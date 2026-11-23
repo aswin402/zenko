@@ -1,0 +1,3176 @@
+use crate::config::PermissionMode;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use ulid::Ulid;
+
+pub fn new_id() -> String {
+    Ulid::new().to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Idle,
+    Running,
+    WaitingApproval,
+    Paused,
+    Error,
+}
+
+impl SessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::WaitingApproval => "waiting_approval",
+            Self::Paused => "paused",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s {
+            "running" => Self::Running,
+            "waiting_approval" => Self::WaitingApproval,
+            "paused" => Self::Paused,
+            "error" => Self::Error,
+            _ => Self::Idle,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub title: String,
+    pub channel: String,
+    pub external_chat_id: Option<String>,
+    pub external_thread_id: Option<String>,
+    pub model_override: Option<String>,
+    pub permission_mode: PermissionMode,
+    pub status: SessionStatus,
+    pub head_event_id: Option<String>,
+    pub frozen_system_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<String>,
+    #[serde(default)]
+    pub agent_depth: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    /// Number of direct child subagents spawned by this session (computed via SQL aggregate).
+    #[serde(default)]
+    pub subagent_count: usize,
+    pub total_tokens: u64,
+    pub total_cost_usd: f64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl EventRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s {
+            "system" => Self::System,
+            "user" => Self::User,
+            "tool" => Self::Tool,
+            _ => Self::Assistant,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    Message,
+    Thinking,
+    ToolCall,
+    ToolResult,
+    CompactionCheckpoint,
+    SystemNote,
+}
+
+impl EventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Thinking => "thinking",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::CompactionCheckpoint => "compaction_checkpoint",
+            Self::SystemNote => "system_note",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s {
+            "thinking" => Self::Thinking,
+            "tool_call" => Self::ToolCall,
+            "tool_result" => Self::ToolResult,
+            "compaction_checkpoint" => Self::CompactionCheckpoint,
+            "system_note" => Self::SystemNote,
+            _ => Self::Message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEvent {
+    pub id: String,
+    pub session_id: String,
+    pub parent_id: Option<String>,
+    pub branch_index: i64,
+    pub role: EventRole,
+    pub kind: EventKind,
+    pub content_json: serde_json::Value,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cache_read_tokens: u64,
+    pub cost_usd: f64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: EventRole,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    Safe,
+    Moderate,
+    Dangerous,
+}
+
+impl RiskLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Moderate => "moderate",
+            Self::Dangerous => "dangerous",
+        }
+    }
+}
+
+/// Declarative tool schema loading strategy for prompt-cache efficiency.
+/// `Eager` tools are always sent in `tools[]`; `Deferred` tools appear as a compact 1-line
+/// catalog in Tier 2 and load full JSON schemas dynamically via `tool_search` (or direct invocation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExposure {
+    #[default]
+    Eager,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    pub risk: RiskLevel,
+}
+
+/// Metadata returned when an oversized tool output is spilled atomically to `~/.zenko/artifacts/`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactSpillRecord {
+    pub handle: String,
+    pub abs_path: String,
+    pub total_bytes: usize,
+    pub total_lines: usize,
+    pub preview: String,
+}
+
+/// Persisted `EventKind::CompactionCheckpoint` payload stored in SQLite for zero-loss,
+/// cache-friendly long-horizon session continuity (Oh My Pi + Codex iterative merge pattern).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionCheckpointPayload {
+    pub version: u32,
+    pub summary: String,
+    pub first_kept_event_id: String,
+    pub compacted_events_count: usize,
+    pub estimated_tokens_before: usize,
+    pub estimated_tokens_after: usize,
+    pub model: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Live token-budget & KV-cache breakdown for `context_inspect`, CLI `zenko context`, and WebUI drawer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContextBreakdown {
+    pub session_id: String,
+    pub model: String,
+    pub context_window: u64,
+    pub total_tokens: usize,
+    pub utilization_pct: f64,
+    pub tier1_tokens: usize,
+    pub tier1_hash: String,
+    pub tier2_tokens: usize,
+    pub repo_rules_loaded: Vec<String>,
+    pub tool_schema_tokens: usize,
+    pub eager_tools_count: usize,
+    pub deferred_active_count: usize,
+    pub deferred_available_count: usize,
+    pub history_tokens: usize,
+    pub microcompacted_tools_count: usize,
+    pub microcompacted_tokens_saved: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_checkpoint_id: Option<String>,
+    pub checkpoints_count: usize,
+    pub spilled_artifacts_count: usize,
+    pub cache_hit_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolOutput {
+    pub content: String,
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+impl ToolOutput {
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            diff: None,
+            metadata: None,
+        }
+    }
+
+    pub fn ok_with_diff(content: impl Into<String>, diff: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            diff: Some(diff.into()),
+            metadata: None,
+        }
+    }
+
+    pub fn err(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            diff: None,
+            metadata: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UsageStats {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_price_per_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_price_per_m: Option<f64>,
+    #[serde(default)]
+    pub is_free: bool,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn from_tier(tier: ExecutionTier) -> Self {
+        match tier {
+            ExecutionTier::Instant => Self::Low,
+            ExecutionTier::Standard => Self::Medium,
+            ExecutionTier::Orchestrated => Self::High,
+        }
+    }
+
+    pub fn escalated(self) -> Self {
+        match self {
+            Self::Low => Self::Medium,
+            Self::Medium | Self::High => Self::High,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatRequest {
+    pub session_id: String,
+    pub model: String,
+    pub fallbacks: Vec<String>,
+    pub system_prompt: String,
+    pub messages: Vec<ChatMessage>,
+    pub tools: Vec<ToolSpec>,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    #[serde(default = "default_req_true")]
+    pub enable_streaming: bool,
+    pub enable_prompt_caching: bool,
+    pub sticky_session_routing: bool,
+    pub provider_sort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+fn default_req_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LlmDelta {
+    Thinking(String),
+    Text(String),
+    ToolCallComplete(ToolCall),
+    Usage(UsageStats),
+    Done { finish_reason: Option<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboundMessage {
+    pub id: String,
+    pub channel: String,
+    pub peer_id: String,
+    pub username: Option<String>,
+    pub chat_id: String,
+    pub thread_id: Option<String>,
+    pub session_id: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboundMessage {
+    pub channel: String,
+    pub chat_id: String,
+    pub thread_id: Option<String>,
+    pub text: String,
+    pub approval: Option<ApprovalRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Denied,
+    AlwaysAllowed,
+    Expired,
+}
+
+impl ApprovalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::AlwaysAllowed => "always_allowed",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s {
+            "approved" => Self::Approved,
+            "denied" => Self::Denied,
+            "always_allowed" => Self::AlwaysAllowed,
+            "expired" => Self::Expired,
+            _ => Self::Pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
+    AlwaysAllow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    pub id: String,
+    pub session_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+    pub args_preview: String,
+    pub risk: RiskLevel,
+    pub status: ApprovalStatus,
+    pub resolved_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerRole {
+    Owner,
+    Trusted,
+    ReadOnly,
+}
+
+impl PeerRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Trusted => "trusted",
+            Self::ReadOnly => "readonly",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s {
+            "owner" => Self::Owner,
+            "trusted" => Self::Trusted,
+            _ => Self::ReadOnly,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayPeer {
+    pub channel: String,
+    pub peer_id: String,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub role: PeerRole,
+    pub paired_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingCode {
+    pub code: String,
+    pub channel: String,
+    pub role: PeerRole,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+}
+
+/// Typed memory taxonomy (Claude Code + Hermes synthesis) with declarative temporal decay half-lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    User,
+    Feedback,
+    Project,
+    Reference,
+    #[default]
+    Fact,
+    Lesson,
+}
+
+impl MemoryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Feedback => "feedback",
+            Self::Project => "project",
+            Self::Reference => "reference",
+            Self::Fact => "fact",
+            Self::Lesson => "lesson",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "user" | "preference" | "preferences" => Self::User,
+            "feedback" | "rule" | "correction" => Self::Feedback,
+            "project" | "architecture" | "decision" => Self::Project,
+            "reference" | "pointer" | "link" => Self::Reference,
+            "lesson" | "episode" | "bug" => Self::Lesson,
+            _ => Self::Fact,
+        }
+    }
+
+    /// Declarative Ebbinghaus decay half-life in days (user preferences & feedback decay slowest).
+    pub fn half_life_days(self) -> f64 {
+        match self {
+            Self::User | Self::Feedback => 120.0,
+            Self::Reference => 60.0,
+            Self::Lesson => 45.0,
+            Self::Project | Self::Fact => 30.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MemoryKindMeta {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub half_life_days: u32,
+}
+
+/// Declarative single-source-of-truth memory taxonomy shared by Tools, Dream, CLI, API & WebUI.
+pub const MEMORY_KINDS: &[MemoryKindMeta] = &[
+    MemoryKindMeta {
+        id: "project",
+        label: "Project",
+        description: "Architecture decisions, workspace invariants, and design constraints",
+        half_life_days: 30,
+    },
+    MemoryKindMeta {
+        id: "fact",
+        label: "Fact",
+        description: "Verified technical facts, environment quirks, and build/test notes",
+        half_life_days: 30,
+    },
+    MemoryKindMeta {
+        id: "user",
+        label: "User",
+        description: "Developer preferences, workflow habits, and communication style",
+        half_life_days: 120,
+    },
+    MemoryKindMeta {
+        id: "feedback",
+        label: "Feedback",
+        description: "Explicit corrections, banned patterns, and quality rules",
+        half_life_days: 120,
+    },
+    MemoryKindMeta {
+        id: "lesson",
+        label: "Lesson",
+        description: "Bug root causes, post-mortems, and debugging takeaways",
+        half_life_days: 45,
+    },
+    MemoryKindMeta {
+        id: "reference",
+        label: "Reference",
+        description: "External links, endpoints, dashboards, and service pointers",
+        half_life_days: 60,
+    },
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEntry {
+    pub id: String,
+    pub scope: String,
+    pub kind: String,
+    pub title: String,
+    pub content: String,
+    pub salience: f64,
+    #[serde(default)]
+    pub access_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accessed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub content_simhash: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_event_id: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Scored recall hit from Zenko's pure-Rust RRF hybrid memory search with live path staleness flags.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredMemoryHit {
+    pub entry: MemoryEntry,
+    pub score: f64,
+    #[serde(default)]
+    pub stale_paths: Vec<String>,
+}
+
+/// Outcome of `upsert_memory_dedup` indicating whether an entry was newly inserted or merged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryUpsertResult {
+    pub entry: MemoryEntry,
+    pub merged: bool,
+    pub similarity: f64,
+}
+
+/// Summary of a zero-LLM Stage-0 memory hygiene sweep.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryHygieneReport {
+    pub duplicates_merged: usize,
+    pub entries_archived: usize,
+    pub stale_flagged: usize,
+}
+
+/// Versioned snapshot stored under `~/.zenko/memories/.history/` for 1-click rollback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryDocSnapshot {
+    pub id: String,
+    pub doc_name: String,
+    pub reason: String,
+    pub bytes: u64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Filter parameters for cross-session FTS5 `session_search`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionSearchFilter {
+    pub query: String,
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub workspace_dir: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub exclude_session_id: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Cross-session FTS5 search hit grouped with session context and matched BM25 snippet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSearchHit {
+    pub session_id: String,
+    pub session_title: String,
+    pub channel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    pub event_id: String,
+    pub role: String,
+    pub snippet: String,
+    pub rank: f64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Surrounding turn returned by Hermes-style `session_search(around_event_id)` lineage expansion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionContextTurn {
+    pub event_id: String,
+    pub role: String,
+    pub kind: String,
+    pub text: String,
+    pub is_anchor: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Window of ±N turns centered on a matched `session_search` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionContextWindow {
+    pub session_id: String,
+    pub session_title: String,
+    pub channel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    pub anchor_event_id: String,
+    pub events: Vec<SessionContextTurn>,
+}
+
+/// Cached Stage-1 rollout digest per session (Codex `codex-rs` pattern).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRolloutSummary {
+    pub session_id: String,
+    pub scope: String,
+    pub digest: String,
+    pub session_updated_at: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Persisted audit record for every autonomous or triggered Dream consolidation run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamRunRecord {
+    pub id: String,
+    pub trigger: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub sessions_scanned: usize,
+    pub memories_added: usize,
+    pub memories_merged: usize,
+    pub memories_archived: usize,
+    pub docs_patched: usize,
+    #[serde(default)]
+    pub skills_proposed: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+/// Live Dream subsystem status for CLI, API, and WebUI Memory view.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DreamStatus {
+    pub enabled: bool,
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark_ts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_ts: Option<String>,
+    pub pending_sessions: usize,
+    pub recent_runs: Vec<DreamRunRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronKind {
+    Cron,
+    Heartbeat,
+    /// Hermes-inspired zero-LLM scheduled script running directly from `~/zenko_hub/scripts/`.
+    Script,
+}
+
+impl CronKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cron => "cron",
+            Self::Heartbeat => "heartbeat",
+            Self::Script => "script",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "heartbeat" => Self::Heartbeat,
+            "script" | "no_agent" => Self::Script,
+            _ => Self::Cron,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronJob {
+    pub id: String,
+    pub name: String,
+    pub cron_expr: String,
+    pub kind: CronKind,
+    pub prompt: String,
+    /// Relative script filename/subpath inside `~/zenko_hub/scripts/` when `kind == CronKind::Script`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_path: Option<String>,
+    pub target_channel: String,
+    pub target_chat_id: Option<String>,
+    pub target_thread_id: Option<String>,
+    pub enabled: bool,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_status: Option<String>,
+}
+
+/// Unified typed category for every asynchronous task managed by ZenkoTasks.
+/// Each category stores its streaming logs cleanly under `~/.zenko/tasks/<kind>/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Shell,
+    Build,
+    Dev,
+    Debug,
+    Script,
+    Cron,
+    Browser,
+    Subagent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TaskKindMeta {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub subdir: &'static str,
+    pub description: &'static str,
+}
+
+pub const TASK_KINDS: &[TaskKindMeta] = &[
+    TaskKindMeta {
+        id: "shell",
+        label: "Shell",
+        subdir: "shell",
+        description: "Ad-hoc shell commands and one-off CLI operations",
+    },
+    TaskKindMeta {
+        id: "build",
+        label: "Build",
+        subdir: "build",
+        description: "Compilations, bundlers, linters, and test suites",
+    },
+    TaskKindMeta {
+        id: "dev",
+        label: "Dev",
+        subdir: "dev",
+        description: "Long-running dev servers, hot reloaders, and file watchers",
+    },
+    TaskKindMeta {
+        id: "debug",
+        label: "Debug",
+        subdir: "debug",
+        description: "Debuggers, profilers, traces, and diagnostics",
+    },
+    TaskKindMeta {
+        id: "script",
+        label: "Script",
+        subdir: "script",
+        description: "Reusable scripts executed from ~/zenko_hub/scripts/",
+    },
+    TaskKindMeta {
+        id: "cron",
+        label: "Cron",
+        subdir: "cron",
+        description: "24/7 scheduled cron jobs and zero-token script runs",
+    },
+    TaskKindMeta {
+        id: "browser",
+        label: "Browser",
+        subdir: "browser",
+        description: "Headless & CDP browser automation sessions",
+    },
+    TaskKindMeta {
+        id: "subagent",
+        label: "Subagent",
+        subdir: "subagent",
+        description: "Asynchronous child agents and isolated worktree workers",
+    },
+];
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct HubCategoryMeta {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub subdir: &'static str,
+    pub description: &'static str,
+}
+
+pub const HUB_CATEGORIES: &[HubCategoryMeta] = &[
+    HubCategoryMeta {
+        id: "projects",
+        label: "Projects",
+        subdir: crate::constants::HUB_SUBDIR_PROJECTS,
+        description: "Standalone apps & repositories scaffolded by Zenko",
+    },
+    HubCategoryMeta {
+        id: "scripts",
+        label: "Scripts",
+        subdir: crate::constants::HUB_SUBDIR_SCRIPTS,
+        description: "Reusable automation & zero-token No-Agent cron scripts",
+    },
+    HubCategoryMeta {
+        id: "media",
+        label: "Media",
+        subdir: crate::constants::HUB_SUBDIR_MEDIA,
+        description: "Generated images, videos, and audio assets",
+    },
+    HubCategoryMeta {
+        id: "artifacts",
+        label: "Artifacts",
+        subdir: crate::constants::HUB_SUBDIR_ARTIFACTS,
+        description: "Reports, exports, and spilled large command outputs",
+    },
+];
+
+/// Declarative token-prefix rules for deterministic, zero-regex `TaskKind` inference.
+const TASK_KIND_PREFIX_RULES: &[(&[&str], TaskKind)] = &[
+    (&["cargo", "build"], TaskKind::Build),
+    (&["cargo", "check"], TaskKind::Build),
+    (&["cargo", "test"], TaskKind::Build),
+    (&["cargo", "clippy"], TaskKind::Build),
+    (&["cargo", "watch"], TaskKind::Dev),
+    (&["cargo", "run"], TaskKind::Dev),
+    (&["npm", "run", "build"], TaskKind::Build),
+    (&["npm", "run", "test"], TaskKind::Build),
+    (&["npm", "test"], TaskKind::Build),
+    (&["npm", "run", "dev"], TaskKind::Dev),
+    (&["vite"], TaskKind::Dev),
+    (&["next", "dev"], TaskKind::Dev),
+    (&["next", "build"], TaskKind::Build),
+    (&["pytest"], TaskKind::Build),
+    (&["make"], TaskKind::Build),
+    (&["cmake"], TaskKind::Build),
+    (&["go", "build"], TaskKind::Build),
+    (&["go", "test"], TaskKind::Build),
+    (&["uvicorn"], TaskKind::Dev),
+    (&["gdb"], TaskKind::Debug),
+    (&["lldb"], TaskKind::Debug),
+    (&["strace"], TaskKind::Debug),
+    (&["perf"], TaskKind::Debug),
+    (&["playwright"], TaskKind::Browser),
+    (&["chromium"], TaskKind::Browser),
+];
+
+impl TaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Build => "build",
+            Self::Dev => "dev",
+            Self::Debug => "debug",
+            Self::Script => "script",
+            Self::Cron => "cron",
+            Self::Browser => "browser",
+            Self::Subagent => "subagent",
+        }
+    }
+
+    pub fn subdir(self) -> &'static str {
+        self.as_str()
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "build" | "compile" | "test" => Self::Build,
+            "dev" | "server" | "watch" => Self::Dev,
+            "debug" | "trace" | "profile" => Self::Debug,
+            "script" | "scripts" => Self::Script,
+            "cron" | "schedule" | "heartbeat" => Self::Cron,
+            "browser" | "web" | "cdp" => Self::Browser,
+            "subagent" | "agent" | "worker" => Self::Subagent,
+            _ => Self::Shell,
+        }
+    }
+
+    pub fn parse_filter(s: &str) -> Option<Self> {
+        let trimmed = s.trim();
+        match trimmed.is_empty() || trimmed.eq_ignore_ascii_case("all") {
+            true => None,
+            false => Some(Self::from_str_loose(trimmed)),
+        }
+    }
+
+    /// Deterministically infers `TaskKind` from leading command tokens without regex.
+    pub fn infer_from_command(cmd: &str) -> Self {
+        let lower = cmd.to_ascii_lowercase();
+        let tokens: Vec<&str> = lower.split_whitespace().take(4).collect();
+        if tokens.is_empty() {
+            return Self::Shell;
+        }
+        let hub_script_prefix = format!("{}{}/", crate::constants::HUB_PATH_PREFIX, crate::constants::HUB_SUBDIR_SCRIPTS);
+        let hub_script_segment = format!("/{}/", crate::constants::HUB_SUBDIR_SCRIPTS);
+        if tokens
+            .iter()
+            .any(|t| t.contains(&hub_script_prefix) || (t.contains("zenko_hub") && t.contains(&hub_script_segment)))
+        {
+            return Self::Script;
+        }
+        for (prefix, kind) in TASK_KIND_PREFIX_RULES {
+            if tokens.len() >= prefix.len()
+                && tokens[..prefix.len()]
+                    .iter()
+                    .zip(*prefix)
+                    .all(|(a, b)| *a == *b)
+            {
+                return *kind;
+            }
+        }
+        Self::Shell
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubEntry {
+    pub category: String,
+    pub rel_path: String,
+    pub is_dir: bool,
+    pub size_bytes: u64,
+    pub modified_at: DateTime<Utc>,
+}
+
+/// Typed resource lock identity used by the 3-state parallel tool wave scheduler.
+/// Prevents string-prefix drift across tools while guaranteeing collision-free keying.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum ResourceLockKey {
+    File(String),
+    Job(String),
+    Agent(String),
+    Task(String),
+    Git,
+    Mcp(String),
+    Skill(String),
+    Goal(String),
+}
+
+/// Three-state declarative resource-lock concurrency algebra:
+/// - `Shared`: read-only operations; run concurrently with adjacent `Shared` calls.
+/// - `Keyed(key)`: scoped mutation (e.g. canonical file path or job ID); calls with distinct keys
+///   run concurrently while calls sharing the same key serialize deterministically.
+/// - `Global`: cross-cutting mutation / shell / HITL approval barrier; runs strictly sequentially.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolConcurrency {
+    Shared,
+    Keyed(ResourceLockKey),
+    #[default]
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuedPromptStatus {
+    #[default]
+    Queued,
+    Dispatched,
+    Cancelled,
+}
+
+impl QueuedPromptStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Dispatched => "dispatched",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dispatched" => Self::Dispatched,
+            "cancelled" => Self::Cancelled,
+            _ => Self::Queued,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedPrompt {
+    pub id: String,
+    pub session_id: String,
+    pub text: String,
+    pub status: QueuedPromptStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SendMode {
+    Auto,
+    Steer,
+    #[default]
+    Queue,
+    Interrupt,
+}
+
+impl SendMode {
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Self::Auto,
+            "steer" => Self::Steer,
+            "interrupt" | "cancel" | "replace" => Self::Interrupt,
+            _ => Self::Queue,
+        }
+    }
+}
+
+/// Pure deterministic runtime state snapshot driving `SendMode::Auto` routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SessionDispatchState {
+    pub is_running: bool,
+    pub active_jobs: usize,
+    pub active_subagents: usize,
+    pub is_monitoring_tool_active: bool,
+}
+
+/// Deterministic outcome of resolving how an incoming user message should be dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoDispatchDecision {
+    StartTurn,
+    Steer,
+    Queue,
+}
+
+/// Pure algebraic resolver (zero `if/else` chains):
+/// - Idle session -> `StartTurn`
+/// - Running + managing/monitoring background jobs or subagents -> `Steer`
+/// - Running focused foreground work -> `Queue`
+pub fn resolve_auto_send_mode(state: SessionDispatchState) -> AutoDispatchDecision {
+    match (
+        state.is_running,
+        state.active_jobs > 0 || state.active_subagents > 0 || state.is_monitoring_tool_active,
+    ) {
+        (false, _) => AutoDispatchDecision::StartTurn,
+        (true, true) => AutoDispatchDecision::Steer,
+        (true, false) => AutoDispatchDecision::Queue,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalStreamKind {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundJobStatus {
+    Running,
+    Completed,
+    Failed,
+    Stopped,
+    Interrupted,
+}
+
+impl BackgroundJobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "running" => Self::Running,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "stopped" => Self::Stopped,
+            _ => Self::Interrupted,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundJobRecord {
+    pub id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub kind: TaskKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub command: String,
+    pub workspace_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub status: BackgroundJobStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub log_path: String,
+    pub bytes_written: u64,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobReadChunk {
+    pub job: BackgroundJobRecord,
+    pub offset: u64,
+    pub next_offset: u64,
+    pub total_bytes: u64,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonTelemetry {
+    pub pid: u32,
+    pub uptime_secs: u64,
+    pub rss_bytes: u64,
+    pub db_size_bytes: u64,
+    pub active_sessions: usize,
+    #[serde(default)]
+    pub active_jobs: usize,
+    pub pending_approvals: usize,
+    pub daily_cost_usd: f64,
+    pub total_cost_usd: f64,
+    pub cache_hit_pct: f64,
+    pub telegram_connected: bool,
+    pub telegram_bot_username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DailyActivityPoint {
+    pub date: String,
+    pub events: u64,
+    pub turns: u64,
+    pub tool_calls: u64,
+    pub tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolUsageStat {
+    pub name: String,
+    pub calls: u64,
+    pub errors: u64,
+    pub avg_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelUsageStat {
+    pub provider: String,
+    pub model: String,
+    pub calls: u64,
+    pub tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StorageSlice {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DashboardCounts {
+    pub sessions: u64,
+    pub messages: u64,
+    pub tool_calls: u64,
+    pub memories: u64,
+    pub skills_enabled: u64,
+    pub skills_total: u64,
+    pub cron_jobs: u64,
+    pub goal_loops: u64,
+    pub background_jobs: u64,
+    pub subagents: u64,
+    pub checkpoints: u64,
+    pub mcp_servers: u64,
+    pub paired_peers: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardAnalytics {
+    pub telemetry: DaemonTelemetry,
+    pub vault: crate::vault::VaultStats,
+    pub counts: DashboardCounts,
+    pub total_storage_bytes: u64,
+    pub storage: Vec<StorageSlice>,
+    pub daily_activity: Vec<DailyActivityPoint>,
+    pub top_tools: Vec<ToolUsageStat>,
+    pub top_models: Vec<ModelUsageStat>,
+    pub channels: std::collections::BTreeMap<String, u64>,
+    pub streak_days: u32,
+    pub active_days: u32,
+    pub total_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: DateTime<Utc>,
+    pub level: String,
+    #[serde(default = "default_log_category")]
+    pub category: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+}
+
+fn default_log_category() -> String {
+    "system".to_string()
+}
+
+impl LogEntry {
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn with_turn(mut self, turn_id: impl Into<String>) -> Self {
+        self.turn_id = Some(turn_id.into());
+        self
+    }
+
+    pub fn with_call(mut self, call_id: impl Into<String>) -> Self {
+        self.call_id = Some(call_id.into());
+        self
+    }
+
+    pub fn with_payload(mut self, payload: serde_json::Value) -> Self {
+        self.payload = Some(payload);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogFilter {
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+impl LogFilter {
+    /// Deterministic predicate matching a live `LogEntry` against this filter.
+    pub fn matches(&self, entry: &LogEntry) -> bool {
+        let cat_ok = self
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+            .map_or(true, |c| entry.category.eq_ignore_ascii_case(c));
+
+        let chan_ok = self
+            .channel
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+            .map_or(true, |c| entry.target.eq_ignore_ascii_case(c));
+
+        let level_ok = self
+            .level
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+            .map_or(true, |lvl| entry.level.eq_ignore_ascii_case(lvl));
+
+        let sess_ok = self
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map_or(true, |sid| entry.session_id.as_deref() == Some(sid));
+
+        let search_ok = self
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map_or(true, |needle| {
+                let n = needle.to_ascii_lowercase();
+                entry.message.to_ascii_lowercase().contains(&n)
+                    || entry.target.to_ascii_lowercase().contains(&n)
+                    || entry
+                        .payload
+                        .as_ref()
+                        .map_or(false, |p| p.to_string().to_ascii_lowercase().contains(&n))
+            });
+
+        cat_ok && chan_ok && level_ok && sess_ok && search_ok
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTier {
+    Instant,
+    #[default]
+    Standard,
+    Orchestrated,
+}
+
+impl ExecutionTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Instant => "instant",
+            Self::Standard => "standard",
+            Self::Orchestrated => "orchestrated",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "instant" | "fast" => Self::Instant,
+            "orchestrated" | "deep" | "plan" => Self::Orchestrated,
+            _ => Self::Standard,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRoutingRole {
+    Fast,
+    #[default]
+    Lead,
+    Plan,
+    Advisor,
+}
+
+impl ModelRoutingRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Lead => "lead",
+            Self::Plan => "plan",
+            Self::Advisor => "advisor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorPhase {
+    #[default]
+    Recon,
+    Plan,
+    Execute,
+    Verify,
+    Done,
+}
+
+impl OrchestratorPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recon => "recon",
+            Self::Plan => "plan",
+            Self::Execute => "execute",
+            Self::Verify => "verify",
+            Self::Done => "done",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentKind {
+    Direct,
+    Research,
+    Advisory,
+    #[default]
+    Implement,
+}
+
+impl IntentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Research => "research",
+            Self::Advisory => "advisory",
+            Self::Implement => "implement",
+        }
+    }
+
+    /// Returns true when the user explicitly asked for read-only analysis, investigation,
+    /// or architectural comparison rather than workspace mutations.
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::Research | Self::Advisory)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliberationDepth {
+    #[default]
+    Standard,
+    Deliberate,
+}
+
+impl DeliberationDepth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Deliberate => "deliberate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriageReport {
+    pub tier: ExecutionTier,
+    #[serde(default)]
+    pub intent: IntentKind,
+    #[serde(default)]
+    pub deliberation: DeliberationDepth,
+    pub complexity_score: i32,
+    pub ambiguity_score: i32,
+    #[serde(default)]
+    pub risk_score: i32,
+    pub matched_signals: Vec<String>,
+    pub recommended_model_role: ModelRoutingRole,
+    #[serde(default)]
+    pub recommended_effort: ReasoningEffort,
+    pub needs_recon: bool,
+    pub needs_brainstorm: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReconSummary {
+    pub workspace_entries: Vec<String>,
+    pub repo_markers: Vec<String>,
+    pub memory_hits: Vec<String>,
+    #[serde(default)]
+    pub session_hits: Vec<String>,
+    pub active_tasks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub git_dirty_files: Vec<String>,
+    #[serde(default)]
+    pub mentioned_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_plan_summary: Option<String>,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainstormOption {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub pros: Vec<String>,
+    #[serde(default)]
+    pub cons: Vec<String>,
+    #[serde(default = "default_medium_tag")]
+    pub blast_radius: String,
+    #[serde(default = "default_high_tag")]
+    pub reversibility: String,
+    #[serde(default = "default_option_score")]
+    pub safety_score: u8,
+    #[serde(default = "default_option_score")]
+    pub testability_score: u8,
+    #[serde(default)]
+    pub touched_files: Vec<String>,
+    #[serde(default)]
+    pub rollback_steps: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+    #[serde(default)]
+    pub recommended: bool,
+}
+
+fn default_medium_tag() -> String {
+    "medium".to_string()
+}
+
+fn default_high_tag() -> String {
+    "high".to_string()
+}
+
+fn default_option_score() -> u8 {
+    crate::constants::ORCH_DEFAULT_OPTION_SCORE
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStepStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+    Blocked,
+}
+
+impl PlanStepStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "in_progress" | "active" | "running" => Self::InProgress,
+            "completed" | "done" | "finished" => Self::Completed,
+            "blocked" | "stuck" => Self::Blocked,
+            _ => Self::Pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub status: PlanStepStatus,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPlan {
+    pub id: String,
+    pub goal: String,
+    #[serde(default)]
+    pub steps: Vec<PlanStep>,
+    #[serde(default)]
+    pub rubric_warnings: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainstormSpec {
+    pub id: String,
+    pub problem: String,
+    #[serde(default)]
+    pub invariants: Vec<String>,
+    #[serde(default)]
+    pub options: Vec<BrainstormOption>,
+    pub selected_option_id: String,
+    pub selection_rationale: String,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    #[serde(default)]
+    pub pre_mortem: Vec<String>,
+    #[serde(default)]
+    pub verification_plan: Vec<String>,
+    #[serde(default)]
+    pub rubric_warnings: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarificationOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub recommended: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClarificationStatus {
+    #[default]
+    Pending,
+    Answered,
+    AutoResolved,
+    Cancelled,
+}
+
+impl ClarificationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Answered => "answered",
+            Self::AutoResolved => "auto_resolved",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarificationRecord {
+    pub id: String,
+    pub session_id: String,
+    pub question: String,
+    #[serde(default)]
+    pub context: String,
+    pub options: Vec<ClarificationOption>,
+    pub recommended_option_id: String,
+    pub status: ClarificationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_option_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarificationAnswer {
+    pub selected_option_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_answer: Option<String>,
+    pub resolved_by: String,
+    pub auto_resolved: bool,
+}
+
+// ─── Phase 5: Async Subagents, Git Worktree Isolation & Inter-Agent Mailbox ────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentWorkspaceMode {
+    #[default]
+    Inherit,
+    Worktree,
+}
+
+impl SubagentWorkspaceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Worktree => "worktree",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "worktree" | "isolated" | "git_worktree" => Self::Worktree,
+            _ => Self::Inherit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    #[default]
+    Running,
+    Completed,
+    Failed,
+    Killed,
+    /// Marked on daemon startup when a prior process exited ungracefully mid-subagent.
+    Interrupted,
+}
+
+impl SubagentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "completed" | "done" => Self::Completed,
+            "failed" | "error" => Self::Failed,
+            "killed" | "cancelled" | "stopped" => Self::Killed,
+            "interrupted" => Self::Interrupted,
+            _ => Self::Running,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+}
+
+/// Typed live delivery disposition returned by `send_message` (zero raw magic strings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeliveryAction {
+    Steered,
+    Interrupted,
+    Resumed,
+    Queued,
+}
+
+impl AgentDeliveryAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Steered => "steered",
+            Self::Interrupted => "interrupted",
+            Self::Resumed => "resumed",
+            Self::Queued => "queued",
+        }
+    }
+}
+
+/// Typed action enum for the `agent_worktree` tool (single declarative source of truth).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeAction {
+    Diff,
+    Merge,
+    Discard,
+    Prune,
+}
+
+pub const WORKTREE_ACTIONS: &[&str] = &["diff", "merge", "discard", "prune"];
+
+impl WorktreeAction {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "diff" => Some(Self::Diff),
+            "merge" => Some(Self::Merge),
+            "discard" => Some(Self::Discard),
+            "prune" => Some(Self::Prune),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentSpawnRequest {
+    pub parent_session_id: String,
+    pub role: String,
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub run_in_background: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_mode: Option<SubagentWorkspaceMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
+    /// Optional bounded fork of the parent session's active branch (gated by `subagents.allow_fork_context`).
+    #[serde(default)]
+    pub fork_context: bool,
+    /// When using `worktree` isolation, capture uncommitted parent edits via non-invasive `git stash create`.
+    #[serde(default)]
+    pub include_uncommitted: bool,
+    /// Optional per-subagent wall-clock timeout ceiling in seconds (clamped to `[subagents].max_duration_secs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_secs: Option<u64>,
+    /// Optional per-subagent USD spend ceiling (clamped to `[subagents].max_cost_usd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentRecord {
+    pub id: String,
+    pub parent_session_id: String,
+    pub role: String,
+    pub depth: u8,
+    pub goal: String,
+    pub status: SubagentStatus,
+    pub workspace_mode: SubagentWorkspaceMode,
+    pub workspace_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_base_commit: Option<String>,
+    #[serde(default)]
+    pub worktree_dirty_baseline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_stat: Option<String>,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    pub tokens_used: u64,
+    pub cost_usd: f64,
+    /// Hierarchical subtree totals (self + all recursive descendants).
+    #[serde(default)]
+    pub tree_tokens: u64,
+    #[serde(default)]
+    pub tree_cost_usd: f64,
+    #[serde(default)]
+    pub descendant_count: usize,
+    #[serde(default)]
+    pub resume_count: u32,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+fn default_agent_resume_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AgentMessageOptions {
+    /// When true (default), messaging a completed/failed/killed child resumes its exact session & worktree.
+    #[serde(default = "default_agent_resume_true")]
+    pub resume: bool,
+    /// When true and the target subagent is actively running, interrupts its current step and restarts with the new guidance.
+    #[serde(default)]
+    pub interrupt: bool,
+}
+
+impl Default for AgentMessageOptions {
+    fn default() -> Self {
+        Self {
+            resume: true,
+            interrupt: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMailMessage {
+    pub id: String,
+    pub from_session_id: String,
+    pub to_session_id: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    /// Live runtime delivery disposition (`steered` | `interrupted` | `resumed` | `queued`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_action: Option<AgentDeliveryAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorktreeDiffReport {
+    pub agent_id: String,
+    pub branch: String,
+    pub worktree_path: String,
+    pub repo_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
+    #[serde(default)]
+    pub dirty_baseline: bool,
+    pub has_changes: bool,
+    pub changed_files: Vec<String>,
+    pub diff_stat: String,
+    pub patch_preview: String,
+    #[serde(default)]
+    pub merged: bool,
+    #[serde(default)]
+    pub cleaned_up: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorktreePruneReport {
+    pub removed_dirs: Vec<String>,
+    pub removed_count: usize,
+}
+
+// ─── Phase 6: Durable SQLite Task DAG, Read-Only Plan Mode & Workspace Checkpoints ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTaskStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Blocked,
+    Done,
+    Failed,
+}
+
+impl SessionTaskStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "in_progress" | "active" | "running" | "started" => Self::InProgress,
+            "blocked" => Self::Blocked,
+            "done" | "completed" | "complete" => Self::Done,
+            "failed" | "error" => Self::Failed,
+            _ => Self::Pending,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed)
+    }
+
+    pub fn to_plan_status(self) -> PlanStepStatus {
+        match self {
+            Self::Pending => PlanStepStatus::Pending,
+            Self::InProgress => PlanStepStatus::InProgress,
+            Self::Done => PlanStepStatus::Completed,
+            Self::Blocked | Self::Failed => PlanStepStatus::Blocked,
+        }
+    }
+
+    pub fn from_plan_status(s: PlanStepStatus) -> Self {
+        match s {
+            PlanStepStatus::Pending => Self::Pending,
+            PlanStepStatus::InProgress => Self::InProgress,
+            PlanStepStatus::Completed => Self::Done,
+            PlanStepStatus::Blocked => Self::Blocked,
+        }
+    }
+}
+
+pub const SESSION_TASK_STATUSES: &[&str] = &[
+    "pending",
+    "in_progress",
+    "blocked",
+    "done",
+    "failed",
+];
+
+pub fn new_session_task_id() -> String {
+    format!("{}{}", crate::constants::SESSION_TASK_ID_PREFIX, &new_id()[..8])
+}
+
+/// Declarative action set for the `session_task` tool (zero magic strings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTaskAction {
+    Create,
+    Update,
+    Claim,
+    List,
+    Ready,
+    Delete,
+    Clear,
+}
+
+pub const SESSION_TASK_ACTIONS: &[&str] = &[
+    "create",
+    "update",
+    "claim",
+    "list",
+    "ready",
+    "delete",
+    "clear",
+];
+
+impl SessionTaskAction {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "create" | "add" => Some(Self::Create),
+            "update" | "edit" | "set" => Some(Self::Update),
+            "claim" | "take" => Some(Self::Claim),
+            "list" | "all" => Some(Self::List),
+            "ready" | "next" => Some(Self::Ready),
+            "delete" | "remove" => Some(Self::Delete),
+            "clear" | "reset" => Some(Self::Clear),
+            _ => None,
+        }
+    }
+}
+
+/// Durable SQLite-backed Task DAG node surviving compaction, restarts, and parallel subagent claims.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionTask {
+    pub id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_event_id: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_label: Option<String>,
+    #[serde(default)]
+    pub status: SessionTaskStatus,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub priority: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Partial update patch for `session_task(action="update")`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionTaskPatch {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub active_label: Option<Option<String>>,
+    pub status: Option<SessionTaskStatus>,
+    pub depends_on: Option<Vec<String>>,
+    pub add_depends_on: Vec<String>,
+    pub owner_agent: Option<Option<String>>,
+    pub verification_cmd: Option<Option<String>>,
+    pub verification_evidence: Option<Option<String>>,
+    pub notes: Option<Option<String>>,
+    pub priority: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointBackend {
+    #[default]
+    ShadowGit,
+    ContentBlobs,
+}
+
+impl CheckpointBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ShadowGit => "shadow_git",
+            Self::ContentBlobs => "content_blobs",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "content_blobs" | "blobs" => Self::ContentBlobs,
+            _ => Self::ShadowGit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindMode {
+    #[default]
+    CodeAndConversation,
+    CodeOnly,
+    ConversationOnly,
+}
+
+pub const REWIND_MODES: &[&str] = &["code_and_conversation", "code_only", "conversation_only"];
+
+impl RewindMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CodeAndConversation => "code_and_conversation",
+            Self::CodeOnly => "code_only",
+            Self::ConversationOnly => "conversation_only",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "code" | "code_only" | "files" => Self::CodeOnly,
+            "conversation" | "conversation_only" | "chat" => Self::ConversationOnly,
+            _ => Self::CodeAndConversation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceCheckpoint {
+    pub id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    pub workspace_dir: String,
+    pub backend: CheckpointBackend,
+    pub pre_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_ref: Option<String>,
+    pub trigger_tool: String,
+    pub label: String,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    #[serde(default)]
+    pub is_safety_backup: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CheckpointDiffReport {
+    pub checkpoint_id: String,
+    pub session_id: String,
+    pub workspace_dir: String,
+    pub changed_files: Vec<String>,
+    pub manual_edit_conflicts: Vec<String>,
+    pub diff_stat: String,
+    pub patch_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewindRequest {
+    pub checkpoint_id: String,
+    #[serde(default)]
+    pub mode: RewindMode,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub overwrite_manual_edits: bool,
+    #[serde(default)]
+    pub summarize_abandoned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewindReport {
+    pub checkpoint_id: String,
+    pub session_id: String,
+    pub mode: RewindMode,
+    #[serde(default)]
+    pub restored_files: Vec<String>,
+    #[serde(default)]
+    pub deleted_files: Vec<String>,
+    #[serde(default)]
+    pub preserved_manual_edits: Vec<String>,
+    #[serde(default)]
+    pub skipped_symlinks: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_head_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewind_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CheckpointPruneReport {
+    pub removed_checkpoints: usize,
+    pub reclaimed_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum AgentEvent {
+    SessionUpdated {
+        session_id: String,
+        status: SessionStatus,
+        title: Option<String>,
+    },
+    UserMessageAccepted {
+        session_id: String,
+        event_id: String,
+        text: String,
+    },
+    ThinkingDelta {
+        session_id: String,
+        turn_id: String,
+        text: String,
+    },
+    TextDelta {
+        session_id: String,
+        turn_id: String,
+        text: String,
+    },
+    ToolCallStarted {
+        session_id: String,
+        call_id: String,
+        tool_name: String,
+        args_preview: String,
+        risk: RiskLevel,
+    },
+    ToolApprovalRequested {
+        approval: ApprovalRecord,
+    },
+    ToolApprovalResolved {
+        approval_id: String,
+        session_id: String,
+        decision: ApprovalDecision,
+        resolved_by: String,
+    },
+    ToolCallFinished {
+        session_id: String,
+        call_id: String,
+        tool_name: String,
+        is_error: bool,
+        duration_ms: u64,
+        diff: Option<String>,
+        output_preview: String,
+    },
+    TurnCompleted {
+        session_id: String,
+        turn_id: String,
+        event_id: String,
+        usage: UsageStats,
+    },
+    TurnError {
+        session_id: String,
+        message: String,
+    },
+    GatewayPaired {
+        peer: GatewayPeer,
+    },
+    JobUpdated {
+        job: BackgroundJobRecord,
+    },
+    JobOutputDelta {
+        job_id: String,
+        session_id: String,
+        stream: TerminalStreamKind,
+        chunk: String,
+        bytes_written: u64,
+    },
+    SteeringAccepted {
+        session_id: String,
+        preview: String,
+    },
+    QueueUpdated {
+        session_id: String,
+        queued_count: usize,
+    },
+    OrchestratorUpdated {
+        session_id: String,
+        stage: String,
+        tier: ExecutionTier,
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    BrainstormRecorded {
+        session_id: String,
+        spec: BrainstormSpec,
+    },
+    PlanUpdated {
+        session_id: String,
+        plan: ExecutionPlan,
+    },
+    ClarificationRequested {
+        clarification: ClarificationRecord,
+    },
+    ClarificationResolved {
+        clarification_id: String,
+        session_id: String,
+        selected_option_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_answer: Option<String>,
+        resolved_by: String,
+    },
+    SubagentSpawned {
+        agent: SubagentRecord,
+    },
+    SubagentCompleted {
+        agent: SubagentRecord,
+    },
+    SubagentMessage {
+        message: AgentMailMessage,
+    },
+    SessionTasksUpdated {
+        session_id: String,
+        tasks: Vec<SessionTask>,
+    },
+    CheckpointCreated {
+        checkpoint: WorkspaceCheckpoint,
+    },
+    SessionRewound {
+        report: RewindReport,
+    },
+    PlanApproved {
+        session_id: String,
+        new_mode: PermissionMode,
+        task_count: usize,
+    },
+    McpServersUpdated {
+        servers: Vec<McpServerStatus>,
+    },
+    SkillUpdated {
+        slug: String,
+        action: String,
+        status: String,
+    },
+    GoalLoopUpdated {
+        goal: GoalLoopRecord,
+    },
+    Telemetry(DaemonTelemetry),
+    Log(LogEntry),
+}
+
+// ─── Phase 7: Deep Engineering Tools (`glob_find`, `git_tool`, `lsp_tool`), `web_search` & MCP Client ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobSort {
+    #[default]
+    Mtime,
+    Path,
+}
+
+impl GlobSort {
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "path" | "name" | "alpha" => Self::Path,
+            _ => Self::Mtime,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobFileType {
+    #[default]
+    File,
+    Dir,
+    Any,
+}
+
+impl GlobFileType {
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dir" | "directory" | "dirs" => Self::Dir,
+            "any" | "all" => Self::Any,
+            _ => Self::File,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitAction {
+    Status,
+    Diff,
+    Log,
+    Blame,
+    Show,
+    Branch,
+    Stage,
+    Unstage,
+    Commit,
+}
+
+pub const GIT_ACTIONS: &[&str] = &[
+    "status", "diff", "log", "blame", "show", "branch", "stage", "unstage", "commit",
+];
+
+impl GitAction {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "status" => Some(Self::Status),
+            "diff" => Some(Self::Diff),
+            "log" => Some(Self::Log),
+            "blame" => Some(Self::Blame),
+            "show" => Some(Self::Show),
+            "branch" | "branches" => Some(Self::Branch),
+            "stage" | "add" => Some(Self::Stage),
+            "unstage" | "reset_staged" => Some(Self::Unstage),
+            "commit" => Some(Self::Commit),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Diff => "diff",
+            Self::Log => "log",
+            Self::Blame => "blame",
+            Self::Show => "show",
+            Self::Branch => "branch",
+            Self::Stage => "stage",
+            Self::Unstage => "unstage",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+/// Evaluates whether a `git_tool` invocation mutates git state (shared across Policy, Plan Mode,
+/// Checkpoint capture, and ToolConcurrency — zero duplicated `if/else` checks).
+pub fn is_git_tool_args_mutating(args: &serde_json::Value) -> bool {
+    let action = args
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(GitAction::parse);
+    match action {
+        Some(GitAction::Stage | GitAction::Unstage | GitAction::Commit) => true,
+        Some(GitAction::Branch) => {
+            let sub = args
+                .get("branch_action")
+                .or_else(|| args.get("mode"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("list")
+                .trim()
+                .to_ascii_lowercase();
+            let has_name = args
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            matches!(sub.as_str(), "create" | "checkout" | "switch" | "delete") || has_name && sub != "list"
+        }
+        Some(
+            GitAction::Status
+            | GitAction::Diff
+            | GitAction::Log
+            | GitAction::Blame
+            | GitAction::Show,
+        ) => false,
+        None => true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspAction {
+    Status,
+    Diagnostics,
+    Definition,
+    TypeDefinition,
+    Implementation,
+    References,
+    Hover,
+    DocumentSymbols,
+    WorkspaceSymbols,
+    IncomingCalls,
+    OutgoingCalls,
+}
+
+pub const LSP_ACTIONS: &[&str] = &[
+    "status",
+    "diagnostics",
+    "definition",
+    "type_definition",
+    "implementation",
+    "references",
+    "hover",
+    "document_symbols",
+    "workspace_symbols",
+    "incoming_calls",
+    "outgoing_calls",
+];
+
+impl LspAction {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "status" => Some(Self::Status),
+            "diagnostics" | "diag" | "errors" => Some(Self::Diagnostics),
+            "definition" | "goto_definition" | "gotodefinition" => Some(Self::Definition),
+            "type_definition" | "typedefinition" | "goto_type_definition" => {
+                Some(Self::TypeDefinition)
+            }
+            "implementation" | "implementations" | "goto_implementation" => {
+                Some(Self::Implementation)
+            }
+            "references" | "find_references" | "findreferences" => Some(Self::References),
+            "hover" | "type" => Some(Self::Hover),
+            "document_symbols" | "documentsymbol" | "symbols" | "outline" => {
+                Some(Self::DocumentSymbols)
+            }
+            "workspace_symbols" | "workspacesymbol" => Some(Self::WorkspaceSymbols),
+            "incoming_calls" | "incomingcalls" => Some(Self::IncomingCalls),
+            "outgoing_calls" | "outgoingcalls" => Some(Self::OutgoingCalls),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Diagnostics => "diagnostics",
+            Self::Definition => "definition",
+            Self::TypeDefinition => "type_definition",
+            Self::Implementation => "implementation",
+            Self::References => "references",
+            Self::Hover => "hover",
+            Self::DocumentSymbols => "document_symbols",
+            Self::WorkspaceSymbols => "workspace_symbols",
+            Self::IncomingCalls => "incoming_calls",
+            Self::OutgoingCalls => "outgoing_calls",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspServerRuntimeStatus {
+    pub server_id: String,
+    pub language_id: String,
+    pub workspace_root: String,
+    pub running: bool,
+    pub open_documents: usize,
+    pub cached_diagnostics_files: usize,
+    pub last_used_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchResultItem {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchResponse {
+    pub provider: String,
+    pub query: String,
+    pub results: Vec<WebSearchResultItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempted_providers: Vec<String>,
+}
+
+/// MCP ToolAnnotations parsed from `tools/list` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpDiscoveredTool {
+    pub server_name: String,
+    pub remote_name: String,
+    pub full_name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub annotations: McpToolAnnotations,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub transport: String,
+    pub enabled: bool,
+    pub connected: bool,
+    pub tool_count: usize,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub catalog_dirty: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+// ─── Phase 8: Procedural Skills, 24/7 Bounded Goal Loops, Event Triggers & Trajectory Export ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillStatus {
+    #[default]
+    Active,
+    Draft,
+}
+
+impl SkillStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Draft => "draft",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "draft" | "pending" => Self::Draft,
+            _ => Self::Active,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillAuthor {
+    #[default]
+    User,
+    Agent,
+    Dream,
+}
+
+impl SkillAuthor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Dream => "dream",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "agent" => Self::Agent,
+            "dream" => Self::Dream,
+            _ => Self::User,
+        }
+    }
+}
+
+/// Versioned backup stored under `~/.zenko/skills/.history/` for instant rollback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillVersionSnapshot {
+    pub id: String,
+    pub slug: String,
+    pub reason: String,
+    pub bytes: u64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillManageAction {
+    List,
+    Create,
+    Patch,
+    WriteSubfile,
+    RemoveSubfile,
+    Toggle,
+    Approve,
+    History,
+    Rollback,
+    Delete,
+}
+
+impl SkillManageAction {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "list" | "ls" => Some(Self::List),
+            "create" | "save" | "upsert" => Some(Self::Create),
+            "patch" | "edit" => Some(Self::Patch),
+            "write_subfile" | "write_file" => Some(Self::WriteSubfile),
+            "remove_subfile" | "remove_file" => Some(Self::RemoveSubfile),
+            "toggle" | "enable" | "disable" => Some(Self::Toggle),
+            "approve" => Some(Self::Approve),
+            "history" | "versions" => Some(Self::History),
+            "rollback" | "restore" => Some(Self::Rollback),
+            "delete" | "remove" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Create => "create",
+            Self::Patch => "patch",
+            Self::WriteSubfile => "write_subfile",
+            Self::RemoveSubfile => "remove_subfile",
+            Self::Toggle => "toggle",
+            Self::Approve => "approve",
+            Self::History => "history",
+            Self::Rollback => "rollback",
+            Self::Delete => "delete",
+        }
+    }
+
+    pub fn is_mutating(self) -> bool {
+        !matches!(self, Self::List | Self::History)
+    }
+}
+
+pub fn is_skill_manage_args_mutating(args: &serde_json::Value) -> bool {
+    args.get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(SkillManageAction::parse)
+        .map(SkillManageAction::is_mutating)
+        .unwrap_or(true)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalLoopStatus {
+    #[default]
+    Active,
+    Paused,
+    Succeeded,
+    Failed,
+    BudgetExhausted,
+    Stalled,
+}
+
+impl GoalLoopStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::Stalled => "stalled",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "paused" => Self::Paused,
+            "succeeded" | "done" | "completed" => Self::Succeeded,
+            "failed" | "error" => Self::Failed,
+            "budget_exhausted" | "budget" => Self::BudgetExhausted,
+            "stalled" => Self::Stalled,
+            _ => Self::Active,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::BudgetExhausted | Self::Stalled
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalLoopAction {
+    List,
+    Create,
+    Status,
+    Pause,
+    Resume,
+    RunNow,
+    Delete,
+}
+
+impl GoalLoopAction {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "list" | "ls" => Some(Self::List),
+            "create" | "add" | "start" => Some(Self::Create),
+            "status" | "get" | "show" => Some(Self::Status),
+            "pause" | "stop" => Some(Self::Pause),
+            "resume" => Some(Self::Resume),
+            "run_now" | "run" | "trigger" => Some(Self::RunNow),
+            "delete" | "remove" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Create => "create",
+            Self::Status => "status",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::RunNow => "run_now",
+            Self::Delete => "delete",
+        }
+    }
+
+    pub fn is_mutating(self) -> bool {
+        !matches!(self, Self::List | Self::Status)
+    }
+}
+
+pub fn is_goal_loop_args_mutating(args: &serde_json::Value) -> bool {
+    args.get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(GoalLoopAction::parse)
+        .map(GoalLoopAction::is_mutating)
+        .unwrap_or(true)
+}
+
+pub fn new_goal_loop_id() -> String {
+    format!("{}{}", crate::constants::GOAL_LOOP_ID_PREFIX, &new_id()[..10])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalLoopRecord {
+    pub id: String,
+    pub name: String,
+    pub session_id: String,
+    pub workspace_dir: String,
+    pub goal_text: String,
+    /// Deterministic argv verification command executed without `/bin/sh` interpolation.
+    pub verify_cmd: Vec<String>,
+    pub interval_secs: u64,
+    pub max_iterations: usize,
+    pub max_budget_usd: f64,
+    pub max_consecutive_stalls: usize,
+    pub checkpoint_each_iter: bool,
+    pub auto_rewind_on_stall: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub notify_channel: String,
+    pub status: GoalLoopStatus,
+    pub iterations_done: usize,
+    pub consecutive_stalls: usize,
+    pub cost_spent_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verify_exit: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verify_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verify_output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalLoopRun {
+    pub id: String,
+    pub goal_id: String,
+    pub iteration: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<String>,
+    pub verify_exit_code: i32,
+    pub verify_output_excerpt: String,
+    pub verify_hash: String,
+    pub tokens_used: u64,
+    pub cost_usd: f64,
+    pub duration_ms: u64,
+    pub outcome: String,
+    pub reward: f64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalLoopCreateRequest {
+    pub name: String,
+    pub goal_text: String,
+    pub verify_cmd: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub interval_secs: Option<u64>,
+    #[serde(default)]
+    pub max_iterations: Option<usize>,
+    #[serde(default)]
+    pub max_budget_usd: Option<f64>,
+    #[serde(default)]
+    pub max_consecutive_stalls: Option<usize>,
+    #[serde(default)]
+    pub checkpoint_each_iter: Option<bool>,
+    #[serde(default)]
+    pub auto_rewind_on_stall: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_channel: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoalLoopPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_cmd: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_budget_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<GoalLoopStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_stalls: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerStatusEntry {
+    pub id: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub target: String,
+    pub fires_last_hour: usize,
+    pub max_per_hour: usize,
+    pub cooldown_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fired_at: Option<DateTime<Utc>>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerRateSnapshot {
+    pub fires_last_hour: usize,
+    pub last_fired_at: Option<DateTime<Utc>>,
+}
+
+/// Bounded sliding-window rate limiter & per-trigger cooldown tracker shared across
+/// declarative webhook routing rules and workspace file-change watchers.
+#[derive(Default)]
+pub struct TriggerRateLimiter {
+    buckets: std::sync::Mutex<
+        std::collections::HashMap<String, std::collections::VecDeque<DateTime<Utc>>>,
+    >,
+}
+
+impl TriggerRateLimiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn check_and_record(
+        &self,
+        key: &str,
+        cooldown_secs: u64,
+        max_per_hour: usize,
+    ) -> std::result::Result<(), String> {
+        let now = Utc::now();
+        let hour_cutoff = now - chrono::Duration::hours(1);
+        let Ok(mut map) = self.buckets.lock() else {
+            return Err("trigger rate limiter lock poisoned".into());
+        };
+        let queue = map.entry(key.to_string()).or_default();
+        while queue.front().is_some_and(|t| *t < hour_cutoff) {
+            queue.pop_front();
+        }
+        if cooldown_secs > 0 {
+            if let Some(last) = queue.back() {
+                let elapsed = (now - *last).num_seconds().max(0) as u64;
+                if elapsed < cooldown_secs {
+                    return Err(format!(
+                        "cooldown active ({}s remaining)",
+                        cooldown_secs - elapsed
+                    ));
+                }
+            }
+        }
+        let cap = max_per_hour.max(1);
+        if queue.len() >= cap {
+            return Err(format!("hourly rate limit reached ({cap}/hr)"));
+        }
+        queue.push_back(now);
+        Ok(())
+    }
+
+    pub fn snapshot(&self, key: &str) -> TriggerRateSnapshot {
+        let now = Utc::now();
+        let hour_cutoff = now - chrono::Duration::hours(1);
+        let Ok(mut map) = self.buckets.lock() else {
+            return TriggerRateSnapshot {
+                fires_last_hour: 0,
+                last_fired_at: None,
+            };
+        };
+        let Some(queue) = map.get_mut(key) else {
+            return TriggerRateSnapshot {
+                fires_last_hour: 0,
+                last_fired_at: None,
+            };
+        };
+        while queue.front().is_some_and(|t| *t < hour_cutoff) {
+            queue.pop_front();
+        }
+        TriggerRateSnapshot {
+            fires_last_hour: queue.len(),
+            last_fired_at: queue.back().copied(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    #[default]
+    Jsonl,
+    ShareGpt,
+    Markdown,
+}
+
+impl ExportFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jsonl => "jsonl",
+            Self::ShareGpt => "sharegpt",
+            Self::Markdown => "markdown",
+        }
+    }
+
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Jsonl | Self::ShareGpt => "application/x-ndjson; charset=utf-8",
+            Self::Markdown => "text/markdown; charset=utf-8",
+        }
+    }
+
+    pub fn file_ext(self) -> &'static str {
+        match self {
+            Self::Jsonl | Self::ShareGpt => "jsonl",
+            Self::Markdown => "md",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "sharegpt" | "share_gpt" | "sft" => Self::ShareGpt,
+            "md" | "markdown" => Self::Markdown,
+            _ => Self::Jsonl,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExportOptions {
+    #[serde(default)]
+    pub format: ExportFormat,
+    #[serde(default)]
+    pub include_thinking: bool,
+    #[serde(default)]
+    pub anonymize_paths: bool,
+    #[serde(default)]
+    pub all_branches: bool,
+    #[serde(default)]
+    pub verified_only: bool,
+    #[serde(default)]
+    pub min_turns: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportReport {
+    pub format: String,
+    pub sessions_exported: usize,
+    pub events_exported: usize,
+    pub bytes: usize,
+    pub content: String,
+}

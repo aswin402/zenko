@@ -1,0 +1,58 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# WebUI dependencies & build outputs
+node_modules/
+webui/node_modules/
+webui/dist/
+webui/.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+bun-debug.log*
+
+# Local runtime state, databases, logs & secrets (never commit!)
+.env
+.env.*
+!.env.example
+.zenko/
+zenko.toml
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+vault.enc
+vault.key
+*.log
+*.jsonl
+logs/
+
+# Local scaffolding, scratch & temporary files (anchored to root so crate/webui src/ are NEVER ignored!)
+/scripts/zenko-intro-cdp-check.js
+/src/
+/webui/assets/
+/onpkg.json
+/webui/onpkg.json
+/onpkg_docs/
+/webui/onpkg_docs/
+/AGENTS.md
+/webui/AGENTS.md
+/future_updates.md
+*.tmp
+*.bak
+*.orig
+coverage/
+playwright-report/
+test-results/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

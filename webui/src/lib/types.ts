@@ -1,0 +1,1122 @@
+export type PermissionMode = 'plan' | 'strict' | 'balanced' | 'autonomous'
+export type SessionStatus = 'idle' | 'running' | 'waiting_approval' | 'paused' | 'error'
+
+export interface Session {
+  id: string
+  title: string
+  channel: string
+  external_chat_id?: string | null
+  external_thread_id?: string | null
+  workspace_dir?: string | null
+  parent_session_id?: string | null
+  agent_role?: string | null
+  agent_depth?: number
+  worktree_branch?: string | null
+  subagent_count?: number
+  model_override?: string | null
+  permission_mode: PermissionMode
+  status: SessionStatus
+  head_event_id?: string | null
+  total_tokens: number
+  total_cost_usd: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SessionEvent {
+  id: string
+  session_id: string
+  parent_id?: string | null
+  branch_index: number
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  kind: 'message' | 'thinking' | 'tool_call' | 'tool_result' | 'compaction_checkpoint' | 'system_note'
+  content_json: Record<string, any>
+  tokens_in: number
+  tokens_out: number
+  cache_read_tokens: number
+  cost_usd: number
+  created_at: string
+}
+
+export interface ApprovalRecord {
+  id: string
+  session_id: string
+  call_id: string
+  tool_name: string
+  args_preview: string
+  risk: 'safe' | 'moderate' | 'dangerous'
+  status: string
+  resolved_by?: string | null
+  created_at: string
+}
+
+export type ExecutionTier = 'instant' | 'standard' | 'orchestrated'
+
+export interface BrainstormOption {
+  id: string
+  title: string
+  summary: string
+  pros: string[]
+  cons: string[]
+  blast_radius: string
+  reversibility: string
+  safety_score: number
+  testability_score: number
+  touched_files?: string[]
+  rollback_steps?: string[]
+  risks?: string[]
+  recommended: boolean
+}
+
+export type PlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'blocked'
+
+export interface PlanStep {
+  id: string
+  title: string
+  status: PlanStepStatus
+  depends_on: string[]
+  verification?: string | null
+}
+
+export interface ExecutionPlan {
+  id: string
+  goal: string
+  steps: PlanStep[]
+  rubric_warnings?: string[]
+  updated_at: string
+}
+
+export interface ClarificationDecisionNote {
+  question: string
+  context?: string
+  selected_option_id: string
+  custom_answer?: string | null
+  resolved_by: string
+  auto_resolved: boolean
+}
+
+export interface BrainstormSpec {
+  id: string
+  problem: string
+  invariants: string[]
+  options: BrainstormOption[]
+  selected_option_id: string
+  selection_rationale: string
+  open_questions: string[]
+  pre_mortem?: string[]
+  verification_plan: string[]
+  rubric_warnings?: string[]
+  created_at: string
+}
+
+export interface ClarificationOption {
+  id: string
+  label: string
+  description: string
+  recommended: boolean
+}
+
+export interface ClarificationRecord {
+  id: string
+  session_id: string
+  question: string
+  context: string
+  options: ClarificationOption[]
+  recommended_option_id: string
+  status: string
+  selected_option_id?: string | null
+  custom_answer?: string | null
+  resolved_by?: string | null
+  created_at: string
+}
+
+export interface OrchestratorStatus {
+  tier: ExecutionTier
+  stage: string
+  detail: string
+  model?: string | null
+}
+
+export type TaskKind =
+  | 'shell'
+  | 'build'
+  | 'dev'
+  | 'debug'
+  | 'script'
+  | 'cron'
+  | 'browser'
+  | 'subagent'
+
+export interface TaskKindMeta {
+  id: TaskKind
+  label: string
+  subdir: string
+  description: string
+}
+
+export interface HubCategoryMeta {
+  id: string
+  label: string
+  subdir: string
+  description: string
+}
+
+export interface HubEntry {
+  category: string
+  rel_path: string
+  is_dir: boolean
+  size_bytes: number
+  modified_at: string
+}
+
+export interface BackgroundJob {
+  id: string
+  session_id: string
+  kind?: TaskKind
+  label?: string | null
+  command: string
+  workspace_dir: string
+  pid?: number | null
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
+  exit_code?: number | null
+  log_path: string
+  bytes_written: number
+  started_at: string
+  finished_at?: string | null
+}
+
+export interface JobReadChunk {
+  job: BackgroundJob
+  offset: number
+  next_offset: number
+  total_bytes: number
+  content: string
+}
+
+export interface QueuedPrompt {
+  id: string
+  session_id: string
+  text: string
+  status: string
+  created_at: string
+}
+
+export interface SubagentRoleDescriptor {
+  id: string
+  label: string
+  description: string
+  model_tier: 'fast' | 'plan' | 'lead' | 'advisor'
+  default_workspace: 'inherit' | 'worktree'
+  max_iterations: number
+  read_only: boolean
+  can_spawn_children: boolean
+}
+
+export interface SubagentRecord {
+  id: string
+  parent_session_id: string
+  role: string
+  depth: number
+  goal: string
+  status: 'running' | 'completed' | 'failed' | 'killed' | 'interrupted'
+  workspace_mode: 'inherit' | 'worktree'
+  workspace_dir: string
+  worktree_branch?: string | null
+  model?: string | null
+  summary?: string | null
+  structured_output?: any
+  diff_stat?: string | null
+  changed_files: string[]
+  tokens_used: number
+  cost_usd: number
+  tree_tokens?: number
+  tree_cost_usd?: number
+  descendant_count?: number
+  resume_count?: number
+  started_at: string
+  finished_at?: string | null
+}
+
+export interface WorktreeDiffReport {
+  agent_id: string
+  branch: string
+  worktree_path: string
+  repo_root: string
+  base_commit?: string | null
+  dirty_baseline?: boolean
+  has_changes: boolean
+  changed_files: string[]
+  diff_stat: string
+  patch_preview: string
+  merged: boolean
+  cleaned_up: boolean
+}
+
+export type SessionTaskStatus = 'pending' | 'in_progress' | 'blocked' | 'done' | 'failed'
+
+export interface SessionTask {
+  id: string
+  session_id: string
+  branch_event_id?: string | null
+  title: string
+  description: string
+  active_label?: string | null
+  status: SessionTaskStatus
+  depends_on: string[]
+  owner_agent?: string | null
+  verification_cmd?: string | null
+  verification_evidence?: string | null
+  notes?: string | null
+  priority: number
+  created_at: string
+  updated_at: string
+}
+
+export type RewindMode = 'code_and_conversation' | 'code_only' | 'conversation_only'
+
+export interface WorkspaceCheckpoint {
+  id: string
+  session_id: string
+  turn_id: string
+  event_id?: string | null
+  workspace_dir: string
+  backend: 'shadow_git' | 'content_blobs'
+  pre_ref: string
+  post_ref?: string | null
+  trigger_tool: string
+  label: string
+  changed_files: string[]
+  is_safety_backup: boolean
+  created_at: string
+}
+
+export interface CheckpointDiffReport {
+  checkpoint_id: string
+  session_id: string
+  workspace_dir: string
+  changed_files: string[]
+  manual_edit_conflicts: string[]
+  diff_stat: string
+  patch_preview: string
+}
+
+export interface RewindReport {
+  checkpoint_id: string
+  session_id: string
+  mode: RewindMode
+  restored_files: string[]
+  deleted_files: string[]
+  preserved_manual_edits: string[]
+  skipped_symlinks: number
+  safety_checkpoint_id?: string | null
+  new_head_event_id?: string | null
+  rewind_summary?: string | null
+}
+
+export interface DaemonTelemetry {
+  pid: number
+  uptime_secs: number
+  rss_bytes: number
+  db_size_bytes: number
+  active_sessions: number
+  active_jobs?: number
+  pending_approvals: number
+  daily_cost_usd: number
+  total_cost_usd: number
+  cache_hit_pct: number
+  telegram_connected: boolean
+  telegram_bot_username?: string | null
+}
+
+export interface VaultStats {
+  exists: boolean
+  encrypted: boolean
+  cipher: string
+  path: string
+  size_bytes: number
+  key_count: number
+  key_names: string[]
+}
+
+export interface DailyActivityPoint {
+  date: string
+  events: number
+  turns: number
+  tool_calls: number
+  tokens: number
+  cache_read_tokens: number
+  cost_usd: number
+}
+
+export interface ToolUsageStat {
+  name: string
+  calls: number
+  errors: number
+  avg_duration_ms: number
+}
+
+export interface ModelUsageStat {
+  provider: string
+  model: string
+  calls: number
+  tokens: number
+  cache_read_tokens: number
+  cost_usd: number
+}
+
+export interface StorageSlice {
+  id: string
+  label: string
+  path: string
+  bytes: number
+  files: number
+}
+
+export interface DashboardCounts {
+  sessions: number
+  messages: number
+  tool_calls: number
+  memories: number
+  skills_enabled: number
+  skills_total: number
+  cron_jobs: number
+  goal_loops: number
+  background_jobs: number
+  subagents: number
+  checkpoints: number
+  mcp_servers: number
+  paired_peers: number
+}
+
+export interface DashboardAnalytics {
+  telemetry: DaemonTelemetry
+  vault: VaultStats
+  counts: DashboardCounts
+  total_storage_bytes: number
+  storage: StorageSlice[]
+  daily_activity: DailyActivityPoint[]
+  top_tools: ToolUsageStat[]
+  top_models: ModelUsageStat[]
+  channels: Record<string, number>
+  streak_days: number
+  active_days: number
+  total_tokens: number
+  total_cache_read_tokens: number
+  generated_at: string
+}
+
+export type AvatarFrameStyle =
+  | 'squircle'
+  | 'bare'
+  | 'circle'
+  | 'soft_tint'
+  | 'accent_solid'
+  | 'ring'
+
+export type AgentAvatarStyle =
+  | 'liquid_halo'
+  | 'fox_geometric'
+  | 'fox_line'
+  | 'fox_cute'
+  | 'fox_origami'
+  | 'fox_kitsune'
+  | 'fox_side'
+  | 'fox_sleeping'
+  | 'fox_crest'
+  | 'fox_cyber'
+  | 'icon_bot'
+  | 'icon_brain'
+  | 'icon_cpu'
+  | 'icon_terminal'
+  | 'icon_zap'
+  | 'icon_shield'
+  | 'icon_activity'
+  | 'icon_braces'
+  | 'icon_globe'
+  | 'pulse_ring'
+  | 'matrix_dot'
+  | 'minimal_dot'
+  | 'hidden'
+
+export type UserAvatarStyle =
+  | 'icon_user'
+  | 'user_circle'
+  | 'user_round'
+  | 'user_check'
+  | 'user_code'
+  | 'user_crown'
+  | 'user_glasses'
+  | 'user_smile'
+  | 'user_hoodie'
+  | 'monogram'
+  | 'hidden'
+
+export interface ColorTokens {
+  background: string
+  surface: string
+  card: string
+  border: string
+  foreground: string
+  muted: string
+  primary: string
+  primary_foreground: string
+  accent: string
+  destructive: string
+  success: string
+  warning: string
+}
+
+export interface ComponentSlots {
+  composer: {
+    shell_variant: 'floating_card' | 'pill_capsule' | 'minimal_bar' | 'glass_dock'
+    model_picker_style: 'drilldown' | 'split_pane' | 'compact_inline'
+    send_button_shape: 'rounded_square' | 'circle' | 'pill_label'
+    send_button_icon: 'arrow_up' | 'send' | 'sparkles' | 'corner_up'
+    context_meter: 'progress_ring' | 'linear_bar' | 'compact_text' | 'hidden'
+    action_pills: 'soft_tint' | 'outline' | 'ghost' | 'solid_chip'
+    show_attach: boolean
+    show_policy: boolean
+    show_streaming_toggle: boolean
+  }
+  left_menubar: {
+    frame_style: 'flush_border' | 'floating_card' | 'compact_rail'
+    new_session_style: 'vermilion_soft' | 'solid_primary' | 'outline_minimal' | 'pill_soft'
+    session_item_style: 'soft_fill' | 'left_accent_bar' | 'bordered_card' | 'minimal_text'
+    show_telemetry_badge: boolean
+  }
+  right_menubar: {
+    dock_style: 'floating_capsule' | 'attached_rail' | 'glass_pill' | 'minimal_strip'
+    active_indicator: 'vermilion_pill' | 'solid_accent' | 'side_bar' | 'dot_indicator'
+  }
+  chat_page: {
+    background:
+      | 'clean'
+      | 'dot_grid'
+      | 'fine_grid'
+      | 'cross_grid'
+      | 'top_glow'
+      | 'bottom_glow'
+      | 'vignette'
+      | 'diagonal_hatch'
+    content_width: 'narrow' | 'balanced' | 'wide' | 'full'
+    user_bubble: 'soft_card' | 'accent_tint' | 'minimal_border' | 'pill'
+    thinking_style: 'collapsible_steps' | 'inline_quote' | 'minimal_bar' | 'hidden'
+    tool_card_style:
+      | 'aui_smart'
+      | 'aui_tool_call'
+      | 'aui_tool_call_icon'
+      | 'aui_code_runner'
+      | 'aui_terminal_block'
+      | 'beui_tool_result'
+      | 'pill_chips'
+      | 'detailed_card'
+      | 'terminal_line'
+    show_avatars: boolean
+    agent_avatar_frame?: AvatarFrameStyle
+    agent_avatar_color?: string
+    user_avatar?: UserAvatarStyle
+    user_avatar_frame?: AvatarFrameStyle
+    user_avatar_color?: string
+    scroller_style: 'beui_rail' | 'beui_scroller' | 'smooth' | 'native'
+    streaming_style: 'beui_stream' | 'aui_streaming_text' | 'editorial'
+    message_actions_style?: 'aui_message_actions' | 'beui_inline' | 'minimal'
+    approval_style: 'aui_permission_grant' | 'beui_approval' | 'compact_card'
+    activity_style:
+      | 'aui_tool_call_icon'
+      | 'aui_tool_call'
+      | 'aui_smart'
+      | 'beui_tool_result'
+      | 'beui_activity'
+      | 'aui_run_activity'
+      | 'aui_tool_timeline'
+      | 'aui_terminal_block'
+      | 'aui_code_runner'
+      | 'detailed_card'
+      | 'terminal_line'
+      | 'minimal_pills'
+      | 'hidden'
+    loading_style?:
+      | 'beui_loader'
+      | 'aui_thinking_indicator'
+      | 'aui_loading_dots'
+      | 'aui_loading_squares'
+      | 'aui_loading_rounded'
+    diff_style?: 'aui_code_diff' | 'aui_reviewable_diff' | 'minimal_inline'
+    shell_style?: 'aui_terminal_block' | 'aui_code_runner' | 'minimal_mono'
+    code_block_style?: 'aui_code_runner' | 'minimal_code' | 'bordered_code'
+    show_day_separators?: boolean
+    loader_variant:
+      | 'dot-matrix'
+      | 'dots'
+      | 'bars'
+      | 'spinner'
+      | 'comet'
+      | 'morph'
+      | 'metaballs'
+      | 'newton'
+      | 'helix'
+      | 'dither'
+      | 'ascii'
+      | 'ascii-line'
+      | 'ascii-braille'
+      | 'ascii-blocks'
+      | 'ascii-bounce'
+      | 'scramble'
+      | 'percent'
+    show_citations: boolean
+    skill_badge_style?:
+      | 'aui_memory_chips'
+      | 'pill_glow'
+      | 'minimal_outline'
+      | 'accent_solid'
+      | 'compact_chip'
+      | 'hidden'
+  }
+  dashboard?: {
+    layout: 'bento_grid' | 'editorial_stack' | 'compact_ops'
+    chart_theme: 'monochrome_accent' | 'soft_gradient' | 'crisp_outline'
+    heatmap_shape: 'rounded' | 'square' | 'circle'
+    heatmap_range: 'year' | 'half_year' | 'quarter'
+    show_heatmap: boolean
+    show_storage_vault: boolean
+    show_token_trends: boolean
+    show_tools_table: boolean
+    show_subagents_jobs: boolean
+    show_logs: boolean
+  }
+}
+
+export interface StudioOption {
+  value: string
+  label: string
+  hint: string
+}
+
+export interface StudioControl {
+  path: string
+  label: string
+  description: string
+  kind: 'cards' | 'toggle' | 'range' | 'icon_overrides' | 'color'
+  options: StudioOption[]
+  min?: number | null
+  max?: number | null
+  step?: number | null
+  unit: string
+}
+
+export interface StudioSubComponent {
+  id: string
+  group?: string
+  label: string
+  description: string
+  preview: string
+  controls: StudioControl[]
+}
+
+export interface StudioCategory {
+  id: string
+  label: string
+  description: string
+  preview: string
+  sub_components: StudioSubComponent[]
+}
+
+export interface UiCustomization {
+  mode: 'dark' | 'light' | 'system'
+  preset_id: string
+  colors: ColorTokens
+  buttons: {
+    style: 'solid' | 'soft' | 'outline' | 'ghost' | 'glass' | 'glow' | 'tactile3d' | 'shimmer'
+    shape: 'sharp' | 'rounded' | 'soft' | 'pill'
+    size: 'compact' | 'default' | 'comfortable'
+    motion: 'none' | 'subtle_lift' | 'scale_press' | 'magnetic_glow'
+  }
+  icons: {
+    pack:
+      | 'lucide'
+      | 'pulsoicon'
+      | 'iconsax'
+      | 'hugeicons'
+      | 'itshover'
+      | 'tabler'
+      | 'aicanvas'
+      | 'humbleicons'
+      | 'majesticons'
+      | 'dooicons'
+      | 'phosphor'
+      | 'heroicons'
+      | 'pixel'
+    stroke_width: number
+    style: 'outline' | 'duotone' | 'solid'
+    size_px: number
+    overrides: Record<string, string>
+  }
+  surface: {
+    card_style:
+      | 'minimal_top'
+      | 'minimal_bottom'
+      | 'borderless'
+      | 'ghost_hairline'
+      | 'flat'
+      | 'bordered'
+      | 'elevated'
+      | 'glass'
+      | 'spotlight'
+    bg_pattern: 'clean' | 'dot_grid' | 'tech_grid' | 'ambient_glow'
+    radius_px: number
+    border_contrast: string
+    scrollbar_style?: 'accent_thin' | 'muted_thin' | 'minimal'
+    tabs_variant?: 'pill' | 'segment' | 'underline'
+    accordion_style?: 'bouncy' | 'compact'
+    alert_style?: 'beui_alert' | 'compact'
+    modal_style?: 'center_morph' | 'scale'
+    popover_style?: 'gooey' | 'crisp'
+    element_chrome?: 'borderless' | 'minimal' | 'bordered'
+    table_style?: 'borderless' | 'minimal' | 'striped' | 'bordered'
+    tooltip_style?: 'accent_edge' | 'minimal_glass' | 'solid_contrast' | 'accent_solid' | 'quiet_matte'
+    tooltip_shape?: 'pill' | 'rounded' | 'sharp'
+    tooltip_motion?: 'spring' | 'fade' | 'instant'
+    show_hover_hints?: boolean
+  }
+  typography: {
+    ui_font: string
+    mono_font: string
+    base_size_px: number
+    custom_ui_font?: string
+    custom_mono_font?: string
+  }
+  layout: {
+    density: 'compact' | 'balanced' | 'spacious'
+    sidebar_mode: 'fixed' | 'icon_rail' | 'floating_dock'
+    chat_layout: 'editorial' | 'bubble_split' | 'terminal_stream'
+    show_inspector: boolean
+  }
+  motion: {
+    preset: 'snappy' | 'fluid_spring' | 'reduced' | 'instant'
+    orb_style: AgentAvatarStyle
+    theme_transition?: 'circle-blur' | 'circle' | 'rectangle' | 'blinds'
+    smooth_scroll?: boolean
+  }
+  widgets: {
+    show_thinking: boolean
+    show_cost_badges: boolean
+    show_timestamps: boolean
+    show_line_numbers: boolean
+    show_shortcut_hints: boolean
+  }
+  components: ComponentSlots
+}
+
+export interface UiProfile {
+  id: string
+  name: string
+  is_active: boolean
+  config: UiCustomization
+  updated_at: string
+}
+
+export interface ThemeSwatch {
+  bg: string
+  surface: string
+  card: string
+  border: string
+  fg: string
+  muted: string
+  primary: string
+  primary_fg: string
+}
+
+export interface ThemePresetMeta {
+  id: string
+  label: string
+  dark: ThemeSwatch
+  light: ThemeSwatch
+}
+
+export interface ModelInfo {
+  id: string
+  name: string
+  context_length?: number | null
+  max_output_tokens?: number | null
+  prompt_price_per_m?: number | null
+  completion_price_per_m?: number | null
+  is_free: boolean
+  supports_tools: boolean
+  supports_reasoning: boolean
+  source?: string
+}
+
+export interface GatewayPeer {
+  channel: string
+  peer_id: string
+  username?: string | null
+  display_name?: string | null
+  role: 'owner' | 'trusted' | 'readonly'
+  paired_at: string
+}
+
+export interface PairingCode {
+  code: string
+  channel: string
+  role: string
+  expires_at: string
+}
+
+export interface SkillDoc {
+  slug: string
+  name: string
+  description: string
+  content: string
+  enabled: boolean
+  status?: 'active' | 'draft'
+  author?: 'user' | 'agent' | 'dream'
+  triggers?: string[]
+  allowed_tools?: string[]
+  token_estimate: number
+  subfiles?: string[]
+  source_dir?: string | null
+  file_path?: string | null
+}
+
+export interface SkillVersionSnapshot {
+  id: string
+  slug: string
+  reason: string
+  bytes: number
+  created_at: string
+}
+
+export type GoalLoopStatus =
+  | 'active'
+  | 'paused'
+  | 'succeeded'
+  | 'failed'
+  | 'budget_exhausted'
+  | 'stalled'
+
+export interface GoalLoopRecord {
+  id: string
+  name: string
+  session_id: string
+  workspace_dir: string
+  goal_text: string
+  verify_cmd: string[]
+  interval_secs: number
+  max_iterations: number
+  max_budget_usd: number
+  max_consecutive_stalls: number
+  checkpoint_each_iter: boolean
+  auto_rewind_on_stall: boolean
+  model?: string | null
+  notify_channel: string
+  status: GoalLoopStatus
+  iterations_done: number
+  consecutive_stalls: number
+  cost_spent_usd: number
+  last_verify_exit?: number | null
+  last_verify_output?: string | null
+  next_run_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface GoalLoopRun {
+  id: string
+  goal_id: string
+  iteration: number
+  checkpoint_id?: string | null
+  verify_exit_code: number
+  verify_output_excerpt: string
+  verify_hash: string
+  tokens_used: number
+  cost_usd: number
+  duration_ms: number
+  outcome: string
+  reward: number
+  created_at: string
+}
+
+export interface WebhookRuleConfig {
+  id: string
+  enabled: boolean
+  source: string
+  match_pointer?: string | null
+  match_values: string[]
+  prompt_template: string
+  session_key?: string | null
+  workspace_dir?: string | null
+  model?: string | null
+  goal_loop_id?: string | null
+  cooldown_secs: number
+  max_per_hour: number
+}
+
+export interface WorkspaceWatcherConfig {
+  id: string
+  enabled: boolean
+  path: string
+  glob: string
+  poll_interval_secs: number
+  debounce_secs: number
+  cooldown_secs: number
+  max_per_hour: number
+  action: 'prompt' | 'script' | 'goal_loop'
+  prompt: string
+  goal_loop_id?: string | null
+  script_path?: string | null
+  model?: string | null
+}
+
+export interface TriggerStatusEntry {
+  id: string
+  kind: string
+  enabled: boolean
+  target: string
+  fires_last_hour: number
+  max_per_hour: number
+  cooldown_secs: number
+  last_fired_at?: string | null
+  detail: string
+}
+
+export interface WorkspaceSnapshot {
+  soul_md: string
+  user_md: string
+  memory_md: string
+  project_memory_md?: string
+  zenko_md: string
+  skills: SkillDoc[]
+  repo_rules_loaded?: string[]
+  tier1_tokens?: number
+  tier1_hash?: string
+  tier2_tokens?: number
+  total_tokens_estimate: number
+}
+
+export interface ContextBreakdown {
+  session_id: string
+  model: string
+  context_window: number
+  total_tokens: number
+  utilization_pct: number
+  tier1_tokens: number
+  tier1_hash: string
+  tier2_tokens: number
+  repo_rules_loaded: string[]
+  tool_schema_tokens: number
+  eager_tools_count: number
+  deferred_active_count: number
+  deferred_available_count: number
+  history_tokens: number
+  microcompacted_tools_count: number
+  microcompacted_tokens_saved: number
+  active_checkpoint_id?: string | null
+  checkpoints_count: number
+  spilled_artifacts_count: number
+  cache_hit_pct: number
+}
+
+export interface MemoryKindMeta {
+  id: string
+  label: string
+  description: string
+  half_life_days: number
+}
+
+export interface MemoryEntry {
+  id: string
+  scope: string
+  kind: string
+  title: string
+  content: string
+  salience?: number
+  access_count?: number
+  last_accessed_at?: string | null
+  updated_at?: string | null
+  source_session_id?: string | null
+  archived?: boolean
+  created_at: string
+}
+
+export interface ScoredMemoryHit {
+  entry: MemoryEntry
+  score: number
+  stale_paths: string[]
+}
+
+export interface MemoryDocSnapshot {
+  id: string
+  doc_name: string
+  reason: string
+  bytes: number
+  created_at: string
+}
+
+export interface DreamRunRecord {
+  id: string
+  trigger: string
+  status: string
+  model?: string | null
+  sessions_scanned: number
+  memories_added: number
+  memories_merged: number
+  memories_archived: number
+  docs_patched: number
+  skills_proposed?: number
+  diff_preview?: string | null
+  detail?: string | null
+  started_at: string
+  finished_at?: string | null
+}
+
+export interface DreamStatus {
+  enabled: boolean
+  running: boolean
+  watermark_ts?: string | null
+  last_run_ts?: string | null
+  pending_sessions: number
+  recent_runs: DreamRunRecord[]
+}
+
+export interface SessionSearchHit {
+  session_id: string
+  session_title: string
+  channel: string
+  workspace_dir?: string | null
+  event_id: string
+  role: string
+  snippet: string
+  rank: number
+  created_at: string
+}
+
+export interface CronJob {
+  id: string
+  name: string
+  cron_expr: string
+  kind: 'cron' | 'heartbeat' | 'script'
+  prompt: string
+  script_path?: string | null
+  target_channel: string
+  enabled: boolean
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_status?: string | null
+}
+
+export interface LogCategoryMeta {
+  id: string
+  label: string
+  file: string
+  description: string
+}
+
+export interface LogEntry {
+  timestamp: string
+  level: string
+  category?: string
+  target: string
+  session_id?: string | null
+  turn_id?: string | null
+  call_id?: string | null
+  message: string
+  payload?: Record<string, any> | null
+}
+
+export interface ProviderDescriptor {
+  id: string
+  label: string
+  description: string
+  default_base_url: string
+  metadata_keys: string[]
+  requires_api_key: boolean
+  vault_secret_key: string
+  supports_prompt_caching: boolean
+  supports_sticky_routing: boolean
+  dialect: 'open_router' | 'mini_max' | 'open_ai_compat'
+}
+
+export interface WebSearchProviderDescriptor {
+  id: string
+  label: string
+  description: string
+  requires_api_key: boolean
+  vault_secret_key: string
+}
+
+export interface LspServerDescriptor {
+  id: string
+  label: string
+  language_id: string
+  command: string
+  args: string[]
+  extensions: string[]
+  root_markers: string[]
+}
+
+export interface LspServerRuntimeStatus {
+  server_id: string
+  language_id: string
+  workspace_root: string
+  running: boolean
+  open_documents: number
+  cached_diagnostics_files: number
+  last_used_at: string
+}
+
+export interface McpServerStatus {
+  name: string
+  transport: 'stdio' | 'http' | string
+  enabled: boolean
+  connected: boolean
+  tool_count: number
+  tools: string[]
+  catalog_dirty?: boolean
+  last_error?: string | null
+  last_synced_at?: string | null
+}
+
+export interface BootstrapResponse {
+  authorized: boolean
+  config?: any
+  telemetry?: DaemonTelemetry
+  sessions?: Session[]
+  active_profile: UiProfile
+  profiles?: UiProfile[]
+  presets: ThemePresetMeta[]
+  studio_schema?: StudioCategory[]
+  providers?: ProviderDescriptor[]
+  configured_providers?: Record<string, boolean>
+  pending_approvals?: ApprovalRecord[]
+  pending_clarifications?: ClarificationRecord[]
+  has_provider_key?: boolean
+  has_openrouter_key?: boolean
+  has_telegram_token?: boolean
+  has_brave_search_key?: boolean
+  has_tavily_search_key?: boolean
+  web_search_providers?: WebSearchProviderDescriptor[]
+  mcp_servers?: McpServerStatus[]
+  lsp_registry?: LspServerDescriptor[]
+  lsp_active?: LspServerRuntimeStatus[]
+  workspace_dir?: string
+  hub_dir?: string
+  hub_categories?: HubCategoryMeta[]
+  task_kinds?: TaskKindMeta[]
+  snapshot_tokens?: number
+  skills_count?: number
+  log_categories?: LogCategoryMeta[]
+  log_counts?: Record<string, number>
+  logs_dir?: string
+  jobs?: BackgroundJob[]
+  subagent_roles?: SubagentRoleDescriptor[]
+  subagents?: SubagentRecord[]
+}
+
+export type ActiveView =
+  | 'chat'
+  | 'telemetry'
+  | 'gateways'
+  | 'memory'
+  | 'automation'
+  | 'appearance'
+  | 'setup'

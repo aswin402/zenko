@@ -1,0 +1,1795 @@
+//! Declarative Appearance & Component Studio schema served dynamically to the WebUI.
+//! Every category, hierarchical sub-group, inside component page, and selectable option
+//! lives here so the frontend renders the entire hierarchical Studio without hardcoding menus.
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StudioOption {
+    pub value: &'static str,
+    pub label: &'static str,
+    pub hint: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlKind {
+    Cards,
+    Toggle,
+    Range,
+    IconOverrides,
+    Color,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StudioControl {
+    /// Dot-separated path inside `UiCustomization` (e.g. `components.composer.shell_variant`).
+    pub path: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub kind: ControlKind,
+    pub options: &'static [StudioOption],
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub step: Option<f32>,
+    pub unit: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StudioSubComponent {
+    pub id: &'static str,
+    /// Optional nested hierarchy group label inside the Left Menubar (empty = direct child).
+    pub group: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub preview: &'static str,
+    pub controls: &'static [StudioControl],
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StudioCategory {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub preview: &'static str,
+    pub sub_components: &'static [StudioSubComponent],
+}
+
+const OPT_COMPOSER_SHELL: &[StudioOption] = &[
+    StudioOption { value: "floating_card", label: "Floating Card", hint: "Elevated sculpted card with hairline edge" },
+    StudioOption { value: "pill_capsule", label: "Pill Capsule", hint: "Generous rounded-3xl floating capsule" },
+    StudioOption { value: "minimal_bar", label: "Minimal Bar", hint: "Clean flat dock anchored to bottom" },
+    StudioOption { value: "glass_dock", label: "Glass Dock", hint: "Translucent frosted blur surface" },
+];
+
+const OPT_MODEL_PICKER: &[StudioOption] = &[
+    StudioOption { value: "drilldown", label: "Provider Drilldown", hint: "Providers list -> click for live models" },
+    StudioOption { value: "split_pane", label: "Split Pane", hint: "Side-by-side providers & live models" },
+    StudioOption { value: "compact_inline", label: "Compact Tabs", hint: "Provider tabs above searchable models" },
+];
+
+const OPT_SEND_SHAPE: &[StudioOption] = &[
+    StudioOption { value: "rounded_square", label: "Rounded Square", hint: "Crisp 10px square action button" },
+    StudioOption { value: "circle", label: "Circle Orb", hint: "Full circular send button" },
+    StudioOption { value: "pill_label", label: "Labeled Pill", hint: "Pill button with Send label" },
+];
+
+const OPT_SEND_ICON: &[StudioOption] = &[
+    StudioOption { value: "arrow_up", label: "Arrow Up", hint: "Clean vertical submit arrow" },
+    StudioOption { value: "send", label: "Paper Plane", hint: "Classic send plane glyph" },
+    StudioOption { value: "sparkles", label: "Spark", hint: "Agentic spark glyph" },
+    StudioOption { value: "corner_up", label: "Return Key", hint: "Keyboard return glyph" },
+];
+
+const OPT_CONTEXT_METER: &[StudioOption] = &[
+    StudioOption { value: "progress_ring", label: "Progress Ring", hint: "Circular ring + exact token ratio" },
+    StudioOption { value: "linear_bar", label: "Linear Meter", hint: "Compact horizontal usage bar" },
+    StudioOption { value: "compact_text", label: "Minimal Text", hint: "Monospace token count only" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Hide context meter from composer" },
+];
+
+const OPT_ACTION_PILLS: &[StudioOption] = &[
+    StudioOption { value: "soft_tint", label: "Soft Tint", hint: "Subtle accent-tinted pill badges" },
+    StudioOption { value: "outline", label: "Crisp Outline", hint: "Hairline bordered pills" },
+    StudioOption { value: "ghost", label: "Quiet Ghost", hint: "Borderless hover-revealed pills" },
+    StudioOption { value: "solid_chip", label: "Solid Chip", hint: "Raised matte surface chips" },
+];
+
+const OPT_SIDEBAR_FRAME: &[StudioOption] = &[
+    StudioOption { value: "flush_border", label: "Flush Panel", hint: "Full-height panel with hairline border" },
+    StudioOption { value: "floating_card", label: "Floating Card", hint: "Detached inset card with rounded corners" },
+    StudioOption { value: "compact_rail", label: "Compact Width", hint: "Narrower 224px minimal rail" },
+];
+
+const OPT_NEW_SESSION: &[StudioOption] = &[
+    StudioOption { value: "vermilion_soft", label: "Accent Tint", hint: "Soft accent outline CTA" },
+    StudioOption { value: "solid_primary", label: "Solid Primary", hint: "High-contrast filled accent CTA" },
+    StudioOption { value: "outline_minimal", label: "Minimal Outline", hint: "Neutral hairline button" },
+    StudioOption { value: "pill_soft", label: "Soft Pill", hint: "Full pill rounded CTA" },
+];
+
+const OPT_SESSION_ITEM: &[StudioOption] = &[
+    StudioOption { value: "soft_fill", label: "Soft Fill", hint: "Subtle translucent active highlight" },
+    StudioOption { value: "left_accent_bar", label: "Accent Bar", hint: "Crisp 2px accent indicator on active item" },
+    StudioOption { value: "bordered_card", label: "Bordered Row", hint: "Subtle bordered active session card" },
+    StudioOption { value: "minimal_text", label: "Minimal Text", hint: "Clean typography-only highlight" },
+];
+
+const OPT_DOCK_SHELL: &[StudioOption] = &[
+    StudioOption { value: "floating_capsule", label: "Floating Capsule", hint: "Elevated vertical rounded pill dock" },
+    StudioOption { value: "attached_rail", label: "Attached Rail", hint: "Full-height docked right border rail" },
+    StudioOption { value: "glass_pill", label: "Frosted Glass", hint: "Translucent blurred glass capsule" },
+    StudioOption { value: "minimal_strip", label: "Minimal Strip", hint: "Borderless quiet icon strip" },
+];
+
+const OPT_DOCK_INDICATOR: &[StudioOption] = &[
+    StudioOption { value: "vermilion_pill", label: "Accent Glow Pill", hint: "Soft tinted pill with accent border" },
+    StudioOption { value: "solid_accent", label: "Solid Accent", hint: "Filled primary square with crisp icon" },
+    StudioOption { value: "side_bar", label: "Edge Bar", hint: "Minimal right-edge accent bar" },
+    StudioOption { value: "dot_indicator", label: "Minimal Dot", hint: "Subtle accent dot below icon" },
+];
+
+const OPT_CHAT_BACKGROUND: &[StudioOption] = &[
+    StudioOption { value: "clean", label: "Clean Solid", hint: "Pure matte canvas with zero visual noise" },
+    StudioOption { value: "dot_grid", label: "Dot Matrix", hint: "Fine architectural dot pattern" },
+    StudioOption { value: "fine_grid", label: "Drafting Grid", hint: "Subtle 28px hairline grid lines" },
+    StudioOption { value: "cross_grid", label: "Cross Lattice", hint: "Minimal architectural intersections" },
+    StudioOption { value: "top_glow", label: "Horizon Glow", hint: "Soft radial theme wash from the top" },
+    StudioOption { value: "bottom_glow", label: "Composer Glow", hint: "Subtle ambient glow behind the input box" },
+    StudioOption { value: "vignette", label: "Soft Spotlight", hint: "Gentle elevated center fading into edges" },
+    StudioOption { value: "diagonal_hatch", label: "Diagonal Weave", hint: "Ultra-fine 45° architectural weave" },
+];
+
+const OPT_CHAT_LAYOUT: &[StudioOption] = &[
+    StudioOption { value: "editorial", label: "Editorial Stream", hint: "Borderless prose + right user cards" },
+    StudioOption { value: "bubble_split", label: "Bubble Split", hint: "Framed cards for both user & agent" },
+    StudioOption { value: "terminal_stream", label: "Terminal Stream", hint: "Monospace compact developer stream" },
+];
+
+const OPT_CONTENT_WIDTH: &[StudioOption] = &[
+    StudioOption { value: "narrow", label: "Focused (680px)", hint: "Comfortable narrow reading measure" },
+    StudioOption { value: "balanced", label: "Balanced (780px)", hint: "Default editorial column" },
+    StudioOption { value: "wide", label: "Wide (960px)", hint: "Extra room for code & tables" },
+    StudioOption { value: "full", label: "Full Width", hint: "Edge-to-edge workspace width" },
+];
+
+const OPT_USER_BUBBLE: &[StudioOption] = &[
+    StudioOption { value: "soft_card", label: "Soft Card", hint: "Matte card with crisp hairline border" },
+    StudioOption { value: "accent_tint", label: "Accent Tint", hint: "Subtle global accent wash" },
+    StudioOption { value: "minimal_border", label: "Minimal Outline", hint: "Transparent with clean border" },
+    StudioOption { value: "pill", label: "Rounded Pill", hint: "Soft pill bubble silhouette" },
+];
+
+const OPT_THINKING_STYLE: &[StudioOption] = &[
+    StudioOption { value: "collapsible_steps", label: "Collapsible Steps", hint: "Compact 'Completed N steps' disclosure" },
+    StudioOption { value: "inline_quote", label: "Left Quote Rail", hint: "Minimal indented reasoning block" },
+    StudioOption { value: "minimal_bar", label: "Compact Pill", hint: "Single-line subtle trace pill" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Hide reasoning traces in chat" },
+];
+
+const OPT_SCROLLER_STYLE: &[StudioOption] = &[
+    StudioOption { value: "beui_rail", label: "BeUI Scroller + Rail", hint: "Auto-follow chat scroller with message preview rail" },
+    StudioOption { value: "beui_scroller", label: "BeUI Scroller", hint: "Clean auto-follow chat scroller with slim scrollbar" },
+    StudioOption { value: "smooth", label: "Smooth Scroll", hint: "Lenis inertia smooth scrolling container" },
+    StudioOption { value: "native", label: "Native Scroll", hint: "Standard browser scroll behavior" },
+];
+
+const OPT_STREAMING_STYLE: &[StudioOption] = &[
+    StudioOption { value: "beui_stream", label: "BeUI Streaming", hint: "Smooth markdown streaming container with citations" },
+    StudioOption { value: "aui_streaming_text", label: "Word-Stream Accent", hint: "Live word-by-word accent shimmer while generating" },
+    StudioOption { value: "editorial", label: "Editorial Minimal", hint: "Quiet borderless prose stream" },
+];
+
+const OPT_MESSAGE_ACTIONS_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_message_actions", label: "Assistant Actions", hint: "Copy, retry & steps action strip (Default)" },
+    StudioOption { value: "beui_inline", label: "BeUI Inline", hint: "Integrated BeUI streaming copy & retry bar" },
+    StudioOption { value: "minimal", label: "Minimal Copy", hint: "Quiet copy, retry & metadata strip" },
+];
+
+const OPT_APPROVAL_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_permission_grant", label: "Permission Grant", hint: "Clean capability reach & Deny/Session/Always receipt (Default)" },
+    StudioOption { value: "beui_approval", label: "BeUI Approval Card", hint: "Structured parameter disclosure with Allow/Always/Deny" },
+    StudioOption { value: "compact_card", label: "Compact Card", hint: "Classic inline approval strip" },
+];
+
+const OPT_ACTIVITY_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_tool_call_icon", label: "Collapsible+", hint: "Default: Collapsible tool rows with semantic icons from your active icon family" },
+    StudioOption { value: "aui_tool_call", label: "Collapsible ToolCall", hint: "Minimal assistant-ui expandable chevron request/result rows" },
+    StudioOption { value: "aui_smart", label: "Smart Elements", hint: "Auto-dispatches Terminal, CodeRunner, Diff, FileTree, WebSearch & ToolError" },
+    StudioOption { value: "beui_tool_result", label: "BeUI Tool Result", hint: "Collapsible live log cards with syntax highlight & copy" },
+    StudioOption { value: "beui_activity", label: "BeUI Activity Feed", hint: "Grouped activity feed with thinking shimmer & gliding tool rows" },
+    StudioOption { value: "aui_run_activity", label: "Run Activity", hint: "Collapsible run commentary & tool activity rail" },
+    StudioOption { value: "aui_tool_timeline", label: "Tool Timeline", hint: "Step-by-step verb chips with diff file stats" },
+    StudioOption { value: "aui_terminal_block", label: "Terminal Block", hint: "ANSI-aware terminal command block with copy" },
+    StudioOption { value: "aui_code_runner", label: "Code Runner", hint: "Dedicated code & output execution surface" },
+    StudioOption { value: "detailed_card", label: "Detailed Cards", hint: "Expanded output cards with latency & diff" },
+    StudioOption { value: "terminal_line", label: "Hono Log Line", hint: "Compact monospace `--> tool ok 4ms` rows" },
+    StudioOption { value: "minimal_pills", label: "Minimal Pills", hint: "Single-line inline tool status chips" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Hide intermediate activity & tool execution rows" },
+];
+
+const OPT_TOOLTIP_STYLE: &[StudioOption] = &[
+    StudioOption { value: "accent_edge", label: "Accent Edge", hint: "Dark card with subtle accent hairline edge (Default)" },
+    StudioOption { value: "minimal_glass", label: "Frosted Glass", hint: "Translucent blurred glass hover badge" },
+    StudioOption { value: "solid_contrast", label: "High Contrast", hint: "Inverted foreground pill for instant legibility" },
+    StudioOption { value: "accent_solid", label: "Solid Accent", hint: "Filled primary accent badge with crisp contrast" },
+    StudioOption { value: "quiet_matte", label: "Quiet Matte", hint: "Subtle neutral matte surface with hairline border" },
+];
+
+const OPT_TOOLTIP_SHAPE: &[StudioOption] = &[
+    StudioOption { value: "pill", label: "Capsule Pill", hint: "Full rounded-full pill silhouette (Default)" },
+    StudioOption { value: "rounded", label: "Soft Rounded", hint: "Compact 8px rounded rectangle" },
+    StudioOption { value: "sharp", label: "Crisp Sharp", hint: "Architectural 4px corner radius" },
+];
+
+const OPT_TOOLTIP_MOTION: &[StudioOption] = &[
+    StudioOption { value: "spring", label: "Spring Glide", hint: "Tactile directional slide & scale pop (Default)" },
+    StudioOption { value: "fade", label: "Quiet Fade", hint: "Pure opacity reveal with zero shift" },
+    StudioOption { value: "instant", label: "Instant", hint: "Zero animation latency on hover" },
+];
+
+const OPT_DASHBOARD_LAYOUT: &[StudioOption] = &[
+    StudioOption { value: "bento_grid", label: "Bento Grid", hint: "Balanced multi-column visual analytics layout (Default)" },
+    StudioOption { value: "editorial_stack", label: "Editorial Stack", hint: "Full-width stacked narrative cards & charts" },
+    StudioOption { value: "compact_ops", label: "Compact Ops", hint: "High-density telemetry & logs operations grid" },
+];
+
+const OPT_DASHBOARD_CHART_THEME: &[StudioOption] = &[
+    StudioOption { value: "monochrome_accent", label: "Monochrome Accent", hint: "Strict 60/30/10 monochrome + single theme accent ramp (Default)" },
+    StudioOption { value: "soft_gradient", label: "Soft Gradient", hint: "Luminous area fills & smooth tonal transitions" },
+    StudioOption { value: "crisp_outline", label: "Crisp Outline", hint: "Minimal hairline strokes with transparent fills" },
+];
+
+const OPT_DASHBOARD_HEATMAP_SHAPE: &[StudioOption] = &[
+    StudioOption { value: "rounded", label: "Rounded Squares", hint: "Classic GitHub-style soft rounded cells (Default)" },
+    StudioOption { value: "square", label: "Sharp Pixels", hint: "Crisp 0px architectural matrix tiles" },
+    StudioOption { value: "circle", label: "Dot Matrix", hint: "Circular activity dots across calendar weeks" },
+];
+
+const OPT_DASHBOARD_HEATMAP_RANGE: &[StudioOption] = &[
+    StudioOption { value: "year", label: "Full Year (52w)", hint: "365-day contribution calendar (Default)" },
+    StudioOption { value: "half_year", label: "6 Months (26w)", hint: "Compact half-year activity heatmap" },
+    StudioOption { value: "quarter", label: "90 Days (13w)", hint: "Focused quarterly usage view" },
+];
+
+const OPT_LOADING_STYLE: &[StudioOption] = &[
+    StudioOption { value: "beui_loader", label: "BeUI Motion Loader", hint: "Animated motion glyph + shimmer status" },
+    StudioOption { value: "aui_thinking_indicator", label: "Thinking Indicator", hint: "Minimal pulsing accent dot + shimmer + live timer" },
+    StudioOption { value: "aui_loading_dots", label: "3×3 Matrix Dots", hint: "Assistant-UI 3×3 dot matrix wave loader" },
+    StudioOption { value: "aui_loading_squares", label: "3×3 Matrix Squares", hint: "Crisp pixel-square 3×3 wave loader" },
+    StudioOption { value: "aui_loading_rounded", label: "3×3 Matrix Rounded", hint: "Soft rounded 3×3 tile wave loader" },
+];
+
+const OPT_DIFF_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_code_diff", label: "Code Diff", hint: "Animated unified diff with +/− gutter & stats (Default)" },
+    StudioOption { value: "aui_reviewable_diff", label: "Reviewable Diff", hint: "Interactive per-hunk Keep / Discard diff review" },
+    StudioOption { value: "minimal_inline", label: "Minimal Inline", hint: "Plain monospace diff lines without header" },
+];
+
+const OPT_SHELL_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_terminal_block", label: "Terminal Block", hint: "ANSI color terminal with exit code & copy (Default)" },
+    StudioOption { value: "aui_code_runner", label: "Code Runner", hint: "Structured command + output runner card" },
+    StudioOption { value: "minimal_mono", label: "Minimal Output", hint: "Borderless quiet monospace block" },
+];
+
+const OPT_CODE_BLOCK_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_code_runner", label: "Code Runner", hint: "Clean code runner surface with language & copy (Default)" },
+    StudioOption { value: "minimal_code", label: "Borderless Minimal", hint: "Ultra-clean subtle top-divider code block" },
+    StudioOption { value: "bordered_code", label: "Classic Bordered", hint: "Framed code block with header bar" },
+];
+
+const OPT_ELEMENT_CHROME: &[StudioOption] = &[
+    StudioOption { value: "borderless", label: "Borderless", hint: "Zero outer card borders — ultra-clean editorial surfaces" },
+    StudioOption { value: "minimal", label: "Minimal Hairline", hint: "Quiet top/bottom dividers with zero heavy chrome (Default)" },
+    StudioOption { value: "bordered", label: "Framed Border", hint: "Full 1px crisp hairline border on element cards" },
+];
+
+const OPT_TABLE_STYLE: &[StudioOption] = &[
+    StudioOption { value: "borderless", label: "Borderless", hint: "Zero borders, airy spacing & hover highlight (Default)" },
+    StudioOption { value: "minimal", label: "Minimal Hairlines", hint: "Quiet header divider only, no outer box" },
+    StudioOption { value: "striped", label: "Soft Striped", hint: "Alternating subtle surface rows, borderless edges" },
+    StudioOption { value: "bordered", label: "Framed Table", hint: "Full card frame with row rules" },
+];
+
+const OPT_LOADER_VARIANT: &[StudioOption] = &[
+    StudioOption { value: "dot-matrix", label: "Dot Matrix", hint: "3×3 diagonal shimmering wave" },
+    StudioOption { value: "dots", label: "Bouncing Dots", hint: "Classic rhythmic 3-dot pulse" },
+    StudioOption { value: "bars", label: "Equalizer Bars", hint: "Vertical pulsing signal bars" },
+    StudioOption { value: "spinner", label: "Arc Spinner", hint: "Minimal precision ring spinner" },
+    StudioOption { value: "comet", label: "Comet Orbit", hint: "Orbital fading particle trail" },
+    StudioOption { value: "morph", label: "Polygon Morph", hint: "Morphing geometric polygon loop" },
+    StudioOption { value: "metaballs", label: "Liquid Metaballs", hint: "Gooey merging dual orbs" },
+    StudioOption { value: "newton", label: "Newton Cradle", hint: "Kinetic momentum spheres" },
+    StudioOption { value: "helix", label: "DNA Helix", hint: "Intertwining double-helix wave" },
+    StudioOption { value: "dither", label: "Bayer Dither", hint: "4×4 halftone threshold shimmer" },
+    StudioOption { value: "ascii-braille", label: "CLI Braille", hint: "Native terminal braille spinner" },
+    StudioOption { value: "scramble", label: "Text Scramble", hint: "Monospace glyph decode loop" },
+];
+
+const OPT_THEME_TRANSITION: &[StudioOption] = &[
+    StudioOption { value: "circle-blur", label: "Circle + Blur", hint: "Radial circular reveal with soft blur sweep" },
+    StudioOption { value: "circle", label: "Crisp Circle", hint: "Sharp circular radial reveal" },
+    StudioOption { value: "rectangle", label: "Wipe Sweep", hint: "Directional rectangular curtain reveal" },
+    StudioOption { value: "blinds", label: "Shutter Blinds", hint: "Tiled vertical louver reveal" },
+];
+
+const OPT_SCROLLBAR_STYLE: &[StudioOption] = &[
+    StudioOption { value: "accent_thin", label: "Slim Accent", hint: "3.5px slim scrollbar tinted with active theme accent" },
+    StudioOption { value: "muted_thin", label: "Slim Neutral", hint: "3.5px quiet neutral hairline scrollbar" },
+    StudioOption { value: "minimal", label: "Ultra-Thin", hint: "2.5px minimal scrollbar fading on hover" },
+];
+
+const OPT_TABS_VARIANT: &[StudioOption] = &[
+    StudioOption { value: "pill", label: "Spring Pill", hint: "Gliding pill indicator with inverted clip label" },
+    StudioOption { value: "segment", label: "Segmented", hint: "Compact rounded segmented control bar" },
+    StudioOption { value: "underline", label: "Underline", hint: "Minimal hairline accent underline tabs" },
+];
+
+const OPT_ACCORDION_STYLE: &[StudioOption] = &[
+    StudioOption { value: "bouncy", label: "Bouncy Accordion", hint: "Spring-grouped BeUI cards that part on expand" },
+    StudioOption { value: "compact", label: "Compact Tree", hint: "Tight indented disclosure rows" },
+];
+
+const OPT_ALERT_STYLE: &[StudioOption] = &[
+    StudioOption { value: "beui_alert", label: "BeUI Animated Alert", hint: "Spring-entering semantic alerts with dismiss" },
+    StudioOption { value: "compact", label: "Compact Strip", hint: "Quiet single-line status strips" },
+];
+
+const OPT_MODAL_STYLE: &[StudioOption] = &[
+    StudioOption { value: "center_morph", label: "Center Morph", hint: "Unfolds smoothly outward from viewport center" },
+    StudioOption { value: "scale", label: "Classic Scale", hint: "Crisp fade-and-scale dialog" },
+];
+
+const OPT_POPOVER_STYLE: &[StudioOption] = &[
+    StudioOption { value: "gooey", label: "Gooey Liquid", hint: "BeUI liquid-neck morphing popover" },
+    StudioOption { value: "crisp", label: "Crisp Card", hint: "Instant clean spring popover" },
+];
+
+const OPT_SKILL_BADGE_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_memory_chips", label: "Memory Chips", hint: "Assistant-UI soft memory & skill badge chips (Default)" },
+    StudioOption { value: "pill_glow", label: "Soft Pill", hint: "Accent-tinted sparkle pill badge" },
+    StudioOption { value: "minimal_outline", label: "Hairline Outline", hint: "Crisp transparent border chip" },
+    StudioOption { value: "accent_solid", label: "Solid Accent", hint: "High-contrast primary badge" },
+    StudioOption { value: "compact_chip", label: "Compact Mono", hint: "Quiet small monospace label" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Do not show skill or memory badges" },
+];
+
+const OPT_BG_PATTERN: &[StudioOption] = &[
+    StudioOption { value: "clean", label: "Clean Matte", hint: "Zero visual noise (default)" },
+    StudioOption { value: "dot_grid", label: "Dot Grid", hint: "Subtle architectural dot matrix" },
+    StudioOption { value: "tech_grid", label: "Blueprint Grid", hint: "Fine 28px drafting lines" },
+    StudioOption { value: "ambient_glow", label: "Ambient Glow", hint: "Soft top radial global accent" },
+];
+
+const OPT_DENSITY: &[StudioOption] = &[
+    StudioOption { value: "compact", label: "Compact", hint: "Dense layout for maximum info" },
+    StudioOption { value: "balanced", label: "Balanced", hint: "Default editorial spacing" },
+    StudioOption { value: "spacious", label: "Spacious", hint: "Airy generous whitespace" },
+];
+
+const OPT_UI_FONT: &[StudioOption] = &[
+    StudioOption { value: "inter", label: "Plus Jakarta", hint: "Clean editorial geometric sans (Default)" },
+    StudioOption { value: "geist", label: "Space Grotesk", hint: "Sharp technical display sans" },
+    StudioOption { value: "obel_mono", label: "Obel Mono", hint: "Typographic Systems · Variable editorial mono (OFL)" },
+    StudioOption { value: "halden", label: "Halden", hint: "Fontzz · Neo-grotesque sans (OFL)" },
+    StudioOption { value: "rondel", label: "Rondel", hint: "Fontzz · Precision geometric sans (OFL)" },
+    StudioOption { value: "mallow", label: "Mallow", hint: "Fontzz · Friendly rounded sans (OFL)" },
+    StudioOption { value: "strata", label: "Strata", hint: "Fontzz · Architectural condensed sans (OFL)" },
+    StudioOption { value: "vector", label: "Vector", hint: "Fontzz · Crisp technical sans (OFL)" },
+    StudioOption { value: "folio", label: "Folio", hint: "Fontzz · Editorial book serif (OFL)" },
+    StudioOption { value: "meridian", label: "Meridian", hint: "Fontzz · Transitional serif (OFL)" },
+    StudioOption { value: "ledger", label: "Ledger", hint: "Fontzz · Confident slab serif (OFL)" },
+    StudioOption { value: "opaline", label: "Opaline", hint: "Fontzz · High-contrast Didone serif (OFL)" },
+    StudioOption { value: "vesper", label: "Vesper", hint: "Fontzz · Sculptural display (OFL)" },
+    StudioOption { value: "orbit", label: "Orbit", hint: "Fontzz · Futuristic display (OFL)" },
+    StudioOption { value: "diode", label: "Diode", hint: "Fontzz · Modular geometric display (OFL)" },
+    StudioOption { value: "system", label: "System UI", hint: "Native OS interface font" },
+];
+
+const OPT_MONO_FONT: &[StudioOption] = &[
+    StudioOption { value: "obel_mono", label: "Obel Mono", hint: "Typographic Systems · Variable code mono (OFL)" },
+    StudioOption { value: "jetbrains", label: "JetBrains Mono", hint: "Default developer mono" },
+    StudioOption { value: "signal", label: "Signal", hint: "Fontzz · Crisp engineering mono (OFL)" },
+    StudioOption { value: "tally", label: "Tally", hint: "Fontzz · Clean tabular telemetry mono (OFL)" },
+    StudioOption { value: "fathom", label: "Fathom", hint: "Fontzz · Warm readable code mono (OFL)" },
+    StudioOption { value: "fira", label: "Fira Code", hint: "Classic ligature mono" },
+    StudioOption { value: "cascadia", label: "Cascadia Code", hint: "Clean wide monospace" },
+    StudioOption { value: "system", label: "System Mono", hint: "Native OS monospace" },
+];
+
+const OPT_MOTION: &[StudioOption] = &[
+    StudioOption { value: "snappy", label: "Snappy", hint: "140ms fast crisp transitions" },
+    StudioOption { value: "fluid_spring", label: "Fluid Spring", hint: "260ms expressive spring bounce" },
+    StudioOption { value: "reduced", label: "Reduced", hint: "80ms subtle linear motion" },
+    StudioOption { value: "instant", label: "Instant (0ms)", hint: "Zero animation delay" },
+];
+
+const OPT_ORB: &[StudioOption] = &[
+    StudioOption { value: "liquid_halo", label: "Zenko Fox", hint: "Signature solid Zenko fox silhouette (Default)" },
+    StudioOption { value: "fox_geometric", label: "Geometric Fox", hint: "Sharp faceted low-poly fox emblem" },
+    StudioOption { value: "fox_line", label: "Minimal Line Fox", hint: "Crisp clean vector outline fox face" },
+    StudioOption { value: "fox_cute", label: "Cute Fox", hint: "Friendly rounded fox portrait with soft cheeks" },
+    StudioOption { value: "fox_origami", label: "Origami Fox", hint: "Folded angular paper-craft fox emblem" },
+    StudioOption { value: "fox_kitsune", label: "Kitsune Mask", hint: "Sleek ceremonial Japanese fox mask silhouette" },
+    StudioOption { value: "fox_side", label: "Fox Profile", hint: "Alert sleek side-profile fox head mark" },
+    StudioOption { value: "fox_sleeping", label: "Curled Fox", hint: "Cozy minimalist sleeping curled fox emblem" },
+    StudioOption { value: "fox_crest", label: "Fox Crest", hint: "Bold symmetrical heraldic shield fox" },
+    StudioOption { value: "fox_cyber", label: "Cyber Fox", hint: "Sharp hexagonal angular tech-fox mark" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Hide agent avatar next to replies" },
+];
+
+const OPT_AVATAR_FRAME: &[StudioOption] = &[
+    StudioOption { value: "bare", label: "Hidden (No Frame)", hint: "Hide the container frame — show only the clean avatar" },
+    StudioOption { value: "squircle", label: "Squircle Badge", hint: "Rounded square container frame" },
+    StudioOption { value: "circle", label: "Circle Badge", hint: "Classic circular hairline frame" },
+    StudioOption { value: "soft_tint", label: "Accent Soft", hint: "Subtle 12% tinted wash + hairline" },
+    StudioOption { value: "accent_solid", label: "Accent Solid", hint: "High-contrast filled color badge" },
+    StudioOption { value: "ring", label: "Accent Ring", hint: "Transparent interior with crisp colored outline" },
+];
+
+const OPT_USER_AVATAR: &[StudioOption] = &[
+    StudioOption { value: "icon_user", label: "Classic User", hint: "User profile glyph from your active icon family (Default)" },
+    StudioOption { value: "user_circle", label: "Profile Circle", hint: "Human portrait enclosed in a clean profile ring" },
+    StudioOption { value: "user_round", label: "Minimal Human", hint: "Smooth solid human head & shoulders silhouette" },
+    StudioOption { value: "user_check", label: "Verified Member", hint: "User profile silhouette with verified checkmark" },
+    StudioOption { value: "user_code", label: "Dev Profile", hint: "Human profile paired with developer code mark" },
+    StudioOption { value: "user_crown", label: "Workspace Owner", hint: "Human profile silhouette with minimalist crown" },
+    StudioOption { value: "user_glasses", label: "Architect Persona", hint: "Minimal human face portrait with spectacles" },
+    StudioOption { value: "user_smile", label: "Friendly Portrait", hint: "Warm approachable human face icon" },
+    StudioOption { value: "user_hoodie", label: "Builder Silhouette", hint: "Modern hooded human profile silhouette" },
+    StudioOption { value: "monogram", label: "Monogram", hint: "Clean typographic initial badge" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Hide user avatar next to outgoing prompts" },
+];
+
+const OPT_BTN_STYLE: &[StudioOption] = &[
+    StudioOption { value: "solid", label: "Solid", hint: "Filled primary accent button" },
+    StudioOption { value: "soft", label: "Soft Tint", hint: "Subtle tinted fill + border" },
+    StudioOption { value: "outline", label: "Outline", hint: "Crisp bordered transparent fill" },
+    StudioOption { value: "ghost", label: "Ghost", hint: "Borderless hover surface" },
+    StudioOption { value: "glass", label: "Glass", hint: "Frosted translucent surface" },
+    StudioOption { value: "glow", label: "Glow", hint: "Soft ambient accent glow" },
+    StudioOption { value: "tactile3d", label: "3D Tactile", hint: "Physical press depth edge" },
+    StudioOption { value: "shimmer", label: "Shimmer", hint: "Animated highlight sweep" },
+];
+
+const OPT_BTN_SHAPE: &[StudioOption] = &[
+    StudioOption { value: "sharp", label: "Sharp", hint: "3px crisp architectural corners" },
+    StudioOption { value: "rounded", label: "Rounded", hint: "Matches global radius" },
+    StudioOption { value: "soft", label: "Soft", hint: "12px generous rounded corners" },
+    StudioOption { value: "pill", label: "Pill", hint: "Full capsule silhouette" },
+];
+
+const OPT_BTN_SIZE: &[StudioOption] = &[
+    StudioOption { value: "compact", label: "Compact", hint: "Tighter dense controls" },
+    StudioOption { value: "default", label: "Default", hint: "Balanced ergonomic sizing" },
+    StudioOption { value: "comfortable", label: "Comfortable", hint: "Roomier touch-friendly targets" },
+];
+
+const OPT_BTN_MOTION: &[StudioOption] = &[
+    StudioOption { value: "none", label: "None", hint: "Static interaction" },
+    StudioOption { value: "subtle_lift", label: "Subtle Lift", hint: "1px hover elevation" },
+    StudioOption { value: "scale_press", label: "Scale Press", hint: "Tactile 0.96 press spring" },
+    StudioOption { value: "magnetic_glow", label: "Magnetic Glow", hint: "Hover glow + gentle lift" },
+];
+
+const OPT_ICON_PACK: &[StudioOption] = &[
+    StudioOption { value: "lucide", label: "Lucide", hint: "Clean balanced default stroke vectors" },
+    StudioOption { value: "pulsoicon", label: "PulsoIcon", hint: "CityPulso animated React micro-motion icons" },
+    StudioOption { value: "iconsax", label: "Iconsax", hint: "Rounded 24px modern linear vectors (free)" },
+    StudioOption { value: "hugeicons", label: "Hugeicons Animated", hint: "Soft geometric Hugeicons with spring hover motion" },
+    StudioOption { value: "itshover", label: "ItsHover", hint: "Motion-first hover-intent interactive icons" },
+    StudioOption { value: "tabler", label: "Tabler Icons", hint: "Precision 24px MIT open-source stroke set" },
+    StudioOption { value: "aicanvas", label: "AiCanvas", hint: "Modern AI-interface geometric vectors" },
+    StudioOption { value: "humbleicons", label: "Humbleicons", hint: "Neutral minimal hand-crafted MIT UI set" },
+    StudioOption { value: "majesticons", label: "Majesticons", hint: "Confident bold-line 24px interface icons" },
+    StudioOption { value: "dooicons", label: "Dooicons", hint: "Sculpted smooth-corner contrast UI glyphs" },
+];
+
+const OPT_ICON_STYLE: &[StudioOption] = &[
+    StudioOption { value: "outline", label: "Outline", hint: "Clean stroked vectors" },
+    StudioOption { value: "duotone", label: "Duotone", hint: "Subtle 16% tinted inner fill" },
+    StudioOption { value: "solid", label: "Solid", hint: "Filled silhouette glyphs" },
+];
+
+const OPT_SURFACE_CARD: &[StudioOption] = &[
+    StudioOption { value: "minimal_top", label: "Top Hairline", hint: "Clean minimal surface with top divider only — zero heavy box (Default)" },
+    StudioOption { value: "minimal_bottom", label: "Bottom Hairline", hint: "Quiet surface with subtle bottom divider only" },
+    StudioOption { value: "borderless", label: "Borderless Fill", hint: "Soft tonal surface fill with zero borders" },
+    StudioOption { value: "ghost_hairline", label: "Ghost Outline", hint: "Transparent background with quiet 1px hairline border" },
+    StudioOption { value: "flat", label: "Flat Matte", hint: "Zero-border secondary surface tone" },
+    StudioOption { value: "bordered", label: "Framed Card", hint: "Classic card background + 1px hairline border" },
+    StudioOption { value: "elevated", label: "Elevated Soft", hint: "Ambient floating shadow with borderless edges" },
+    StudioOption { value: "glass", label: "Frosted Glass", hint: "Translucent blurred glass surface" },
+    StudioOption { value: "spotlight", label: "Accent Edge", hint: "Subtle global accent gradient wash & hairline" },
+];
+
+pub const STUDIO_SCHEMA: &[StudioCategory] = &[
+    StudioCategory {
+        id: "icons",
+        label: "Icons & Glyphs",
+        description: "Choose from 10 free icon families (including animated hover packs), stroke weight, and slot swaps.",
+        preview: "icon_families",
+        sub_components: &[
+            StudioSubComponent {
+                id: "icon_families",
+                group: "",
+                label: "Icon Families",
+                description: "Switch the active icon library across the WebUI — hover animated packs to preview motion.",
+                preview: "icon_families",
+                controls: &[StudioControl {
+                    path: "icons.pack",
+                    label: "Icon Family",
+                    description: "Applies live across sidebar, floating dock, composer, and studio controls.",
+                    kind: ControlKind::Cards,
+                    options: OPT_ICON_PACK,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "icon_style",
+                group: "",
+                label: "Stroke & Fill",
+                description: "Fine-tune outline, duotone, solid rendering, stroke weight, and default size.",
+                preview: "icon_families",
+                controls: &[
+                    StudioControl {
+                        path: "icons.style",
+                        label: "Icon Fill Style",
+                        description: "Outline, soft duotone tint, or solid.",
+                        kind: ControlKind::Cards,
+                        options: OPT_ICON_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "icons.stroke_width",
+                        label: "Stroke Width",
+                        description: "Fine-tune vector line thickness.",
+                        kind: ControlKind::Range,
+                        options: &[],
+                        min: Some(1.1),
+                        max: Some(2.4),
+                        step: Some(0.1),
+                        unit: "px",
+                    },
+                    StudioControl {
+                        path: "icons.size_px",
+                        label: "Icon Size",
+                        description: "Default navigation and toolbar icon dimensions.",
+                        kind: ControlKind::Range,
+                        options: &[],
+                        min: Some(13.0),
+                        max: Some(21.0),
+                        step: Some(1.0),
+                        unit: "px",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "icon_overrides",
+                group: "",
+                label: "Slot Overrides",
+                description: "Swap individual navigation dock icon glyphs cleanly.",
+                preview: "right_menubar",
+                controls: &[StudioControl {
+                    path: "icons.overrides",
+                    label: "Per-Slot Icon Overrides",
+                    description: "Override specific workspace dock slots without changing the whole pack.",
+                    kind: ControlKind::IconOverrides,
+                    options: &[],
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "chat_page",
+        label: "Chat Page",
+        description: "Dedicated customization pages for chat canvas, loading, activity, responses, tools, diffs, badges, and tables.",
+        preview: "chat_background",
+        sub_components: &[
+            StudioSubComponent {
+                id: "chat_background",
+                group: "",
+                label: "Background",
+                description: "Backdrop pattern and ambient lighting strictly inheriting your active theme.",
+                preview: "chat_background",
+                controls: &[StudioControl {
+                    path: "components.chat_page.background",
+                    label: "Chat Background",
+                    description: "Select a matte, architectural grid, or subtle ambient backdrop for the chat canvas.",
+                    kind: ControlKind::Cards,
+                    options: OPT_CHAT_BACKGROUND,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "message_layout",
+                group: "",
+                label: "Message Layout",
+                description: "Conversation flow, column measure, scroller rail, separators, and metadata toggles.",
+                preview: "chat_layout",
+                controls: &[
+                    StudioControl {
+                        path: "layout.chat_layout",
+                        label: "Stream Layout",
+                        description: "Editorial prose, framed split bubbles, or monospace terminal.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CHAT_LAYOUT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.content_width",
+                        label: "Reading Width",
+                        description: "Maximum horizontal width of the conversation column.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CONTENT_WIDTH,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.scroller_style",
+                        label: "Chat Message Scroller",
+                        description: "Auto-follow conversation scroller & interactive jump preview rail.",
+                        kind: ControlKind::Cards,
+                        options: OPT_SCROLLER_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "widgets.show_timestamps",
+                        label: "Show Timestamps",
+                        description: "Display quiet HH:MM times on messages.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.show_day_separators",
+                        label: "Day & Compaction Separators",
+                        description: "Show hairline DaySeparator dividers for dates and autocompact checkpoints.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "widgets.show_cost_badges",
+                        label: "Show Token & Cost Badges",
+                        description: "Display token count, cache hits, and USD spend inline with replies.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "user_bubble",
+                group: "",
+                label: "User Bubble",
+                description: "Container style for your outgoing prompt bubbles.",
+                preview: "user_bubble",
+                controls: &[StudioControl {
+                    path: "components.chat_page.user_bubble",
+                    label: "Bubble Style",
+                    description: "Inherits global theme card & accent colors.",
+                    kind: ControlKind::Cards,
+                    options: OPT_USER_BUBBLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "avatars_profiles",
+                group: "",
+                label: "Avatars & Profiles",
+                description: "Choose a Fox emblem for Zenko, customize human profile avatars, pick custom colors, or hide the avatar frame.",
+                preview: "avatars",
+                controls: &[
+                    StudioControl {
+                        path: "components.chat_page.show_avatars",
+                        label: "Show Chat Avatars",
+                        description: "Display Agent and User profile avatars alongside conversation turns.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "motion.orb_style",
+                        label: "Zenko Fox Avatar",
+                        description: "Select a handcrafted fox emblem style for Zenko.",
+                        kind: ControlKind::Cards,
+                        options: OPT_ORB,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.agent_avatar_frame",
+                        label: "Agent Avatar Frame",
+                        description: "Hide the frame completely or pick a container badge around Zenko's fox avatar.",
+                        kind: ControlKind::Cards,
+                        options: OPT_AVATAR_FRAME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.agent_avatar_color",
+                        label: "Agent Avatar Color",
+                        description: "Customize Zenko's fox emblem color or reset to follow your global theme accent.",
+                        kind: ControlKind::Color,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.user_avatar",
+                        label: "User Profile Avatar",
+                        description: "Pick a human/profile avatar icon or clean monogram for your prompts.",
+                        kind: ControlKind::Cards,
+                        options: OPT_USER_AVATAR,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.user_avatar_frame",
+                        label: "User Profile Frame",
+                        description: "Hide the frame or select a container silhouette around your profile avatar.",
+                        kind: ControlKind::Cards,
+                        options: OPT_AVATAR_FRAME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.user_avatar_color",
+                        label: "User Avatar Color",
+                        description: "Customize your profile avatar tint or reset to inherit your active theme.",
+                        kind: ControlKind::Color,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            // Hierarchical Group: Thinking & Activity
+            StudioSubComponent {
+                id: "loading_thinking",
+                group: "Thinking & Activity",
+                label: "Loading & Thinking",
+                description: "Animated thinking indicator, 3×3 matrix loaders, and BeUI motion glyphs.",
+                preview: "loading_state",
+                controls: &[
+                    StudioControl {
+                        path: "components.chat_page.loading_style",
+                        label: "Loading & Thinking Indicator",
+                        description: "Choose BeUI Motion Loader, ThinkingIndicator, or 3×3 GenerationLoader.",
+                        kind: ControlKind::Cards,
+                        options: OPT_LOADING_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.loader_variant",
+                        label: "BeUI Motion Glyph",
+                        description: "Motion glyph used when Loading Style is set to BeUI Motion Loader.",
+                        kind: ControlKind::Cards,
+                        options: OPT_LOADER_VARIANT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "agent_activity",
+                group: "Thinking & Activity",
+                label: "Agent Activity",
+                description: "Unified live & completed tool execution and activity style: Collapsible+, Smart Elements, BeUI ToolResult, RunActivity, or ToolTimeline.",
+                preview: "agent_activity",
+                controls: &[StudioControl {
+                    path: "components.chat_page.activity_style",
+                    label: "Agent Activity & Tool Execution",
+                    description: "One unified view for all tool calls & activity — Collapsible+, Collapsible, Smart Elements, BeUI Tool Result, RunActivity, or Timeline.",
+                    kind: ControlKind::Cards,
+                    options: OPT_ACTIVITY_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "reasoning_trace",
+                group: "Thinking & Activity",
+                label: "Reasoning Trace",
+                description: "Completed model thought presentation and disclosure controls.",
+                preview: "thinking_trace",
+                controls: &[
+                    StudioControl {
+                        path: "components.chat_page.thinking_style",
+                        label: "Thinking Display",
+                        description: "Presentation of completed model reasoning blocks.",
+                        kind: ControlKind::Cards,
+                        options: OPT_THINKING_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "widgets.show_thinking",
+                        label: "Enable Reasoning Trace",
+                        description: "Show internal model chain-of-thought when provided.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            // Hierarchical Group: Responses & Elements (each inside component has its own dedicated page!)
+            StudioSubComponent {
+                id: "streaming_response",
+                group: "Responses & Elements",
+                label: "Streaming Response",
+                description: "Choose between BeUI Markdown Stream, Word-Stream Accent (StreamingText), or Editorial.",
+                preview: "streaming_response",
+                controls: &[StudioControl {
+                    path: "components.chat_page.streaming_style",
+                    label: "Streaming Response Style",
+                    description: "Live text reveal and markdown stream presentation.",
+                    kind: ControlKind::Cards,
+                    options: OPT_STREAMING_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "message_actions",
+                group: "Responses & Elements",
+                label: "Message Actions",
+                description: "Copy, branching retry, sources, and inline token metrics bar.",
+                preview: "message_actions",
+                controls: &[
+                    StudioControl {
+                        path: "components.chat_page.message_actions_style",
+                        label: "Message Actions Bar",
+                        description: "Action controls displayed cleanly under assistant replies.",
+                        kind: ControlKind::Cards,
+                        options: OPT_MESSAGE_ACTIONS_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.show_citations",
+                        label: "Show Source Citations",
+                        description: "Display interactive Sources disclosure drawer from web search or links.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "terminal_shell",
+                group: "Responses & Elements",
+                label: "Terminal & Shell",
+                description: "ANSI-aware TerminalBlock, CodeRunner, or borderless minimal shell output.",
+                preview: "terminal_block",
+                controls: &[StudioControl {
+                    path: "components.chat_page.shell_style",
+                    label: "Terminal & Shell Element",
+                    description: "Default element for shell command output inside Smart Elements.",
+                    kind: ControlKind::Cards,
+                    options: OPT_SHELL_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "code_blocks",
+                group: "Responses & Elements",
+                label: "Code Blocks",
+                description: "CodeRunner, Borderless Minimal, or Classic Bordered fenced code blocks.",
+                preview: "code_blocks",
+                controls: &[StudioControl {
+                    path: "components.chat_page.code_block_style",
+                    label: "Code Block Element",
+                    description: "Visual style for markdown code blocks inside assistant responses.",
+                    kind: ControlKind::Cards,
+                    options: OPT_CODE_BLOCK_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "code_diffs",
+                group: "Responses & Elements",
+                label: "Code Diffs",
+                description: "Animated CodeDiff, interactive per-hunk ReviewableDiff, or minimal inline diff.",
+                preview: "code_diffs",
+                controls: &[StudioControl {
+                    path: "components.chat_page.diff_style",
+                    label: "Code Diff Element",
+                    description: "How file edits and git patches render in chat.",
+                    kind: ControlKind::Cards,
+                    options: OPT_DIFF_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "permission_approvals",
+                group: "Responses & Elements",
+                label: "Permission Approvals",
+                description: "HITL confirmation cards: PermissionGrant, BeUI ToolApproval, or Compact Card.",
+                preview: "permission_approvals",
+                controls: &[StudioControl {
+                    path: "components.chat_page.approval_style",
+                    label: "Permission & Approval Card",
+                    description: "Interactive confirmation card for dangerous shell & guarded tools.",
+                    kind: ControlKind::Cards,
+                    options: OPT_APPROVAL_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "memory_badges",
+                group: "Responses & Elements",
+                label: "Memory & Skill Badges",
+                description: "MemoryChips badges or customizable pill badges shown when skills/memory activate.",
+                preview: "memory_badges",
+                controls: &[StudioControl {
+                    path: "components.chat_page.skill_badge_style",
+                    label: "Memory & Skill Badges",
+                    description: "Customize badges shown under assistant headers.",
+                    kind: ControlKind::Cards,
+                    options: OPT_SKILL_BADGE_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "data_tables",
+                group: "Responses & Elements",
+                label: "Data Tables",
+                description: "Borderless, minimal hairline, soft striped, or framed sortable tables.",
+                preview: "data_tables",
+                controls: &[StudioControl {
+                    path: "surface.table_style",
+                    label: "Data Table Style",
+                    description: "Applies to all Markdown and structured DataTables.",
+                    kind: ControlKind::Cards,
+                    options: OPT_TABLE_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "element_chrome",
+                group: "Responses & Elements",
+                label: "Borders, Errors & States",
+                description: "Global borderless/minimal chrome plus live ErrorState, StoppedRun, FileTree & WebSearch.",
+                preview: "element_states",
+                controls: &[StudioControl {
+                    path: "surface.element_chrome",
+                    label: "Element Chrome (Borderless / Minimal)",
+                    description: "Control borders across Terminal, CodeRunner, Diff, FileTree, Permission, and Error elements.",
+                    kind: ControlKind::Cards,
+                    options: OPT_ELEMENT_CHROME,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "chat_input",
+        label: "Chat Input Box",
+        description: "Customize the floating prompt composer and every inside sub-component.",
+        preview: "chat_input",
+        sub_components: &[
+            StudioSubComponent {
+                id: "composer_shell",
+                group: "",
+                label: "Container Shell",
+                description: "Outer shape, elevation, and footer visibility of the chat input box.",
+                preview: "chat_input",
+                controls: &[
+                    StudioControl {
+                        path: "components.composer.shell_variant",
+                        label: "Shell Style",
+                        description: "Inherits global theme surface & accent automatically.",
+                        kind: ControlKind::Cards,
+                        options: OPT_COMPOSER_SHELL,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.show_attach",
+                        label: "Attach Path Action",
+                        description: "Display quick workspace path hint icon on the left.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.show_policy",
+                        label: "Execution Policy Pill",
+                        description: "Quick Strict / Balanced / Autonomous selector inside composer.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.show_streaming_toggle",
+                        label: "Streaming Toggle Pill",
+                        description: "Interactive Streaming ON/OFF control inside composer.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "model_picker",
+                group: "",
+                label: "Model Picker",
+                description: "Provider -> Model switcher layout and live metadata presentation.",
+                preview: "model_picker",
+                controls: &[StudioControl {
+                    path: "components.composer.model_picker_style",
+                    label: "Picker Layout",
+                    description: "How providers and live models appear when clicking the model pill.",
+                    kind: ControlKind::Cards,
+                    options: OPT_MODEL_PICKER,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "send_button",
+                group: "",
+                label: "Send Button",
+                description: "Shape and icon glyph for the primary prompt submission action.",
+                preview: "chat_input",
+                controls: &[
+                    StudioControl {
+                        path: "components.composer.send_button_shape",
+                        label: "Button Silhouette",
+                        description: "Geometric shape of the send/stop control.",
+                        kind: ControlKind::Cards,
+                        options: OPT_SEND_SHAPE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.send_button_icon",
+                        label: "Send Icon",
+                        description: "Icon rendered inside the submit button.",
+                        kind: ControlKind::Cards,
+                        options: OPT_SEND_ICON,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "context_meter",
+                group: "",
+                label: "Context Meter",
+                description: "Displays live session tokens against the active model's real max context.",
+                preview: "chat_input",
+                controls: &[StudioControl {
+                    path: "components.composer.context_meter",
+                    label: "Meter Visualization",
+                    description: "Visual style of the live token/context indicator.",
+                    kind: ControlKind::Cards,
+                    options: OPT_CONTEXT_METER,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "action_pills",
+                group: "",
+                label: "Action Pills",
+                description: "Visual treatment for composer pills (model, policy, streaming).",
+                preview: "chat_input",
+                controls: &[StudioControl {
+                    path: "components.composer.action_pills",
+                    label: "Pill Style",
+                    description: "Surface & border weight for composer toolbar controls.",
+                    kind: ControlKind::Cards,
+                    options: OPT_ACTION_PILLS,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "layout",
+        label: "Layout & Typography",
+        description: "Workspace backdrop texture, spacing density, Obel Mono & Fontzz typefaces, and motion feel.",
+        preview: "layout",
+        sub_components: &[
+            StudioSubComponent {
+                id: "canvas",
+                group: "",
+                label: "Workspace Canvas",
+                description: "Background surface pattern, spacing density, and slim scrollbar styling.",
+                preview: "layout",
+                controls: &[
+                    StudioControl {
+                        path: "surface.bg_pattern",
+                        label: "Canvas Texture",
+                        description: "Optional subtle architectural background texture.",
+                        kind: ControlKind::Cards,
+                        options: OPT_BG_PATTERN,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "layout.density",
+                        label: "Spacing Density",
+                        description: "Controls global card and panel padding rhythm.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DENSITY,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.scrollbar_style",
+                        label: "Scrollbar Style",
+                        description: "Slim theme-colored vertical scrollbar across panels.",
+                        kind: ControlKind::Cards,
+                        options: OPT_SCROLLBAR_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "motion.smooth_scroll",
+                        label: "Smooth Scroll Animation",
+                        description: "Enable Lenis inertia smooth scrolling on scrollable pages.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "typography",
+                group: "",
+                label: "Typography & Fonts",
+                description: "Self-hosted Obel Mono, Fontzz Sans/Serif/Display/Mono families, and root text scale.",
+                preview: "typography",
+                controls: &[
+                    StudioControl {
+                        path: "typography.ui_font",
+                        label: "Interface Font (Fontzz & Sans)",
+                        description: "Primary typeface across navigation, headings, and prose.",
+                        kind: ControlKind::Cards,
+                        options: OPT_UI_FONT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "typography.mono_font",
+                        label: "Code & Telemetry Font (Obel Mono & Fontzz)",
+                        description: "Monospace font for logs, diffs, terminal output, and code blocks.",
+                        kind: ControlKind::Cards,
+                        options: OPT_MONO_FONT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "typography.base_size_px",
+                        label: "Base Font Size",
+                        description: "Root text scale across the workspace.",
+                        kind: ControlKind::Range,
+                        options: &[],
+                        min: Some(12.0),
+                        max: Some(17.0),
+                        step: Some(1.0),
+                        unit: "px",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "motion_orb",
+                group: "",
+                label: "Motion & Transitions",
+                description: "Animation responsiveness and Dark/Light view-transition reveals.",
+                preview: "layout",
+                controls: &[
+                    StudioControl {
+                        path: "motion.preset",
+                        label: "Motion Speed",
+                        description: "Global spring & transition responsiveness.",
+                        kind: ControlKind::Cards,
+                        options: OPT_MOTION,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "motion.theme_transition",
+                        label: "Theme Toggle Animation",
+                        description: "View Transition reveal used when toggling Dark & Light mode.",
+                        kind: ControlKind::Cards,
+                        options: OPT_THEME_TRANSITION,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "left_menubar",
+        label: "Left Menubar",
+        description: "Session sidebar frame, New Session CTA, and conversation list styling.",
+        preview: "left_menubar",
+        sub_components: &[
+            StudioSubComponent {
+                id: "sidebar_frame",
+                group: "",
+                label: "Sidebar Frame",
+                description: "Container geometry of the session sidebar.",
+                preview: "left_menubar",
+                controls: &[StudioControl {
+                    path: "components.left_menubar.frame_style",
+                    label: "Frame Layout",
+                    description: "Flush docked panel, detached floating card, or compact width.",
+                    kind: ControlKind::Cards,
+                    options: OPT_SIDEBAR_FRAME,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "new_session_btn",
+                group: "",
+                label: "New Session Button",
+                description: "Visual emphasis of the primary session creation CTA.",
+                preview: "left_menubar",
+                controls: &[StudioControl {
+                    path: "components.left_menubar.new_session_style",
+                    label: "CTA Variant",
+                    description: "Inherits global accent and radius.",
+                    kind: ControlKind::Cards,
+                    options: OPT_NEW_SESSION,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "session_items",
+                group: "",
+                label: "Session Items",
+                description: "Active row highlight style in the session list.",
+                preview: "left_menubar",
+                controls: &[StudioControl {
+                    path: "components.left_menubar.session_item_style",
+                    label: "Active Row Style",
+                    description: "How the currently open session is highlighted.",
+                    kind: ControlKind::Cards,
+                    options: OPT_SESSION_ITEM,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "right_menubar",
+        label: "Right Menubar",
+        description: "Floating vertical icon dock shell and spring active indicator.",
+        preview: "right_menubar",
+        sub_components: &[
+            StudioSubComponent {
+                id: "dock_shell",
+                group: "",
+                label: "Dock Shell",
+                description: "Container geometry of the right-edge workspace dock.",
+                preview: "right_menubar",
+                controls: &[StudioControl {
+                    path: "components.right_menubar.dock_style",
+                    label: "Shell Style",
+                    description: "Capsule, attached edge rail, frosted glass, or minimal strip.",
+                    kind: ControlKind::Cards,
+                    options: OPT_DOCK_SHELL,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "dock_indicator",
+                group: "",
+                label: "Active Indicator",
+                description: "Spring-animated highlight marking the active workspace view.",
+                preview: "right_menubar",
+                controls: &[StudioControl {
+                    path: "components.right_menubar.active_indicator",
+                    label: "Highlight Variant",
+                    description: "How the active view icon is emphasized.",
+                    kind: ControlKind::Cards,
+                    options: OPT_DOCK_INDICATOR,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "primitives",
+        label: "Buttons & Surfaces",
+        description: "Global interactive button language, card surfaces, tabs, accordions, alerts, modals, and popovers.",
+        preview: "buttons",
+        sub_components: &[
+            StudioSubComponent {
+                id: "buttons",
+                group: "",
+                label: "Buttons",
+                description: "Global button style, shape, sizing, and press micro-interactions.",
+                preview: "buttons",
+                controls: &[
+                    StudioControl {
+                        path: "buttons.style",
+                        label: "Button Style",
+                        description: "8 curated surface treatments inheriting global primary color.",
+                        kind: ControlKind::Cards,
+                        options: OPT_BTN_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "buttons.shape",
+                        label: "Button Shape",
+                        description: "Corner geometry across primary & secondary buttons.",
+                        kind: ControlKind::Cards,
+                        options: OPT_BTN_SHAPE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "buttons.size",
+                        label: "Button Size",
+                        description: "Global button padding scale.",
+                        kind: ControlKind::Cards,
+                        options: OPT_BTN_SIZE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "buttons.motion",
+                        label: "Hover & Press Motion",
+                        description: "Tactile feedback on pointer interaction.",
+                        kind: ControlKind::Cards,
+                        options: OPT_BTN_MOTION,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "surfaces",
+                group: "",
+                label: "Surfaces & Radius",
+                description: "Global card surface elevation and corner radius.",
+                preview: "surfaces",
+                controls: &[
+                    StudioControl {
+                        path: "surface.card_style",
+                        label: "Card Surface",
+                        description: "Applied across settings, telemetry, and workspace panels.",
+                        kind: ControlKind::Cards,
+                        options: OPT_SURFACE_CARD,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.radius_px",
+                        label: "Corner Radius",
+                        description: "Global corner rounding across cards and inputs.",
+                        kind: ControlKind::Range,
+                        options: &[],
+                        min: Some(0.0),
+                        max: Some(20.0),
+                        step: Some(1.0),
+                        unit: "px",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "tabs_accordions",
+                group: "Overlays & Controls",
+                label: "Tabs & Accordions",
+                description: "Spring tabs and collapsible accordion styles.",
+                preview: "tabs_accordions",
+                controls: &[
+                    StudioControl {
+                        path: "surface.tabs_variant",
+                        label: "Tabs Style",
+                        description: "Visual style for BeUI animated tabs across workspace views.",
+                        kind: ControlKind::Cards,
+                        options: OPT_TABS_VARIANT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.accordion_style",
+                        label: "Accordion Style",
+                        description: "Spring-grouped bouncy cards or compact disclosure rows.",
+                        kind: ControlKind::Cards,
+                        options: OPT_ACCORDION_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "alerts_modals",
+                group: "Overlays & Controls",
+                label: "Alerts, Modals & Popovers",
+                description: "Customize alerts, center-morph modals, and gooey popovers.",
+                preview: "overlays",
+                controls: &[
+                    StudioControl {
+                        path: "surface.alert_style",
+                        label: "Alert Banner Style",
+                        description: "Animated BeUI alerts or compact inline notices.",
+                        kind: ControlKind::Cards,
+                        options: OPT_ALERT_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.modal_style",
+                        label: "Modal Transition",
+                        description: "Center-unfolding morph modal or classic scale dialog.",
+                        kind: ControlKind::Cards,
+                        options: OPT_MODAL_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.popover_style",
+                        label: "Popover Style",
+                        description: "Liquid gooey BeUI popover or crisp floating card.",
+                        kind: ControlKind::Cards,
+                        options: OPT_POPOVER_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "hover_hints",
+                group: "Overlays & Controls",
+                label: "Hover Hints (Tooltips)",
+                description: "Customize dock, composer, context meter, and action hover hint pills.",
+                preview: "hover_hints",
+                controls: &[
+                    StudioControl {
+                        path: "surface.tooltip_style",
+                        label: "Hover Hint Surface",
+                        description: "Visual appearance of hover hints across dock, context meter, and controls.",
+                        kind: ControlKind::Cards,
+                        options: OPT_TOOLTIP_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.tooltip_shape",
+                        label: "Hover Hint Shape",
+                        description: "Corner silhouette of floating hover hints.",
+                        kind: ControlKind::Cards,
+                        options: OPT_TOOLTIP_SHAPE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.tooltip_motion",
+                        label: "Hover Hint Animation",
+                        description: "Entrance motion when hovering interactive controls.",
+                        kind: ControlKind::Cards,
+                        options: OPT_TOOLTIP_MOTION,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.show_hover_hints",
+                        label: "Enable Hover Hints",
+                        description: "Show themed floating hints when hovering icons and meters.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+        ],
+    },
+    StudioCategory {
+        id: "dashboard",
+        label: "Dashboard",
+        description: "Customize Zenko's visual analytics Dashboard, contribution heatmap, charts, storage & vault widgets.",
+        preview: "dashboard_preview",
+        sub_components: &[
+            StudioSubComponent {
+                id: "dashboard_charts",
+                group: "",
+                label: "Layout & Charts",
+                description: "Configure grid layout, ECharts aesthetic, and GitHub-style contribution heatmap appearance.",
+                preview: "dashboard_preview",
+                controls: &[
+                    StudioControl {
+                        path: "components.dashboard.layout",
+                        label: "Dashboard Layout",
+                        description: "Structural grid cadence across analytics charts & panels.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DASHBOARD_LAYOUT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.chart_theme",
+                        label: "Chart Visual Style",
+                        description: "Rendering aesthetic across ECharts heatmaps, trends, and storage breakdowns.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DASHBOARD_CHART_THEME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.heatmap_shape",
+                        label: "Activity Heatmap Cells",
+                        description: "Cell silhouette in the GitHub-style contribution calendar.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DASHBOARD_HEATMAP_SHAPE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.heatmap_range",
+                        label: "Activity Heatmap Window",
+                        description: "Time span displayed in the contribution calendar.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DASHBOARD_HEATMAP_RANGE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "dashboard_widgets",
+                group: "",
+                label: "Visible Modules",
+                description: "Choose which analytics charts, storage/vault cards, and ops panels appear on Dashboard.",
+                preview: "dashboard_preview",
+                controls: &[
+                    StudioControl {
+                        path: "components.dashboard.show_heatmap",
+                        label: "Activity Contribution Heatmap",
+                        description: "GitHub-style daily Zenko usage calendar heatmap.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_token_trends",
+                        label: "Token & KV-Cache Trends",
+                        description: "Daily prompt, completion, and cached token volume chart.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_storage_vault",
+                        label: "Storage & zenko_vault",
+                        description: "Disk breakdown chart and encrypted ChaCha20-Poly1305 vault inspector.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_tools_table",
+                        label: "Tool & Model Analytics",
+                        description: "Top executed tools chart, latency table, and model usage ledger.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_subagents_jobs",
+                        label: "Subagents & Background Tasks",
+                        description: "Async subagent worktrees and ZenkoTasks control plane.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.show_logs",
+                        label: "Categorized Flight Recorder",
+                        description: "Searchable secret-scrubbed live daemon log stream.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+        ],
+    },
+];

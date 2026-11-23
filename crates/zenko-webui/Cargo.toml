@@ -1,0 +1,28 @@
+[package]
+name = "zenko-webui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+chrono.workspace = true
+croner.workspace = true
+futures-util.workspace = true
+maud.workspace = true
+mime_guess.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+zenko-core.workspace = true
+zenko-gateways.workspace = true
+zenko-memory.workspace = true
+zenko-providers.workspace = true
+zenko-runtime.workspace = true

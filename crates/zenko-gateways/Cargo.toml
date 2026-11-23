@@ -1,0 +1,21 @@
+[package]
+name = "zenko-gateways"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hex.workspace = true
+hmac.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+zenko-core.workspace = true
+zenko-runtime.workspace = true

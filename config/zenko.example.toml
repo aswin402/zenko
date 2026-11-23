@@ -1,0 +1,64 @@
+# Zenko 24/7 Autonomous AI Agent — Example Configuration
+# Copy to ~/.zenko/zenko.toml or generate via `zenko setup`
+
+[general]
+data_dir = "~/.zenko"
+workspace_dir = "."
+log_level = "info"
+max_tool_iterations = 24
+daily_spend_limit_usd = 5.0
+
+[webui]
+enabled = true
+bind = "127.0.0.1"
+port = 7878
+# Admin token is stored securely in ~/.zenko/vault.enc (set via `zenko setup`)
+require_auth = true
+
+[provider]
+kind = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+lead_model = "anthropic/claude-sonnet-4"
+fast_model = "google/gemini-2.5-flash"
+compaction_model = "google/gemini-2.5-flash"
+dream_model = "google/gemini-2.5-flash"
+fallbacks = [
+    "openai/gpt-4.1",
+    "deepseek/deepseek-chat-v3-0324",
+]
+provider_sort = "price" # "price" | "throughput"
+enable_prompt_caching = true
+sticky_session_routing = true
+temperature = 0.2
+max_tokens = 4096
+
+[telegram]
+enabled = false
+mode = "polling" # "polling" | "webhook"
+stream_drafts = true
+poll_timeout_secs = 25
+default_permission = "balanced"
+
+[policy]
+mode = "balanced" # "strict" | "balanced" | "autonomous"
+shell_timeout_secs = 60
+max_output_bytes = 16384
+allowed_shell_prefixes = [
+    "ls", "pwd", "cat", "head", "tail", "wc", "git status", "git diff", "git log",
+    "cargo check", "cargo test", "rg", "find",
+]
+denied_shell_patterns = [
+    "rm -rf /",
+    "rm -rf ~",
+    "mkfs",
+    "dd if=",
+    ":(){ :|:& };:",
+    "chmod -R 777 /",
+]
+
+# Optional deterministic lifecycle hooks (Claude Code pattern)
+# [[hooks]]
+# event = "PreToolUse"
+# matcher = "shell_exec"
+# command = "/path/to/policy-check.sh"
+# timeout_secs = 5

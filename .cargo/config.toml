@@ -1,0 +1,3 @@
+[build]
+# Limit parallel compilation jobs to conserve CPU and RAM
+jobs = 2

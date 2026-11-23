@@ -1,0 +1,551 @@
+@import "tailwindcss";
+@import "tw-shimmer";
+
+/* Self-hosted SIL OFL 1.1 Variable Fonts: Obel Mono (typographic.systems) + Fontzz (fontzz.vercel.app) */
+@font-face { font-family: 'Obel Mono'; src: url('/fonts/ObelMono-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Halden'; src: url('/fonts/Halden-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Rondel'; src: url('/fonts/Rondel-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Mallow'; src: url('/fonts/Mallow-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Strata'; src: url('/fonts/Strata-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Vector'; src: url('/fonts/Vector-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Folio'; src: url('/fonts/Folio-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Meridian'; src: url('/fonts/Meridian-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Ledger'; src: url('/fonts/Ledger-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Opaline'; src: url('/fonts/Opaline-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Vesper'; src: url('/fonts/Vesper-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbit'; src: url('/fonts/Orbit-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Diode'; src: url('/fonts/Diode-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Signal'; src: url('/fonts/Signal-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Tally'; src: url('/fonts/Tally-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Fathom'; src: url('/fonts/Fathom-VF.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+
+:root {
+  --bg: #0a0a0b;
+  --surface: #0e0e10;
+  --card: #131316;
+  --border: #1f1f24;
+  --fg: #f5f5f6;
+  --muted: #8a8a93;
+  --primary: #ea5829;
+  --primary-fg: #ffffff;
+  --accent: #ea5829;
+  --destructive: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --muted-foreground: var(--muted);
+  --card-foreground: var(--fg);
+  --popover: var(--surface);
+  --popover-foreground: var(--fg);
+  --ring: var(--accent);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-lg: 16px;
+  --font-sans: 'Plus Jakarta Sans', 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: 'Space Grotesk', 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-base: 14px;
+  --icon-size: 16px;
+  --icon-stroke: 1.75;
+  --motion-ms: 160ms;
+  --motion-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --density-pad: 16px;
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-surface: var(--surface);
+  --color-card: var(--card);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--fg);
+  --color-secondary: var(--surface);
+  --color-secondary-foreground: var(--fg);
+  --color-muted: var(--card);
+  --color-muted-foreground: var(--muted);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+  --color-foreground: var(--fg);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-fg);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--primary-fg);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Density scales */
+[data-density="compact"] { --density-pad: 11px; }
+[data-density="balanced"] { --density-pad: 16px; }
+[data-density="spacious"] { --density-pad: 22px; }
+
+/* Optional background patterns (Clean default — no AI dot noise!) */
+[data-bg-pattern="dot_grid"] .zenko-canvas {
+  background-image: radial-gradient(color-mix(in srgb, var(--border) 80%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+[data-bg-pattern="tech_grid"] .zenko-canvas {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+[data-bg-pattern="ambient_glow"] .zenko-canvas {
+  background-image:
+    radial-gradient(640px circle at 50% 0%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 62%);
+}
+
+/* Chat Page background options (strictly inherit active global theme tokens) */
+.zenko-chat-bg[data-chat-bg="clean"] {
+  background-image: none;
+}
+.zenko-chat-bg[data-chat-bg="dot_grid"] {
+  background-image: radial-gradient(color-mix(in srgb, var(--border) 92%, transparent) 1.1px, transparent 1.1px);
+  background-size: 22px 22px;
+}
+.zenko-chat-bg[data-chat-bg="fine_grid"] {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.zenko-chat-bg[data-chat-bg="cross_grid"] {
+  background-image:
+    radial-gradient(circle at 0 0, color-mix(in srgb, var(--muted) 36%, transparent) 1.25px, transparent 1.25px),
+    linear-gradient(to right, color-mix(in srgb, var(--border) 32%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 32%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.zenko-chat-bg[data-chat-bg="top_glow"] {
+  background-image: radial-gradient(
+    720px 340px at 50% -40px,
+    color-mix(in srgb, var(--accent) 13%, transparent),
+    transparent 68%
+  );
+}
+.zenko-chat-bg[data-chat-bg="bottom_glow"] {
+  background-image: radial-gradient(
+    680px 300px at 50% 104%,
+    color-mix(in srgb, var(--accent) 13%, transparent),
+    transparent 68%
+  );
+}
+.zenko-chat-bg[data-chat-bg="vignette"] {
+  background-image: radial-gradient(
+    80% 72% at 50% 42%,
+    color-mix(in srgb, var(--surface) 92%, transparent),
+    var(--bg) 100%
+  );
+}
+.zenko-chat-bg[data-chat-bg="diagonal_hatch"] {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 13px,
+    color-mix(in srgb, var(--border) 42%, transparent) 13px,
+    color-mix(in srgb, var(--border) 42%, transparent) 14px
+  );
+}
+
+/* Surface customization modes (in @layer components so Tailwind utilities win cleanly) */
+@layer components {
+  .z-surface-card,
+  .z-card-item {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: background-color var(--motion-ms) var(--motion-ease), border-color var(--motion-ms) var(--motion-ease), box-shadow var(--motion-ms) var(--motion-ease);
+  }
+  .z-surface-card {
+    padding: var(--density-pad);
+  }
+  button.z-card-item:hover {
+    background: color-mix(in srgb, var(--fg) 4.5%, var(--surface));
+  }
+
+  /* Minimal Top Hairline — clean quiet surface with top divider only (no heavy box) */
+  [data-surface="minimal_top"] .z-surface-card,
+  [data-surface="minimal_top"] .z-card-item {
+    background: color-mix(in srgb, var(--surface) 48%, transparent);
+    border: 0;
+    border-top: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+    border-radius: var(--radius-sm);
+    box-shadow: none;
+  }
+
+  /* Minimal Bottom Hairline — clean quiet surface with bottom divider only */
+  [data-surface="minimal_bottom"] .z-surface-card,
+  [data-surface="minimal_bottom"] .z-card-item {
+    background: color-mix(in srgb, var(--surface) 42%, transparent);
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+    border-radius: var(--radius-sm);
+    box-shadow: none;
+  }
+
+  /* Borderless Fill — soft surface contrast with zero borders */
+  [data-surface="borderless"] .z-surface-card,
+  [data-surface="borderless"] .z-card-item {
+    background: color-mix(in srgb, var(--surface) 74%, transparent);
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  /* Ghost Outline — transparent canvas with quiet 1px hairline only */
+  [data-surface="ghost_hairline"] .z-surface-card,
+  [data-surface="ghost_hairline"] .z-card-item {
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+    box-shadow: none;
+  }
+
+  /* Flat Matte — solid secondary surface, no border */
+  [data-surface="flat"] .z-surface-card,
+  [data-surface="flat"] .z-card-item {
+    border-color: transparent;
+    background: var(--surface);
+  }
+
+  /* Framed Bordered — classic card surface + hairline */
+  [data-surface="bordered"] .z-surface-card,
+  [data-surface="bordered"] .z-card-item {
+    background: var(--card);
+    border: 1px solid var(--border);
+  }
+
+  /* Elevated Soft — floating depth shadow, borderless edges */
+  [data-surface="elevated"] .z-surface-card,
+  [data-surface="elevated"] .z-card-item {
+    background: var(--card);
+    border-color: transparent;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
+  }
+
+  /* Frosted Glass */
+  [data-surface="glass"] .z-surface-card,
+  [data-surface="glass"] .z-card-item {
+    background: color-mix(in srgb, var(--card) 66%, transparent);
+    border-color: color-mix(in srgb, var(--border) 68%, transparent);
+    backdrop-filter: blur(18px);
+  }
+
+  /* Accent Edge Spotlight */
+  [data-surface="spotlight"] .z-surface-card,
+  [data-surface="spotlight"] .z-card-item {
+    background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 7%, var(--card)), var(--card) 55%);
+    border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  }
+
+  /* Assistant-UI Element Chrome Modes (borderless / minimal / bordered) — strictly global 60/30/10 */
+  [data-element-chrome="borderless"] .zenko-aui-paper {
+    border-color: transparent !important;
+    background: color-mix(in srgb, var(--surface) 78%, transparent);
+    box-shadow: none !important;
+  }
+  [data-element-chrome="minimal"] .zenko-aui-paper {
+    border-left-color: transparent !important;
+    border-right-color: transparent !important;
+    border-top-color: color-mix(in srgb, var(--border) 75%, transparent);
+    border-bottom-color: color-mix(in srgb, var(--border) 75%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface) 64%, transparent);
+  }
+  [data-element-chrome="bordered"] .zenko-aui-paper {
+    border-color: var(--border);
+    background: var(--card);
+  }
+
+  /* Assistant-UI DataTable Style Modes (borderless default / minimal / striped / bordered) */
+  [data-table-style="borderless"] .zenko-data-table {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 0;
+  }
+  [data-table-style="borderless"] .zenko-data-table .zenko-dt-head {
+    border-bottom-color: transparent !important;
+  }
+  [data-table-style="borderless"] .zenko-data-table tbody tr {
+    border: 0 !important;
+  }
+  [data-table-style="borderless"] .zenko-data-table tbody tr:hover {
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+  }
+  [data-table-style="minimal"] .zenko-data-table {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 0;
+  }
+  [data-table-style="minimal"] .zenko-data-table .zenko-dt-head {
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  }
+  [data-table-style="minimal"] .zenko-data-table tbody tr {
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 36%, transparent);
+  }
+  [data-table-style="minimal"] .zenko-data-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  [data-table-style="striped"] .zenko-data-table {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: var(--radius-sm);
+  }
+  [data-table-style="striped"] .zenko-data-table .zenko-dt-head {
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  }
+  [data-table-style="striped"] .zenko-data-table tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--fg) 3.5%, transparent);
+  }
+  [data-table-style="bordered"] .zenko-data-table {
+    border: 1px solid var(--border) !important;
+    background: var(--card) !important;
+  }
+  [data-table-style="bordered"] .zenko-data-table tbody tr + tr {
+    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  }
+
+  /* Customizable Button System (8 styles × 4 shapes × 3 sizes × 4 motions) */
+  .z-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    font-weight: 500;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid transparent;
+    padding: 0.52rem 0.9rem;
+    border-radius: var(--radius-sm);
+    transition: all var(--motion-ms) var(--motion-ease);
+  }
+  .z-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .z-btn-sm { padding: 0.36rem 0.68rem; font-size: 0.78rem; }
+  .z-btn-icon { padding: 0; }
+
+  [data-btn-size="compact"] .z-btn:not(.z-btn-icon) { padding: 0.36rem 0.68rem; font-size: 0.79rem; }
+  [data-btn-size="comfortable"] .z-btn:not(.z-btn-icon) { padding: 0.66rem 1.15rem; font-size: 0.92rem; }
+
+  [data-btn-shape="sharp"] .z-btn:not(.z-btn-icon) { border-radius: 3px; }
+  [data-btn-shape="rounded"] .z-btn:not(.z-btn-icon) { border-radius: var(--radius-sm); }
+  [data-btn-shape="soft"] .z-btn:not(.z-btn-icon) { border-radius: 12px; }
+  [data-btn-shape="pill"] .z-btn:not(.z-btn-icon) { border-radius: 9999px; }
+
+  .z-btn-primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+  .z-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+  [data-btn-style="soft"] .z-btn-primary {
+    background: color-mix(in srgb, var(--primary) 16%, transparent);
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 42%, transparent);
+  }
+  [data-btn-style="outline"] .z-btn-primary {
+    background: transparent;
+    color: var(--primary);
+    border-color: var(--primary);
+  }
+  [data-btn-style="ghost"] .z-btn-primary {
+    background: transparent;
+    color: var(--primary);
+    border-color: transparent;
+  }
+  [data-btn-style="ghost"] .z-btn-primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
+  }
+  [data-btn-style="glass"] .z-btn-primary {
+    background: color-mix(in srgb, var(--primary) 24%, transparent);
+    color: var(--fg);
+    border-color: color-mix(in srgb, var(--primary) 48%, transparent);
+    backdrop-filter: blur(12px);
+  }
+  [data-btn-style="glow"] .z-btn-primary {
+    background: var(--primary);
+    color: var(--primary-fg);
+    box-shadow: 0 0 22px color-mix(in srgb, var(--primary) 48%, transparent);
+  }
+  [data-btn-style="tactile3d"] .z-btn-primary {
+    background: var(--primary);
+    color: var(--primary-fg);
+    box-shadow: 0 3px 0 color-mix(in srgb, var(--primary) 50%, #000);
+  }
+  [data-btn-style="tactile3d"] .z-btn-primary:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--primary) 50%, #000);
+  }
+  [data-btn-style="shimmer"] .z-btn-primary {
+    background: linear-gradient(110deg, var(--primary) 0%, color-mix(in srgb, var(--primary) 65%, #fff) 45%, var(--primary) 90%);
+    background-size: 220% 100%;
+    color: var(--primary-fg);
+    animation: z-shimmer 2.6s linear infinite;
+  }
+
+  .z-btn-vermilion-soft {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  }
+  .z-btn-vermilion-soft:hover {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  }
+
+  .z-btn-secondary { background: var(--card); color: var(--fg); border-color: var(--border); }
+  .z-btn-secondary:hover { background: color-mix(in srgb, var(--fg) 6%, var(--card)); }
+  .z-btn-ghost { background: transparent; color: var(--muted); border-color: transparent; }
+  .z-btn-ghost:hover { background: color-mix(in srgb, var(--fg) 7%, transparent); color: var(--fg); }
+  .z-btn-danger {
+    background: color-mix(in srgb, var(--destructive) 12%, transparent);
+    color: var(--destructive);
+    border-color: color-mix(in srgb, var(--destructive) 36%, transparent);
+  }
+  .z-btn-danger:hover { background: var(--destructive); color: #fff; }
+
+  [data-btn-motion="subtle_lift"] .z-btn:hover:not(:disabled) { transform: translateY(-1px); }
+  [data-btn-motion="scale_press"] .z-btn:active:not(:disabled) { transform: scale(0.96); }
+  [data-btn-motion="magnetic_glow"] .z-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+}
+
+/* Icons: never force width/height over Tailwind size, width, or height utilities */
+.z-icon {
+  flex-shrink: 0;
+}
+[data-icon-style="duotone"] .z-icon:not([data-icon-fill="true"]) {
+  fill: color-mix(in srgb, currentColor 16%, transparent);
+}
+[data-icon-style="solid"] .z-icon:not([data-icon-fill="true"]) {
+  fill: currentColor;
+}
+
+/* Editorial Markdown Prose (Image 1 + Image 2 clean typography) */
+.zenko-prose {
+  font-size: 0.94rem;
+  line-height: 1.68;
+  color: var(--fg);
+}
+.zenko-prose p { margin: 0 0 0.72rem; }
+.zenko-prose p:last-child { margin-bottom: 0; }
+.zenko-prose ul, .zenko-prose ol { margin: 0.45rem 0 0.75rem; padding-left: 1.35rem; }
+.zenko-prose li { margin: 0.25rem 0; }
+.zenko-prose h1, .zenko-prose h2, .zenko-prose h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 1rem 0 0.45rem;
+}
+.zenko-prose code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  background: color-mix(in srgb, var(--accent) 13%, var(--card));
+  color: color-mix(in srgb, var(--accent) 78%, var(--fg));
+  padding: 0.14rem 0.42rem;
+  border-radius: 6px;
+}
+.zenko-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1rem 0;
+}
+
+/* RareUI Living Status Orb */
+.z-orb-core {
+  background: radial-gradient(circle at 30% 30%, #fff, var(--accent) 55%, color-mix(in srgb, var(--accent) 40%, #000));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+/* Slim theme-colored scrollbars across WebKit & Firefox (customizable via data-scrollbar) */
+:root {
+  --scrollbar-size: 4px;
+  --scrollbar-thumb: color-mix(in srgb, var(--accent) 54%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 88%, transparent);
+}
+[data-scrollbar="muted_thin"] {
+  --scrollbar-size: 4px;
+  --scrollbar-thumb: color-mix(in srgb, var(--muted) 42%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--muted) 74%, transparent);
+}
+[data-scrollbar="minimal"] {
+  --scrollbar-size: 3px;
+  --scrollbar-thumb: color-mix(in srgb, var(--accent) 36%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 80%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 9999px;
+  transition: background-color 140ms ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.zenko-thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.zenko-thin-scroll::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes z-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@keyframes z-breathe { 0%, 100% { transform: scale(1); opacity: 0.65; } 50% { transform: scale(1.16); opacity: 1; } }
+@keyframes beui-text-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.beui-text-shimmer {
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  background-image: linear-gradient(110deg, var(--muted) 28%, var(--fg) 50%, var(--muted) 72%);
+  animation: beui-text-shimmer 2.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

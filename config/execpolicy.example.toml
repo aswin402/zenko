@@ -1,0 +1,44 @@
+# Zenko Execution Policy Reference (`execpolicy.example.toml`)
+# Merge into [policy] and [[hooks]] sections of ~/.zenko/zenko.toml
+
+[policy]
+# "strict"     -> Ask approval for file writes, edits, patches, web fetches, and shell commands
+# "balanced"   -> Allow workspace reads/edits & allowlisted read-only shell commands; ask for other shell commands
+# "autonomous" -> Allow all non-denied tools automatically (hard-denied patterns still blocked)
+mode = "balanced"
+shell_timeout_secs = 60
+max_output_bytes = 16384
+
+allowed_shell_prefixes = [
+    "ls",
+    "pwd",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "git status",
+    "git diff",
+    "git log",
+    "cargo check",
+    "cargo test",
+    "rg",
+    "find",
+]
+
+denied_shell_patterns = [
+    "rm -rf /",
+    "rm -rf ~",
+    "mkfs",
+    "dd if=",
+    ":(){ :|:& };:",
+    "chmod -R 777 /",
+]
+
+# Deterministic Lifecycle Hooks (Claude Code pattern)
+# Hook receives JSON on stdin. Exit 0 = allow, Exit 2 = block tool with stderr message.
+#
+# [[hooks]]
+# event = "PreToolUse"
+# matcher = "shell_exec"
+# command = "python3 -c 'import sys,json; d=json.load(sys.stdin); sys.exit(2 if \"--force\" in str(d) else 0)'"
+# timeout_secs = 5

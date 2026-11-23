@@ -1,0 +1,95 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zenko-core",
+    "crates/zenko-memory",
+    "crates/zenko-providers",
+    "crates/zenko-tools",
+    "crates/zenko-runtime",
+    "crates/zenko-gateways",
+    "crates/zenko-webui",
+    "crates/zenko-cli",
+]
+default-members = ["crates/zenko-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+authors = ["Aswin <aswin402>"]
+repository = "https://github.com/aswin402/zenko"
+rust-version = "1.88"
+
+[workspace.dependencies]
+# Internal crates
+zenko-core = { path = "crates/zenko-core" }
+zenko-memory = { path = "crates/zenko-memory" }
+zenko-providers = { path = "crates/zenko-providers" }
+zenko-tools = { path = "crates/zenko-tools" }
+zenko-runtime = { path = "crates/zenko-runtime" }
+zenko-gateways = { path = "crates/zenko-gateways" }
+zenko-webui = { path = "crates/zenko-webui" }
+
+# Async runtime & concurrency
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-core = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+
+# Web & HTTP (100% rustls, zero OpenSSL)
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["compression-gzip", "limit", "trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
+maud = { version = "0.27", features = ["axum"] }
+rust-embed = "8.7"
+mime_guess = "2.0"
+
+# Storage & Search
+rusqlite = { version = "0.34", features = ["bundled"] }
+
+# Serialization & Config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling & Observability
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Security & Crypto
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+subtle = "2.6"
+
+# Tools, Files, Search, Diffs, Cron, Time
+ignore = "0.4"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+similar = "2.7"
+croner = "2.1"
+chrono = { version = "0.4", features = ["serde"] }
+ulid = "1.2"
+dirs = "6.0"
+
+# CLI, TUI & Allocator
+clap = { version = "4.5", features = ["derive", "env"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
+mimalloc = { version = "0.1", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
