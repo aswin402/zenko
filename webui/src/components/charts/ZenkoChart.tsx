@@ -44,35 +44,38 @@ export interface ZenkoChartPalette {
   isDark: boolean
 }
 
+/** Canonical default Obsidian Vermilion fallback tokens aligned 1:1 with `index.css`. */
+const DEFAULT_ZENKO_PALETTE: ZenkoChartPalette = {
+  bg: '#0a0a0b',
+  surface: '#0e0e10',
+  card: '#131316',
+  border: '#1f1f24',
+  fg: '#f5f5f6',
+  muted: '#8a8a93',
+  accent: '#ea5829',
+  destructive: '#ef4444',
+  fontSans: 'system-ui, sans-serif',
+  fontMono: 'monospace',
+  isDark: true,
+}
+
 export function readZenkoChartPalette(): ZenkoChartPalette {
   if (typeof document === 'undefined') {
-    return {
-      bg: '#0a0a0b',
-      surface: '#0f0f11',
-      card: '#141417',
-      border: '#222227',
-      fg: '#f5f5f6',
-      muted: '#8a8a93',
-      accent: '#ea5829',
-      destructive: '#ef4444',
-      fontSans: 'system-ui, sans-serif',
-      fontMono: 'monospace',
-      isDark: true,
-    }
+    return DEFAULT_ZENKO_PALETTE
   }
   const styles = getComputedStyle(document.documentElement)
   const get = (k: string, fb: string) => styles.getPropertyValue(k).trim() || fb
   return {
-    bg: get('--bg', '#0a0a0b'),
-    surface: get('--surface', '#0f0f11'),
-    card: get('--card', '#141417'),
-    border: get('--border', '#222227'),
-    fg: get('--fg', '#f5f5f6'),
-    muted: get('--muted', '#8a8a93'),
-    accent: get('--accent', '#ea5829'),
-    destructive: get('--destructive', '#ef4444'),
-    fontSans: get('--font-sans', 'system-ui, sans-serif'),
-    fontMono: get('--font-mono', 'monospace'),
+    bg: get('--bg', DEFAULT_ZENKO_PALETTE.bg),
+    surface: get('--surface', DEFAULT_ZENKO_PALETTE.surface),
+    card: get('--card', DEFAULT_ZENKO_PALETTE.card),
+    border: get('--border', DEFAULT_ZENKO_PALETTE.border),
+    fg: get('--fg', DEFAULT_ZENKO_PALETTE.fg),
+    muted: get('--muted', DEFAULT_ZENKO_PALETTE.muted),
+    accent: get('--accent', DEFAULT_ZENKO_PALETTE.accent),
+    destructive: get('--destructive', DEFAULT_ZENKO_PALETTE.destructive),
+    fontSans: get('--font-sans', DEFAULT_ZENKO_PALETTE.fontSans),
+    fontMono: get('--font-mono', DEFAULT_ZENKO_PALETTE.fontMono),
     isDark: document.documentElement.dataset.mode !== 'light',
   }
 }

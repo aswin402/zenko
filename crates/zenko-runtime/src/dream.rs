@@ -158,14 +158,13 @@ pub async fn run_dream_cycle(
         if runtime.active_sessions_count() > 0 {
             return Ok(skipped_record(trigger, "deferred while active session turn is running"));
         }
-        if let Ok(Some(last_raw)) = runtime.store.get_kv(DREAM_KV_LAST_RUN_KEY) {
-            if let Ok(last_dt) = DateTime::parse_from_rfc3339(&last_raw) {
+        if let Ok(Some(last_raw)) = runtime.store.get_kv(DREAM_KV_LAST_RUN_KEY)
+            && let Ok(last_dt) = DateTime::parse_from_rfc3339(&last_raw) {
                 let min_gap = Duration::hours(cfg.memory.dream_cooldown_hours.max(1) as i64);
                 if now - last_dt.with_timezone(&Utc) < min_gap {
                     return Ok(skipped_record(trigger, "cooldown window active"));
                 }
             }
-        }
         if cfg.general.daily_spend_limit_usd > 0.0 {
             let today = runtime.store.daily_cost_usd().unwrap_or(0.0);
             if today >= cfg.general.daily_spend_limit_usd * 0.90 {
@@ -227,10 +226,12 @@ pub async fn run_dream_cycle(
             if rec.status == "running" {
                 rec.status = "completed".into();
             }
-            let _ = runtime.store.set_kv(DREAM_KV_LAST_RUN_KEY, &Utc::now().to_rfc3339());
-            // Advance watermark STRICTLY when Stage-1/2 completed AND only to the latest session
-            // actually included in the LLM transcript (zero silent data loss on blips or caps!).
+            // Advance cooldown & watermark STRICTLY when Stage-1/2 completed cleanly
+            // (zero silent cooldown burn or data loss on transient LLM blips!).
             if rec.status == "completed" {
+                let _ = runtime
+                    .store
+                    .set_kv(DREAM_KV_LAST_RUN_KEY, &Utc::now().to_rfc3339());
                 if let Some(latest_ts) = processed_watermark {
                     let _ = runtime.store.set_kv(DREAM_KV_WATERMARK_KEY, &latest_ts);
                 }
@@ -543,7 +544,7 @@ async fn execute_dream_stages(
         };
 
         // Contradiction resolution: archive superseded older facts in the same scope
-        if let Some(ref sup_q) = mem
+        if let Some(sup_q) = mem
             .supersedes_query
             .as_deref()
             .map(str::trim)
@@ -617,14 +618,13 @@ async fn execute_dream_stages(
                     .append_doc_guarded_with_secrets(doc_name, &patch.new_text, "dream", &known_secrets)
                     .map(|(d, _, added)| (d, added)),
             };
-            if let Ok((diff, changed)) = res {
-                if changed {
+            if let Ok((diff, changed)) = res
+                && changed {
                     rec.docs_patched += 1;
                     if !diff.is_empty() {
                         diffs.push(diff);
                     }
                 }
-            }
         }
         if !diffs.is_empty() {
             rec.diff_preview = Some(compact_preview(&diffs.join("\n"), 2_000));

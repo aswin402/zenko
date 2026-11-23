@@ -89,7 +89,7 @@ pub struct HookConfig {
 }
 
 fn default_hook_timeout() -> u64 {
-    5
+    crate::constants::DEFAULT_HOOK_TIMEOUT_SECS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +229,46 @@ impl Default for ProviderConfig {
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
         }
+    }
+}
+
+impl ProviderConfig {
+    /// Unified single-source-of-truth provider switch logic shared by WebUI Composer,
+    /// Setup API, and Ratatui TUI wizard. Resets cross-provider model slots whenever
+    /// switching to a different provider kind so stale models never leak across providers.
+    pub fn switch_provider(
+        &mut self,
+        kind: &str,
+        base_url_override: Option<&str>,
+        lead_model_override: Option<&str>,
+        sync_fast_model: bool,
+    ) -> bool {
+        let desc = find_provider(kind);
+        let switched = !self.kind.eq_ignore_ascii_case(desc.id);
+        self.kind = desc.id.to_string();
+        if let Some(url) = base_url_override.map(str::trim).filter(|s| !s.is_empty()) {
+            self.base_url = url.to_string();
+        } else if switched {
+            self.base_url = desc.default_base_url.to_string();
+        }
+        if switched {
+            self.plan_model.clear();
+            self.advisor_model.clear();
+            self.compaction_model.clear();
+            self.dream_model.clear();
+            self.fallbacks.clear();
+            if lead_model_override.map(str::trim).unwrap_or("").is_empty() {
+                self.lead_model.clear();
+                self.fast_model.clear();
+            }
+        }
+        if let Some(m) = lead_model_override.map(str::trim).filter(|s| !s.is_empty()) {
+            self.lead_model = m.to_string();
+            if sync_fast_model {
+                self.fast_model = m.to_string();
+            }
+        }
+        switched
     }
 }
 
@@ -1050,16 +1090,15 @@ pub fn list_hub_entries_at(
     let mut out: Vec<HubEntry> = Vec::new();
 
     for cat in HUB_CATEGORIES {
-        if let Some(want) = filter {
-            if !cat.id.eq_ignore_ascii_case(want) {
+        if let Some(want) = filter
+            && !cat.id.eq_ignore_ascii_case(want) {
                 continue;
             }
-        }
         let base = hub_root.join(cat.subdir);
         collect_hub_dir(&base, &base, cat.id, 0, &mut out);
     }
 
-    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.modified_at));
     out.truncate(cap);
     out
 }
@@ -1120,10 +1159,30 @@ pub fn expand_tilde(input: &str) -> PathBuf {
         if let Some(home) = dirs::home_dir() {
             return home.join(stripped);
         }
-    } else if input == "~" {
-        if let Some(home) = dirs::home_dir() {
+    } else if input == "~"
+        && let Some(home) = dirs::home_dir() {
             return home;
         }
-    }
     PathBuf::from(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderConfig;
+
+    #[test]
+    fn switch_provider_resets_cross_provider_model_slots() {
+        let mut p = ProviderConfig {
+            kind: "openrouter".into(),
+            lead_model: "anthropic/claude-sonnet-4".into(),
+            fast_model: "openai/gpt-4o-mini".into(),
+            ..Default::default()
+        };
+
+        p.switch_provider("minimax", None, Some("MiniMax-M3.1-Flash"), true);
+        assert_eq!(p.kind, "minimax");
+        assert_eq!(p.lead_model, "MiniMax-M3.1-Flash");
+        assert_eq!(p.fast_model, "MiniMax-M3.1-Flash");
+        assert!(p.base_url.contains("minimax"));
+    }
 }

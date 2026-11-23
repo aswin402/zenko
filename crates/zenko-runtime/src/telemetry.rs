@@ -35,11 +35,10 @@ impl LogBuffer {
     }
 
     pub fn push(&self, entry: LogEntry) {
-        if let Ok(guard) = self.sink.read() {
-            if let Some(ref sink) = *guard {
+        if let Ok(guard) = self.sink.read()
+            && let Some(ref sink) = *guard {
                 sink.enqueue(entry.clone());
             }
-        }
         if let Ok(mut guard) = self.inner.lock() {
             if guard.len() >= self.max_entries {
                 guard.pop_front();
@@ -50,11 +49,10 @@ impl LogBuffer {
     }
 
     pub fn flush(&self) {
-        if let Ok(guard) = self.sink.read() {
-            if let Some(ref sink) = *guard {
+        if let Ok(guard) = self.sink.read()
+            && let Some(ref sink) = *guard {
                 sink.flush();
             }
-        }
     }
 
     pub fn recent(&self, limit: usize) -> Vec<LogEntry> {
@@ -141,13 +139,11 @@ pub fn current_rss_bytes() -> u64 {
             return 0;
         };
         for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("VmRSS:") {
-                if let Some(kb_str) = rest.split_whitespace().next() {
-                    if let Ok(kb) = kb_str.parse::<u64>() {
+            if let Some(rest) = line.strip_prefix("VmRSS:")
+                && let Some(kb_str) = rest.split_whitespace().next()
+                    && let Ok(kb) = kb_str.parse::<u64>() {
                         return kb * 1024;
                     }
-                }
-            }
         }
         0
     }

@@ -763,11 +763,10 @@ pub fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<WebSearchResultIte
                 }
                 (true, "a" | "div" | "span" | "p", DdgCapture::Snippet) => {
                     let snip = collapse_ws(&decode_basic_entities(&cur_buf));
-                    if let Some(last) = results.last_mut() {
-                        if last.snippet.is_empty() {
+                    if let Some(last) = results.last_mut()
+                        && last.snippet.is_empty() {
                             last.snippet = snip;
                         }
-                    }
                     cur_buf.clear();
                     mode = DdgCapture::Idle;
                 }

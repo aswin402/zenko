@@ -124,15 +124,12 @@ impl UnifiedLlmProvider {
 
     /// Fetches or reuses the live `models.dev/api.json` registry snapshot.
     pub async fn load_metadata_registry(&self, force_refresh: bool) -> Option<Value> {
-        if !force_refresh {
-            if let Ok(guard) = self.metadata_cache.read() {
-                if let Some((ts, val)) = guard.as_ref() {
-                    if ts.elapsed() < Duration::from_secs(MODEL_CACHE_TTL_SECS) {
+        if !force_refresh
+            && let Ok(guard) = self.metadata_cache.read()
+                && let Some((ts, val)) = guard.as_ref()
+                    && ts.elapsed() < Duration::from_secs(MODEL_CACHE_TTL_SECS) {
                         return Some(val.clone());
                     }
-                }
-            }
-        }
         if let Some(fresh) = fetch_metadata_registry(&self.client).await {
             if let Ok(mut guard) = self.metadata_cache.write() {
                 *guard = Some((Instant::now(), fresh.clone()));
@@ -231,11 +228,10 @@ impl LlmProvider for UnifiedLlmProvider {
 
         let endpoint = verify_endpoint(dialect, &base);
         let mut req = self.client.get(&endpoint);
-        if let Some(ref k) = key {
-            if !k.trim().is_empty() {
+        if let Some(ref k) = key
+            && !k.trim().is_empty() {
                 req = req.bearer_auth(k.as_str());
             }
-        }
 
         let resp = req
             .send()
@@ -255,11 +251,9 @@ impl LlmProvider for UnifiedLlmProvider {
 
         if dialect == ProviderDialect::MiniMax
             && matches!(resp.status(), StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED)
-        {
-            if let Some(ref k) = key {
+            && let Some(ref k) = key {
                 return self.verify_minimax_completion_probe(&base, k.as_str()).await;
             }
-        }
 
         let status = resp.status();
         let text = read_bounded_error_text(resp, None).await;
@@ -301,11 +295,10 @@ impl LlmProvider for UnifiedLlmProvider {
             .header("Content-Type", "application/json")
             .header("Accept", accept);
 
-        if let Some(k) = key {
-            if !k.trim().is_empty() {
+        if let Some(k) = key
+            && !k.trim().is_empty() {
                 http_req = http_req.bearer_auth(k.as_str());
             }
-        }
         http_req = apply_chat_headers(dialect, http_req, &req);
 
         let resp = tokio::select! {
@@ -403,12 +396,11 @@ impl LlmProvider for UnifiedLlmProvider {
                         return;
                     }
                     None => {
-                        if let Some(tail) = decoder.finish() {
-                            if let Err(e) = process_sse_line(&tail, &mut acc, &tx).await {
+                        if let Some(tail) = decoder.finish()
+                            && let Err(e) = process_sse_line(&tail, &mut acc, &tx).await {
                                 let _ = tx.send(Err(e)).await;
                                 return;
                             }
-                        }
                         acc.flush_all(&tx).await;
                         let _ = tx
                             .send(Ok(LlmDelta::Done {

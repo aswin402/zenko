@@ -6,7 +6,7 @@ function safeHostname(url: string): string | undefined {
   try {
     const parsed = new URL(url)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined
-    return parsed.hostname.replace(/^www\./, '')
+    return parsed.hostname.startsWith('www.') ? parsed.hostname.slice(4) : parsed.hostname
   } catch {
     return undefined
   }

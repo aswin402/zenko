@@ -371,7 +371,7 @@ impl TelegramGateway {
                         /new — start a fresh session in this chat/topic\n\
                         /stop — cancel active generation\n\
                         /status — daemon RAM, uptime, cost & model\n\
-                        /model <id> — switch OpenRouter model for this session\n\
+                        /model <id> — switch active model for this session\n\
                         /mode <strict|balanced|autonomous> — change tool approval policy\n\
                         /help — show this help";
                     let _ = self.send_message(token, chat_id, thread_id, help, None).await;
@@ -515,11 +515,15 @@ impl TelegramGateway {
                 let s_id = sid.clone();
                 let done_sig = turn_done.clone();
                 Some(tokio::spawn(async move {
+                    #[derive(Clone, Copy)]
+                    enum DraftMode {
+                        Native,
+                        MessageEdit(Option<i64>),
+                    }
                     let mut acc = String::new();
                     let mut last_flush: Option<Instant> = None;
                     let draft_id: i64 = (chrono::Utc::now().timestamp_millis() % 1_000_000).max(1);
-                    let mut draft_supported = true;
-                    let mut fallback_msg_id: Option<i64> = None;
+                    let mut mode = DraftMode::Native;
 
                     loop {
                         let ev = tokio::select! {
@@ -534,32 +538,30 @@ impl TelegramGateway {
                         match ev {
                             AgentEvent::TextDelta { session_id, text, .. } if session_id == s_id => {
                                 acc.push_str(&text);
-                                let cadence = match draft_supported {
-                                    true => Duration::from_millis(450),
-                                    false => Duration::from_millis(1200),
+                                let cadence = match mode {
+                                    DraftMode::Native => Duration::from_millis(450),
+                                    DraftMode::MessageEdit(_) => Duration::from_millis(1200),
                                 };
                                 let due = last_flush.is_none_or(|t| t.elapsed() >= cadence);
                                 if due && !acc.trim().is_empty() {
                                     let preview = truncate_telegram(&acc, 3900);
-                                    if draft_supported {
-                                        if this
+                                    if matches!(mode, DraftMode::Native)
+                                        && this
                                             .send_message_draft(&tok, chat_id, thread_id, draft_id, &preview)
                                             .await
                                             .is_err()
-                                        {
-                                            draft_supported = false;
-                                        }
+                                    {
+                                        mode = DraftMode::MessageEdit(None);
                                     }
-                                    if !draft_supported {
-                                        match fallback_msg_id {
+                                    if let DraftMode::MessageEdit(ref mut fallback_msg_id) = mode {
+                                        match *fallback_msg_id {
                                             None => {
                                                 if let Ok(mid) = this
                                                     .send_message(&tok, chat_id, thread_id, &preview, None)
                                                     .await
+                                                    && mid > 0
                                                 {
-                                                    if mid > 0 {
-                                                        fallback_msg_id = Some(mid);
-                                                    }
+                                                    *fallback_msg_id = Some(mid);
                                                 }
                                             }
                                             Some(mid) => {
@@ -578,7 +580,10 @@ impl TelegramGateway {
                             _ => {}
                         }
                     }
-                    fallback_msg_id
+                    match mode {
+                        DraftMode::Native => None,
+                        DraftMode::MessageEdit(mid) => mid,
+                    }
                 }))
             }
             false => None,
@@ -600,17 +605,15 @@ impl TelegramGateway {
                 };
                 let chunks = split_telegram_chunks(&text_out, 4000);
                 for (idx, chunk) in chunks.iter().enumerate() {
-                    if idx == 0 {
-                        if let Some(mid) = fallback_mid.filter(|&m| m > 0) {
-                            if self
+                    if idx == 0
+                        && let Some(mid) = fallback_mid.filter(|&m| m > 0)
+                            && self
                                 .edit_message_text(token, chat_id, mid, chunk, None)
                                 .await
                                 .is_ok()
                             {
                                 continue;
                             }
-                        }
-                    }
                     let _ = self.send_message(token, chat_id, thread_id, chunk, None).await;
                 }
             }

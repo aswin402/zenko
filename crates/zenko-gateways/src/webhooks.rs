@@ -130,8 +130,8 @@ mod tests {
         assert!(match_webhook_rule(&rule, "github", Some(&fail_payload)));
         assert!(!match_webhook_rule(&rule, "github", Some(&ok_payload)));
         assert!(!match_webhook_rule(&rule, "gitlab", Some(&fail_payload)));
-        assert!(has_webhook_rules_for_source(&[rule.clone()], "github"));
-        assert!(!has_webhook_rules_for_source(&[rule.clone()], "gitlab"));
+        assert!(has_webhook_rules_for_source(std::slice::from_ref(&rule), "github"));
+        assert!(!has_webhook_rules_for_source(std::slice::from_ref(&rule), "gitlab"));
 
         let rendered = render_webhook_prompt(&rule.prompt_template, "github", &rule.id, "{}");
         assert_eq!(rendered, "CI failed on github (gh-ci-fail): {}");

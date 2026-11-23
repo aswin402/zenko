@@ -232,16 +232,14 @@ impl SubagentSupervisor {
 
         let (parent_sid, parent_depth, parent_ws, parent_perm) = match parent_session {
             Some(ref p) => {
-                if let Some(ref parent_role_id) = p.agent_role {
-                    if let Some(parent_role) = find_subagent_role(parent_role_id) {
-                        if !parent_role.can_spawn_children {
+                if let Some(ref parent_role_id) = p.agent_role
+                    && let Some(parent_role) = find_subagent_role(parent_role_id)
+                        && !parent_role.can_spawn_children {
                             return Err(ZenkoError::PolicyDenied(format!(
                                 "Subagent role `{}` is not permitted to spawn nested child agents.",
                                 parent_role.id
                             )));
                         }
-                    }
-                }
                 let ws = p
                     .workspace_dir
                     .as_deref()
@@ -384,7 +382,7 @@ impl SubagentSupervisor {
             workspace_dir: effective_ws.display().to_string(),
             worktree_branch: worktree_handle.as_ref().map(|w| w.branch.clone()),
             worktree_base_commit: worktree_handle.as_ref().map(|w| w.base_commit.clone()),
-            worktree_dirty_baseline: worktree_handle.as_ref().map_or(false, |w| w.dirty_baseline),
+            worktree_dirty_baseline: worktree_handle.as_ref().is_some_and(|w| w.dirty_baseline),
             model: resolved_model.clone(),
             summary: None,
             output_schema: req.output_schema.clone(),
@@ -425,13 +423,12 @@ impl SubagentSupervisor {
         if let Some(ctx_notes) = req.context.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             child_prompt.push_str(&format!("\n\nFocused Parent Handoff Context:\n{ctx_notes}"));
         }
-        if req.fork_context {
-            if let Some(fork_digest) = build_forked_parent_context(&rt.store, &parent_sid) {
+        if req.fork_context
+            && let Some(fork_digest) = build_forked_parent_context(&rt.store, &parent_sid) {
                 child_prompt.push_str(&format!(
                     "\n\n<forked_parent_context>\n{fork_digest}\n</forked_parent_context>"
                 ));
             }
-        }
         if !hook_contexts.is_empty() {
             child_prompt.push_str(&format!(
                 "\n\n<subagent_hook_context>\n{}\n</subagent_hook_context>",
@@ -613,8 +610,8 @@ impl SubagentSupervisor {
                 }
             }
 
-            if let Some(ref wt) = wt_bg {
-                if let Ok(diff_rep) = inspect_worktree_diff(wt).await {
+            if let Some(ref wt) = wt_bg
+                && let Ok(diff_rep) = inspect_worktree_diff(wt).await {
                     record_bg.changed_files = diff_rep.changed_files.clone();
                     if !diff_rep.diff_stat.is_empty() {
                         record_bg.diff_stat = Some(diff_rep.diff_stat.clone());
@@ -629,7 +626,6 @@ impl SubagentSupervisor {
                         record_bg.workspace_mode = SubagentWorkspaceMode::Inherit;
                     }
                 }
-            }
 
             let is_current_gen = rt_bg
                 .subagents
@@ -840,11 +836,10 @@ impl SubagentSupervisor {
         let mut pending_rxs: Vec<watch::Receiver<SubagentStatus>> = Vec::new();
         if let Ok(st) = self.state.lock() {
             for id in &target_ids {
-                if let Some(h) = st.active.get(id) {
-                    if !h.status_rx.borrow().is_terminal() {
+                if let Some(h) = st.active.get(id)
+                    && !h.status_rx.borrow().is_terminal() {
                         pending_rxs.push(h.status_rx.clone());
                     }
-                }
             }
         }
 
@@ -1021,15 +1016,14 @@ impl SubagentSupervisor {
         let now = Utc::now();
         for sid in &subtree {
             let mut wt_removed = false;
-            if remove_wt {
-                if let Ok(Some(wt)) = self.resolve_worktree_handle(rt, sid) {
+            if remove_wt
+                && let Ok(Some(wt)) = self.resolve_worktree_handle(rt, sid) {
                     if let Err(e) = remove_worktree(&data_dir, &wt).await {
                         warn!(agent_id = %sid, error = %e, "failed cleaning up subagent worktree");
                     }
                     self.forget_worktree(sid);
                     wt_removed = true;
                 }
-            }
             if let Ok(Some(mut rec)) = rt.store.get_subagent(sid) {
                 let transitioned_to_killed = !rec.status.is_terminal();
                 if transitioned_to_killed {
@@ -1074,7 +1068,7 @@ impl SubagentSupervisor {
             }
         }
 
-        Ok(rt.store.get_subagent(&target.id)?)
+        rt.store.get_subagent(&target.id)
     }
 
     /// Cancels all active subagents cleanly during graceful daemon shutdown.
@@ -1331,14 +1325,13 @@ fn build_forked_parent_context(store: &SqliteStore, parent_sid: &str) -> Option<
     }
     let slice = slice_from_latest_checkpoint(&branch);
     let mut parts: Vec<String> = Vec::new();
-    if let Some(ref ckpt) = slice.checkpoint {
-        if !ckpt.summary.trim().is_empty() {
+    if let Some(ref ckpt) = slice.checkpoint
+        && !ckpt.summary.trim().is_empty() {
             parts.push(format!(
                 "Parent Checkpoint Summary:\n{}",
                 compact_preview(&ckpt.summary, SUBAGENT_FORK_MAX_CHARS / 2)
             ));
         }
-    }
 
     let mut recent_lines: Vec<String> = Vec::new();
     for ev in slice.kept_events.iter().rev().take(SUBAGENT_FORK_RECENT_EVENTS) {
@@ -1580,63 +1573,55 @@ fn validate_node(
         }
     }
 
-    if let Some(Value::Array(allowed)) = obj.get("enum") {
-        if !allowed.iter().any(|cand| cand == val) {
+    if let Some(Value::Array(allowed)) = obj.get("enum")
+        && !allowed.iter().any(|cand| cand == val) {
             errors.push(format!("{path}: value not in allowed enum"));
         }
-    }
 
-    if let Some(const_val) = obj.get("const") {
-        if const_val != val {
+    if let Some(const_val) = obj.get("const")
+        && const_val != val {
             errors.push(format!("{path}: value does not match required const"));
         }
-    }
 
     match val {
         Value::String(s) => {
             let len = s.chars().count();
-            if let Some(min_l) = obj.get("minLength").and_then(Value::as_u64) {
-                if (len as u64) < min_l {
+            if let Some(min_l) = obj.get("minLength").and_then(Value::as_u64)
+                && (len as u64) < min_l {
                     errors.push(format!("{path}: length {len} < minLength {min_l}"));
                 }
-            }
-            if let Some(max_l) = obj.get("maxLength").and_then(Value::as_u64) {
-                if (len as u64) > max_l {
+            if let Some(max_l) = obj.get("maxLength").and_then(Value::as_u64)
+                && (len as u64) > max_l {
                     errors.push(format!("{path}: length {len} > maxLength {max_l}"));
                 }
-            }
         }
         Value::Number(n) => {
             if let Some(f) = n.as_f64() {
-                if let Some(min_v) = obj.get("minimum").and_then(Value::as_f64) {
-                    if f < min_v {
+                if let Some(min_v) = obj.get("minimum").and_then(Value::as_f64)
+                    && f < min_v {
                         errors.push(format!("{path}: {f} < minimum {min_v}"));
                     }
-                }
-                if let Some(max_v) = obj.get("maximum").and_then(Value::as_f64) {
-                    if f > max_v {
+                if let Some(max_v) = obj.get("maximum").and_then(Value::as_f64)
+                    && f > max_v {
                         errors.push(format!("{path}: {f} > maximum {max_v}"));
                     }
-                }
             }
         }
         Value::Array(items_val) => {
-            if let Some(min_i) = obj.get("minItems").and_then(Value::as_u64) {
-                if (items_val.len() as u64) < min_i {
+            if let Some(min_i) = obj.get("minItems").and_then(Value::as_u64)
+                && (items_val.len() as u64) < min_i {
                     errors.push(format!(
                         "{path}: array len {} < minItems {min_i}",
                         items_val.len()
                     ));
                 }
-            }
-            if let Some(max_i) = obj.get("maxItems").and_then(Value::as_u64) {
-                if (items_val.len() as u64) > max_i {
+            if let Some(max_i) = obj.get("maxItems").and_then(Value::as_u64)
+                && (items_val.len() as u64) > max_i {
                     errors.push(format!(
                         "{path}: array len {} > maxItems {max_i}",
                         items_val.len()
                     ));
                 }
-            }
             if let Some(item_schema) = obj.get("items") {
                 for (i, item) in items_val.iter().enumerate() {
                     validate_node(item_schema, item, &format!("{path}[{i}]"), depth + 1, errors);
@@ -1661,7 +1646,7 @@ fn validate_node(
             }
             if obj.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
                 for k in map.keys() {
-                    let known = props_opt.map_or(false, |p| p.contains_key(k));
+                    let known = props_opt.is_some_and(|p| p.contains_key(k));
                     if !known {
                         errors.push(format!("{path}: unexpected additional property `{k}`"));
                     }

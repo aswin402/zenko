@@ -1402,42 +1402,42 @@ impl LogFilter {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
-            .map_or(true, |c| entry.category.eq_ignore_ascii_case(c));
+            .is_none_or(|c| entry.category.eq_ignore_ascii_case(c));
 
         let chan_ok = self
             .channel
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
-            .map_or(true, |c| entry.target.eq_ignore_ascii_case(c));
+            .is_none_or(|c| entry.target.eq_ignore_ascii_case(c));
 
         let level_ok = self
             .level
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
-            .map_or(true, |lvl| entry.level.eq_ignore_ascii_case(lvl));
+            .is_none_or(|lvl| entry.level.eq_ignore_ascii_case(lvl));
 
         let sess_ok = self
             .session_id
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map_or(true, |sid| entry.session_id.as_deref() == Some(sid));
+            .is_none_or(|sid| entry.session_id.as_deref() == Some(sid));
 
         let search_ok = self
             .search
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map_or(true, |needle| {
+            .is_none_or(|needle| {
                 let n = needle.to_ascii_lowercase();
                 entry.message.to_ascii_lowercase().contains(&n)
                     || entry.target.to_ascii_lowercase().contains(&n)
                     || entry
                         .payload
                         .as_ref()
-                        .map_or(false, |p| p.to_string().to_ascii_lowercase().contains(&n))
+                        .is_some_and(|p| p.to_string().to_ascii_lowercase().contains(&n))
             });
 
         cat_ok && chan_ok && level_ok && sess_ok && search_ok
@@ -3078,22 +3078,20 @@ impl TriggerRateLimiter {
             });
             if map.len() >= crate::constants::DEFAULT_RATE_LIMITER_MAX_ENTRIES
                 && !map.contains_key(key)
-            {
-                if let Some(oldest_key) = map
+                && let Some(oldest_key) = map
                     .iter()
                     .min_by_key(|(_, q)| q.back().copied())
                     .map(|(k, _)| k.clone())
                 {
                     map.remove(&oldest_key);
                 }
-            }
         }
         let queue = map.entry(key.to_string()).or_default();
         while queue.front().is_some_and(|t| *t < hour_cutoff) {
             queue.pop_front();
         }
-        if cooldown_secs > 0 {
-            if let Some(last) = queue.back() {
+        if cooldown_secs > 0
+            && let Some(last) = queue.back() {
                 let elapsed = (now - *last).num_seconds().max(0) as u64;
                 if elapsed < cooldown_secs {
                     return Err(format!(
@@ -3102,7 +3100,6 @@ impl TriggerRateLimiter {
                     ));
                 }
             }
-        }
         let cap = max_per_hour.max(1);
         if queue.len() >= cap {
             return Err(format!("hourly rate limit reached ({cap}/hr)"));

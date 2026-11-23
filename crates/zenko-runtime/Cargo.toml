@@ -20,7 +20,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-zeroize.workspace = true
 zenko-core.workspace = true
 zenko-memory.workspace = true
 zenko-providers.workspace = true

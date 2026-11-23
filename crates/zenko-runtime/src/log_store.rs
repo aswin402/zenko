@@ -234,7 +234,7 @@ fn write_categorized_jsonl(
             let session_file = sessions_dir.join(format!("{safe_sid}.jsonl"));
             append_rotating(session_file, bytes, max_file_bytes);
             *session_writes += 1;
-            if *session_writes % 32 == 0 {
+            if (*session_writes).is_multiple_of(32) {
                 prune_oldest_files(&sessions_dir, LOG_MAX_SESSION_FILES, "jsonl");
             }
         }
@@ -245,11 +245,10 @@ fn append_rotating(path: PathBuf, bytes: &[u8], max_bytes: u64) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(meta) = metadata(&path) {
-        if meta.len().saturating_add(bytes.len() as u64) > max_bytes {
+    if let Ok(meta) = metadata(&path)
+        && meta.len().saturating_add(bytes.len() as u64) > max_bytes {
             rotate_file_chain(&path, LOG_MAX_ROTATED_FILES);
         }
-    }
     let mut opts = OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]
@@ -314,7 +313,8 @@ fn prune_oldest_files(dir: &Path, max_files: usize, ext: &str) {
         .filter_map(|e| {
             let p = e.path();
             let is_target_ext = p.extension().and_then(|x| x.to_str()) == Some(ext);
-            let is_index = p.file_name().and_then(|n| n.to_str()) == Some("index.jsonl");
+            let is_index = p.file_name().and_then(|n| n.to_str())
+                == Some(zenko_core::LOG_SESSION_INDEX_FILE);
             if !is_target_ext || is_index {
                 return None;
             }

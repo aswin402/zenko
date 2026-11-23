@@ -24,14 +24,15 @@ where
     let id_to_idx: HashMap<&str, usize> = items
         .iter()
         .enumerate()
-        .map(|(i, item)| (get_id(item), i))
+        .map(|(i, item)| (get_id(item).trim(), i))
         .collect();
-    let mut in_degree: Vec<usize> = items.iter().map(|item| get_deps(item).len()).collect();
+    let mut in_degree: Vec<usize> = vec![0; items.len()];
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
     for (idx, item) in items.iter().enumerate() {
         for dep in get_deps(item) {
-            if let Some(&dep_idx) = id_to_idx.get(dep.as_str()) {
+            if let Some(&dep_idx) = id_to_idx.get(dep.trim()) {
                 dependents[dep_idx].push(idx);
+                in_degree[idx] += 1;
             }
         }
     }

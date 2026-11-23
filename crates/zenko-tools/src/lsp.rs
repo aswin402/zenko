@@ -44,6 +44,8 @@ struct OpenDocState {
     content_hash: String,
 }
 
+type DiagnosticsMap = Arc<Mutex<HashMap<String, (u64, Vec<Value>)>>>;
+
 struct LspClientSession {
     server_id: String,
     language_id: String,
@@ -53,7 +55,7 @@ struct LspClientSession {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     /// Per-URI `(monotonic_generation, diagnostics)` so edits never return stale cached diagnostics.
-    diagnostics: Arc<Mutex<HashMap<String, (u64, Vec<Value>)>>>,
+    diagnostics: DiagnosticsMap,
     diag_gen: Arc<AtomicU64>,
     diag_notify: Arc<Notify>,
     stderr_tail: Arc<Mutex<String>>,
@@ -91,8 +93,7 @@ impl LspClientSession {
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let diagnostics: Arc<Mutex<HashMap<String, (u64, Vec<Value>)>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let diagnostics: DiagnosticsMap = Arc::new(Mutex::new(HashMap::new()));
         let diag_gen = Arc::new(AtomicU64::new(1));
         let diag_notify = Arc::new(Notify::new());
         let stderr_tail = Arc::new(Mutex::new(String::new()));
@@ -148,15 +149,14 @@ impl LspClientSession {
                 match (has_id, method) {
                     // Response to our request
                     (true, None) => {
-                        if let Some(id) = msg.get("id").and_then(Value::as_u64) {
-                            if let Some(tx) = pending
+                        if let Some(id) = msg.get("id").and_then(Value::as_u64)
+                            && let Some(tx) = pending
                                 .lock()
                                 .ok()
                                 .and_then(|mut map| map.remove(&id))
                             {
                                 let _ = tx.send(msg);
                             }
-                        }
                     }
                     // Server -> client request (e.g. `workspace/configuration` expects an array of results)
                     (true, Some(req_method)) => {
@@ -182,8 +182,8 @@ impl LspClientSession {
                     }
                     // Server notification
                     (false, Some("textDocument/publishDiagnostics")) => {
-                        if let Some(params) = msg.get("params") {
-                            if let Some(uri) = params.get("uri").and_then(Value::as_str) {
+                        if let Some(params) = msg.get("params")
+                            && let Some(uri) = params.get("uri").and_then(Value::as_str) {
                                 let items = params
                                     .get("diagnostics")
                                     .and_then(Value::as_array)
@@ -195,7 +195,6 @@ impl LspClientSession {
                                 }
                                 diag_notify.notify_waiters();
                             }
-                        }
                     }
                     _ => {}
                 }
@@ -732,7 +731,7 @@ impl LspPoolManager {
             changed,
             before_gen,
             Duration::from_millis(wait_ms),
-            Duration::from_secs(cfg.request_timeout_secs.min(5).max(2)),
+            Duration::from_secs(cfg.request_timeout_secs.clamp(2, 5)),
             cancel,
         )
         .await
@@ -1077,8 +1076,8 @@ async fn collect_diagnostics(
     req_timeout: Duration,
     cancel: CancellationToken,
 ) -> Result<Vec<Value>> {
-    if sess.supports_pull_diag.load(Ordering::Relaxed) == 1 {
-        if let Ok(res) = sess
+    if sess.supports_pull_diag.load(Ordering::Relaxed) == 1
+        && let Ok(res) = sess
             .request(
                 "textDocument/diagnostic",
                 json!({ "textDocument": { "uri": uri } }),
@@ -1086,12 +1085,9 @@ async fn collect_diagnostics(
                 cancel.clone(),
             )
             .await
-        {
-            if let Some(items) = res.get("items").and_then(Value::as_array) {
+            && let Some(items) = res.get("items").and_then(Value::as_array) {
                 return Ok(items.clone());
             }
-        }
-    }
 
     let deadline = tokio::time::Instant::now() + wait_budget;
     loop {
@@ -1157,13 +1153,11 @@ pub async fn read_lsp_frame<R: AsyncRead + Unpin>(
         if trimmed.is_empty() {
             break;
         }
-        if let Some((key, val)) = trimmed.split_once(':') {
-            if key.trim().eq_ignore_ascii_case("Content-Length") {
-                if let Ok(len) = val.trim().parse::<usize>() {
+        if let Some((key, val)) = trimmed.split_once(':')
+            && key.trim().eq_ignore_ascii_case("Content-Length")
+                && let Ok(len) = val.trim().parse::<usize>() {
                     content_length = Some(len);
                 }
-            }
-        }
     }
     let Some(len) = content_length else {
         return Ok(None);
@@ -1276,13 +1270,12 @@ fn decode_uri_path(input: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
                 out.push((hi << 4) | lo);
                 i += 3;
                 continue;
             }
-        }
         out.push(bytes[i]);
         i += 1;
     }

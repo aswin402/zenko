@@ -13,7 +13,7 @@ members = [
 default-members = ["crates/zenko-cli"]
 
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 edition = "2024"
 license = "MIT"
 authors = ["Aswin <aswin402>"]
@@ -43,7 +43,6 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["compression-gzip", "limit", "trace"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
-maud = { version = "0.27", features = ["axum"] }
 rust-embed = "8.7"
 mime_guess = "2.0"
 

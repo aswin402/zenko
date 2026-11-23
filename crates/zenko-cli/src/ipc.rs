@@ -148,13 +148,11 @@ where
             _ = tokio::signal::ctrl_c() => break,
             line = lines.next_line() => match line? {
                 Some(raw) => {
-                    if let Ok(val) = serde_json::from_str::<Value>(&raw) {
-                        if let Some(entry_val) = val.get("entry") {
-                            if let Ok(entry) = serde_json::from_value::<LogEntry>(entry_val.clone()) {
+                    if let Ok(val) = serde_json::from_str::<Value>(&raw)
+                        && let Some(entry_val) = val.get("entry")
+                            && let Ok(entry) = serde_json::from_value::<LogEntry>(entry_val.clone()) {
                                 on_entry(entry);
                             }
-                        }
-                    }
                 }
                 None => break,
             }

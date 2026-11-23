@@ -92,33 +92,39 @@ export function ZenkoSelect({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (disabled || options.length === 0) return
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (!open) {
-        setOpen(true)
-        return
-      }
-      setHighlightedIdx((prev) => (prev + 1) % options.length)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (!open) {
-        setOpen(true)
-        return
-      }
-      setHighlightedIdx((prev) => (prev - 1 + options.length) % options.length)
-    } else if (e.key === 'Home' && open) {
-      e.preventDefault()
-      setHighlightedIdx(0)
-    } else if (e.key === 'End' && open) {
-      e.preventDefault()
-      setHighlightedIdx(options.length - 1)
-    } else if (e.key === 'Enter' && open && highlightedIdx >= 0) {
-      e.preventDefault()
-      selectByIndex(highlightedIdx)
-    } else if (e.key === 'Escape' && open) {
-      e.preventDefault()
-      setOpen(false)
+    const keyHandlers: Record<string, () => void> = {
+      ArrowDown: () => {
+        e.preventDefault()
+        if (!open) setOpen(true)
+        else setHighlightedIdx((prev) => (prev + 1) % options.length)
+      },
+      ArrowUp: () => {
+        e.preventDefault()
+        if (!open) setOpen(true)
+        else setHighlightedIdx((prev) => (prev - 1 + options.length) % options.length)
+      },
+      Home: () => {
+        if (!open) return
+        e.preventDefault()
+        setHighlightedIdx(0)
+      },
+      End: () => {
+        if (!open) return
+        e.preventDefault()
+        setHighlightedIdx(options.length - 1)
+      },
+      Enter: () => {
+        if (!open || highlightedIdx < 0) return
+        e.preventDefault()
+        selectByIndex(highlightedIdx)
+      },
+      Escape: () => {
+        if (!open) return
+        e.preventDefault()
+        setOpen(false)
+      },
     }
+    keyHandlers[e.key]?.()
   }
 
   return (

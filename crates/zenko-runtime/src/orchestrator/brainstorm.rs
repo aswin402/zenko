@@ -154,10 +154,9 @@ pub fn finalize_brainstorm_spec(mut spec: BrainstormSpec) -> BrainstormSpec {
         true => ORCH_SCORE_PREMORTEM_BONUS,
         false => 0,
     };
-    if spec.selected_option_id.trim().is_empty()
-        || !spec.options.iter().any(|o| o.id == spec.selected_option_id)
-    {
-        if let Some(best) = select_optimal_option(&spec.options) {
+    if (spec.selected_option_id.trim().is_empty()
+        || !spec.options.iter().any(|o| o.id == spec.selected_option_id))
+        && let Some(best) = select_optimal_option(&spec.options) {
             spec.selected_option_id = best.id.clone();
             if spec.selection_rationale.trim().is_empty() {
                 spec.selection_rationale = format!(
@@ -169,7 +168,6 @@ pub fn finalize_brainstorm_spec(mut spec: BrainstormSpec) -> BrainstormSpec {
                 );
             }
         }
-    }
     spec.rubric_warnings = audit_brainstorm_rubric(&spec);
     spec
 }
@@ -503,7 +501,7 @@ impl OrchestratorBridge for ClarificationHub {
             .lock()
             .map(|map| {
                 map.values()
-                    .filter(|p| session_id.map_or(true, |sid| p.record.session_id == sid))
+                    .filter(|p| session_id.is_none_or(|sid| p.record.session_id == sid))
                     .map(|p| p.record.clone())
                     .collect()
             })

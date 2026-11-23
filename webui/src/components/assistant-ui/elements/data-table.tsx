@@ -88,8 +88,32 @@ export interface DataTableProps extends Omit<
   relativeTo?: number | undefined;
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/;
-const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const isAsciiDigit = (code: number) => code >= 48 && code <= 57;
+
+const isDateOnlyString = (s: string): boolean =>
+  s.length === 10 &&
+  s[4] === "-" &&
+  s[7] === "-" &&
+  isAsciiDigit(s.charCodeAt(0)) &&
+  isAsciiDigit(s.charCodeAt(1)) &&
+  isAsciiDigit(s.charCodeAt(2)) &&
+  isAsciiDigit(s.charCodeAt(3)) &&
+  isAsciiDigit(s.charCodeAt(5)) &&
+  isAsciiDigit(s.charCodeAt(6)) &&
+  isAsciiDigit(s.charCodeAt(8)) &&
+  isAsciiDigit(s.charCodeAt(9));
+
+const isIsoDateString = (s: string): boolean =>
+  s.length >= 10 &&
+  isDateOnlyString(s.slice(0, 10)) &&
+  (s.length === 10 || s[10] === "T");
+
+const BADGE_TONE_CLASSES: Readonly<Record<string, string>> = {
+  neutral: cn(field, "text-foreground/60"),
+  success: "bg-[color-mix(in_srgb,var(--success)_14%,transparent)] text-[var(--success)]",
+  warning: "bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]",
+  danger: "bg-[color-mix(in_srgb,var(--destructive)_14%,transparent)] text-[var(--destructive)]",
+};
 
 const isEmpty = (value: DataTableValue) =>
   value === null || value === undefined;
@@ -119,7 +143,7 @@ const asDate = (value: DataTableValue) => {
     typeof value === "number"
       ? value
       : typeof value === "string" &&
-          ISO_DATE.test(value) &&
+          isIsoDateString(value) &&
           isCalendarDate(value)
         ? Date.parse(value)
         : Number.NaN;
@@ -227,174 +251,164 @@ function Value({
   if (isEmpty(value)) return <EmptyValue />;
 
   const format = column.format ?? { kind: "text" as const };
-  if (format.kind === "number") {
-    const number = numericValue(value);
-    if (number === undefined) return <>{textValue(value)}</>;
-    const content = formatted(value, () =>
-      new Intl.NumberFormat(
-        locale,
-        numberOptions(format.decimals, format.compact === true),
-      ).format(number),
-    );
-    return <>{withUnit(content, format.unit)}</>;
+  switch (format.kind) {
+    case "number": {
+      const number = numericValue(value);
+      if (number === undefined) return <>{textValue(value)}</>;
+      const content = formatted(value, () =>
+        new Intl.NumberFormat(
+          locale,
+          numberOptions(format.decimals, format.compact === true),
+        ).format(number),
+      );
+      return <>{withUnit(content, format.unit)}</>;
+    }
+    case "currency": {
+      const number = numericValue(value);
+      if (number === undefined) return <>{textValue(value)}</>;
+      return (
+        <>
+          {formatted(value, () =>
+            new Intl.NumberFormat(locale, {
+              style: "currency",
+              currency: format.currency,
+              ...numberOptions(format.decimals, format.compact === true),
+            }).format(number),
+          )}
+        </>
+      );
+    }
+    case "percent": {
+      const number = numericValue(value);
+      if (number === undefined) return <>{textValue(value)}</>;
+      return (
+        <>
+          {formatted(value, () =>
+            new Intl.NumberFormat(locale, {
+              style: "percent",
+              ...fractionDigits(format.decimals),
+            }).format(format.basis === "unit" ? number / 100 : number),
+          )}
+        </>
+      );
+    }
+    case "delta": {
+      const number = numericValue(value);
+      if (number === undefined) return <>{textValue(value)}</>;
+      const direction = number > 0 ? "↑" : number < 0 ? "↓" : "→";
+      const good = number === 0 || number > 0 === (format.upIsGood ?? true);
+      const content = formatted(value, () =>
+        new Intl.NumberFormat(locale, {
+          signDisplay: "never",
+          ...fractionDigits(format.decimals),
+        }).format(number),
+      );
+      return (
+        <span
+          className={cn(
+            number === 0
+              ? "text-muted-foreground"
+              : good
+                ? "text-[var(--success)]"
+                : "text-[var(--destructive)]",
+          )}
+        >
+          {direction} {withUnit(content, format.unit)}
+        </span>
+      );
+    }
+    case "date": {
+      const date = asDate(value);
+      if (!date) return <>{textValue(value)}</>;
+      const style = format.style ?? "date";
+      const content = formatted(value, () =>
+        style === "relative" && relativeTo !== undefined
+          ? relativeDate(date, locale, relativeTo)
+          : new Intl.DateTimeFormat(
+              locale,
+              style === "datetime"
+                ? { dateStyle: "medium", timeStyle: "short" }
+                : {
+                    dateStyle: "medium",
+                    ...((style === "relative" && relativeTo === undefined) ||
+                    (typeof value === "string" && isDateOnlyString(value))
+                      ? { timeZone: "UTC" }
+                      : {}),
+                  },
+            ).format(date),
+      );
+      return <span title={date.toISOString()}>{content}</span>;
+    }
+    case "boolean": {
+      if (typeof value !== "boolean") return <>{textValue(value)}</>;
+      return (
+        <>{value ? (format.trueLabel ?? "Yes") : (format.falseLabel ?? "No")}</>
+      );
+    }
+    case "link": {
+      const hrefValue = format.hrefKey ? row[format.hrefKey] : value;
+      const href = safeHref(
+        typeof hrefValue === "string" ? hrefValue : undefined,
+      );
+      if (!href) return <>{textValue(value)}</>;
+      const external = href.startsWith("http:") || href.startsWith("https:");
+      return external ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline underline-offset-2"
+        >
+          {textValue(value)}
+          <span className="sr-only"> (opens in a new tab)</span>
+        </a>
+      ) : (
+        <a href={href} className="underline underline-offset-2">
+          {textValue(value)}
+        </a>
+      );
+    }
+    case "badge": {
+      const tone = format.tones?.[textValue(value)] ?? "neutral";
+      return (
+        <span
+          className={cn(
+            "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
+            BADGE_TONE_CLASSES[tone] ?? BADGE_TONE_CLASSES.neutral,
+          )}
+        >
+          {textValue(value)}
+        </span>
+      );
+    }
+    case "list": {
+      if (!Array.isArray(value)) return <>{textValue(value)}</>;
+      const max = Math.max(0, Math.floor(format.max ?? value.length));
+      const shown = value.slice(0, max);
+      return (
+        <span className="flex flex-wrap gap-1">
+          {shown.map((item, index) => (
+            <span
+              key={index}
+              className={cn(
+                field,
+                "text-foreground/60 rounded-md px-1.5 py-0.5 text-xs",
+              )}
+            >
+              {item}
+            </span>
+          ))}
+          {value.length > shown.length ? (
+            <span className="text-muted-foreground px-1.5 py-0.5 text-xs">
+              +{value.length - shown.length}
+            </span>
+          ) : null}
+        </span>
+      );
+    }
+    default:
+      return <>{textValue(value)}</>;
   }
-
-  if (format.kind === "currency") {
-    const number = numericValue(value);
-    if (number === undefined) return <>{textValue(value)}</>;
-    return (
-      <>
-        {formatted(value, () =>
-          new Intl.NumberFormat(locale, {
-            style: "currency",
-            currency: format.currency,
-            ...numberOptions(format.decimals, format.compact === true),
-          }).format(number),
-        )}
-      </>
-    );
-  }
-
-  if (format.kind === "percent") {
-    const number = numericValue(value);
-    if (number === undefined) return <>{textValue(value)}</>;
-    return (
-      <>
-        {formatted(value, () =>
-          new Intl.NumberFormat(locale, {
-            style: "percent",
-            ...fractionDigits(format.decimals),
-          }).format(format.basis === "unit" ? number / 100 : number),
-        )}
-      </>
-    );
-  }
-
-  if (format.kind === "delta") {
-    const number = numericValue(value);
-    if (number === undefined) return <>{textValue(value)}</>;
-    const direction = number > 0 ? "↑" : number < 0 ? "↓" : "→";
-    const good = number === 0 || number > 0 === (format.upIsGood ?? true);
-    const content = formatted(value, () =>
-      new Intl.NumberFormat(locale, {
-        signDisplay: "never",
-        ...fractionDigits(format.decimals),
-      }).format(number),
-    );
-    return (
-      <span
-        className={cn(
-          number === 0
-            ? "text-muted-foreground"
-            : good
-              ? "text-emerald-600 dark:text-emerald-400"
-              : "text-red-600 dark:text-red-400",
-        )}
-      >
-        {direction} {withUnit(content, format.unit)}
-      </span>
-    );
-  }
-
-  if (format.kind === "date") {
-    const date = asDate(value);
-    if (!date) return <>{textValue(value)}</>;
-    const style = format.style ?? "date";
-    const content = formatted(value, () =>
-      style === "relative" && relativeTo !== undefined
-        ? relativeDate(date, locale, relativeTo)
-        : new Intl.DateTimeFormat(
-            locale,
-            style === "datetime"
-              ? { dateStyle: "medium", timeStyle: "short" }
-              : {
-                  dateStyle: "medium",
-                  ...((style === "relative" && relativeTo === undefined) ||
-                  (typeof value === "string" && DATE_ONLY.test(value))
-                    ? { timeZone: "UTC" }
-                    : {}),
-                },
-          ).format(date),
-    );
-    return <span title={date.toISOString()}>{content}</span>;
-  }
-
-  if (format.kind === "boolean") {
-    if (typeof value !== "boolean") return <>{textValue(value)}</>;
-    return (
-      <>{value ? (format.trueLabel ?? "Yes") : (format.falseLabel ?? "No")}</>
-    );
-  }
-
-  if (format.kind === "link") {
-    const hrefValue = format.hrefKey ? row[format.hrefKey] : value;
-    const href = safeHref(
-      typeof hrefValue === "string" ? hrefValue : undefined,
-    );
-    if (!href) return <>{textValue(value)}</>;
-    const external = /^https?:/.test(href);
-    return external ? (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="underline underline-offset-2"
-      >
-        {textValue(value)}
-        <span className="sr-only"> (opens in a new tab)</span>
-      </a>
-    ) : (
-      <a href={href} className="underline underline-offset-2">
-        {textValue(value)}
-      </a>
-    );
-  }
-
-  if (format.kind === "badge") {
-    const tone = format.tones?.[textValue(value)] ?? "neutral";
-    return (
-      <span
-        className={cn(
-          "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
-          tone === "neutral" && cn(field, "text-foreground/60"),
-          tone === "success" &&
-            "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-          tone === "warning" &&
-            "bg-amber-500/12 text-amber-700 dark:text-amber-300",
-          tone === "danger" && "bg-red-500/12 text-red-700 dark:text-red-300",
-        )}
-      >
-        {textValue(value)}
-      </span>
-    );
-  }
-
-  if (format.kind === "list" && Array.isArray(value)) {
-    const max = Math.max(0, Math.floor(format.max ?? value.length));
-    const shown = value.slice(0, max);
-    return (
-      <span className="flex flex-wrap gap-1">
-        {shown.map((item, index) => (
-          <span
-            key={index}
-            className={cn(
-              field,
-              "text-foreground/60 rounded-md px-1.5 py-0.5 text-xs",
-            )}
-          >
-            {item}
-          </span>
-        ))}
-        {value.length > shown.length ? (
-          <span className="text-muted-foreground px-1.5 py-0.5 text-xs">
-            +{value.length - shown.length}
-          </span>
-        ) : null}
-      </span>
-    );
-  }
-
-  return <>{textValue(value)}</>;
 }
 
 const isNumeric = (format: DataTableFormat | undefined) =>

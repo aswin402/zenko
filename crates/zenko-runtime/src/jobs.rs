@@ -268,11 +268,10 @@ impl Utf8ChunkDecoder {
                 }
                 Err(err) => {
                     let valid_up_to = err.valid_up_to();
-                    if valid_up_to > 0 {
-                        if let Ok(valid) = std::str::from_utf8(&self.pending[..valid_up_to]) {
+                    if valid_up_to > 0
+                        && let Ok(valid) = std::str::from_utf8(&self.pending[..valid_up_to]) {
                             out.push_str(valid);
                         }
-                    }
                     match err.error_len() {
                         Some(invalid_len) => {
                             out.push('\u{FFFD}');
@@ -594,22 +593,20 @@ impl JobSupervisor for LocalJobSupervisor {
             });
             let _ = done_tx.send(true);
 
-            if notify_flag.load(Ordering::SeqCst) {
-                if let Some(cb) = on_finish {
+            if notify_flag.load(Ordering::SeqCst)
+                && let Some(cb) = on_finish {
                     cb(&final_rec);
                 }
-            }
         });
 
         Ok(record)
     }
 
     fn enable_completion_notify(&self, job_id: &str) {
-        if let Ok(map) = self.active.lock() {
-            if let Some(h) = map.get(job_id) {
+        if let Ok(map) = self.active.lock()
+            && let Some(h) = map.get(job_id) {
                 h.notify_on_complete.store(true, Ordering::SeqCst);
             }
-        }
     }
 
     fn list_jobs(
@@ -620,24 +617,21 @@ impl JobSupervisor for LocalJobSupervisor {
     ) -> Result<Vec<BackgroundJobRecord>> {
         let mut jobs = self.store.list_jobs(session_id, kind, limit)?;
         for job in &mut jobs {
-            if job.status == BackgroundJobStatus::Running {
-                if let Ok(meta) = std::fs::metadata(&job.log_path) {
+            if job.status == BackgroundJobStatus::Running
+                && let Ok(meta) = std::fs::metadata(&job.log_path) {
                     job.bytes_written = meta.len();
                 }
-            }
         }
         Ok(jobs)
     }
 
     fn get_job(&self, job_id: &str) -> Result<Option<BackgroundJobRecord>> {
         let mut rec = self.store.get_job(job_id)?;
-        if let Some(ref mut job) = rec {
-            if job.status == BackgroundJobStatus::Running {
-                if let Ok(meta) = std::fs::metadata(&job.log_path) {
+        if let Some(ref mut job) = rec
+            && job.status == BackgroundJobStatus::Running
+                && let Ok(meta) = std::fs::metadata(&job.log_path) {
                     job.bytes_written = meta.len();
                 }
-            }
-        }
         Ok(rec)
     }
 

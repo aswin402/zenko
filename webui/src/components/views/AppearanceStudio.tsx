@@ -273,7 +273,7 @@ export function AppearanceStudio({
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     if (!q) return []
-    const tokens = q.split(/\s+/).filter(Boolean)
+    const tokens = q.split(' ').flatMap((part) => part.split('\t')).filter(Boolean)
     const matchesAll = (haystack: string) => tokens.every((t) => haystack.includes(t))
 
     interface StudioSearchHit {

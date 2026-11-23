@@ -7,6 +7,7 @@ use zenko_core::{
 /// - `artifact:<session>/<file>` strictly inside `<data_dir>/artifacts/` (read-only spilled outputs)
 /// - `hub:<subpath>` strictly inside `hub_root` (`~/zenko_hub/`)
 /// - Everything else strictly inside `workspace_root`
+///
 /// Write tools MUST continue calling `resolve_workspace_or_hub_path` so spilled artifacts stay immutable.
 pub fn resolve_readable_path(
     workspace_root: &Path,
@@ -32,6 +33,7 @@ pub fn resolve_readable_path(
 /// - `hub:<subpath>` explicitly targets `hub_root`
 /// - Absolute or `~/` paths pointing inside `hub_root` resolve within `hub_root`
 /// - All other paths resolve strictly inside `workspace_root`
+///
 /// Both roots enforce identical lexical + canonical symlink-escape jails.
 pub fn resolve_workspace_or_hub_path(
     workspace_root: &Path,

@@ -105,6 +105,24 @@ pub fn scrub_secrets(input: &str, known_secrets: &[String]) -> String {
     out
 }
 
+const SECRET_JSON_KEY_SUBSTRINGS: &[&str] = &["api_key", "authorization", "secret"];
+const NON_SECRET_TOKEN_FIELDS: &[&str] = &[
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "max_tokens",
+    "cache_read_tokens",
+    "cached_tokens",
+];
+
+fn is_secret_json_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    SECRET_JSON_KEY_SUBSTRINGS
+        .iter()
+        .any(|needle| lower.contains(needle))
+        || (lower.contains("token") && !NON_SECRET_TOKEN_FIELDS.contains(&lower.as_str()))
+}
+
 /// Recursively scrubs string values inside arbitrary JSON payloads.
 pub fn scrub_json(val: Value, known_secrets: &[String]) -> Value {
     match val {
@@ -117,12 +135,7 @@ pub fn scrub_json(val: Value, known_secrets: &[String]) -> Value {
         Value::Object(map) => Value::Object(
             map.into_iter()
                 .map(|(k, v)| {
-                    let lower = k.to_ascii_lowercase();
-                    let is_secret_key = lower.contains("api_key")
-                        || lower.contains("authorization")
-                        || lower.contains("secret")
-                        || lower.contains("token") && lower != "prompt_tokens" && lower != "completion_tokens" && lower != "total_tokens" && lower != "max_tokens" && lower != "cache_read_tokens" && lower != "cached_tokens";
-                    let next_v = match (is_secret_key, v) {
+                    let next_v = match (is_secret_json_key(&k), v) {
                         (true, Value::String(ref s)) if !s.trim().is_empty() => {
                             Value::String(REDACTED_PLACEHOLDER.to_string())
                         }
@@ -158,15 +171,14 @@ pub fn sanitize_untrusted_markup(input: &str) -> String {
                 && MEMORY_INJECTION_BLOCKED_TAGS
                     .iter()
                     .any(|b| tag_name.eq_ignore_ascii_case(b));
-            if is_blocked {
-                if let Some(rel_end) = input[j..].find('>') {
+            if is_blocked
+                && let Some(rel_end) = input[j..].find('>') {
                     out.push('[');
                     out.push_str(tag_name);
                     out.push(']');
                     i = j + rel_end + 1;
                     continue;
                 }
-            }
         }
         let ch = input[i..].chars().next().unwrap_or(' ');
         out.push(ch);

@@ -4,6 +4,32 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-11-23
+
+Phase 3 (P2) modular architecture refactoring, centralized Axum auth middleware, DRY & zero-hardcoding cleanup, frontend code splitting, dead code & dependency pruning, and strict zero-warning Clippy sweep across the entire workspace.
+
+### Changed
+- **Modularized 6 Large Monolithic Files into Cohesive Sub-Modules:**
+  - `crates/zenko-webui/src/api/` (`mod`, `auth`, `sessions`, `agents`, `tasks_checkpoints`, `ui_models`, `setup_gateways`, `memory_skills_automation`, `openai_webhooks`, `mcp_lsp`): split 3,774-line `api.rs` and centralized admin auth into an Axum `require_api_auth_middleware` layer + `ApiError` wrapper in `lib.rs`, removing 105+ repetitive per-handler auth checks.
+  - `crates/zenko-memory/src/sqlite/` (`mod`, `sessions`, `approvals_gateways`, `memories`, `cron_ui_logs`, `jobs_agents`, `tasks_checkpoints_goals`, `tests`): split 3,423-line `sqlite.rs` and removed the duplicate `get_all_session_events` helper (unified on `list_all_session_events`).
+  - `crates/zenko-runtime/src/runtime/` (`mod`, `bridges`, `turn`, `loops`, `ipc`, `tests`): split 4,798-line `runtime.rs`.
+  - `crates/zenko-cli/src/commands/` (`mod`, `ask_chat`, `sessions_memory`, `jobs_hub_queue`, `agents`, `dag_checkpoints`, `mcp_lsp`, `skills_goals_export`) + `crates/zenko-cli/src/{cli.rs, daemon.rs, main.rs}`: split 3,663-line `commands.rs` and 1,105-line `main.rs`, boxing `McpClientCmd::Add` (`McpClientAddArgs`) and extracting `get_or_build_runtime` in `mcp.rs`.
+  - `webui/src/components/views/` (`shared`, `SetupView`, `GatewaysView`, `MemoryView`, `AutomationView`, `TelemetryView`, `LoginGate`): split 3,262-line `SecondaryViews.tsx` with clean minimal imports and a barrel re-export.
+- **Frontend Code Splitting, Lazy Views & Zero-Regex Declarative Dispatch:**
+  - Lazy-loaded `AppearanceStudio`, `DashboardView`, `SetupView`, `GatewaysView`, `MemoryView`, and `AutomationView` via `React.lazy` + `<Suspense>` (`webui/src/App.tsx`) and added Vite `manualChunks` (`vendor-echarts`, `vendor-motion`, `vendor-markdown`, `zenko-icon-packs`), shrinking the main entry chunk to `651 kB` (`186 kB` gzip) with ECharts (`613 kB`) loaded on demand.
+  - Replaced remaining frontend regexes and imperative `if/else` ladders with deterministic parsers and declarative dispatch tables across `citations.ts`, `terminal-block.tsx`, `data-table.tsx`, `loader.tsx`, `ZenkoSelect.tsx`, `ChatElements.tsx`, and `AppearanceStudio.tsx`; aligned `data-table.tsx` badge tones and `ZenkoChart.tsx` default palette to strict 60/30/10 theme tokens.
+- **DRY & Zero-Hardcoding Cleanup:**
+  - Centralized `ProviderConfig::switch_provider(...)` in `crates/zenko-core/src/config.rs` (shared by `api/sessions.rs`, `api/setup_gateways.rs`, and `cli/setup/state.rs`).
+  - Replaced boolean chains and magic literals with declarative tables/constants (`SECRET_JSON_KEY_SUBSTRINGS` / `NON_SECRET_TOKEN_FIELDS` in `redact.rs`, `DEFAULT_HOOK_TIMEOUT_SECS`, `HUB_PATH_PREFIX`, `ARTIFACT_PATH_PREFIX`, `LOG_SESSION_INDEX_FILE`, `WEB_SEARCH_MAX_LIMIT`, `CHECKPOINT_LIST_DEFAULT_LIMIT`, `LSP_IDLE_TIMEOUT_SECS`, and `enum DraftMode` in `telegram.rs`).
+- **Strict Zero-Warning Clippy Sweep:** Resolved all Rust Clippy lints across all 8 crates and all test targets (`cargo clippy --workspace --all-targets -- -D warnings` passes with 0 warnings).
+
+### Fixed
+- **Runtime, Scheduler & IPC Edge Cases:** Re-enqueue popped prompt in `promote_queued_to_steer` if a session goes idle concurrently; check cron job existence before upserting next run so deleted cron jobs are never resurrected; bound incoming Unix IPC lines at `1 MiB` (`MAX_IPC_LINE_BYTES`); trim whitespace on task `id`/`depends_on` in `kahn_topological_order`; only advance `DREAM_KV_LAST_RUN_KEY` cooldown when `status == "completed"`; load up to 200 goal loops so active goals aren't starved behind finished ones.
+- **API, CLI & Systemd Edge Cases:** Verified session existence (`404`) before mutating global config in `PATCH /api/sessions/{id}`; propagated config/storage errors in `api_update_session`, `api_switch_branch`, and `api_update_telegram`; sanitized session IDs in `Content-Disposition` headers (`api_export_session`); escaped `%`, `\`, `"`, and newlines in generated systemd `ExecStart` lines (`service.rs`); ignored `Ctrl`/`Alt` modifiers on printable characters in `zenko setup`; updated stale Telegram `/model` help text.
+
+### Removed
+- **Dead Legacy Files & 15 Unused Dependencies:** Removed obsolete `crates/zenko-webui/assets/*`, `scripts/build-css.sh`, duplicate `logo.svg` copies, unused `TextShimmer.tsx` and `smooth-scroll.tsx`; pruned unused Rust crate dependencies (`maud`, `tokio-stream`, `anyhow`, `futures-core`, `serde`, `tracing`, `zeroize`, moved `tower` to `dev-dependencies`) and 9 unused npm packages (`@radix-ui/react-*`, `class-variance-authority`, `next-themes`, `shiki`).
+
 ## [0.0.4] - 2026-11-23
 
 Phase 2 (P1) concurrency, security, performance, provider/SSE, runtime reliability, and WebUI CSS/render polish across all 8 crates and the embedded React frontend.

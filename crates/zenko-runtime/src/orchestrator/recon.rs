@@ -5,6 +5,7 @@
 //! 3. Prompt-referenced file probe (checks existence & line count inside workspace or `~/zenko_hub/`)
 //! 4. SQLite FTS5 memory recall + active-branch prior brainstorm/plan continuity
 //! 5. Recent ZenkoTasks snapshot
+//!
 //! Zero LLM tokens and zero side effects.
 
 use crate::jobs::LocalJobSupervisor;
@@ -89,7 +90,7 @@ fn probe_mentioned_files_sync(
         let status = match std::fs::canonicalize(&target) {
             Ok(canon_target) => {
                 // Reject symlinks escaping outside workspace_dir / hub_dir
-                if !canon_root.map_or(false, |root| canon_target.starts_with(root)) {
+                if !canon_root.is_some_and(|root| canon_target.starts_with(root)) {
                     continue;
                 }
                 match std::fs::metadata(&canon_target) {

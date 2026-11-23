@@ -383,8 +383,8 @@ impl ExecutionGuard {
         }
 
         // Track mutated workspace files & verified completions (foreground OR background-then-awaited)
-        if !is_error && MUTATING_FILE_TOOLS.contains(&tool_name) {
-            if let Some(p) = arguments.get("path").and_then(Value::as_str) {
+        if !is_error && MUTATING_FILE_TOOLS.contains(&tool_name)
+            && let Some(p) = arguments.get("path").and_then(Value::as_str) {
                 let norm = p.trim().trim_start_matches("./").to_string();
                 if !norm.is_empty() {
                     self.mutated_files.insert(norm.clone());
@@ -392,7 +392,6 @@ impl ExecutionGuard {
                     self.verification_ran = false;
                 }
             }
-        }
         if is_error && tool_name == TOOL_SHELL_EXEC {
             let cmd = arguments
                 .get("command")
@@ -553,8 +552,8 @@ impl ExecutionGuard {
         }
 
         // 3. Oscillating file-edit detection (same file mutated repeatedly with errors or thrashing)
-        if MUTATING_FILE_TOOLS.contains(&tool_name) {
-            if let Some(path) = arguments.get("path").and_then(Value::as_str) {
+        if MUTATING_FILE_TOOLS.contains(&tool_name)
+            && let Some(path) = arguments.get("path").and_then(Value::as_str) {
                 let norm = path.trim().trim_start_matches("./");
                 let edit_err_repeats = self
                     .window
@@ -577,7 +576,6 @@ impl ExecutionGuard {
                     return self.escalate_or_pivot(reason, hint);
                 }
             }
-        }
 
         // 4. Consecutive error streak across tools
         if self.consecutive_errors >= ORCH_MAX_CONSECUTIVE_ERRORS {
@@ -1423,7 +1421,7 @@ mod tests {
         );
         // Advisory completion gate nudges once if model tries to conclude without calling record_brainstorm
         let adv_complete = pacing_adv.check_completion_gate(true);
-        assert!(adv_complete.as_deref().map_or(false, |s| s.contains("advisory_brainstorm")));
+        assert!(adv_complete.as_deref().is_some_and(|s| s.contains("advisory_brainstorm")));
         assert!(pacing_adv.check_completion_gate(true).is_none(), "advisory nudge capped at 1");
         // Wrap-up countdown fires when remaining <= ORCH_ITER_WRAPUP_REMAINING
         let wrap = pacing_adv.check_iteration_pacing(true, 20, 24, false);

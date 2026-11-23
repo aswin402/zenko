@@ -21,5 +21,31 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/echarts') || id.includes('node_modules/zrender')) {
+            return 'vendor-echarts'
+          }
+          if (id.includes('node_modules/motion') || id.includes('node_modules/framer-motion')) {
+            return 'vendor-motion'
+          }
+          if (
+            id.includes('node_modules/react-markdown') ||
+            id.includes('node_modules/remark-') ||
+            id.includes('node_modules/micromark') ||
+            id.includes('node_modules/mdast-') ||
+            id.includes('node_modules/hast-') ||
+            id.includes('node_modules/unified')
+          ) {
+            return 'vendor-markdown'
+          }
+          if (id.includes('src/lib/icon-packs')) {
+            return 'zenko-icon-packs'
+          }
+          return undefined
+        },
+      },
+    },
   },
 })

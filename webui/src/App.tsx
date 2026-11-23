@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Search, X } from 'lucide-react'
 import { api, applyUiCustomization, normalizeUiCustomization } from '@/lib/api'
@@ -59,15 +59,26 @@ import { Sidebar } from '@/components/chat/Sidebar'
 import { ChatStream, type LiveToolItem } from '@/components/chat/ChatStream'
 import { Phase6Bar, WorkspaceToolsPopovers } from '@/components/chat/Phase6Bar'
 import { PromptComposer } from '@/components/chat/PromptComposer'
-import { AppearanceStudio } from '@/components/views/AppearanceStudio'
-import { DashboardView } from '@/components/views/DashboardView'
-import {
-  AutomationView,
-  GatewaysView,
-  LoginGate,
-  MemoryView,
-  SetupView,
-} from '@/components/views/SecondaryViews'
+import { LoginGate } from '@/components/views/LoginGate'
+
+const AppearanceStudio = lazy(() =>
+  import('@/components/views/AppearanceStudio').then((m) => ({ default: m.AppearanceStudio })),
+)
+const DashboardView = lazy(() =>
+  import('@/components/views/DashboardView').then((m) => ({ default: m.DashboardView })),
+)
+const SetupView = lazy(() =>
+  import('@/components/views/SetupView').then((m) => ({ default: m.SetupView })),
+)
+const GatewaysView = lazy(() =>
+  import('@/components/views/GatewaysView').then((m) => ({ default: m.GatewaysView })),
+)
+const MemoryView = lazy(() =>
+  import('@/components/views/MemoryView').then((m) => ({ default: m.MemoryView })),
+)
+const AutomationView = lazy(() =>
+  import('@/components/views/AutomationView').then((m) => ({ default: m.AutomationView })),
+)
 
 interface ToastItem {
   id: number
@@ -1124,6 +1135,13 @@ export default function App() {
           </div>
         )}
 
+        <Suspense
+          fallback={
+            <div className="flex flex-1 items-center justify-center text-xs text-[var(--muted)]">
+              Loading view...
+            </div>
+          }
+        >
         {activeView === 'appearance' && (
           <AppearanceStudio
             ui={ui}
@@ -1339,6 +1357,7 @@ export default function App() {
             toast={toast}
           />
         )}
+        </Suspense>
       </main>
 
       {/* Signature Floating Right Vertical Icon Dock — hidden inside full-page Theme Studio */}

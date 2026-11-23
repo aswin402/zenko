@@ -548,16 +548,14 @@ impl Tool for SkillManageTool {
                         .get("enabled")
                         .and_then(Value::as_bool)
                         .ok_or_else(|| ZenkoError::Tool("missing boolean `enabled` for `toggle`".into()))?;
-                    if enabled {
-                        if let Some(existing) = snapshots.get_global_skill(slug)? {
-                            if existing.status == SkillStatus::Draft {
+                    if enabled
+                        && let Some(existing) = snapshots.get_global_skill(slug)?
+                            && existing.status == SkillStatus::Draft {
                                 return Err(ZenkoError::PolicyDenied(format!(
                                     "Cannot enable draft skill `{}` before operator approval (`zenko skills approve {}` or WebUI Approve).",
                                     existing.slug, existing.slug
                                 )));
                             }
-                        }
-                    }
                     let (doc, snap) =
                         snapshots.toggle_skill(slug, enabled, cfg.max_history_snapshots)?;
                     Ok(ToolOutput {

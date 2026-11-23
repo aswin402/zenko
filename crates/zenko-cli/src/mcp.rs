@@ -8,7 +8,7 @@ use chrono::Utc;
 use croner::Cron;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zenko_core::{
     CronJob, CronKind, ExportFormat, ExportOptions, GOAL_LOOP_LIST_DEFAULT_LIMIT,
@@ -609,7 +609,7 @@ fn mcp_tools_list_payload() -> Value {
 }
 
 async fn dispatch_mcp_request(
-    config_path: &PathBuf,
+    config_path: &Path,
     cfg: &ZenkoConfig,
     lazy_runtime: &mut Option<Arc<AgentRuntime>>,
     id: Value,
@@ -661,8 +661,21 @@ async fn dispatch_mcp_request(
     }
 }
 
+fn get_or_build_runtime(
+    lazy_runtime: &mut Option<Arc<AgentRuntime>>,
+    config_path: &Path,
+    cfg: &ZenkoConfig,
+) -> Result<Arc<AgentRuntime>> {
+    if let Some(existing) = lazy_runtime {
+        return Ok(existing.clone());
+    }
+    let (built, _logs) = AgentRuntime::build(config_path.to_path_buf(), cfg.clone())?;
+    *lazy_runtime = Some(built.clone());
+    Ok(built)
+}
+
 async fn execute_mcp_tool(
-    config_path: &PathBuf,
+    config_path: &Path,
     cfg: &ZenkoConfig,
     lazy_runtime: &mut Option<Arc<AgentRuntime>>,
     name: &str,
@@ -1080,15 +1093,7 @@ async fn execute_mcp_tool(
             match ipc_call(cfg, IPC_METHOD_CHECKPOINTS_REWIND, args.clone()).await {
                 Ok(resp) => unwrap_ipc_result(resp),
                 Err(e) if is_daemon_offline(&e) => {
-                    let rt = match lazy_runtime {
-                        Some(existing) => existing.clone(),
-                        None => {
-                            let (built, _logs) =
-                                AgentRuntime::build(config_path.clone(), cfg.clone())?;
-                            *lazy_runtime = Some(built.clone());
-                            built
-                        }
-                    };
+                    let rt = get_or_build_runtime(lazy_runtime, config_path, cfg)?;
                     let mode = args
                         .get("mode")
                         .and_then(Value::as_str)
@@ -1145,15 +1150,7 @@ async fn execute_mcp_tool(
             match ipc_call(cfg, IPC_METHOD_SESSION_APPROVE_PLAN, args).await {
                 Ok(resp) => unwrap_ipc_result(resp),
                 Err(_) => {
-                    let rt = match lazy_runtime {
-                        Some(existing) => existing.clone(),
-                        None => {
-                            let (built, _logs) =
-                                AgentRuntime::build(config_path.clone(), cfg.clone())?;
-                            *lazy_runtime = Some(built.clone());
-                            built
-                        }
-                    };
+                    let rt = get_or_build_runtime(lazy_runtime, config_path, cfg)?;
                     let (sess, task_count) =
                         rt.approve_session_plan(&sid, PermissionMode::from_str_loose(&mode))?;
                     Ok(json!({ "session": sess, "task_count": task_count }))
@@ -1163,15 +1160,7 @@ async fn execute_mcp_tool(
         "zenko_mcp_servers_list" => match ipc_call(cfg, IPC_METHOD_MCP_SERVERS_LIST, json!({})).await {
             Ok(resp) => unwrap_ipc_result(resp),
             Err(_) => {
-                let rt = match lazy_runtime {
-                    Some(existing) => existing.clone(),
-                    None => {
-                        let (built, _logs) =
-                            AgentRuntime::build(config_path.clone(), cfg.clone())?;
-                        *lazy_runtime = Some(built.clone());
-                        built
-                    }
-                };
+                let rt = get_or_build_runtime(lazy_runtime, config_path, cfg)?;
                 Ok(json!({
                     "servers": rt.mcp_clients.list_status().await,
                     "configs": rt.mcp_clients.configs(),
@@ -1223,14 +1212,7 @@ async fn execute_mcp_tool(
                 Err(e) => return Err(e),
             }
 
-            let rt = match lazy_runtime {
-                Some(existing) => existing.clone(),
-                None => {
-                    let (built, _logs) = AgentRuntime::build(config_path.clone(), cfg.clone())?;
-                    *lazy_runtime = Some(built.clone());
-                    built
-                }
-            };
+            let rt = get_or_build_runtime(lazy_runtime, config_path, cfg)?;
             let perm = mode.map(PermissionMode::from_str_loose);
             let sid = match session_id {
                 Some(id) => id.to_string(),
@@ -1297,14 +1279,7 @@ async fn execute_mcp_tool(
                 Err(e) if is_daemon_offline(&e) => {}
                 Err(e) => return Err(e),
             }
-            let rt = match lazy_runtime {
-                Some(existing) => existing.clone(),
-                None => {
-                    let (built, _logs) = AgentRuntime::build(config_path.clone(), cfg.clone())?;
-                    *lazy_runtime = Some(built.clone());
-                    built
-                }
-            };
+            let rt = get_or_build_runtime(lazy_runtime, config_path, cfg)?;
             Ok(serde_json::to_value(rt.create_goal_loop(req)?)?)
         }
         "zenko_export_session" => {

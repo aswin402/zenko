@@ -396,7 +396,7 @@ fn neutralize_xml_tag_case_insensitive(input: &str, tag: &str) -> String {
                     && &lower_bytes[i..i + pat.len()] == pat
                     && lower_bytes
                         .get(i + pat.len())
-                        .map_or(true, |&b| !b.is_ascii_alphanumeric() && b != b'_')
+                        .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_')
             });
         match matched {
             true => {
@@ -435,20 +435,16 @@ pub fn extract_memory_file_paths(text: &str) -> Vec<String> {
             || tok.contains('@')
             || tok.contains("..")
             || tok.starts_with('/')
-            || tok.starts_with("hub:")
-            || tok.starts_with("artifact:")
+            || tok.starts_with(zenko_core::HUB_PATH_PREFIX)
+            || tok.starts_with(zenko_core::ARTIFACT_PATH_PREFIX)
         {
             continue;
         }
-        let has_slash = tok.contains('/');
         let ext = tok
             .rsplit_once('.')
             .map(|(_, e)| e.to_ascii_lowercase())
             .unwrap_or_default();
-        if !has_slash && !KNOWN_EXTS.contains(&ext.as_str()) {
-            continue;
-        }
-        if has_slash && !KNOWN_EXTS.contains(&ext.as_str()) {
+        if !KNOWN_EXTS.contains(&ext.as_str()) {
             continue;
         }
         if tok

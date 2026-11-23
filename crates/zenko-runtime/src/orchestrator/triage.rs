@@ -444,11 +444,10 @@ fn count_list_items(prompt: &str) -> usize {
             let is_numbered = t
                 .as_bytes()
                 .first()
-                .map_or(false, u8::is_ascii_digit)
+                .is_some_and(u8::is_ascii_digit)
                 && t.chars()
-                    .skip_while(char::is_ascii_digit)
-                    .next()
-                    .map_or(false, |c| matches!(c, '.' | ')'));
+                    .find(|c| !c.is_ascii_digit())
+                    .is_some_and(|c| matches!(c, '.' | ')'));
             is_bullet || is_numbered
         })
         .count()

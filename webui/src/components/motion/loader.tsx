@@ -76,6 +76,30 @@ export function Loader({
   const label = labelProp ?? t("label");
   const reduce = useReducedMotion() ?? false;
 
+  const asciiFrames = ASCII_SETS[variant];
+  const renderVariant = (): React.ReactNode => {
+    if (asciiFrames) {
+      return <Ascii frames={asciiFrames} size={size} speed={speed} reduce={reduce} />;
+    }
+    const dispatch: Partial<Record<LoaderVariant, () => React.ReactNode>> = {
+      spinner: () => <Spinner size={size} speed={speed} reduce={reduce} />,
+      dots: () => <Dots size={size} speed={speed} reduce={reduce} />,
+      bars: () => <Bars size={size} speed={speed} reduce={reduce} />,
+      "dot-matrix": () => <DotMatrix size={size} speed={speed} reduce={reduce} />,
+      dither: () => <Dither size={size} speed={speed} reduce={reduce} />,
+      morph: () => <Morph size={size} speed={speed} reduce={reduce} label={label} />,
+      comet: () => <Comet size={size} speed={speed} reduce={reduce} />,
+      scramble: () => (
+        <Scramble size={size} speed={speed} reduce={reduce} target={t("scramble")} />
+      ),
+      metaballs: () => <Metaballs size={size} speed={speed} reduce={reduce} label={label} />,
+      newton: () => <Newton size={size} speed={speed} reduce={reduce} />,
+      helix: () => <Helix size={size} speed={speed} reduce={reduce} />,
+      percent: () => <Percent size={size} speed={speed} reduce={reduce} />,
+    };
+    return dispatch[variant]?.() ?? null;
+  };
+
   return (
     <span
       role="status"
@@ -85,36 +109,7 @@ export function Loader({
         className,
       )}
     >
-      {variant === "spinner" && <Spinner size={size} speed={speed} reduce={reduce} />}
-      {variant === "dots" && <Dots size={size} speed={speed} reduce={reduce} />}
-      {variant === "bars" && <Bars size={size} speed={speed} reduce={reduce} />}
-      {variant === "dot-matrix" && (
-        <DotMatrix size={size} speed={speed} reduce={reduce} />
-      )}
-      {variant === "dither" && <Dither size={size} speed={speed} reduce={reduce} />}
-      {ASCII_SETS[variant] && (
-        <Ascii frames={ASCII_SETS[variant]} size={size} speed={speed} reduce={reduce} />
-      )}
-      {variant === "morph" && (
-        <Morph size={size} speed={speed} reduce={reduce} label={label} />
-      )}
-      {variant === "comet" && <Comet size={size} speed={speed} reduce={reduce} />}
-      {variant === "scramble" && (
-        <Scramble
-          size={size}
-          speed={speed}
-          reduce={reduce}
-          target={t("scramble")}
-        />
-      )}
-      {variant === "metaballs" && (
-        <Metaballs size={size} speed={speed} reduce={reduce} label={label} />
-      )}
-      {variant === "newton" && <Newton size={size} speed={speed} reduce={reduce} />}
-      {variant === "helix" && <Helix size={size} speed={speed} reduce={reduce} />}
-      {variant === "percent" && (
-        <Percent size={size} speed={speed} reduce={reduce} />
-      )}
+      {renderVariant()}
       <span className="sr-only">{label}</span>
     </span>
   );

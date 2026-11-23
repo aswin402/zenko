@@ -290,19 +290,17 @@ fn parse_outputs_text(arch: Option<&Value>) -> bool {
     let Some(a) = arch else {
         return true;
     };
-    if let Some(arr) = a.get("output_modalities").and_then(Value::as_array) {
-        if !arr.is_empty() {
+    if let Some(arr) = a.get("output_modalities").and_then(Value::as_array)
+        && !arr.is_empty() {
             return arr
                 .iter()
                 .filter_map(Value::as_str)
                 .any(|s| s.eq_ignore_ascii_case("text"));
         }
-    }
-    if let Some(mod_str) = a.get("modality").and_then(Value::as_str) {
-        if let Some((_, rhs)) = mod_str.split_once("->") {
+    if let Some(mod_str) = a.get("modality").and_then(Value::as_str)
+        && let Some((_, rhs)) = mod_str.split_once("->") {
             return rhs.to_ascii_lowercase().contains("text");
         }
-    }
     true
 }
 
@@ -642,11 +640,10 @@ pub async fn discover_provider_models(
 ) -> Result<Vec<ModelInfo>> {
     let endpoint = format!("{}/models", base_url.trim_end_matches('/'));
     let mut req = client.get(&endpoint).timeout(Duration::from_secs(10));
-    if let Some(k) = api_key {
-        if !k.trim().is_empty() {
+    if let Some(k) = api_key
+        && !k.trim().is_empty() {
             req = req.bearer_auth(k.trim());
         }
-    }
 
     let live_res = req.send().await;
     let live_models = match live_res {

@@ -198,14 +198,11 @@ fn is_blocked_hostname(host: &str) -> bool {
 
 pub(crate) async fn verify_url_safe(raw: &str) -> Result<ParsedHttpUrl> {
     let parsed = parse_http_url(raw)?;
-    match is_blocked_hostname(&parsed.host) {
-        true => {
-            return Err(ZenkoError::PolicyDenied(format!(
-                "blocked local/internal host `{}` (SSRF protection)",
-                parsed.host
-            )));
-        }
-        false => {}
+    if is_blocked_hostname(&parsed.host) {
+        return Err(ZenkoError::PolicyDenied(format!(
+            "blocked local/internal host `{}` (SSRF protection)",
+            parsed.host
+        )));
     }
 
     if let Ok(ip) = parsed.host.parse::<IpAddr>() {

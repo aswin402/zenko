@@ -54,28 +54,47 @@ const findStringEnd = (line: string, start: number, bell: boolean) => {
   return line.length;
 };
 
+const findNextAnsiControl = (line: string, start: number): number => {
+  for (let i = start; i < line.length; i += 1) {
+    const code = line.charCodeAt(i);
+    if (code === 0x1b || code === 0x9b || code === 0x9d) return i;
+  }
+  return -1;
+};
+
 const applySgr = (value: string, state: Omit<AnsiSegment, "text">) => {
   const parts = value.split(";");
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index];
     const code = part === "" ? 0 : Number(part);
-    if (code === 38 || code === 48) {
-      index += parts[index + 1] === "2" ? 4 : parts[index + 1] === "5" ? 2 : 1;
-    } else if (code === 0) {
-      state.color = undefined;
-      state.bold = false;
-      state.dim = false;
-    } else if (code === 1) {
-      state.bold = true;
-    } else if (code === 2) {
-      state.dim = true;
-    } else if (code === 22) {
-      state.bold = false;
-      state.dim = false;
-    } else if (code === 39) {
-      state.color = undefined;
-    } else if (ANSI_COLORS.has(code as AnsiColor)) {
-      state.color = code as AnsiColor;
+    switch (code) {
+      case 38:
+      case 48:
+        index += parts[index + 1] === "2" ? 4 : parts[index + 1] === "5" ? 2 : 1;
+        break;
+      case 0:
+        state.color = undefined;
+        state.bold = false;
+        state.dim = false;
+        break;
+      case 1:
+        state.bold = true;
+        break;
+      case 2:
+        state.dim = true;
+        break;
+      case 22:
+        state.bold = false;
+        state.dim = false;
+        break;
+      case 39:
+        state.color = undefined;
+        break;
+      default:
+        if (ANSI_COLORS.has(code as AnsiColor)) {
+          state.color = code as AnsiColor;
+        }
+        break;
     }
   }
 };
@@ -105,10 +124,7 @@ export function parseAnsi(line: string): AnsiSegment[] {
   };
 
   while (index < line.length) {
-    const escape = line.indexOf("\u001b", index);
-    const c1Offset = line.slice(index).search(/[\u009b\u009d]/);
-    const c1 = c1Offset === -1 ? -1 : index + c1Offset;
-    const next = escape === -1 ? c1 : c1 === -1 ? escape : Math.min(escape, c1);
+    const next = findNextAnsiControl(line, index);
 
     if (next === -1) {
       append(line.slice(index));

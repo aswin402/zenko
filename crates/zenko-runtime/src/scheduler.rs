@@ -6,6 +6,7 @@
 //! - Transitions between `Shared` and `Keyed` flush the active wave to preserve strict
 //!   read-after-write and write-after-read causal consistency.
 //! - `Global` calls act as strict exclusive barriers.
+//!
 //! Every result is reassembled in exact original `tool_calls` order.
 
 use futures_util::stream::{self, StreamExt};

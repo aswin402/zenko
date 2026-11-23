@@ -327,63 +327,62 @@ export function ActivityDisplay({
     )
   }
 
-  if (style === 'aui_run_activity') {
-    const runStatus: RunActivityStatus = status === 'working' ? 'running' : 'complete'
-    return (
-      <RunActivity
-        status={runStatus}
-        statusLabel={statusLabel}
-        durationLabel={durationLabel}
-        entries={runEntries}
-        open={open}
-        onOpenChange={setOpen}
-      />
-    )
+  const ACTIVITY_RENDERERS: Partial<Record<typeof style, () => ReactNode>> = {
+    aui_run_activity: () => {
+      const runStatus: RunActivityStatus = status === 'working' ? 'running' : 'complete'
+      return (
+        <RunActivity
+          status={runStatus}
+          statusLabel={statusLabel}
+          durationLabel={durationLabel}
+          entries={runEntries}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      )
+    },
+    aui_tool_timeline: () =>
+      timelineSteps.length === 0 ? null : (
+        <ToolTimeline
+          steps={timelineSteps}
+          visibleSteps={timelineSteps.length}
+          streaming={status === 'working'}
+          open={open}
+          onOpenChange={setOpen}
+          restingLabel={`${timelineSteps.length} ${timelineSteps.length === 1 ? 'tool step' : 'tool steps'}${durationLabel ? ` · ${durationLabel}` : ''}`}
+          activeLabel={statusLabel}
+          stats={timelineStats}
+        />
+      ),
+    minimal_pills: () =>
+      tools.length === 0 ? null : (
+        <div className="flex flex-wrap gap-1.5">
+          {tools.map((t) => (
+            <span
+              key={t.id}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--muted)]"
+            >
+              <Terminal
+                size={10.5}
+                style={{
+                  color:
+                    t.status === 'running'
+                      ? 'var(--accent)'
+                      : t.status === 'error'
+                        ? 'var(--destructive)'
+                        : 'var(--muted)',
+                }}
+              />
+              <span>{t.name}</span>
+              {t.duration_ms !== undefined && <span>{t.duration_ms}ms</span>}
+            </span>
+          ))}
+        </div>
+      ),
   }
 
-  if (style === 'aui_tool_timeline') {
-    if (timelineSteps.length === 0) return null
-    return (
-      <ToolTimeline
-        steps={timelineSteps}
-        visibleSteps={timelineSteps.length}
-        streaming={status === 'working'}
-        open={open}
-        onOpenChange={setOpen}
-        restingLabel={`${timelineSteps.length} ${timelineSteps.length === 1 ? 'tool step' : 'tool steps'}${durationLabel ? ` · ${durationLabel}` : ''}`}
-        activeLabel={statusLabel}
-        stats={timelineStats}
-      />
-    )
-  }
-
-  if (style === 'minimal_pills') {
-    if (tools.length === 0) return null
-    return (
-      <div className="flex flex-wrap gap-1.5">
-        {tools.map((t) => (
-          <span
-            key={t.id}
-            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--muted)]"
-          >
-            <Terminal
-              size={10.5}
-              style={{
-                color:
-                  t.status === 'running'
-                    ? 'var(--accent)'
-                    : t.status === 'error'
-                      ? 'var(--destructive)'
-                      : 'var(--muted)',
-              }}
-            />
-            <span>{t.name}</span>
-            {t.duration_ms !== undefined && <span>{t.duration_ms}ms</span>}
-          </span>
-        ))}
-      </div>
-    )
-  }
+  const customActivity = ACTIVITY_RENDERERS[style]
+  if (customActivity) return <>{customActivity()}</>
 
   return (
     <div className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)]/80 bg-[var(--surface)]/70 px-3 py-1.5">
@@ -512,8 +511,33 @@ export function SmartToolElement({
 }) {
   const [retrying, setRetrying] = useState(false)
 
-  if (toolCardStyle === 'terminal_line') {
-    return (
+  const renderDetailedCard = () => (
+    <div className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[12px]">
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 font-mono font-medium text-[var(--fg)]">
+          <Terminal size={12.5} style={{ color: 'var(--accent)' }} />
+          {tool.name}
+        </span>
+        <span
+          className="font-mono text-[11px]"
+          style={{ color: tool.status === 'error' ? 'var(--destructive)' : 'var(--muted)' }}
+        >
+          {tool.status}
+          {tool.duration_ms !== undefined ? ` · ${tool.duration_ms}ms` : ''}
+        </span>
+      </div>
+      <CompactScrollArea autoHeight className="mt-2" viewportClassName="max-h-48 pr-2.5">
+        <pre className="whitespace-pre-wrap font-mono text-[11.5px] text-[var(--muted)]">
+          {(tool.diff || tool.content).slice(0, 1400)}
+        </pre>
+      </CompactScrollArea>
+    </div>
+  )
+
+  const STYLE_RENDERERS: Partial<
+    Record<ComponentSlots['chat_page']['tool_card_style'], () => ReactNode>
+  > = {
+    terminal_line: () => (
       <div className="flex items-center gap-2 font-mono text-[11.5px] text-[var(--muted)]">
         <span style={{ color: 'var(--accent)' }}>--&gt;</span>
         <span className="font-semibold text-[var(--fg)]">{tool.name}</span>
@@ -522,11 +546,8 @@ export function SmartToolElement({
         </span>
         {tool.duration_ms !== undefined && <span>{tool.duration_ms}ms</span>}
       </div>
-    )
-  }
-
-  if (toolCardStyle === 'beui_tool_result') {
-    return (
+    ),
+    beui_tool_result: () => (
       <ToolResult
         tool={tool.name}
         title={tool.args_preview ? tool.args_preview.slice(0, 72) : tool.name}
@@ -545,73 +566,45 @@ export function SmartToolElement({
           )}
         </ToolResultOutput>
       </ToolResult>
-    )
+    ),
+    aui_tool_call: () => <CollapsibleAuiToolCall tool={tool} />,
+    aui_tool_call_icon: () => <CollapsibleAuiToolCall tool={tool} showIcon />,
+    aui_terminal_block: () => {
+      const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, tool.status === 'error')
+      return (
+        <TerminalBlock
+          command={sh.command}
+          cwd={sh.cwd}
+          lines={sh.stdoutLines}
+          stderr={sh.stderrLines}
+          visibleCount={sh.stdoutLines.length + sh.stderrLines.length}
+          done={tool.status !== 'running'}
+          exitCode={sh.exitCode}
+          durationMs={tool.duration_ms}
+          maxCollapsedLines={12}
+        />
+      )
+    },
+    aui_code_runner: () => {
+      const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, tool.status === 'error')
+      const outLines = [...sh.stdoutLines, ...sh.stderrLines]
+      return (
+        <CodeRunner
+          language={sh.language}
+          code={sh.command}
+          state={tool.status === 'running' ? 'running' : tool.status === 'error' ? 'error' : 'ok'}
+          output={outLines.length > 0 ? outLines : [tool.status === 'running' ? 'Running...' : '(no output)']}
+          durationMs={tool.duration_ms}
+          onRun={onRetryTool ? () => onRetryTool(tool.name, tool.args_preview) : undefined}
+        />
+      )
+    },
+    detailed_card: renderDetailedCard,
+    pill_chips: renderDetailedCard,
   }
 
-  if (toolCardStyle === 'aui_tool_call') {
-    return <CollapsibleAuiToolCall tool={tool} />
-  }
-
-  if (toolCardStyle === 'aui_tool_call_icon') {
-    return <CollapsibleAuiToolCall tool={tool} showIcon />
-  }
-
-  if (toolCardStyle === 'aui_terminal_block') {
-    const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, tool.status === 'error')
-    return (
-      <TerminalBlock
-        command={sh.command}
-        cwd={sh.cwd}
-        lines={sh.stdoutLines}
-        stderr={sh.stderrLines}
-        visibleCount={sh.stdoutLines.length + sh.stderrLines.length}
-        done={tool.status !== 'running'}
-        exitCode={sh.exitCode}
-        durationMs={tool.duration_ms}
-        maxCollapsedLines={12}
-      />
-    )
-  }
-
-  if (toolCardStyle === 'aui_code_runner') {
-    const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, tool.status === 'error')
-    const outLines = [...sh.stdoutLines, ...sh.stderrLines]
-    return (
-      <CodeRunner
-        language={sh.language}
-        code={sh.command}
-        state={tool.status === 'running' ? 'running' : tool.status === 'error' ? 'error' : 'ok'}
-        output={outLines.length > 0 ? outLines : [tool.status === 'running' ? 'Running...' : '(no output)']}
-        durationMs={tool.duration_ms}
-        onRun={onRetryTool ? () => onRetryTool(tool.name, tool.args_preview) : undefined}
-      />
-    )
-  }
-
-  if (toolCardStyle === 'detailed_card' || toolCardStyle === 'pill_chips') {
-    return (
-      <div className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[12px]">
-        <div className="flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-1.5 font-mono font-medium text-[var(--fg)]">
-            <Terminal size={12.5} style={{ color: 'var(--accent)' }} />
-            {tool.name}
-          </span>
-          <span
-            className="font-mono text-[11px]"
-            style={{ color: tool.status === 'error' ? 'var(--destructive)' : 'var(--muted)' }}
-          >
-            {tool.status}
-            {tool.duration_ms !== undefined ? ` · ${tool.duration_ms}ms` : ''}
-          </span>
-        </div>
-        <CompactScrollArea autoHeight className="mt-2" viewportClassName="max-h-48 pr-2.5">
-          <pre className="whitespace-pre-wrap font-mono text-[11.5px] text-[var(--muted)]">
-            {(tool.diff || tool.content).slice(0, 1400)}
-          </pre>
-        </CompactScrollArea>
-      </div>
-    )
-  }
+  const styledRenderer = STYLE_RENDERERS[toolCardStyle]
+  if (styledRenderer) return <>{styledRenderer()}</>
 
   // Default: `aui_smart` — declarative dispatch across specialized Assistant-UI Elements
   const smartKind = classifySmartTool(tool.name, Boolean(tool.diff), tool.status === 'error')

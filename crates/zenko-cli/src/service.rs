@@ -6,6 +6,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use zenko_core::SYSTEMD_UNIT_NAME;
 
+fn escape_systemd_quoted_arg(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '%' => out.push_str("%%"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' | '\r' => out.push(' '),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 pub fn render_systemd_unit(config_path: &Path) -> Result<String> {
     let exe = std::env::current_exe().context("failed to resolve current zenko executable path")?;
     let cfg_abs = match config_path.is_absolute() {
@@ -14,6 +28,8 @@ pub fn render_systemd_unit(config_path: &Path) -> Result<String> {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(config_path),
     };
+    let exe_escaped = escape_systemd_quoted_arg(&exe.display().to_string());
+    let cfg_escaped = escape_systemd_quoted_arg(&cfg_abs.display().to_string());
     Ok(format!(
         "[Unit]\n\
 Description=Zenko 24/7 Autonomous AI Agent Daemon\n\
@@ -22,7 +38,7 @@ Wants=network-online.target\n\
 \n\
 [Service]\n\
 Type=simple\n\
-ExecStart=\"{}\" --config \"{}\" web\n\
+ExecStart=\"{exe_escaped}\" --config \"{cfg_escaped}\" web\n\
 Restart=on-failure\n\
 RestartSec=3\n\
 TimeoutStopSec=10\n\
@@ -31,9 +47,7 @@ StandardOutput=journal\n\
 StandardError=journal\n\
 \n\
 [Install]\n\
-WantedBy=default.target\n",
-        exe.display(),
-        cfg_abs.display()
+WantedBy=default.target\n"
     ))
 }
 
@@ -163,5 +177,16 @@ fn ok_or_skip(ok: bool) -> &'static str {
     match ok {
         true => "OK",
         false => "skipped (no active user systemd bus)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_systemd_quoted_arg;
+
+    #[test]
+    fn systemd_quoted_arg_escapes_specifiers_quotes_and_newlines() {
+        let escaped = escape_systemd_quoted_arg("/opt/zenko %i/\"cfg\"\\a\nb\rc");
+        assert_eq!(escaped, "/opt/zenko %%i/\\\"cfg\\\"\\\\a b c");
     }
 }

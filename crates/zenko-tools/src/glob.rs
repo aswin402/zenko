@@ -405,9 +405,7 @@ fn match_segment(pat: &str, text: &str) -> bool {
                 pi += 1;
             }
             '?' => {
-                for j in 1..=n {
-                    curr[j] = prev[j - 1];
-                }
+                curr[1..=n].copy_from_slice(&prev[..n]);
                 pi += 1;
             }
             '[' => {
@@ -437,7 +435,9 @@ fn match_segment(pat: &str, text: &str) -> bool {
     prev[n]
 }
 
-fn parse_char_class(p: &[char], start: usize) -> Option<(usize, bool, Vec<(char, char)>)> {
+type CharClassSpec = (usize, bool, Vec<(char, char)>);
+
+fn parse_char_class(p: &[char], start: usize) -> Option<CharClassSpec> {
     let mut i = start + 1;
     if i >= p.len() {
         return None;

@@ -29,7 +29,7 @@ pub fn export_session(
         .get_session(session_id)?
         .ok_or_else(|| ZenkoError::NotFound(format!("session `{session_id}` not found")))?;
     let events = match opts.all_branches {
-        true => store.get_all_session_events(&session.id)?,
+        true => store.list_all_session_events(&session.id)?,
         false => store.get_active_branch(&session.id)?,
     };
     let verification = store.latest_goal_run_for_session(&session.id).ok().flatten();
@@ -88,7 +88,7 @@ pub fn export_batch(
             }
         }
         let events = match opts.all_branches {
-            true => store.get_all_session_events(&session.id)?,
+            true => store.list_all_session_events(&session.id)?,
             false => store.get_active_branch(&session.id)?,
         };
         let user_turns = events
@@ -177,8 +177,8 @@ struct ExtractedToolCall {
 /// Extracts canonical tool calls from either Zenko's array payload (`tool_calls: [...]`)
 /// or legacy single-call rows (`{name, call_id, arguments}`).
 fn extract_event_tool_calls(content_json: &Value, fallback_id: &str) -> Vec<ExtractedToolCall> {
-    if let Some(calls) = content_json.get("tool_calls").and_then(Value::as_array) {
-        if !calls.is_empty() {
+    if let Some(calls) = content_json.get("tool_calls").and_then(Value::as_array)
+        && !calls.is_empty() {
             return calls
                 .iter()
                 .enumerate()
@@ -208,7 +208,6 @@ fn extract_event_tool_calls(content_json: &Value, fallback_id: &str) -> Vec<Extr
                 })
                 .collect();
         }
-    }
     if let Some(name) = content_json.get("name").and_then(Value::as_str) {
         let id = content_json
             .get("call_id")
@@ -260,8 +259,8 @@ fn render_openai_jsonl(
                     "content": clean(text),
                     "created_at": ev.created_at.to_rfc3339(),
                 });
-                if opts.include_thinking {
-                    if let Some(thinking) = ev
+                if opts.include_thinking
+                    && let Some(thinking) = ev
                         .content_json
                         .get("reasoning_content")
                         .or_else(|| ev.content_json.get("thinking"))
@@ -270,7 +269,6 @@ fn render_openai_jsonl(
                     {
                         msg["reasoning_content"] = json!(clean(thinking));
                     }
-                }
                 let calls = extract_event_tool_calls(&ev.content_json, &ev.id);
                 if !calls.is_empty() {
                     tool_calls_total += calls.len();

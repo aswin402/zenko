@@ -144,8 +144,8 @@ impl CheckpointManager {
         self.store.insert_checkpoint(&cp)?;
 
         // Enforce rolling per-session retention ceiling asynchronously (with mark-and-sweep GC)
-        if cfg.max_per_session > 0 {
-            if let Ok(stale) = self
+        if cfg.max_per_session > 0
+            && let Ok(stale) = self
                 .store
                 .prune_session_checkpoints(session_id, cfg.max_per_session)
             {
@@ -158,7 +158,6 @@ impl CheckpointManager {
                     let _ = self.gc_content_blobs().await;
                 }
             }
-        }
 
         let _ = self.events.send(AgentEvent::CheckpointCreated {
             checkpoint: cp.clone(),
@@ -431,8 +430,8 @@ impl CheckpointManager {
                 .set_session_head(&cp.session_id, cp.event_id.as_deref())?;
             new_head_event_id = cp.event_id.clone();
 
-            if let Some(ref sum) = rewind_summary {
-                if let Ok(ev) = self.store.append_event(
+            if let Some(ref sum) = rewind_summary
+                && let Ok(ev) = self.store.append_event(
                     &cp.session_id,
                     cp.event_id.as_deref(),
                     EventRole::System,
@@ -448,7 +447,6 @@ impl CheckpointManager {
                 ) {
                     new_head_event_id = Some(ev.id);
                 }
-            }
         }
 
         let report = RewindReport {
@@ -923,11 +921,10 @@ impl CheckpointManager {
                 };
                 match live_manifests.contains(stem) {
                     true => {
-                        if let Ok(raw) = tokio::fs::read(&path).await {
-                            if let Ok(man) = serde_json::from_slice::<BlobManifest>(&raw) {
+                        if let Ok(raw) = tokio::fs::read(&path).await
+                            && let Ok(man) = serde_json::from_slice::<BlobManifest>(&raw) {
                                 live_blobs.extend(man.files.into_values());
                             }
-                        }
                     }
                     false => {
                         if let Ok(meta) = tokio::fs::metadata(&path).await {
@@ -1022,8 +1019,8 @@ fn parse_git_ls_tree_nul(raw: &str) -> BTreeMap<String, TreeEntry> {
         let mode = parts.next();
         let obj_type = parts.next();
         let sha = parts.next();
-        if obj_type == Some("blob") {
-            if let Some(oid) = sha {
+        if obj_type == Some("blob")
+            && let Some(oid) = sha {
                 out.insert(
                     path.to_string(),
                     TreeEntry {
@@ -1032,7 +1029,6 @@ fn parse_git_ls_tree_nul(raw: &str) -> BTreeMap<String, TreeEntry> {
                     },
                 );
             }
-        }
     }
     out
 }
@@ -1183,11 +1179,10 @@ async fn has_symlink_component(ws_dir: &Path, rel: &str) -> bool {
     for comp in Path::new(rel).components() {
         if let Component::Normal(seg) = comp {
             cur.push(seg);
-            if let Ok(meta) = tokio::fs::symlink_metadata(&cur).await {
-                if meta.file_type().is_symlink() {
+            if let Ok(meta) = tokio::fs::symlink_metadata(&cur).await
+                && meta.file_type().is_symlink() {
                     return true;
                 }
-            }
         }
     }
     false

@@ -379,23 +379,14 @@ impl SetupMachine {
                 let trimmed = buffer.trim().to_string();
                 match PROVIDER_FLOW_STEPS[step_idx] {
                     ProviderField::BaseUrl => {
-                        let switched_provider = !self
-                            .draft
-                            .config
-                            .provider
-                            .kind
-                            .eq_ignore_ascii_case(desc.id);
-                        self.draft.config.provider.kind = desc.id.to_string();
-                        self.draft.config.provider.base_url = match trimmed.is_empty() {
-                            true => desc.default_base_url.to_string(),
-                            false => trimmed,
-                        };
-                        if switched_provider {
-                            self.draft.config.provider.lead_model.clear();
-                            self.draft.config.provider.fast_model.clear();
-                            self.draft.config.provider.compaction_model.clear();
-                            self.draft.config.provider.dream_model.clear();
-                            self.draft.config.provider.fallbacks.clear();
+                        self.draft.config.provider.switch_provider(
+                            desc.id,
+                            Some(trimmed.as_str()),
+                            None,
+                            false,
+                        );
+                        if trimmed.is_empty() {
+                            self.draft.config.provider.base_url = desc.default_base_url.to_string();
                         }
                     }
                     ProviderField::ApiKey => {

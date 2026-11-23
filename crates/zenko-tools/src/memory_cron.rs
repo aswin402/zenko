@@ -743,11 +743,10 @@ impl Tool for CronTool {
                 let Some(mut job) = self.store.get_cron_job(id)? else {
                     return Ok(ToolOutput::err(format!("Cron job `{id}` not found.")));
                 };
-                if let Some(n) = args.get("name").and_then(Value::as_str) {
-                    if !n.trim().is_empty() {
+                if let Some(n) = args.get("name").and_then(Value::as_str)
+                    && !n.trim().is_empty() {
                         job.name = n.trim().to_string();
                     }
-                }
                 if let Some(expr) = args.get("cron_expr").and_then(Value::as_str) {
                     let parsed = Cron::new(expr)
                         .parse()

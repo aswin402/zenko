@@ -25,7 +25,7 @@ use zenko_core::{
 
 /// Approximate token count for plain UTF-8 text (conservative ~4 bytes/token).
 pub fn estimate_text_tokens(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
@@ -36,7 +36,7 @@ pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
             .iter()
             .map(|tc| tc.name.len() + tc.arguments.to_string().len())
             .sum::<usize>();
-    (base + 3) / 4 + 8
+    base.div_ceil(4) + 8
 }
 
 pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> usize {
@@ -48,7 +48,7 @@ pub fn estimate_tool_specs_tokens(specs: &[ToolSpec]) -> usize {
         .iter()
         .map(|s| {
             let bytes = s.name.len() + s.description.len() + s.parameters.to_string().len();
-            (bytes + 3) / 4 + 12
+            bytes.div_ceil(4) + 12
         })
         .sum()
 }
@@ -56,7 +56,7 @@ pub fn estimate_tool_specs_tokens(specs: &[ToolSpec]) -> usize {
 fn estimate_event_tokens(ev: &SessionEvent) -> usize {
     match ev.role {
         EventRole::System => 0,
-        _ => (ev.content_json.to_string().len() + 3) / 4 + 8,
+        _ => ev.content_json.to_string().len().div_ceil(4) + 8,
     }
 }
 
@@ -167,11 +167,10 @@ fn extract_tool_target_hint(args: Option<&Value>) -> String {
     };
     const HINT_KEYS: &[&str] = &["path", "query", "command", "url", "job_id", "slug"];
     for key in HINT_KEYS {
-        if let Some(s) = val.get(*key).and_then(Value::as_str).map(str::trim) {
-            if !s.is_empty() {
+        if let Some(s) = val.get(*key).and_then(Value::as_str).map(str::trim)
+            && !s.is_empty() {
                 return compact_preview(s, 72);
             }
-        }
     }
     String::new()
 }
@@ -214,7 +213,7 @@ pub fn microcompact_messages(
                     }
                     if let Some(reasoning) = msg.reasoning_content.take() {
                         stats.stripped_reasoning_blocks += 1;
-                        stats.tokens_saved += (reasoning.len() + 3) / 4;
+                        stats.tokens_saved += reasoning.len().div_ceil(4);
                     }
                 }
                 EventRole::Tool => {
@@ -380,7 +379,7 @@ fn group_atomic_event_units<'a>(events: &[&'a SessionEvent]) -> Vec<EventUnit<'a
                 .content_json
                 .get("tool_calls")
                 .and_then(Value::as_array)
-                .map_or(false, |a| !a.is_empty());
+                .is_some_and(|a| !a.is_empty());
 
         if expects_tools {
             while idx < events.len() {

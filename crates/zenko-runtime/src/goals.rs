@@ -47,7 +47,7 @@ pub async fn run_goal_loop_scheduler(runtime: Arc<AgentRuntime>, cancel: Cancell
         }
         let goals = runtime
             .store
-            .list_goal_loops(GOAL_LOOP_LIST_DEFAULT_LIMIT)
+            .list_goal_loops(GOAL_LOOP_LIST_DEFAULT_LIMIT.max(200))
             .unwrap_or_default();
         let now = Utc::now();
         let mut next_due: Option<(chrono::DateTime<Utc>, GoalLoopRecord)> = None;
@@ -83,14 +83,13 @@ pub async fn run_goal_loop_scheduler(runtime: Arc<AgentRuntime>, cancel: Cancell
                 }
                 if let Err(e) = execute_goal_iteration(&runtime, &goal.id, cancel.clone()).await {
                     warn!(goal_id = %goal.id, error = %e, "goal loop iteration failed");
-                    if let Ok(Some(mut cur)) = runtime.store.get_goal_loop(&goal.id) {
-                        if cur.status == GoalLoopStatus::Active {
+                    if let Ok(Some(mut cur)) = runtime.store.get_goal_loop(&goal.id)
+                        && cur.status == GoalLoopStatus::Active {
                             let backoff = cur.interval_secs.max(GOAL_LOOP_MIN_BACKOFF_SECS * 2);
                             cur.next_run_at = Some(Utc::now() + ChronoDuration::seconds(backoff as i64));
                             cur.updated_at = Utc::now();
                             let _ = runtime.store.upsert_goal_loop(&cur);
                         }
-                    }
                 }
             }
         }
@@ -235,8 +234,8 @@ pub async fn execute_goal_iteration(
     );
 
     // Optional auto-rewind on stall restores the clean pre-iteration workspace
-    if goal.status == GoalLoopStatus::Stalled && goal.auto_rewind_on_stall {
-        if let Some(ref cp_id) = checkpoint_id {
+    if goal.status == GoalLoopStatus::Stalled && goal.auto_rewind_on_stall
+        && let Some(ref cp_id) = checkpoint_id {
             let _ = runtime
                 .checkpoints
                 .rewind(
@@ -251,7 +250,6 @@ pub async fn execute_goal_iteration(
                 )
                 .await;
         }
-    }
 
     goal.updated_at = Utc::now();
     runtime.store.upsert_goal_loop(&goal)?;

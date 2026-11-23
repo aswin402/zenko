@@ -146,7 +146,11 @@ fn run_event_loop(
                         machine.backspace();
                         MachineOutcome::Continue
                     }
-                    (true, KeyCode::Char(c)) => {
+                    (true, KeyCode::Char(c))
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         machine.push_char(c);
                         MachineOutcome::Continue
                     }
@@ -241,9 +245,9 @@ async fn persist_and_verify(
     };
 
     // Auto-discover top live working model (free-first) when user left model blank
-    if cfg.provider.lead_model.trim().is_empty() {
-        if let Ok(discovered) = probe.list_models().await {
-            if let Some(best) = discovered.first() {
+    if cfg.provider.lead_model.trim().is_empty()
+        && let Ok(discovered) = probe.list_models().await
+            && let Some(best) = discovered.first() {
                 cfg.provider.lead_model = best.id.clone();
                 if cfg.provider.fast_model.trim().is_empty() {
                     cfg.provider.fast_model = best.id.clone();
@@ -251,16 +255,13 @@ async fn persist_and_verify(
                     cfg.provider.dream_model = best.id.clone();
                 }
             }
-        }
-    }
 
     let mut pair_code: Option<String> = None;
     if cfg.telegram.enabled {
-        if let Ok(Some(tok)) = vault.get(VAULT_KEY_TELEGRAM) {
-            if let Ok(info) = verify_bot_token(&http, &tok).await {
+        if let Ok(Some(tok)) = vault.get(VAULT_KEY_TELEGRAM)
+            && let Ok(info) = verify_bot_token(&http, &tok).await {
                 cfg.telegram.bot_username = info.username;
             }
-        }
         let code = store.create_pairing_code("telegram", PeerRole::Owner, DEFAULT_PAIRING_TTL_MINS)?;
         pair_code = Some(code.code);
     }

@@ -154,16 +154,10 @@ fn tokenize_shell(cmd: &str) -> ParsedShell {
 
 fn references_protected_vault_path(raw: &str, tokens: &[String]) -> Option<&'static str> {
     let lower_raw = raw.to_ascii_lowercase();
-    for seg in PROTECTED_DATA_SEGMENTS {
-        if lower_raw.contains(seg)
+    PROTECTED_DATA_SEGMENTS.iter().find(|&seg| lower_raw.contains(seg)
             || tokens
                 .iter()
-                .any(|t| t.to_ascii_lowercase().contains(seg))
-        {
-            return Some(seg);
-        }
-    }
-    None
+                .any(|t| t.to_ascii_lowercase().contains(seg))).map(|v| v as _)
 }
 
 fn expand_short_flags(tokens: &[String]) -> (HashSet<String>, Vec<String>) {
@@ -734,8 +728,8 @@ pub fn evaluate_policy(
     args: &Value,
     always_allowed: &HashSet<String>,
 ) -> PolicyVerdict {
-    if spec.name == TOOL_SHELL_EXEC {
-        if let Some(cmd) = args.get("command").and_then(Value::as_str) {
+    if spec.name == TOOL_SHELL_EXEC
+        && let Some(cmd) = args.get("command").and_then(Value::as_str) {
             if let Some(reason) = check_script_structural_deny(cmd, policy) {
                 return PolicyVerdict::Deny(reason);
             }
@@ -767,7 +761,6 @@ pub fn evaluate_policy(
                 }
             }
         }
-    }
 
     match mode {
         // Plan Mode is strictly rank-0 read-only: overrides even `always_allowed`!
@@ -987,11 +980,10 @@ pub fn evaluate_verify_command_safety(
                     && !arg.starts_with("--")
                     && arg.chars().skip(1).any(|c| c == 'c'));
             if takes_script_next {
-                if let Some(script) = argv.get(idx + 1) {
-                    if let Some(reason) = check_script_structural_deny(script, policy) {
+                if let Some(script) = argv.get(idx + 1)
+                    && let Some(reason) = check_script_structural_deny(script, policy) {
                         return Err(reason);
                     }
-                }
                 idx += 2;
                 continue;
             }
@@ -1025,13 +1017,11 @@ pub async fn run_hooks_with_context(
 ) -> std::result::Result<Vec<String>, String> {
     let mut injected_contexts = Vec::new();
     for hook in hooks.iter().filter(|h| h.event == event) {
-        if !hook.matcher.is_empty() {
-            if let Some(tn) = tool_name {
-                if hook.matcher != "*" && !tn.contains(&hook.matcher) {
+        if !hook.matcher.is_empty()
+            && let Some(tn) = tool_name
+                && hook.matcher != "*" && !tn.contains(&hook.matcher) {
                     continue;
                 }
-            }
-        }
 
         let input = serde_json::to_vec(&json!({
             "event": event,

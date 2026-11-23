@@ -390,11 +390,10 @@ impl SnapshotManager {
                 let Some(snap) = parse_history_filename(stem, &path) else {
                     continue;
                 };
-                if let Some(ref want) = filter_slug {
-                    if doc_slug(&snap.doc_name) != *want {
+                if let Some(want) = filter_slug
+                    && doc_slug(&snap.doc_name) != want {
                         continue;
                     }
-                }
                 items.push(snap);
             }
         }
@@ -887,11 +886,10 @@ impl SnapshotManager {
             let Some(snap) = parse_skill_history_filename(stem, &path) else {
                 continue;
             };
-            if let Some(ref want) = filter {
-                if !snap.slug.eq_ignore_ascii_case(want) {
+            if let Some(ref want) = filter
+                && !snap.slug.eq_ignore_ascii_case(want) {
                     continue;
                 }
-            }
             items.push(snap);
         }
         items.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
@@ -1185,8 +1183,8 @@ fn list_skill_subfiles(skill_dir: &Path) -> Vec<String> {
         }
         if p.is_file() {
             out.push(name);
-        } else if p.is_dir() {
-            if let Ok(sub_rd) = std::fs::read_dir(&p) {
+        } else if p.is_dir()
+            && let Ok(sub_rd) = std::fs::read_dir(&p) {
                 for sub in sub_rd.flatten() {
                     if sub.path().is_file() {
                         let sub_name = sub.file_name().to_string_lossy().to_string();
@@ -1196,7 +1194,6 @@ fn list_skill_subfiles(skill_dir: &Path) -> Vec<String> {
                     }
                 }
             }
-        }
     }
     out.sort();
     out
@@ -1342,7 +1339,7 @@ fn prune_skill_history_for_slug(dir: &Path, safe_slug: &str, max_keep: usize) {
 }
 
 pub fn estimate_tokens(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 fn write_if_missing(path: &Path, content: &str) -> Result<()> {
@@ -1651,16 +1648,14 @@ fn set_skill_frontmatter_flags(
             }
             lines.push(line.to_string());
         }
-        if let Some(en) = set_enabled {
-            if !saw_enabled {
+        if let Some(en) = set_enabled
+            && !saw_enabled {
                 lines.push(format!("enabled: {en}"));
             }
-        }
-        if let Some(st) = set_status {
-            if !saw_status {
+        if let Some(st) = set_status
+            && !saw_status {
                 lines.push(format!("status: {}", st.as_str()));
             }
-        }
         return format!("---\n{}\n---{tail}", lines.join("\n"));
     }
     let mut header = String::from("---\n");

@@ -177,13 +177,12 @@ fn compute_next_watcher_sleep_ms(
             Some(st) => {
                 let since_scan = now.duration_since(st.last_scan).as_millis() as u64;
                 wake_ms = wake_ms.min(poll_ms.saturating_sub(since_scan));
-                if let Some(pending_since) = st.pending_since {
-                    if !st.pending_changed.is_empty() {
+                if let Some(pending_since) = st.pending_since
+                    && !st.pending_changed.is_empty() {
                         let deb_ms = watcher.debounce_secs.saturating_mul(1_000);
                         let since_pend = now.duration_since(pending_since).as_millis() as u64;
                         wake_ms = wake_ms.min(deb_ms.saturating_sub(since_pend));
                     }
-                }
             }
             None => {
                 wake_ms = wake_ms.min(poll_ms);
@@ -234,7 +233,7 @@ async fn dispatch_watcher_action(
 
     match watcher.action {
         WatcherActionKind::GoalLoop => {
-            if let Some(ref gid) = watcher
+            if let Some(gid) = watcher
                 .goal_loop_id
                 .as_deref()
                 .map(str::trim)
@@ -244,7 +243,7 @@ async fn dispatch_watcher_action(
             }
         }
         WatcherActionKind::Script => {
-            if let Some(ref script_rel) = watcher
+            if let Some(script_rel) = watcher
                 .script_path
                 .as_deref()
                 .map(str::trim)

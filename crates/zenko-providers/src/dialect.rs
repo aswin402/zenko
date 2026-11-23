@@ -88,11 +88,10 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
 
                 // Preserve interleaved reasoning state across multi-turn tool calls
                 // (required by MiniMax M3/M2.7/M2.5 and DeepSeek reasoner).
-                if let Some(ref rc) = msg.reasoning_content {
-                    if !rc.trim().is_empty() {
+                if let Some(ref rc) = msg.reasoning_content
+                    && !rc.trim().is_empty() {
                         obj.insert("reasoning_content".into(), Value::String(rc.clone()));
                     }
-                }
 
                 messages.push(Value::Object(obj));
             }
@@ -103,11 +102,10 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                     "tool_call_id".into(),
                     Value::String(msg.tool_call_id.clone().unwrap_or_default()),
                 );
-                if let Some(ref tool_name) = msg.name {
-                    if !tool_name.trim().is_empty() {
+                if let Some(ref tool_name) = msg.name
+                    && !tool_name.trim().is_empty() {
                         obj.insert("name".into(), Value::String(tool_name.clone()));
                     }
-                }
                 obj.insert("content".into(), Value::String(msg.content.clone()));
                 messages.push(Value::Object(obj));
             }
@@ -149,14 +147,13 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                             "parameters": t.parameters
                         }
                     });
-                    if attach_tool_cache && idx == last_tool_idx {
-                        if let Some(m) = tool_val.as_object_mut() {
+                    if attach_tool_cache && idx == last_tool_idx
+                        && let Some(m) = tool_val.as_object_mut() {
                             m.insert(
                                 "cache_control".into(),
                                 json!({ "type": "ephemeral" }),
                             );
                         }
-                    }
                     tool_val
                 })
                 .collect();
@@ -167,9 +164,9 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
         // OpenRouter/Anthropic multi-breakpoint KV caching: place a 3rd cache breakpoint on the
         // penultimate stable user message (avoid converting `role: "tool"` content into array blocks
         // which non-Anthropic upstreams behind OpenRouter can reject with HTTP 400).
-        if dialect == ProviderDialect::OpenRouter && req.enable_prompt_caching {
-            if let Some(arr) = obj.get_mut("messages").and_then(Value::as_array_mut) {
-                if arr.len() >= 4 {
+        if dialect == ProviderDialect::OpenRouter && req.enable_prompt_caching
+            && let Some(arr) = obj.get_mut("messages").and_then(Value::as_array_mut)
+                && arr.len() >= 4 {
                     let target_idx = arr
                         .iter()
                         .enumerate()
@@ -178,9 +175,9 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                         .rev()
                         .find(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
                         .map(|(i, _)| i);
-                    if let Some(idx) = target_idx {
-                        if let Some(mobj) = arr[idx].as_object_mut() {
-                            if let Some(text) =
+                    if let Some(idx) = target_idx
+                        && let Some(mobj) = arr[idx].as_object_mut()
+                            && let Some(text) =
                                 mobj.get("content").and_then(Value::as_str).map(String::from)
                             {
                                 mobj.insert(
@@ -192,11 +189,7 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                                     }]),
                                 );
                             }
-                        }
-                    }
                 }
-            }
-        }
 
         match dialect {
             ProviderDialect::OpenRouter => {

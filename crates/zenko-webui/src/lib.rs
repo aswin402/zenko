@@ -84,11 +84,14 @@ async fn serve_spa(uri: Uri) -> Response {
 }
 
 pub fn build_router(state: WebState) -> Router {
-    Router::new()
-        // Core Health, Auth, Bootstrap & SSE
+    let public_routes = Router::new()
         .route("/api/health", get(api::api_health))
         .route("/api/login", post(api::api_login))
         .route("/api/bootstrap", get(api::api_bootstrap))
+        .route("/api/webhooks/{source}", post(api::api_webhook_ingest));
+
+    let protected_routes = Router::new()
+        // Core Telemetry, Dashboard, Logs, Models & SSE
         .route("/api/events", get(api::api_events_sse))
         .route("/api/telemetry", get(api::api_telemetry))
         .route("/api/dashboard", get(api::api_dashboard))
@@ -314,13 +317,19 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/lsp/status", get(api::api_lsp_status))
         .route("/api/lsp/stop", post(api::api_lsp_stop))
         .route("/api/web-search", put(api::api_update_web_search))
-        // Signed Webhooks & OpenAI-Compatible Agent-to-Agent API
-        .route("/api/webhooks/{source}", post(api::api_webhook_ingest))
+        // OpenAI-Compatible Agent-to-Agent API (protected by admin Bearer/cookie auth)
         .route("/v1/models", get(api::api_openai_models))
         .route(
             "/v1/chat/completions",
             post(api::api_openai_chat_completions),
         )
+        .layer(from_fn_with_state(
+            state.clone(),
+            api::require_api_auth_middleware,
+        ));
+
+    public_routes
+        .merge(protected_routes)
         // Embedded Static SPA Fallback (zero Node.js at runtime)
         .fallback(serve_spa)
         .layer(from_fn_with_state(
@@ -575,6 +584,66 @@ mod tests {
             .await
             .expect("mcp reserved resp");
         assert_eq!(bad_reserved.status(), StatusCode::FORBIDDEN);
+
+        // Regression test: PATCH /api/sessions/{missing} returns 404 without mutating global config
+        let prev_provider = rt.config().provider.kind.clone();
+        let bad_patch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/sessions/does-not-exist")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"provider":"openai","model":"gpt-4o"}"#))
+                    .expect("bad patch req"),
+            )
+            .await
+            .expect("bad patch resp");
+        assert_eq!(bad_patch.status(), StatusCode::NOT_FOUND);
+        assert_eq!(rt.config().provider.kind, prev_provider);
+
+        // Regression test: centralized require_api_auth_middleware guards protected routes when require_auth=true
+        rt.vault
+            .set(zenko_core::VAULT_KEY_WEBUI_ADMIN, "test-admin-token-123")
+            .expect("set admin token");
+        rt.update_config(|c| c.webui.require_auth = true)
+            .expect("enable auth");
+        let unauth_sessions = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .body(Body::empty())
+                    .expect("unauth req"),
+            )
+            .await
+            .expect("unauth resp");
+        assert_eq!(unauth_sessions.status(), StatusCode::UNAUTHORIZED);
+        let pub_health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .expect("health req"),
+            )
+            .await
+            .expect("health resp");
+        assert_eq!(pub_health.status(), StatusCode::OK);
+        let auth_sessions = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .header("authorization", "Bearer test-admin-token-123")
+                    .body(Body::empty())
+                    .expect("auth req"),
+            )
+            .await
+            .expect("auth resp");
+        assert_eq!(auth_sessions.status(), StatusCode::OK);
+        rt.update_config(|c| c.webui.require_auth = false)
+            .expect("disable auth");
 
         // Regression test: an open /api/events SSE stream must terminate immediately on shutdown
         let sse_resp = app

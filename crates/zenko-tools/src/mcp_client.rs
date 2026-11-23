@@ -154,10 +154,7 @@ impl StdioMcpTransport {
                 }
                 if !raw.ends_with(b"\n") && n == MCP_MAX_RESPONSE_BYTES {
                     // Drain oversized corrupted JSON-RPC line without OOMing daemon
-                    loop {
-                        let Ok(buf) = reader.fill_buf().await else {
-                            break;
-                        };
+                    while let Ok(buf) = reader.fill_buf().await {
                         if buf.is_empty() {
                             break;
                         }
@@ -172,21 +169,20 @@ impl StdioMcpTransport {
                 }
                 let line = String::from_utf8_lossy(&raw);
                 let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    if let Ok(msg) = serde_json::from_str::<Value>(trimmed) {
+                if !trimmed.is_empty()
+                    && let Ok(msg) = serde_json::from_str::<Value>(trimmed) {
                         let has_id = msg.get("id").is_some();
                         let method = msg.get("method").and_then(Value::as_str);
                         match (has_id, method) {
                             (true, None) => {
-                                if let Some(id) = msg.get("id").and_then(Value::as_u64) {
-                                    if let Some(tx) = p_clone
+                                if let Some(id) = msg.get("id").and_then(Value::as_u64)
+                                    && let Some(tx) = p_clone
                                         .lock()
                                         .ok()
                                         .and_then(|mut map| map.remove(&id))
                                     {
                                         let _ = tx.send(msg);
                                     }
-                                }
                             }
                             // Server-initiated request (e.g. keepalive `ping`) — reply immediately
                             (true, Some(_)) => {
@@ -209,7 +205,6 @@ impl StdioMcpTransport {
                             _ => {}
                         }
                     }
-                }
             }
             a_clone.store(false, Ordering::SeqCst);
             if let Ok(mut map) = p_clone.lock() {

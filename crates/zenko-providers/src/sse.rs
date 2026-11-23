@@ -242,11 +242,9 @@ fn extract_reasoning_text(container: &Value) -> Option<String> {
         .get("reasoning")
         .and_then(Value::as_str)
         .or_else(|| container.get("reasoning_content").and_then(Value::as_str))
-    {
-        if !direct.is_empty() {
+        && !direct.is_empty() {
             return Some(direct.to_string());
         }
-    }
 
     if let Some(details) = container.get("reasoning_details").and_then(Value::as_array) {
         let joined: String = details
@@ -328,13 +326,12 @@ pub async fn process_sse_line(
                 let _ = tx.send(Ok(LlmDelta::Thinking(reasoning))).await;
             }
 
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                if !text.is_empty() {
+            if let Some(text) = delta.get("content").and_then(Value::as_str)
+                && !text.is_empty() {
                     for (is_thinking, seg) in acc.think_splitter.push(text) {
                         emit_text_segment(is_thinking, seg, tx).await;
                     }
                 }
-            }
 
             if let Some(tcs) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in tcs {
@@ -366,11 +363,10 @@ pub async fn process_sse_line(
                         entry.id = incoming_id.to_string();
                     }
                     if let Some(func) = tc.get("function") {
-                        if let Some(name) = func.get("name").and_then(Value::as_str) {
-                            if !name.is_empty() {
+                        if let Some(name) = func.get("name").and_then(Value::as_str)
+                            && !name.is_empty() {
                                 entry.name.push_str(name);
                             }
-                        }
                         if let Some(args) = func.get("arguments").and_then(Value::as_str) {
                             entry.args_buf.push_str(args);
                         }

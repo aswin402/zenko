@@ -180,8 +180,8 @@ pub async fn create_worktree(
                 let src = repo_root.join(rel);
                 let dst = worktree_path.join(rel);
                 // Use `symlink_metadata` so an untracked symlink pointing outside `repo_root` is NEVER followed!
-                if let Ok(meta) = tokio::fs::symlink_metadata(&src).await {
-                    if meta.file_type().is_file()
+                if let Ok(meta) = tokio::fs::symlink_metadata(&src).await
+                    && meta.file_type().is_file()
                         && !meta.file_type().is_symlink()
                         && meta.len() <= WORKTREE_DIRTY_MAX_FILE_BYTES
                     {
@@ -192,7 +192,6 @@ pub async fn create_worktree(
                             dirty_baseline = true;
                         }
                     }
-                }
             }
         }
     }
@@ -281,14 +280,12 @@ pub async fn inspect_worktree_diff(handle: &WorktreeHandle) -> Result<WorktreeDi
             .take(WORKTREE_UNTRACKED_PREVIEW_MAX_FILES)
         {
             let full = handle.worktree_path.join(rel);
-            if let Ok(meta) = tokio::fs::symlink_metadata(&full).await {
-                if meta.file_type().is_file() && !meta.file_type().is_symlink() {
-                    if let Ok(body) = tokio::fs::read_to_string(&full).await {
+            if let Ok(meta) = tokio::fs::symlink_metadata(&full).await
+                && meta.file_type().is_file() && !meta.file_type().is_symlink()
+                    && let Ok(body) = tokio::fs::read_to_string(&full).await {
                         let snippet = truncate_chars(&body, WORKTREE_UNTRACKED_PREVIEW_MAX_CHARS);
                         untracked_notes.push(format!("--- /dev/null\n+++ b/{rel}\n{snippet}"));
                     }
-                }
-            }
         }
         if !untracked_notes.is_empty() {
             if !patch_preview.trim().is_empty() {
@@ -428,16 +425,14 @@ pub async fn remove_worktree(data_dir: &Path, handle: &WorktreeHandle) -> Result
 
     // Canonical path-jailed fallback cleanup so no orphaned directory remains under ~/.zenko/worktrees/
     let allowed_root = data_dir.join(WORKTREES_DIR_NAME);
-    if handle.worktree_path.exists() {
-        if let (Ok(canon_root), Ok(canon_wt)) = (
+    if handle.worktree_path.exists()
+        && let (Ok(canon_root), Ok(canon_wt)) = (
             std::fs::canonicalize(&allowed_root),
             std::fs::canonicalize(&handle.worktree_path),
-        ) {
-            if canon_wt.starts_with(&canon_root) && canon_wt != canon_root {
+        )
+            && canon_wt.starts_with(&canon_root) && canon_wt != canon_root {
                 let _ = tokio::fs::remove_dir_all(&canon_wt).await;
             }
-        }
-    }
     Ok(())
 }
 
@@ -479,9 +474,9 @@ pub async fn prune_orphan_worktrees(
     }
     let mut removed_dirs = Vec::new();
 
-    if worktrees_root.exists() {
-        if let Ok(canon_root) = std::fs::canonicalize(&worktrees_root) {
-            if let Ok(mut rd) = tokio::fs::read_dir(&worktrees_root).await {
+    if worktrees_root.exists()
+        && let Ok(canon_root) = std::fs::canonicalize(&worktrees_root)
+            && let Ok(mut rd) = tokio::fs::read_dir(&worktrees_root).await {
                 while let Ok(Some(ent)) = rd.next_entry().await {
                     let path = ent.path();
                     let name = ent.file_name().to_string_lossy().to_string();
@@ -499,18 +494,14 @@ pub async fn prune_orphan_worktrees(
                             format!("{WORKTREE_BRANCH_PREFIX}{}", sanitize_branch_suffix(&name));
                         let _ = run_git(repo, &["branch", "-D", &branch]).await;
                     }
-                    if path.exists() {
-                        if let Ok(canon_wt) = std::fs::canonicalize(&path) {
-                            if canon_wt.starts_with(&canon_root) && canon_wt != canon_root {
+                    if path.exists()
+                        && let Ok(canon_wt) = std::fs::canonicalize(&path)
+                            && canon_wt.starts_with(&canon_root) && canon_wt != canon_root {
                                 let _ = tokio::fs::remove_dir_all(&canon_wt).await;
                             }
-                        }
-                    }
                     removed_dirs.push(name);
                 }
             }
-        }
-    }
 
     for repo in touched_repos {
         let _ = run_git(&repo, &["worktree", "prune"]).await;

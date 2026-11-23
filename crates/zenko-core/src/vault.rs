@@ -166,10 +166,7 @@ impl SecretVault {
             .map_err(|_| ZenkoError::Vault("vault lock poisoned".into()))?;
         let mut map = self.load_map()?;
         let removed = map.remove(name).is_some();
-        match removed {
-            true => self.save_map(&map)?,
-            false => {}
-        }
+        if removed { self.save_map(&map)? }
         Ok(removed)
     }
 
