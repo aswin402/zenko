@@ -10,6 +10,7 @@ import type {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { StreamingResponse } from '@/components/agents/streaming-response'
+import { Stretchtext } from '@/components/aimran/stretchtext'
 import { FloatingDock } from '@/components/beui/FloatingDock'
 import { AgentAvatar, UserAvatar } from '@/components/beui/ZenkoAvatars'
 import { ZenkoFoxLogo } from '@/components/beui/ZenkoFoxLogo'
@@ -27,19 +28,25 @@ import {
   CommandList as EaseCommandList,
   CommandPalette as EaseCommandPalette,
 } from '@/components/easeui/command-palette'
+import { MessageBubble as EaseMessageBubble } from '@/components/easeui/message-bubble'
 import { StreamingResponse as EaseStreamingResponse } from '@/components/easeui/streaming-response'
-import { toast as easeToast } from '@/components/easeui/toast'
 import { Faq as RareFaq } from '@/components/rareui/faq'
 import { StreamingResponse as RareStreamingResponse } from '@/components/rareui/streaming-response'
 import { WebSearch as RareWebSearch } from '@/components/rareui/web-search'
 import { ExpandableTabs } from '@/components/skiperui/expandable-tabs'
+import {
+  LineHoverLink,
+  type LineHoverVariant,
+} from '@/components/vengeanceui/line-hover-link'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { Sidebar } from '@/components/chat/Sidebar'
+import { MODEL_BADGE_CLASS, USER_BUBBLE_CLASS } from '@/components/chat/ChatStream'
 import {
   ActivityDisplay,
   ApprovalElement,
   AssistantMessageFooter,
+  CitationsDisplay,
   LoadingStatusBar,
   MarkdownCodeBlock,
   SkillAndMemoryBadges,
@@ -92,6 +99,7 @@ export interface StudioPreviewContext {
   setPreviewTab: (v: string) => void
   previewAlertOpen: boolean
   setPreviewAlertOpen: (v: boolean) => void
+  onTestToast?: (msg: string, kind?: 'info' | 'success' | 'error') => void
 }
 
 const PREVIEW_SESSIONS: Session[] = [
@@ -186,12 +194,136 @@ const PREVIEW_APPROVAL = {
   created_at: new Date().toISOString(),
 }
 
-const USER_BUBBLE_PREVIEW_MAP = {
-  soft_card: 'rounded-[15px] border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-[var(--fg)]',
-  accent_tint:
-    'rounded-[15px] border border-[var(--accent)]/35 bg-[var(--accent)]/12 px-4 py-2 text-[var(--fg)]',
-  minimal_border: 'rounded-[14px] border border-[var(--border)] bg-transparent px-4 py-2 text-[var(--fg)]',
-  pill: 'rounded-3xl border border-[var(--border)] bg-[var(--card)] px-5 py-2 text-[var(--fg)]',
+function renderUserBubblePreview(
+  style: UiCustomization['components']['chat_page']['user_bubble'],
+  text: string,
+  extraClass?: string,
+): ReactNode {
+  if (style === 'easeui_bubble') {
+    return (
+      <EaseMessageBubble align="end" tone="neutral" className={extraClass}>
+        {text}
+      </EaseMessageBubble>
+    )
+  }
+  return (
+    <div className={cn(extraClass, USER_BUBBLE_CLASS[style] || USER_BUBBLE_CLASS.soft_card)}>
+      {text}
+    </div>
+  )
+}
+
+const TOAST_POSITION_CELLS: ReadonlyArray<{
+  value: NonNullable<UiCustomization['surface']['toast_position']>
+  label: string
+}> = [
+  { value: 'top_left', label: 'Top Left' },
+  { value: 'top_center', label: 'Top Center' },
+  { value: 'top_right', label: 'Top Right' },
+  { value: 'bottom_left', label: 'Bottom Left' },
+  { value: 'bottom_center', label: 'Bottom Center' },
+  { value: 'bottom_right', label: 'Bottom Right' },
+]
+
+const TOAST_STYLE_PREVIEW_CLASS: Record<
+  NonNullable<UiCustomization['surface']['toast_style']>,
+  string
+> = {
+  default:
+    'rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 shadow-lg',
+  easeui_toast:
+    'rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 shadow-[0_12px_30px_rgba(0,0,0,0.28)]',
+  minimal_pill:
+    'rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-1.5 shadow-md',
+  accent_bar:
+    'rounded-[var(--radius)] border border-[var(--border)] border-l-[3px] border-l-[var(--accent)] bg-[var(--surface)] px-3.5 py-2.5 shadow-lg',
+  glass_toast:
+    'rounded-xl border border-[var(--border)]/80 bg-[color-mix(in_srgb,var(--surface)_74%,transparent)] px-3.5 py-2.5 shadow-xl backdrop-blur-md',
+}
+
+function ToastPreview({ ctx }: { ctx: StudioPreviewContext }) {
+  const { ui, onTestToast } = ctx
+  const toastStyle = ui.surface.toast_style || 'default'
+  const toastPosition = ui.surface.toast_position || 'top_center'
+
+  return (
+    <div className="flex w-full max-w-[600px] flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            onTestToast?.('Theme synchronized across Zenko WebUI.', 'info')
+          }
+          className="z-btn z-btn-secondary z-btn-sm"
+        >
+          Test Info Toast
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            onTestToast?.('Saved to ~/.zenko/config.toml cleanly.', 'success')
+          }
+          className="z-btn z-btn-primary z-btn-sm"
+        >
+          Test Success Toast
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            onTestToast?.('Upstream provider timed out — retrying.', 'error')
+          }
+          className="z-btn z-btn-danger z-btn-sm"
+        >
+          Test Error Toast
+        </button>
+      </div>
+
+      {/* Static live-style toast sample */}
+      <div className="flex justify-center">
+        <div
+          className={cn(
+            'flex max-w-[380px] items-center gap-2.5 text-[12.5px] text-[var(--fg)] transition-all',
+            TOAST_STYLE_PREVIEW_CLASS[toastStyle] || TOAST_STYLE_PREVIEW_CLASS.default,
+          )}
+        >
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: 'var(--accent)' }}
+            aria-hidden="true"
+          />
+          <span className="truncate font-medium">
+            Theme preferences synced · {toastStyle}
+          </span>
+        </div>
+      </div>
+
+      {/* 6-slot viewport anchor diagram */}
+      <div className="rounded-xl border border-[var(--border)]/80 bg-[var(--bg)]/80 p-3">
+        <div className="mb-2 flex items-center justify-between font-mono text-[10.5px] text-[var(--muted)]">
+          <span>Viewport Anchor</span>
+          <span style={{ color: 'var(--accent)' }}>{toastPosition}</span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {TOAST_POSITION_CELLS.map((cell) => {
+            const active = toastPosition === cell.value
+            return (
+              <div
+                key={cell.value}
+                className={cn(
+                  'flex h-10 items-center justify-center rounded-lg border font-mono text-[10.5px] transition-colors',
+                  active
+                    ? 'border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] font-semibold text-[var(--accent)]'
+                    : 'border-[var(--border)]/60 bg-[var(--surface)]/50 text-[var(--muted)]',
+                )}
+              >
+                {cell.label}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function IconFamiliesPreview({ ui }: { ui: UiCustomization }) {
@@ -383,7 +515,6 @@ function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
   const { ui } = ctx
   const [paletteOpen, setPaletteOpen] = useState(false)
   const paletteStyle = ui.surface.command_palette_style || 'default'
-  const toastStyle = ui.surface.toast_style || 'default'
 
   return (
     <div className="flex w-full max-w-[600px] flex-col gap-4">
@@ -434,20 +565,6 @@ function OverlaysPreview({ ctx }: { ctx: StudioPreviewContext }) {
         >
           ⌘K Palette ({paletteStyle === 'easeui_palette' ? 'EaseUI' : 'Morph'})
         </button>
-
-        {toastStyle === 'easeui_toast' && (
-          <button
-            type="button"
-            onClick={() =>
-              easeToast.success('EaseUI swipe toast active', {
-                description: 'Hover to expand stack or drag down to dismiss.',
-              })
-            }
-            className="z-btn z-btn-secondary z-btn-sm"
-          >
-            Trigger EaseUI Toast
-          </button>
-        )}
       </div>
 
       {paletteStyle === 'easeui_palette' ? (
@@ -579,77 +696,90 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
       </div>
     ),
 
-    chat_layout: () => (
-      <div
-        data-chat-bg={chatSlot.background}
-        className={cn(
-          'zenko-chat-bg flex w-full max-w-[640px] flex-col gap-3.5 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-5',
-          ui.layout.chat_layout === 'terminal_stream' && 'font-mono',
-        )}
-      >
-        {chatSlot.show_day_separators !== false && <DayDivider label="Today" />}
-        <div className="flex items-start justify-end gap-2.5">
-          <div className={cn('text-[13px]', USER_BUBBLE_PREVIEW_MAP[chatSlot.user_bubble])}>
-            Audit runtime memory and check tests
-          </div>
-          {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
-            <UserAvatar
-              variant={chatSlot.user_avatar || 'icon_user'}
-              frame={chatSlot.user_avatar_frame || 'circle'}
-              color={chatSlot.user_avatar_color}
-              icons={ui.icons}
-              size={26}
-              className="mt-0.5"
-            />
+    chat_layout: () => {
+      const badgeStyle = chatSlot.model_badge_style || 'bordered_chip'
+      return (
+        <div
+          data-chat-bg={chatSlot.background}
+          className={cn(
+            'zenko-chat-bg flex w-full max-w-[640px] flex-col gap-3.5 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-5',
+            ui.layout.chat_layout === 'terminal_stream' && 'font-mono',
           )}
-        </div>
-        <div className="flex items-start gap-3">
-          {chatSlot.show_avatars && ui.motion.orb_style !== 'hidden' && (
-            <AgentAvatar
-              variant={ui.motion.orb_style}
-              frame={chatSlot.agent_avatar_frame || 'squircle'}
-              color={chatSlot.agent_avatar_color}
-              icons={ui.icons}
-              size={26}
-              className="mt-0.5 shrink-0"
-            />
-          )}
-          <div
-            className={cn(
-              'min-w-0 flex-1',
-              ui.layout.chat_layout === 'bubble_split' &&
-                'rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3.5',
+        >
+          {chatSlot.show_day_separators !== false && <DayDivider label="Today" />}
+          <div className="flex items-start justify-end gap-2.5">
+            {renderUserBubblePreview(
+              chatSlot.user_bubble,
+              'Audit runtime memory and check tests',
+              'text-[13px]',
             )}
-          >
-            <div className="mb-1 flex items-center gap-2 text-[11.5px]">
-              <span className="font-medium text-[var(--fg)]">Zenko</span>
-              <span className="rounded border border-[var(--border)] bg-[var(--card)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--muted)]">
-                {activeModel || 'live-model'}
-              </span>
-              {ui.widgets.show_timestamps && (
-                <span className="text-[10.5px] text-[var(--muted)]">16:04</span>
+            {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
+              <UserAvatar
+                variant={chatSlot.user_avatar || 'icon_user'}
+                frame={chatSlot.user_avatar_frame || 'circle'}
+                color={chatSlot.user_avatar_color}
+                icons={ui.icons}
+                size={26}
+                className="mt-0.5"
+              />
+            )}
+          </div>
+          <div className="flex items-start gap-3">
+            {chatSlot.show_avatars && ui.motion.orb_style !== 'hidden' && (
+              <AgentAvatar
+                variant={ui.motion.orb_style}
+                frame={chatSlot.agent_avatar_frame || 'squircle'}
+                color={chatSlot.agent_avatar_color}
+                icons={ui.icons}
+                size={26}
+                className="mt-0.5 shrink-0"
+              />
+            )}
+            <div
+              className={cn(
+                'min-w-0 flex-1',
+                ui.layout.chat_layout === 'bubble_split' &&
+                  'rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3.5',
+              )}
+            >
+              <div className="mb-1 flex items-center gap-2 text-[11.5px]">
+                <span className="font-medium text-[var(--fg)]">Zenko</span>
+                {badgeStyle !== 'hidden' && (
+                  <span
+                    className={
+                      MODEL_BADGE_CLASS[badgeStyle] || MODEL_BADGE_CLASS.bordered_chip
+                    }
+                  >
+                    {activeModel || 'live-model'}
+                  </span>
+                )}
+                {ui.widgets.show_timestamps && (
+                  <span className="text-[10.5px] text-[var(--muted)]">16:04</span>
+                )}
+              </div>
+              <p className="text-[13px] leading-relaxed text-[var(--fg)]/90">
+                All 101 Rust tests pass at 28.4 MB VmRSS.
+              </p>
+              {ui.widgets.show_cost_badges && (
+                <div className="mt-1.5 font-mono text-[10.5px] text-[var(--muted)]">
+                  33202 tok · 27264 cached
+                </div>
               )}
             </div>
-            <p className="text-[13px] leading-relaxed text-[var(--fg)]/90">
-              All 101 Rust tests pass at 28.4 MB VmRSS.
-            </p>
-            {ui.widgets.show_cost_badges && (
-              <div className="mt-1.5 font-mono text-[10.5px] text-[var(--muted)]">
-                33202 tok · 27264 cached
-              </div>
-            )}
           </div>
         </div>
-      </div>
-    ),
+      )
+    },
 
     user_bubble: () => (
       <div className="flex w-full max-w-[540px] flex-col items-end gap-1.5">
         <span className="mr-10 font-mono text-[10.5px] text-[var(--muted)]">You · 16:04</span>
         <div className="flex items-start gap-2.5">
-          <div className={cn('text-[14px] leading-relaxed', USER_BUBBLE_PREVIEW_MAP[chatSlot.user_bubble])}>
-            Refactor the streaming parser to zero-regex deterministic byte scanning.
-          </div>
+          {renderUserBubblePreview(
+            chatSlot.user_bubble,
+            'Refactor the streaming parser to zero-regex deterministic byte scanning.',
+            'text-[14px] leading-relaxed',
+          )}
           {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
             <UserAvatar
               variant={chatSlot.user_avatar || 'icon_user'}
@@ -705,9 +835,11 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
         {/* Live Chat Pair */}
         <div className="flex flex-col gap-3.5 px-1">
           <div className="flex items-start justify-end gap-2.5">
-            <div className={cn('text-[13px]', USER_BUBBLE_PREVIEW_MAP[chatSlot.user_bubble])}>
-              Run the workspace build in zenko_task and check RSS.
-            </div>
+            {renderUserBubblePreview(
+              chatSlot.user_bubble,
+              'Run the workspace build in zenko_task and check RSS.',
+              'text-[13px]',
+            )}
             {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
               <UserAvatar
                 variant={chatSlot.user_avatar || 'icon_user'}
@@ -790,6 +922,32 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
           <div className="rounded-xl border border-dashed border-[var(--border)] px-4 py-5 text-center font-mono text-[11.5px] text-[var(--muted)]">
             Reasoning traces hidden in chat.
           </div>
+        ) : chatSlot.thinking_style === 'aimran_stretchtext' ? (
+          <div className="rounded-xl border border-[var(--border)]/70 bg-[var(--surface)]/55 p-4">
+            <Stretchtext
+              kicker="Click underlined phrases to expand inline"
+              size={14}
+              mainColor="var(--accent)"
+              secondaryColor="color-mix(in srgb, var(--accent) 26%, var(--surface))"
+              segments={[
+                { kind: 'text', text: 'Verified ' },
+                {
+                  kind: 'expand',
+                  id: 'wal',
+                  trigger: 'SQLite WAL memory',
+                  detail: ' (28.4 MB VmRSS, zero page leaks)',
+                },
+                { kind: 'text', text: ' and ' },
+                {
+                  kind: 'expand',
+                  id: 'tests',
+                  trigger: '101 workspace tests',
+                  detail: ' across all 8 Rust crates',
+                },
+                { kind: 'text', text: ' before emitting the patch.' },
+              ]}
+            />
+          </div>
         ) : chatSlot.thinking_style === 'inline_quote' ? (
           <div className="border-l-2 border-[var(--accent)]/50 pl-3.5 font-mono text-[12px] leading-relaxed text-[var(--muted)]">
             Checking SQLite WAL mode and verifying zero-regex path checks before emitting the patch.
@@ -821,41 +979,54 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
 
     streaming_response: () => <StreamingPreview ui={ui} />,
 
-    message_actions: () => (
-      <div className="flex w-full max-w-[600px] flex-col gap-2 rounded-xl border border-[var(--border)]/70 bg-[var(--surface)]/55 p-4">
-        <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/90">
-          Daemon is healthy at 28.4 MB VmRSS with WAL mode enabled and zero active warnings.
-        </p>
-        {chatSlot.message_actions_style === 'beui_inline' ? (
-          <StreamingResponse
-            status="complete"
-            copyText="Daemon is healthy at 28.4 MB VmRSS."
-            onRetry={() => {}}
-            sources={chatSlot.show_citations ? PREVIEW_CITATIONS : []}
-            announce={false}
-            footerMeta={
-              <span className="font-mono text-[11px] tabular-nums text-[var(--muted)]/80">
-                33202 tok · 27264 cached
-              </span>
-            }
-          >
-            {null}
-          </StreamingResponse>
-        ) : (
-          <AssistantMessageFooter
-            style={chatSlot.message_actions_style}
-            text="Daemon is healthy at 28.4 MB VmRSS."
-            citations={chatSlot.show_citations ? PREVIEW_CITATIONS : []}
-            onRegenerate={() => {}}
-            tokenMeta={
-              <span className="font-mono text-[11px] tabular-nums text-[var(--muted)]/80">
-                33202 tok · 27264 cached
-              </span>
-            }
-          />
-        )}
-      </div>
-    ),
+    message_actions: () => {
+      const citationsStyle = chatSlot.citations_style || 'beui_citations'
+      const useBeuiSources = chatSlot.show_citations && citationsStyle === 'beui_citations'
+      return (
+        <div className="flex w-full max-w-[600px] flex-col gap-2 rounded-xl border border-[var(--border)]/70 bg-[var(--surface)]/55 p-4">
+          <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/90">
+            Daemon is healthy at 28.4 MB VmRSS with WAL mode enabled and zero active warnings.
+          </p>
+          {chatSlot.message_actions_style === 'beui_inline' ? (
+            <>
+              <StreamingResponse
+                status="complete"
+                copyText="Daemon is healthy at 28.4 MB VmRSS."
+                onRetry={() => {}}
+                sources={useBeuiSources ? PREVIEW_CITATIONS : []}
+                announce={false}
+                footerMeta={
+                  <span className="font-mono text-[11px] tabular-nums text-[var(--muted)]/80">
+                    33202 tok · 27264 cached
+                  </span>
+                }
+              >
+                {null}
+              </StreamingResponse>
+              {chatSlot.show_citations && !useBeuiSources && (
+                <CitationsDisplay
+                  citations={PREVIEW_CITATIONS}
+                  style={citationsStyle}
+                />
+              )}
+            </>
+          ) : (
+            <AssistantMessageFooter
+              style={chatSlot.message_actions_style}
+              text="Daemon is healthy at 28.4 MB VmRSS."
+              citations={chatSlot.show_citations ? PREVIEW_CITATIONS : []}
+              citationsStyle={citationsStyle}
+              onRegenerate={() => {}}
+              tokenMeta={
+                <span className="font-mono text-[11px] tabular-nums text-[var(--muted)]/80">
+                  33202 tok · 27264 cached
+                </span>
+              }
+            />
+          )}
+        </div>
+      )
+    },
 
     tool_execution: () => {
       const showMultiCollapsible =
@@ -989,6 +1160,7 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
         configuredProviders={ctx.configuredProviders}
         activeModels={ctx.models}
         pickerStyle={ui.components.composer.model_picker_style}
+        triggerChrome={ui.components.composer.model_trigger_chrome}
         pillClass={
           ACTION_PILL_PREVIEW_CLASS[ui.components.composer.action_pills] ||
           ACTION_PILL_PREVIEW_CLASS.soft_tint
@@ -1123,35 +1295,59 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
       </div>
     ),
 
-    surfaces: () => (
-      <div className="flex w-full max-w-[580px] flex-col gap-3.5">
-        <div className="z-surface-card flex items-center justify-between text-[13px]">
-          <div>
-            <div className="font-medium text-[var(--fg)]">Primary Surface Container</div>
-            <div className="mt-0.5 text-[11.5px] text-[var(--muted)]">
-              Applied across Dashboard charts, Memory, Settings, and Telemetry panels.
+    surfaces: () => {
+      const linkHoverStyle = ui.surface.link_hover_style || 'zenko_underline'
+      const previewLink = (label: string) =>
+        linkHoverStyle === 'zenko_underline' ? (
+          <a
+            href="#preview-link"
+            onClick={(e) => e.preventDefault()}
+            className="zenko-prose-link font-medium"
+          >
+            {label}
+          </a>
+        ) : (
+          <LineHoverLink
+            href="#preview-link"
+            onClick={(e) => e.preventDefault()}
+            variant={linkHoverStyle as LineHoverVariant}
+            className="font-medium text-[var(--accent)]"
+          >
+            {label}
+          </LineHoverLink>
+        )
+
+      return (
+        <div className="flex w-full max-w-[580px] flex-col gap-3.5">
+          <div className="z-surface-card flex items-center justify-between text-[13px]">
+            <div>
+              <div className="font-medium text-[var(--fg)]">Primary Surface Container</div>
+              <div className="mt-0.5 text-[11.5px] text-[var(--muted)]">
+                Applied across Dashboard charts, Memory, Settings, and Telemetry panels.
+              </div>
+            </div>
+            <span className="font-mono text-[11px] text-[var(--muted)]">
+              {ui.surface.card_style} · {ui.surface.radius_px}px
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="z-card-item p-3 text-[12px]">
+              <div className="font-semibold text-[var(--fg)]">Option Card Item</div>
+              <div className="mt-0.5 text-[11px] text-[var(--muted)]">
+                Studio tiles, KPI cells &amp; vault stats
+              </div>
+            </div>
+            <div className="z-card-item p-3 text-[12px]">
+              <div className="font-semibold text-[var(--fg)]">Link Hover ({linkHoverStyle})</div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[12px]">
+                {previewLink('Zenko Docs')}
+                {previewLink('SQLite WAL')}
+              </div>
             </div>
           </div>
-          <span className="font-mono text-[11px] text-[var(--muted)]">
-            {ui.surface.card_style} · {ui.surface.radius_px}px
-          </span>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="z-card-item p-3 text-[12px]">
-            <div className="font-semibold text-[var(--fg)]">Option Card Item</div>
-            <div className="mt-0.5 text-[11px] text-[var(--muted)]">
-              Studio tiles, KPI cells &amp; vault stats
-            </div>
-          </div>
-          <div className="z-card-item p-3 text-[12px]">
-            <div className="font-semibold text-[var(--fg)]">Secondary Item</div>
-            <div className="mt-0.5 text-[11px] text-[var(--muted)]">
-              Zero forced heavy box borders
-            </div>
-          </div>
-        </div>
-      </div>
-    ),
+      )
+    },
 
     hover_hints: () => (
       <div className="flex w-full max-w-[580px] flex-col items-center gap-5">
@@ -1261,6 +1457,8 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
     ),
 
     overlays: () => <OverlaysPreview ctx={ctx} />,
+
+    toasts: () => <ToastPreview ctx={ctx} />,
   }
 
   return (MAP[previewKey] || MAP.surfaces)()

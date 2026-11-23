@@ -70,6 +70,14 @@ const OPT_MODEL_PICKER: &[StudioOption] = &[
     StudioOption { value: "rareui_picker", label: "RareUI Morph Picker", hint: "Spring clip-path expanding model picker with rolling labels" },
 ];
 
+const OPT_MODEL_TRIGGER_CHROME: &[StudioOption] = &[
+    StudioOption { value: "bordered_filled", label: "Border + Fill", hint: "Hairline pill border with subtle surface background (Default)" },
+    StudioOption { value: "border_only", label: "Border Only", hint: "Crisp pill border with transparent background" },
+    StudioOption { value: "background_only", label: "Background Only", hint: "Soft filled card pill with no outer border" },
+    StudioOption { value: "accent_tint", label: "Accent Tint", hint: "Subtle theme accent tint & hairline border" },
+    StudioOption { value: "minimal_bare", label: "Both Hidden", hint: "Zero border and zero background — pure minimal label" },
+];
+
 const OPT_SEND_SHAPE: &[StudioOption] = &[
     StudioOption { value: "rounded_square", label: "Rounded Square", hint: "Crisp 10px square action button" },
     StudioOption { value: "circle", label: "Circle Orb", hint: "Full circular send button" },
@@ -86,6 +94,7 @@ const OPT_SEND_ICON: &[StudioOption] = &[
 const OPT_CONTEXT_METER: &[StudioOption] = &[
     StudioOption { value: "progress_ring", label: "Progress Ring", hint: "Circular ring + exact token ratio" },
     StudioOption { value: "smoothui_meter", label: "SmoothUI AI Meter", hint: "SmoothUI threshold ring with hover context breakdown" },
+    StudioOption { value: "kokonut_meter", label: "KokonutUI Bayer Meter", hint: "4×4 Bayer-dithered segmented breakdown bar with Compact button" },
     StudioOption { value: "motion_brew_ring", label: "Motion-Brew Ring", hint: "Segmented dial indicator inspired by Motion-Brew UsageRing" },
     StudioOption { value: "linear_bar", label: "Linear Meter", hint: "Compact horizontal usage bar" },
     StudioOption { value: "compact_text", label: "Minimal Text", hint: "Monospace token count only" },
@@ -111,6 +120,7 @@ const OPT_SIDEBAR_FRAME: &[StudioOption] = &[
     StudioOption { value: "floating_card", label: "Floating Card", hint: "Detached inset card with rounded corners" },
     StudioOption { value: "compact_rail", label: "Compact Width", hint: "Narrower 224px minimal rail" },
     StudioOption { value: "motion_brew_nav", label: "Motion-Brew Nav", hint: "Collapsible spring rail with animated hover icons & sliding pill" },
+    StudioOption { value: "responsive_sidebar", label: "Responsive Glass Sidebar", hint: "Frosted translucent collapsible sidebar with smooth width transition & keyboard nav" },
 ];
 
 const OPT_NEW_SESSION: &[StudioOption] = &[
@@ -167,14 +177,28 @@ const OPT_CONTENT_WIDTH: &[StudioOption] = &[
 ];
 
 const OPT_USER_BUBBLE: &[StudioOption] = &[
-    StudioOption { value: "soft_card", label: "Soft Card", hint: "Matte card with crisp hairline border" },
-    StudioOption { value: "accent_tint", label: "Accent Tint", hint: "Subtle global accent wash" },
-    StudioOption { value: "minimal_border", label: "Minimal Outline", hint: "Transparent with clean border" },
-    StudioOption { value: "pill", label: "Rounded Pill", hint: "Soft pill bubble silhouette" },
+    StudioOption { value: "soft_card", label: "Soft Card (Border + Fill)", hint: "Matte card with crisp hairline border (Default)" },
+    StudioOption { value: "easeui_bubble", label: "EaseUI Message Bubble", hint: "Speech-tail bubble with directional spring pop-in" },
+    StudioOption { value: "accent_tint", label: "Accent Tint", hint: "Subtle global accent wash + hairline border" },
+    StudioOption { value: "solid_accent", label: "Solid Accent", hint: "High-contrast filled primary accent bubble" },
+    StudioOption { value: "minimal_border", label: "Border Only", hint: "Transparent fill with crisp hairline outline" },
+    StudioOption { value: "background_only", label: "Background Only", hint: "Soft surface fill with zero outer border" },
+    StudioOption { value: "borderless_minimal", label: "Both Hidden", hint: "Clean borderless text without card chrome" },
+    StudioOption { value: "pill", label: "Rounded Pill", hint: "Soft capsule pill bubble silhouette" },
+];
+
+const OPT_MODEL_BADGE_STYLE: &[StudioOption] = &[
+    StudioOption { value: "bordered_chip", label: "Border + Fill", hint: "Framed monospace model badge beside Zenko header (Default)" },
+    StudioOption { value: "border_only", label: "Border Only", hint: "Hairline outline with transparent fill" },
+    StudioOption { value: "soft_fill", label: "Background Only", hint: "Subtle card tint with zero border" },
+    StudioOption { value: "accent_tint", label: "Accent Tint", hint: "Soft global accent highlight badge" },
+    StudioOption { value: "minimal_text", label: "Both Hidden (Text Only)", hint: "Clean quiet monospace model text without pill chrome" },
+    StudioOption { value: "hidden", label: "Hidden", hint: "Hide model badge from assistant message header" },
 ];
 
 const OPT_THINKING_STYLE: &[StudioOption] = &[
     StudioOption { value: "collapsible_steps", label: "Collapsible Steps", hint: "Compact 'Completed N steps' disclosure" },
+    StudioOption { value: "aimran_stretchtext", label: "AIMRAN Stretchtext", hint: "Inline dotted-underlined words expand reasoning inside the sentence (no popups)" },
     StudioOption { value: "inline_quote", label: "Left Quote Rail", hint: "Minimal indented reasoning block" },
     StudioOption { value: "minimal_bar", label: "Compact Pill", hint: "Single-line subtle trace pill" },
     StudioOption { value: "hidden", label: "Hidden", hint: "Hide reasoning traces in chat" },
@@ -201,8 +225,15 @@ const OPT_MESSAGE_ACTIONS_STYLE: &[StudioOption] = &[
     StudioOption { value: "minimal", label: "Minimal Copy", hint: "Quiet copy, retry & metadata strip" },
 ];
 
+const OPT_CITATIONS_STYLE: &[StudioOption] = &[
+    StudioOption { value: "beui_citations", label: "BeUI Sources Drawer", hint: "Compact source badges & expandable drawer (Default)" },
+    StudioOption { value: "kokonut_citations", label: "KokonutUI Citations", hint: "Stacked site monograms & animated source list with hover highlights" },
+    StudioOption { value: "minimal_pills", label: "Minimal Pills", hint: "Quiet inline link chips with host domains" },
+];
+
 const OPT_APPROVAL_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_permission_grant", label: "Permission Grant", hint: "Clean capability reach & Deny/Session/Always receipt (Default)" },
+    StudioOption { value: "kokonut_approval", label: "KokonutUI Hold-to-Allow", hint: "Structured card with animated Don't-ask-again check & Hold-to-Allow for destructive calls" },
     StudioOption { value: "beui_approval", label: "BeUI Approval Card", hint: "Structured parameter disclosure with Allow/Always/Deny" },
     StudioOption { value: "easeui_approval", label: "EaseUI Tool Approval", hint: "Compact spring-collapsing EaseUI approval card" },
     StudioOption { value: "compact_card", label: "Compact Card", hint: "Classic inline approval strip" },
@@ -210,6 +241,7 @@ const OPT_APPROVAL_STYLE: &[StudioOption] = &[
 
 const OPT_ACTIVITY_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_tool_call_icon", label: "Collapsible+", hint: "Default: Collapsible tool rows with semantic icons from your active icon family" },
+    StudioOption { value: "kokonut_tool_calls", label: "KokonutUI Tool Calls", hint: "Overlapping icon stack, folding tool rail & live step durations" },
     StudioOption { value: "aui_tool_call", label: "Collapsible ToolCall", hint: "Minimal assistant-ui expandable chevron request/result rows" },
     StudioOption { value: "aui_smart", label: "Smart Elements", hint: "Auto-dispatches Terminal, CodeRunner, Diff, FileTree, WebSearch & ToolError" },
     StudioOption { value: "easeui_tool_chip", label: "EaseUI Tool Chips", hint: "Compact EaseUI pill chips with crossfading status indicators" },
@@ -227,6 +259,7 @@ const OPT_ACTIVITY_STYLE: &[StudioOption] = &[
 
 const OPT_TOOLTIP_STYLE: &[StudioOption] = &[
     StudioOption { value: "accent_edge", label: "Accent Edge", hint: "Dark card with subtle accent hairline edge (Default)" },
+    StudioOption { value: "skecher_gooey", label: "SkecherUI Gooey Tooltip", hint: "Liquid SVG metaball droplet detaching with tactile spring physics" },
     StudioOption { value: "minimal_glass", label: "Frosted Glass", hint: "Translucent blurred glass hover badge" },
     StudioOption { value: "solid_contrast", label: "High Contrast", hint: "Inverted foreground pill for instant legibility" },
     StudioOption { value: "accent_solid", label: "Solid Accent", hint: "Filled primary accent badge with crisp contrast" },
@@ -257,6 +290,12 @@ const OPT_DASHBOARD_WIDGET_KIT: &[StudioOption] = &[
     StudioOption { value: "hybrid", label: "Hybrid Studio", hint: "Combines Motion-Brew recap & gauges with ECharts analytics" },
 ];
 
+const OPT_DASHBOARD_RECAP_STYLE: &[StudioOption] = &[
+    StudioOption { value: "motion_brew_recap", label: "Motion-Brew RecapCard", hint: "Animated telemetry narrative with milestone badges (Default)" },
+    StudioOption { value: "aimran_marker_highlight", label: "AIMRAN Marker Highlight", hint: "Hand-drawn staggered marker pen strokes with Replay button" },
+    StudioOption { value: "aimran_stretchtext", label: "AIMRAN Stretchtext", hint: "Tap underlined metrics to expand telemetry details inline" },
+];
+
 const OPT_DASHBOARD_CHART_THEME: &[StudioOption] = &[
     StudioOption { value: "monochrome_accent", label: "Monochrome Accent", hint: "Strict 60/30/10 monochrome + single theme accent ramp (Default)" },
     StudioOption { value: "soft_gradient", label: "Soft Gradient", hint: "Luminous area fills & smooth tonal transitions" },
@@ -277,6 +316,7 @@ const OPT_DASHBOARD_HEATMAP_RANGE: &[StudioOption] = &[
 
 const OPT_LOADING_STYLE: &[StudioOption] = &[
     StudioOption { value: "beui_loader", label: "BeUI Motion Loader", hint: "Animated motion glyph + shimmer status" },
+    StudioOption { value: "kokonut_loading", label: "KokonutUI Step Rail", hint: "Animated filling step rail with wave letters & scrolling step log" },
     StudioOption { value: "easeui_pixel_loader", label: "EaseUI Pixel Loader", hint: "Independent randomized 3×3 twinkling pixel grid + timer" },
     StudioOption { value: "rareui_ai_status", label: "RareUI AI Status", hint: "Spring-morphing RareUI icon & shimmer status indicator" },
     StudioOption { value: "aui_thinking_indicator", label: "Thinking Indicator", hint: "Minimal pulsing accent dot + shimmer + live timer" },
@@ -287,12 +327,14 @@ const OPT_LOADING_STYLE: &[StudioOption] = &[
 
 const OPT_DIFF_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_code_diff", label: "Code Diff", hint: "Animated unified diff with +/− gutter & stats (Default)" },
+    StudioOption { value: "kokonut_diff", label: "KokonutUI Diff Review", hint: "Multi-file reviewable diff with 5-block bar, Accept/Reject & Undo" },
     StudioOption { value: "aui_reviewable_diff", label: "Reviewable Diff", hint: "Interactive per-hunk Keep / Discard diff review" },
     StudioOption { value: "minimal_inline", label: "Minimal Inline", hint: "Plain monospace diff lines without header" },
 ];
 
 const OPT_SHELL_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_terminal_block", label: "Terminal Block", hint: "ANSI color terminal with exit code & copy (Default)" },
+    StudioOption { value: "aimran_copy_cmd", label: "AIMRAN Copy Command", hint: "Sweep highlight command bar with self-drawing SVG checkmark" },
     StudioOption { value: "aui_code_runner", label: "Code Runner", hint: "Structured command + output runner card" },
     StudioOption { value: "minimal_mono", label: "Minimal Output", hint: "Borderless quiet monospace block" },
 ];
@@ -301,6 +343,7 @@ const OPT_CODE_BLOCK_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_code_runner", label: "Code Runner", hint: "Clean code runner surface with language & copy (Default)" },
     StudioOption { value: "easeui_code", label: "EaseUI Code Block", hint: "Zero-overhead EaseUI figure with syntax tokens & copy button" },
     StudioOption { value: "rareui_code", label: "RareUI Prism Code", hint: "Accent-tinted Prism syntax highlighting with animated copy" },
+    StudioOption { value: "aimran_copy_cmd", label: "AIMRAN Copy Command", hint: "Compact sweep-highlight copy pill for single-line CLI snippets" },
     StudioOption { value: "minimal_code", label: "Borderless Minimal", hint: "Ultra-clean subtle top-divider code block" },
     StudioOption { value: "bordered_code", label: "Classic Bordered", hint: "Framed code block with header bar" },
 ];
@@ -377,8 +420,32 @@ const OPT_COMMAND_PALETTE_STYLE: &[StudioOption] = &[
 ];
 
 const OPT_TOAST_STYLE: &[StudioOption] = &[
-    StudioOption { value: "default", label: "Zenko Alert Stack", hint: "Compact corner notification stack (Default)" },
+    StudioOption { value: "default", label: "Zenko Alert Card", hint: "Clean theme-aware toast card with subtle status indicator (Default)" },
     StudioOption { value: "easeui_toast", label: "EaseUI Swipe Stack", hint: "Hover-expanding & swipe-to-dismiss stacked EaseUI toaster" },
+    StudioOption { value: "minimal_pill", label: "Minimal Pill", hint: "Compact rounded-full capsule toast with crisp legibility" },
+    StudioOption { value: "accent_bar", label: "Accent Edge Bar", hint: "Left-striped semantic bar toast inheriting global accent" },
+    StudioOption { value: "glass_toast", label: "Frosted Glass", hint: "Translucent blurred glass toast with subtle specular border" },
+];
+
+const OPT_TOAST_POSITION: &[StudioOption] = &[
+    StudioOption { value: "top_center", label: "Top Center", hint: "Anchored cleanly at top center of viewport (Default)" },
+    StudioOption { value: "top_right", label: "Top Right", hint: "Upper right corner notifications" },
+    StudioOption { value: "top_left", label: "Top Left", hint: "Upper left corner notifications" },
+    StudioOption { value: "bottom_center", label: "Bottom Center", hint: "Centered above the bottom viewport edge" },
+    StudioOption { value: "bottom_right", label: "Bottom Right", hint: "Classic lower-right corner toast stack" },
+    StudioOption { value: "bottom_left", label: "Bottom Left", hint: "Lower-left corner notification stack" },
+];
+
+const OPT_LINK_HOVER_STYLE: &[StudioOption] = &[
+    StudioOption { value: "zenko_underline", label: "Zenko Accent Sweep", hint: "Clean theme underline reveal with subtle tint (Default)" },
+    StudioOption { value: "slide", label: "VengeanceUI Slide", hint: "Crisp horizontal underline sliding across on hover" },
+    StudioOption { value: "double", label: "VengeanceUI Double", hint: "Dual opposing underlines with staggered easing" },
+    StudioOption { value: "grow", label: "VengeanceUI Grow", hint: "Thickening primary line with secondary underline trail" },
+    StudioOption { value: "fade", label: "VengeanceUI Fade", hint: "Soft upward-fading dual underline" },
+    StudioOption { value: "swap", label: "VengeanceUI Swap", hint: "Opposite-direction swapping lines on hover" },
+    StudioOption { value: "sweep", label: "VengeanceUI Sweep", hint: "Full link background sweep animation" },
+    StudioOption { value: "arc", label: "VengeanceUI SVG Arc", hint: "Hand-drawn SVG arc stroke under link" },
+    StudioOption { value: "scribble", label: "VengeanceUI SVG Scribble", hint: "Organic SVG scribble stroke drawing under link" },
 ];
 
 const OPT_MODAL_STYLE: &[StudioOption] = &[
@@ -701,6 +768,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         unit: "",
                     },
                     StudioControl {
+                        path: "components.chat_page.model_badge_style",
+                        label: "Assistant Model Badge",
+                        description: "Customize the model badge pill beside the Zenko header (border, background, accent, text-only, or hidden).",
+                        kind: ControlKind::Cards,
+                        options: OPT_MODEL_BADGE_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
                         path: "widgets.show_timestamps",
                         label: "Show Timestamps",
                         description: "Display quiet HH:MM times on messages.",
@@ -968,6 +1046,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         step: None,
                         unit: "",
                     },
+                    StudioControl {
+                        path: "components.chat_page.citations_style",
+                        label: "Citations Style",
+                        description: "Choose BeUI Sources Drawer, KokonutUI monogram Citations, or Minimal Pills.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CITATIONS_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
                 ],
             },
             StudioSubComponent {
@@ -1174,19 +1263,32 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 id: "model_picker",
                 group: "",
                 label: "Model Picker",
-                description: "Provider -> Model switcher layout and live metadata presentation.",
+                description: "Provider -> Model switcher layout and trigger pill border/background customization.",
                 preview: "model_picker",
-                controls: &[StudioControl {
-                    path: "components.composer.model_picker_style",
-                    label: "Picker Layout",
-                    description: "How providers and live models appear when clicking the model pill.",
-                    kind: ControlKind::Cards,
-                    options: OPT_MODEL_PICKER,
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: "",
-                }],
+                controls: &[
+                    StudioControl {
+                        path: "components.composer.model_picker_style",
+                        label: "Picker Layout",
+                        description: "How providers and live models appear when clicking the model pill.",
+                        kind: ControlKind::Cards,
+                        options: OPT_MODEL_PICKER,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.model_trigger_chrome",
+                        label: "Model Trigger Pill (Border & Background)",
+                        description: "Customize border, background, accent wash, or hide both on the composer model selector button.",
+                        kind: ControlKind::Cards,
+                        options: OPT_MODEL_TRIGGER_CHROME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
             },
             StudioSubComponent {
                 id: "send_button",
@@ -1572,8 +1674,8 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
             StudioSubComponent {
                 id: "surfaces",
                 group: "",
-                label: "Surfaces & Radius",
-                description: "Global card surface elevation and corner radius.",
+                label: "Surfaces, Radius & Links",
+                description: "Global card surface elevation, corner radius, and VengeanceUI link hover animations.",
                 preview: "surfaces",
                 controls: &[
                     StudioControl {
@@ -1597,6 +1699,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         max: Some(20.0),
                         step: Some(1.0),
                         unit: "px",
+                    },
+                    StudioControl {
+                        path: "surface.link_hover_style",
+                        label: "Link Hover Animation (VengeanceUI)",
+                        description: "Underline & SVG hover effect applied across markdown prose links.",
+                        kind: ControlKind::Cards,
+                        options: OPT_LINK_HOVER_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
                     },
                 ],
             },
@@ -1632,10 +1745,41 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 ],
             },
             StudioSubComponent {
+                id: "toasts",
+                group: "Overlays & Controls",
+                label: "Toasts & Placement",
+                description: "Customize notification toast visual style and screen anchor placement (default: Top Center).",
+                preview: "toasts",
+                controls: &[
+                    StudioControl {
+                        path: "surface.toast_style",
+                        label: "Toast Visual Style",
+                        description: "Choose Zenko Alert Card, EaseUI Swipe Stack, Minimal Pill, Accent Bar, or Frosted Glass.",
+                        kind: ControlKind::Cards,
+                        options: OPT_TOAST_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.toast_position",
+                        label: "Toast Placement",
+                        description: "Choose where notifications appear on screen (default: Top Center).",
+                        kind: ControlKind::Cards,
+                        options: OPT_TOAST_POSITION,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
                 id: "alerts_modals",
                 group: "Overlays & Controls",
-                label: "Alerts, Modals, Palette & Toasts",
-                description: "Customize alerts, EaseUI command palette & swipe toasts, center-morph modals, and gooey popovers.",
+                label: "Alerts, Modals & Palette",
+                description: "Customize alerts, EaseUI command palette, center-morph modals, and gooey popovers.",
                 preview: "overlays",
                 controls: &[
                     StudioControl {
@@ -1655,17 +1799,6 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         description: "Choose Zenko CenterMorph or EaseUI native-dialog Command Palette.",
                         kind: ControlKind::Cards,
                         options: OPT_COMMAND_PALETTE_STYLE,
-                        min: None,
-                        max: None,
-                        step: None,
-                        unit: "",
-                    },
-                    StudioControl {
-                        path: "surface.toast_style",
-                        label: "Notification Toasts",
-                        description: "Choose Zenko Alert Stack or EaseUI hover-expanding swipe toaster.",
-                        kind: ControlKind::Cards,
-                        options: OPT_TOAST_STYLE,
                         min: None,
                         max: None,
                         step: None,
@@ -1780,6 +1913,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         description: "Use Apache ECharts, Motion-Brew animated widgets (RecapCard, ActivityGrid, MixChart, QuotaGauge, UsageRing), or Hybrid.",
                         kind: ControlKind::Cards,
                         options: OPT_DASHBOARD_WIDGET_KIT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.dashboard.recap_style",
+                        label: "Narrative Recap Style",
+                        description: "Choose Motion-Brew RecapCard, AIMRAN Marker Pen Highlight, or AIMRAN Stretchtext inline telemetry.",
+                        kind: ControlKind::Cards,
+                        options: OPT_DASHBOARD_RECAP_STYLE,
                         min: None,
                         max: None,
                         step: None,

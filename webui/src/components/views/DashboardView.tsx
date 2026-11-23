@@ -26,6 +26,8 @@ import type {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { DataTable } from '@/components/assistant-ui/elements/data-table'
+import { MarkerHighlight } from '@/components/aimran/marker-highlight'
+import { Stretchtext } from '@/components/aimran/stretchtext'
 import { ZenkoFoxLogo } from '@/components/beui/ZenkoFoxLogo'
 import {
   ZenkoChart,
@@ -503,6 +505,7 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
     show_faq: false,
   }
   const widgetKit = dash.widget_kit || 'echarts'
+  const recapStyle = dash.recap_style || 'motion_brew_recap'
   const showRecap = dash.show_recap_card ?? widgetKit !== 'echarts'
   const showQuota = dash.show_quota_gauges ?? widgetKit !== 'echarts'
   const showFaq = dash.show_faq ?? false
@@ -591,6 +594,42 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
             <ZenkoChart option={heatmapOpt} height={112} />
           </div>
         ))}
+
+      {showRecap && recapStyle === 'aimran_marker_highlight' && (
+        <div className="z-surface-card !p-3.5">
+          <MarkerHighlight
+            size={13}
+            mainColor="var(--accent)"
+            secondaryColor="color-mix(in srgb, var(--accent) 65%, var(--fg))"
+            segments={[
+              { text: '28.4 MB VmRSS', mark: 1 },
+              { text: ' with ' },
+              { text: '82.1% KV cache reuse', mark: 2 },
+              { text: ' across local SQLite WAL — ' },
+              { text: 'zero Node.js runtime', mark: 3 },
+              { text: '.' },
+            ]}
+          />
+        </div>
+      )}
+
+      {showRecap && recapStyle === 'aimran_stretchtext' && (
+        <div className="z-surface-card !p-3.5">
+          <Stretchtext
+            size={13}
+            kicker="Interactive Telemetry"
+            mainColor="var(--accent)"
+            secondaryColor="color-mix(in srgb, var(--accent) 30%, var(--surface))"
+            segments={[
+              { kind: 'text', text: 'Zenko runs ' },
+              { kind: 'expand', id: 'rss', trigger: 'at 28.4 MB', detail: ' (native Rust + mimalloc)' },
+              { kind: 'text', text: ' with ' },
+              { kind: 'expand', id: 'kv', trigger: '82% KV cache', detail: ' (prompt-prefix caching active)' },
+              { kind: 'text', text: '.' },
+            ]}
+          />
+        </div>
+      )}
 
       {showQuota && (
         <QuotaGauge
@@ -707,6 +746,7 @@ export function DashboardView({
     show_faq: false,
   }
   const widgetKit = dash.widget_kit || 'echarts'
+  const recapStyle = dash.recap_style || 'motion_brew_recap'
   const showRecap = dash.show_recap_card ?? widgetKit !== 'echarts'
   const showQuota = dash.show_quota_gauges ?? widgetKit !== 'echarts'
   const showFaq = dash.show_faq ?? false
@@ -1006,18 +1046,95 @@ export function DashboardView({
           })}
         </div>
 
-        {/* 0. Motion-Brew Narrative Recap Card & Runtime Quota Gauges */}
-        {showRecap && (
-          <RecapCard
-            title="Zenko runtime recap"
-            period={recapPeriod}
-            parts={recapParts}
-            badges={recapBadges}
-            actionLabel={onOpenCustomizeDashboard ? 'Customize dashboard' : null}
-            onAction={onOpenCustomizeDashboard}
-            className="zenko-mb-card w-full"
-          />
-        )}
+        {/* 0. Narrative Recap (Motion-Brew RecapCard | AIMRAN MarkerHighlight | AIMRAN Stretchtext) */}
+        {showRecap &&
+          (recapStyle === 'aimran_marker_highlight' ? (
+            <div className="z-surface-card flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+                  Zenko Runtime Recap · {recapPeriod}
+                </span>
+                {onOpenCustomizeDashboard && (
+                  <button
+                    type="button"
+                    onClick={onOpenCustomizeDashboard}
+                    className="cursor-pointer font-mono text-[10.5px] text-[var(--accent)] hover:underline"
+                  >
+                    Customize
+                  </button>
+                )}
+              </div>
+              <MarkerHighlight
+                size={15}
+                mainColor="var(--accent)"
+                secondaryColor="color-mix(in srgb, var(--accent) 65%, var(--fg))"
+                segments={[
+                  {
+                    text: `${formatCompactTokens(data?.total_tokens ?? 0)} tokens processed`,
+                    mark: 1,
+                  },
+                  {
+                    text: ` across ${data?.active_days ?? 0} active days with `,
+                  },
+                  {
+                    text: `${(activeTelemetry?.cache_hit_pct ?? 0).toFixed(1)}% KV cache hit`,
+                    mark: 2,
+                  },
+                  {
+                    text: ` and ${data?.counts.tool_calls ?? 0} tool runs inside `,
+                  },
+                  {
+                    text: `${rssMb} MB native Rust VmRSS`,
+                    mark: 3,
+                  },
+                  { text: '.' },
+                ]}
+              />
+            </div>
+          ) : recapStyle === 'aimran_stretchtext' ? (
+            <div className="z-surface-card flex flex-col gap-2">
+              <Stretchtext
+                size={15}
+                kicker={`Zenko Runtime Recap · ${recapPeriod}`}
+                mainColor="var(--accent)"
+                secondaryColor="color-mix(in srgb, var(--accent) 30%, var(--surface))"
+                segments={[
+                  { kind: 'text', text: 'Zenko processed ' },
+                  {
+                    kind: 'expand',
+                    id: 'tokens',
+                    trigger: `${formatCompactTokens(data?.total_tokens ?? 0)} tokens`,
+                    detail: ` (${formatCompactTokens(data?.total_cache_read_tokens ?? 0)} served from prompt cache)`,
+                  },
+                  { kind: 'text', text: ' over ' },
+                  {
+                    kind: 'expand',
+                    id: 'days',
+                    trigger: `${data?.active_days ?? 0} active days`,
+                    detail: ` (${data?.streak_days ?? 0}-day streak across ${data?.counts.sessions ?? 0} sessions)`,
+                  },
+                  { kind: 'text', text: ' while staying ' },
+                  {
+                    kind: 'expand',
+                    id: 'rss',
+                    trigger: `lightweight at ${rssMb} MB`,
+                    detail: ` (SQLite WAL ${totalStorage}, ${vault?.key_count ?? 0} encrypted vault keys)`,
+                  },
+                  { kind: 'text', text: '.' },
+                ]}
+              />
+            </div>
+          ) : (
+            <RecapCard
+              title="Zenko runtime recap"
+              period={recapPeriod}
+              parts={recapParts}
+              badges={recapBadges}
+              actionLabel={onOpenCustomizeDashboard ? 'Customize dashboard' : null}
+              onAction={onOpenCustomizeDashboard}
+              className="zenko-mb-card w-full"
+            />
+          ))}
 
         {showQuota && (
           <div className={cn('grid gap-5', gridTwoCol)}>

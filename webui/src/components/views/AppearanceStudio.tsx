@@ -180,6 +180,7 @@ export function AppearanceStudio({
   onConsumeInitialTarget,
   onPatchUi,
   onSelectPreset,
+  onTestToast,
   onBackToChat,
 }: {
   ui: UiCustomization
@@ -194,6 +195,7 @@ export function AppearanceStudio({
   onConsumeInitialTarget?: () => void
   onPatchUi: (mutator: (draft: UiCustomization) => void) => void
   onSelectPreset: (presetId: string, mode?: 'dark' | 'light') => void
+  onTestToast?: (msg: string, kind?: 'info' | 'success' | 'error') => void
   onBackToChat: () => void
 }) {
   const reduce = useReducedMotion() ?? false
@@ -1112,6 +1114,7 @@ export function AppearanceStudio({
                     setPreviewTab,
                     previewAlertOpen,
                     setPreviewAlertOpen,
+                    onTestToast,
                   })}
                 </motion.div>
               </AnimatePresence>

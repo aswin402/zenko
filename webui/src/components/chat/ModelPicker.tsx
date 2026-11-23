@@ -24,6 +24,24 @@ function formatModelPrice(m: ModelInfo): string {
   return `$${m.prompt_price_per_m.toFixed(m.prompt_price_per_m < 1 ? 2 : 1)}/M`
 }
 
+type ModelTriggerChrome =
+  | 'bordered_filled'
+  | 'border_only'
+  | 'background_only'
+  | 'accent_tint'
+  | 'minimal_bare'
+
+const MODEL_TRIGGER_CHROME_CLASS: Record<Exclude<ModelTriggerChrome, 'bordered_filled'>, string> = {
+  border_only:
+    'border border-[var(--border)] bg-transparent text-[var(--fg)]/90 hover:border-[var(--accent)]/50',
+  background_only:
+    'border border-transparent bg-[var(--card)] text-[var(--fg)]/90 hover:bg-[var(--card)]/80',
+  accent_tint:
+    'border border-[var(--accent)]/38 bg-[color-mix(in_srgb,var(--accent)_11%,transparent)] text-[var(--fg)] hover:border-[var(--accent)]/65',
+  minimal_bare:
+    'border border-transparent bg-transparent text-[var(--fg)]/88 hover:text-[var(--fg)]',
+}
+
 interface ModelPickerProps {
   activeProvider: string
   activeModel: string
@@ -31,6 +49,7 @@ interface ModelPickerProps {
   configuredProviders: Record<string, boolean>
   activeModels: ModelInfo[]
   pickerStyle: 'drilldown' | 'split_pane' | 'compact_inline' | 'rareui_picker'
+  triggerChrome?: ModelTriggerChrome
   pillClass: string
   open: boolean
   onOpenChange: (next: boolean) => void
@@ -50,6 +69,7 @@ export function ModelPicker({
   configuredProviders,
   activeModels,
   pickerStyle,
+  triggerChrome = 'bordered_filled',
   pillClass,
   open,
   onOpenChange,
@@ -57,6 +77,10 @@ export function ModelPicker({
   onOpenSettings,
   inlinePreview = false,
 }: ModelPickerProps) {
+  const effectiveTriggerClass =
+    triggerChrome === 'bordered_filled'
+      ? pillClass
+      : MODEL_TRIGGER_CHROME_CLASS[triggerChrome] || pillClass
   const containerRef = useRef<HTMLDivElement>(null)
   const [step, setStep] = useState<'providers' | 'models'>('providers')
   const [browsingProvider, setBrowsingProvider] = useState<string>(activeProvider)
@@ -482,7 +506,7 @@ export function ModelPicker({
             onSelectProviderModel(browsingProvider || activeProvider, nextModelId)
           }
           searchable
-          triggerClassName={cn('h-7 rounded-full px-2.5 text-[12px]', pillClass)}
+          triggerClassName={cn('h-7 rounded-full px-2.5 text-[12px]', effectiveTriggerClass)}
           headerSlot={providerSwitcher}
         />
       </div>
@@ -543,44 +567,53 @@ export function ModelPicker({
     </div>
   )
 
+  const triggerPillButton = (
+    <button
+      type="button"
+      onClick={() => !inlinePreview && onOpenChange(!open)}
+      className={cn(
+        'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[12px] transition-colors',
+        effectiveTriggerClass,
+      )}
+    >
+      <Cpu size={12.5} style={{ color: 'var(--accent)' }} />
+      {activeDesc && (
+        <span className="hidden text-[11px] text-[var(--muted)] sm:inline">
+          {activeDesc.label}
+        </span>
+      )}
+      {activeDesc && <span className="hidden text-[var(--border)] sm:inline">/</span>}
+      <span className="max-w-[155px] truncate font-medium text-[var(--fg)]">{shortModel}</span>
+      {activeMeta?.is_free && (
+        <span
+          className="rounded px-1 font-mono text-[9.5px] font-semibold"
+          style={{
+            color: 'var(--accent)',
+            backgroundColor: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+          }}
+        >
+          FREE
+        </span>
+      )}
+      <ChevronDown
+        size={12}
+        className={cn('text-[var(--muted)] transition-transform', open && 'rotate-180')}
+      />
+    </button>
+  )
+
   if (inlinePreview) {
-    return <div className="inline-block">{popoverBody}</div>
+    return (
+      <div className="inline-flex flex-col items-start gap-2.5">
+        {triggerPillButton}
+        {popoverBody}
+      </div>
+    )
   }
 
   return (
     <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        className={cn(
-          'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[12px] transition-colors',
-          pillClass,
-        )}
-      >
-        <Cpu size={12.5} style={{ color: 'var(--accent)' }} />
-        {activeDesc && (
-          <span className="hidden text-[11px] text-[var(--muted)] sm:inline">
-            {activeDesc.label}
-          </span>
-        )}
-        {activeDesc && <span className="hidden text-[var(--border)] sm:inline">/</span>}
-        <span className="max-w-[155px] truncate font-medium text-[var(--fg)]">{shortModel}</span>
-        {activeMeta?.is_free && (
-          <span
-            className="rounded px-1 font-mono text-[9.5px] font-semibold"
-            style={{
-              color: 'var(--accent)',
-              backgroundColor: 'color-mix(in srgb, var(--accent) 14%, transparent)',
-            }}
-          >
-            FREE
-          </span>
-        )}
-        <ChevronDown
-          size={12}
-          className={cn('text-[var(--muted)] transition-transform', open && 'rotate-180')}
-        />
-      </button>
+      {triggerPillButton}
 
       <AnimatePresence>
         {open && (

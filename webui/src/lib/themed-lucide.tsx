@@ -28,6 +28,7 @@ import BookOpenTextRaw from 'lucide-react/dist/esm/icons/book-open-text.js'
 import BotRaw from 'lucide-react/dist/esm/icons/bot.js'
 import BracesRaw from 'lucide-react/dist/esm/icons/braces.js'
 import BrainRaw from 'lucide-react/dist/esm/icons/brain.js'
+import CalendarCheckRaw from 'lucide-react/dist/esm/icons/calendar-check.js'
 import CheckRaw from 'lucide-react/dist/esm/icons/check.js'
 import ChevronDownRaw from 'lucide-react/dist/esm/icons/chevron-down.js'
 import ChevronLeftRaw from 'lucide-react/dist/esm/icons/chevron-left.js'
@@ -47,6 +48,7 @@ import EllipsisRaw from 'lucide-react/dist/esm/icons/ellipsis.js'
 import ExternalLinkRaw from 'lucide-react/dist/esm/icons/external-link.js'
 import FileCodeRaw from 'lucide-react/dist/esm/icons/file-code.js'
 import FileCode2Raw from 'lucide-react/dist/esm/icons/file-code-2.js'
+import FilePenRaw from 'lucide-react/dist/esm/icons/file-pen.js'
 import FileRaw from 'lucide-react/dist/esm/icons/file.js'
 import FileTextRaw from 'lucide-react/dist/esm/icons/file-text.js'
 import FolderRaw from 'lucide-react/dist/esm/icons/folder.js'
@@ -98,6 +100,7 @@ import ThumbsUpRaw from 'lucide-react/dist/esm/icons/thumbs-up.js'
 import Trash2Raw from 'lucide-react/dist/esm/icons/trash-2.js'
 import TriangleAlertRaw from 'lucide-react/dist/esm/icons/triangle-alert.js'
 import TypeRaw from 'lucide-react/dist/esm/icons/type.js'
+import Undo2Raw from 'lucide-react/dist/esm/icons/undo-2.js'
 import UploadRaw from 'lucide-react/dist/esm/icons/upload.js'
 import UserRaw from 'lucide-react/dist/esm/icons/user.js'
 import WrenchRaw from 'lucide-react/dist/esm/icons/wrench.js'
@@ -173,6 +176,7 @@ export const BookOpenText = createThemedIcon('memory', BookOpenTextRaw)
 export const Bot = createThemedIcon('bot', BotRaw)
 export const Braces = createThemedIcon('braces', BracesRaw)
 export const BrainIcon = createThemedIcon('brain', BrainRaw)
+export const CalendarCheck = createThemedIcon('calendar', CalendarCheckRaw)
 export const Check = createThemedIcon('check', CheckRaw)
 export const CheckIcon = Check
 export const CheckCircle2 = createThemedIcon('checkCircle', CircleCheckRaw)
@@ -198,6 +202,7 @@ export const EllipsisIcon = createThemedIcon('ellipsis', EllipsisRaw)
 export const ExternalLink = createThemedIcon('externalLink', ExternalLinkRaw)
 export const FileCode = createThemedIcon('fileCode', FileCodeRaw)
 export const FileCode2 = createThemedIcon('fileCode', FileCode2Raw)
+export const FilePen = createThemedIcon('edit', FilePenRaw)
 export const FileIcon = createThemedIcon('file', FileRaw)
 export const FileText = createThemedIcon('fileText', FileTextRaw)
 export const FolderIcon = createThemedIcon('folder', FolderRaw)
@@ -254,6 +259,7 @@ export const ThumbsUp = createThemedIcon('thumbsUp', ThumbsUpRaw)
 export const ThumbsUpIcon = ThumbsUp
 export const Trash2 = createThemedIcon('trash', Trash2Raw)
 export const Type = createThemedIcon('type', TypeRaw)
+export const Undo2 = createThemedIcon('rotateCcw', Undo2Raw)
 export const Upload = createThemedIcon('upload', UploadRaw)
 export const User = createThemedIcon('user', UserRaw)
 export const Wrench = createThemedIcon('wrench', WrenchRaw)

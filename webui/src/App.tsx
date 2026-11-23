@@ -37,6 +37,7 @@ import type {
   WebSearchProviderDescriptor,
   WorkspaceCheckpoint,
 } from '@/lib/types'
+import { cn } from '@/lib/utils'
 import { FloatingDock } from '@/components/beui/FloatingDock'
 import { ZenkoIconProvider } from '@/components/beui/ZenkoIcon'
 import {
@@ -98,6 +99,18 @@ interface ToastItem {
   id: number
   message: string
   kind: 'info' | 'success' | 'error'
+}
+
+const TOAST_POSITION_STACK_CLASS: Record<
+  NonNullable<UiCustomization['surface']['toast_position']>,
+  string
+> = {
+  top_center: 'top-4 left-1/2 -translate-x-1/2 items-center',
+  top_right: 'top-4 right-5 items-end',
+  top_left: 'top-4 left-5 items-start',
+  bottom_center: 'bottom-5 left-1/2 -translate-x-1/2 items-center',
+  bottom_right: 'bottom-5 right-5 items-end',
+  bottom_left: 'bottom-5 left-5 items-start',
 }
 
 const COMMAND_PALETTE_VIEWS: ReadonlyArray<[ActiveView, string]> = [
@@ -1262,6 +1275,7 @@ export default function App() {
             onConsumeInitialTarget={() => setStudioJumpTarget(null)}
             onPatchUi={patchUi}
             onSelectPreset={selectPreset}
+            onTestToast={toast}
             onBackToChat={() => setActiveView('chat')}
           />
         )}
@@ -1269,6 +1283,7 @@ export default function App() {
         {activeView === 'gateways' && (
           <GatewaysView
             toast={toast}
+            tabsVariant={ui.surface.tabs_variant || 'pill'}
             smoothScroll={ui.motion.smooth_scroll !== false}
           />
         )}
@@ -1498,6 +1513,7 @@ export default function App() {
           activeSessionId={activeSessionId}
           isSessionRunning={isRunning}
           popoverStyle={ui.surface.popover_style || 'gooey'}
+          tabsVariant={ui.surface.tabs_variant || 'pill'}
           onStopJob={async (jobId) => {
             try {
               await api(`/api/jobs/${encodeURIComponent(jobId)}/stop`, { method: 'POST' })
@@ -1840,64 +1856,155 @@ export default function App() {
         </CenterMorphModalContent>
       </CenterMorphModal>
 
-      {/* Toast Stack powered by EaseUI Swipe Toaster or BeUI Alert */}
+      {/* Toast Stack powered by EaseUI Swipe Toaster or customizable Zenko Toasts (default: Top Center) */}
       {ui.surface.toast_style === 'easeui_toast' ? (
-        <EaseToaster />
+        <EaseToaster position={ui.surface.toast_position || 'top_center'} />
       ) : (
-        <div className="pointer-events-none fixed bottom-5 right-5 z-50 flex w-80 max-w-[90vw] flex-col gap-2">
-          <AnimatePresence>
-            {toasts.map((t) =>
-              ui.surface.alert_style === 'easeui_alert' ? (
-                <EaseAlert
-                  key={t.id}
-                  variant={
+        (() => {
+          const toastPos = ui.surface.toast_position || 'top_center'
+          const toastStyle = ui.surface.toast_style || 'default'
+          const isTop = toastPos.startsWith('top_')
+          const posClass = TOAST_POSITION_STACK_CLASS[toastPos] || TOAST_POSITION_STACK_CLASS.top_center
+          const yOffset = isTop ? -10 : 10
+          return (
+            <div
+              className={cn(
+                'pointer-events-none fixed z-[400] flex w-80 max-w-[92vw] flex-col gap-2',
+                posClass,
+              )}
+            >
+              <AnimatePresence>
+                {toasts.map((t) => {
+                  const accentColor =
                     t.kind === 'error'
-                      ? 'destructive'
+                      ? 'var(--destructive)'
                       : t.kind === 'success'
-                        ? 'success'
-                        : 'neutral'
+                        ? 'var(--success)'
+                        : 'var(--accent)'
+
+                  if (toastStyle === 'minimal_pill') {
+                    return (
+                      <motion.div
+                        key={t.id}
+                        initial={{ opacity: 0, y: yOffset, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: yOffset, scale: 0.96 }}
+                        className="pointer-events-auto inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)]/95 px-4 py-2 text-[12.5px] text-[var(--fg)] shadow-xl backdrop-blur-md"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: accentColor }}
+                        />
+                        <span className="truncate">{t.message}</span>
+                      </motion.div>
+                    )
                   }
-                  className="pointer-events-auto bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
-                >
-                  <EaseAlertDescription className="mt-0 text-[12.5px] text-[var(--fg)]">
-                    {t.message}
-                  </EaseAlertDescription>
-                </EaseAlert>
-              ) : ui.surface.alert_style !== 'compact' ? (
-                <Alert
-                  key={t.id}
-                  variant={t.kind === 'error' ? 'destructive' : t.kind === 'success' ? 'success' : 'info'}
-                  className="pointer-events-auto bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
-                >
-                  <AlertIcon />
-                  <AlertContent>
-                    <AlertDescription className="text-[12.5px] text-[var(--fg)]">
+
+                  if (toastStyle === 'accent_bar') {
+                    return (
+                      <motion.div
+                        key={t.id}
+                        initial={{ opacity: 0, y: yOffset }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: yOffset }}
+                        className="pointer-events-auto w-full rounded-[var(--radius)] border border-[var(--border)] border-l-[3px] bg-[var(--surface)]/96 px-3.5 py-2.5 text-[12.5px] text-[var(--fg)] shadow-xl backdrop-blur-md"
+                        style={{ borderLeftColor: accentColor }}
+                      >
+                        {t.message}
+                      </motion.div>
+                    )
+                  }
+
+                  if (toastStyle === 'glass_toast') {
+                    return (
+                      <motion.div
+                        key={t.id}
+                        initial={{ opacity: 0, y: yOffset, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: yOffset, scale: 0.97 }}
+                        className="pointer-events-auto flex w-full items-center gap-2.5 rounded-[var(--radius-lg)] border bg-[var(--surface)]/70 px-4 py-2.5 text-[12.5px] text-[var(--fg)] shadow-[0_14px_36px_rgba(0,0,0,0.34)] backdrop-blur-xl"
+                        style={{
+                          borderColor: `color-mix(in srgb, ${accentColor} 38%, var(--border))`,
+                        }}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: accentColor }}
+                        />
+                        <span className="min-w-0 flex-1">{t.message}</span>
+                      </motion.div>
+                    )
+                  }
+
+                  if (ui.surface.alert_style === 'easeui_alert') {
+                    return (
+                      <EaseAlert
+                        key={t.id}
+                        variant={
+                          t.kind === 'error'
+                            ? 'destructive'
+                            : t.kind === 'success'
+                              ? 'success'
+                              : 'neutral'
+                        }
+                        className="pointer-events-auto w-full bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
+                      >
+                        <EaseAlertDescription className="mt-0 text-[12.5px] text-[var(--fg)]">
+                          {t.message}
+                        </EaseAlertDescription>
+                      </EaseAlert>
+                    )
+                  }
+
+                  if (ui.surface.alert_style !== 'compact') {
+                    return (
+                      <Alert
+                        key={t.id}
+                        variant={
+                          t.kind === 'error'
+                            ? 'destructive'
+                            : t.kind === 'success'
+                              ? 'success'
+                              : 'info'
+                        }
+                        className="pointer-events-auto w-full bg-[var(--surface)]/95 px-3.5 py-2.5 text-[12.5px] shadow-xl backdrop-blur-md"
+                      >
+                        <AlertIcon />
+                        <AlertContent>
+                          <AlertDescription className="text-[12.5px] text-[var(--fg)]">
+                            {t.message}
+                          </AlertDescription>
+                        </AlertContent>
+                      </Alert>
+                    )
+                  }
+
+                  return (
+                    <motion.div
+                      key={t.id}
+                      initial={{ opacity: 0, y: yOffset }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: yOffset }}
+                      className="pointer-events-auto w-full rounded-xl border bg-[var(--surface)] px-3.5 py-2 text-[12.5px] shadow-xl"
+                      style={{
+                        borderColor:
+                          t.kind === 'error'
+                            ? 'var(--destructive)'
+                            : t.kind === 'success'
+                              ? 'color-mix(in srgb, var(--accent) 52%, var(--border))'
+                              : 'var(--border)',
+                      }}
+                    >
                       {t.message}
-                    </AlertDescription>
-                  </AlertContent>
-                </Alert>
-              ) : (
-                <motion.div
-                  key={t.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 8 }}
-                  className="pointer-events-auto rounded-xl border bg-[var(--surface)] px-3.5 py-2 text-[12.5px] shadow-xl"
-                  style={{
-                    borderColor:
-                      t.kind === 'error'
-                        ? 'var(--destructive)'
-                        : t.kind === 'success'
-                          ? 'color-mix(in srgb, var(--accent) 52%, var(--border))'
-                          : 'var(--border)',
-                  }}
-                >
-                  {t.message}
-                </motion.div>
-              ),
-            )}
-          </AnimatePresence>
-        </div>
+                    </motion.div>
+                  )
+                })}
+              </AnimatePresence>
+            </div>
+          )
+        })()
       )}
     </div>
     </ZenkoTooltipProvider>

@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils'
 import { ProgressRing } from '@/components/beui/ProgressRing'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { KokonutContextMeter } from '@/components/kokonutui/ai-context-meter'
 import { PromptInput as MotionBrewPromptInput } from '@/components/motion-brew/prompt-input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/motion/popover'
 import AIContextMeter, {
@@ -259,6 +260,7 @@ export const PromptComposer = memo(function PromptComposer({
         configuredProviders={configuredProviders}
         activeModels={models}
         pickerStyle={composerStyle.model_picker_style}
+        triggerChrome={composerStyle.model_trigger_chrome}
         pillClass={pillClass}
         open={modelOpen}
         onOpenChange={(next) => {
@@ -424,7 +426,30 @@ export const PromptComposer = memo(function PromptComposer({
     </ZenkoTooltip>
   )
 
-  const contextMeterControl = composerStyle.context_meter !== 'hidden' && (
+  const kokonutSegments = contextData
+    ? [
+        { id: 'tier1', label: 'Tier 1 (KV frozen)', tokens: contextData.tier1_tokens },
+        { id: 'tier2', label: 'Tier 2 (Memory/Skills)', tokens: contextData.tier2_tokens },
+        { id: 'tools', label: 'Tool Schemas', tokens: contextData.tool_schema_tokens },
+        { id: 'history', label: 'Active History', tokens: contextData.history_tokens },
+      ]
+    : [
+        { id: 'used', label: 'Session Used', tokens: totalTokens },
+      ]
+
+  const contextMeterControl =
+    composerStyle.context_meter === 'hidden' ? null : composerStyle.context_meter ===
+      'kokonut_meter' ? (
+      <div className="hidden sm:inline-flex">
+        <KokonutContextMeter
+          compact
+          chrome={meterChrome}
+          segments={kokonutSegments}
+          limit={contextLimit ?? 128000}
+          model={activeModel}
+        />
+      </div>
+    ) : (
     <ZenkoTooltip
       label="Inspect live context & KV-cache breakdown"
       side="top"

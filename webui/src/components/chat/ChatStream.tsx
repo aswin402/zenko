@@ -40,16 +40,21 @@ import type {
 import { safeHref } from '@/components/assistant-ui/utils/href'
 import { cn } from '@/lib/utils'
 import type { AgentActivityItem } from '@/components/agents/agent-activity'
-import { Citations } from '@/components/agents/citations'
 import { MessageScroller } from '@/components/agents/message-scroller'
 import { StreamingResponse } from '@/components/agents/streaming-response'
+import { Stretchtext } from '@/components/aimran/stretchtext'
 import {
   Alert as EaseAlert,
   AlertDescription as EaseAlertDescription,
   AlertTitle as EaseAlertTitle,
 } from '@/components/easeui/alert'
+import { MessageBubble as EaseMessageBubble } from '@/components/easeui/message-bubble'
 import { StreamingResponse as EaseStreamingResponse } from '@/components/easeui/streaming-response'
 import { StreamingResponse as RareStreamingResponse } from '@/components/rareui/streaming-response'
+import {
+  LineHoverLink,
+  type LineHoverVariant,
+} from '@/components/vengeanceui/line-hover-link'
 import { AgentDisclosure } from '@/components/beui/AgentDisclosure'
 import { AgentAvatar, UserAvatar } from '@/components/beui/ZenkoAvatars'
 import {
@@ -71,6 +76,7 @@ import {
   ActivityDisplay,
   ApprovalElement,
   AssistantMessageFooter,
+  CitationsDisplay,
   LoadingStatusBar,
   MarkdownCodeBlock,
   MarkdownDataTable,
@@ -85,13 +91,35 @@ const CHAT_WIDTH_CLASS: Record<ComponentSlots['chat_page']['content_width'], str
   full: 'max-w-none',
 }
 
-const USER_BUBBLE_CLASS: Record<ComponentSlots['chat_page']['user_bubble'], string> = {
-  soft_card: 'rounded-[15px] border border-[var(--border)] bg-[var(--card)] px-4 py-2.5 text-[var(--fg)]',
+export const USER_BUBBLE_CLASS: Record<ComponentSlots['chat_page']['user_bubble'], string> = {
+  soft_card:
+    'rounded-[15px] border border-[var(--border)] bg-[var(--card)] px-4 py-2.5 text-[var(--fg)]',
+  easeui_bubble: '',
   accent_tint:
     'rounded-[15px] border border-[var(--accent)]/35 bg-[var(--accent)]/12 px-4 py-2.5 text-[var(--fg)]',
+  solid_accent:
+    'rounded-[15px] border border-transparent bg-[var(--accent)] px-4 py-2.5 text-[var(--primary-fg)]',
   minimal_border:
     'rounded-[14px] border border-[var(--border)] bg-transparent px-4 py-2.5 text-[var(--fg)]',
+  background_only:
+    'rounded-[15px] border border-transparent bg-[var(--card)] px-4 py-2.5 text-[var(--fg)]',
+  borderless_minimal: 'border-0 bg-transparent px-1 py-1 text-[var(--fg)]',
   pill: 'rounded-3xl border border-[var(--border)] bg-[var(--card)] px-5 py-2.5 text-[var(--fg)]',
+}
+
+export const MODEL_BADGE_CLASS: Record<
+  Exclude<NonNullable<ComponentSlots['chat_page']['model_badge_style']>, 'hidden'>,
+  string
+> = {
+  bordered_chip:
+    'rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]',
+  border_only:
+    'rounded-md border border-[var(--border)] bg-transparent px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]',
+  soft_fill:
+    'rounded-md border border-transparent bg-[var(--card)] px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]',
+  accent_tint:
+    'rounded-md border border-[var(--accent)]/35 bg-[color-mix(in_srgb,var(--accent)_11%,transparent)] px-2 py-0.5 font-mono text-[11px] text-[var(--accent)]',
+  minimal_text: 'px-0.5 py-0.5 font-mono text-[11px] text-[var(--muted)]',
 }
 
 interface WelcomeStarter {
@@ -368,10 +396,12 @@ const MarkdownProse = memo(function MarkdownProse({
   text,
   codeBlockStyle = 'aui_code_runner',
   tableStyle,
+  linkHoverStyle = 'zenko_underline',
 }: {
   text: string
   codeBlockStyle?: ComponentSlots['chat_page']['code_block_style']
   tableStyle?: UiCustomization['surface']['table_style']
+  linkHoverStyle?: UiCustomization['surface']['link_hover_style']
 }) {
   const markdownComponents = useMemo(
     () => ({
@@ -400,6 +430,19 @@ const MarkdownProse = memo(function MarkdownProse({
         if (!validated) {
           return <span className="zenko-prose-link">{children}</span>
         }
+        if (linkHoverStyle && linkHoverStyle !== 'zenko_underline') {
+          return (
+            <LineHoverLink
+              {...props}
+              variant={linkHoverStyle as LineHoverVariant}
+              href={validated}
+              target={isExternal ? '_blank' : undefined}
+              rel={isExternal ? 'noopener noreferrer' : undefined}
+            >
+              {children}
+            </LineHoverLink>
+          )
+        }
         return (
           <a
             {...props}
@@ -416,7 +459,7 @@ const MarkdownProse = memo(function MarkdownProse({
         )
       },
     }),
-    [codeBlockStyle, tableStyle],
+    [codeBlockStyle, tableStyle, linkHoverStyle],
   )
 
   return (
@@ -594,12 +637,19 @@ const AssistantTurnView = memo(function AssistantTurnView({
             'rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 p-4',
         )}
       >
-        {/* Meta row: Zenko + model pill + quiet time */}
+        {/* Meta row: Zenko + customizable model badge + quiet time */}
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px]">
           <span className="font-medium text-[var(--fg)]/85">Zenko</span>
-          <span className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]">
-            {shortModel}
-          </span>
+          {chatSlot.model_badge_style !== 'hidden' && (
+            <span
+              className={
+                MODEL_BADGE_CLASS[chatSlot.model_badge_style || 'bordered_chip'] ||
+                MODEL_BADGE_CLASS.bordered_chip
+              }
+            >
+              {shortModel}
+            </span>
+          )}
           {ui.widgets.show_timestamps && (
             <span className="text-[11.5px] text-[var(--muted)]/75">
               {formatTimeShort(group.timestamp)}
@@ -618,7 +668,45 @@ const AssistantTurnView = memo(function AssistantTurnView({
         {/* Auto-Collapsed Completed Steps: Thought for Xs + Agent Activity + Smart Tool Elements */}
         {stepCount > 0 && chatSlot.thinking_style !== 'hidden' && (
           <div className="mb-3 flex flex-col gap-2">
-            {chatSlot.thinking_style === 'inline_quote' && hasThinking && group.tools.length === 0 ? (
+            {chatSlot.thinking_style === 'aimran_stretchtext' ? (
+              <div className="rounded-[var(--radius)] border border-[var(--border)]/75 bg-[var(--surface)]/65 px-3.5 py-2.5">
+                <Stretchtext
+                  size={13}
+                  kicker={completedSummaryText}
+                  mainColor="var(--accent)"
+                  secondaryColor="color-mix(in srgb, var(--accent) 30%, var(--surface))"
+                  toggleLabel="Expand all"
+                  collapseLabel="Collapse"
+                  segments={[
+                    { kind: 'text', text: 'Zenko completed ' },
+                    ...(hasThinking
+                      ? [
+                          {
+                            kind: 'expand' as const,
+                            id: 'reasoning',
+                            trigger: thoughtLabel ? `reasoning (${thoughtLabel})` : 'reasoning',
+                            detail: ` — ${group.thinking.slice(0, 360)}`,
+                          },
+                          ...(group.tools.length > 0
+                            ? [{ kind: 'text' as const, text: ' and ' }]
+                            : []),
+                        ]
+                      : []),
+                    ...(group.tools.length > 0
+                      ? [
+                          {
+                            kind: 'expand' as const,
+                            id: 'tools',
+                            trigger: `${group.tools.length} ${group.tools.length === 1 ? 'tool call' : 'tool calls'}`,
+                            detail: ` (${group.tools.map((t) => `${t.name} ${t.duration_ms}ms`).join(', ')})`,
+                          },
+                        ]
+                      : []),
+                    { kind: 'text', text: '.' },
+                  ]}
+                />
+              </div>
+            ) : chatSlot.thinking_style === 'inline_quote' && hasThinking && group.tools.length === 0 ? (
               <div className="border-l-2 border-[var(--accent)]/45 pl-3 font-mono text-[11.5px] whitespace-pre-wrap text-[var(--muted)]">
                 {group.thinking}
               </div>
@@ -712,11 +800,12 @@ const AssistantTurnView = memo(function AssistantTurnView({
                   text={group.text}
                   codeBlockStyle={codeBlockStyle}
                   tableStyle={ui.surface.table_style}
+                  linkHoverStyle={ui.surface.link_hover_style}
                 />
               </EaseStreamingResponse>
               {(citations.length > 0 || tokenMetaNode) && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
-                  {citations.length > 0 && <Citations citations={citations} className="w-auto" />}
+                  <CitationsDisplay citations={citations} style={chatSlot.citations_style} />
                   {tokenMetaNode}
                 </div>
               )}
@@ -728,11 +817,12 @@ const AssistantTurnView = memo(function AssistantTurnView({
                 status="done"
                 ink="var(--accent)"
                 actions={true}
+                linkHoverStyle={ui.surface.link_hover_style}
                 onRetry={handleRegenerate}
               />
               {(citations.length > 0 || tokenMetaNode) && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
-                  {citations.length > 0 && <Citations citations={citations} className="w-auto" />}
+                  <CitationsDisplay citations={citations} style={chatSlot.citations_style} />
                   {tokenMetaNode}
                 </div>
               )}
@@ -751,6 +841,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
                 text={group.text}
                 codeBlockStyle={codeBlockStyle}
                 tableStyle={ui.surface.table_style}
+                linkHoverStyle={ui.surface.link_hover_style}
               />
             </StreamingResponse>
           ) : (
@@ -759,9 +850,11 @@ const AssistantTurnView = memo(function AssistantTurnView({
                 text={group.text}
                 codeBlockStyle={codeBlockStyle}
                 tableStyle={ui.surface.table_style}
+                linkHoverStyle={ui.surface.link_hover_style}
               />
               <AssistantMessageFooter
                 style={actionsStyle}
+                citationsStyle={chatSlot.citations_style}
                 text={group.text}
                 citations={citations}
                 tokenMeta={tokenMetaNode}
@@ -1261,9 +1354,16 @@ function LiveAssistantTurn({
         {/* Single Unified Zenko Header */}
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px]">
           <span className="font-medium text-[var(--fg)]/85">Zenko</span>
-          <span className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]">
-            {shortModel}
-          </span>
+          {chatSlot.model_badge_style !== 'hidden' && (
+            <span
+              className={
+                MODEL_BADGE_CLASS[chatSlot.model_badge_style || 'bordered_chip'] ||
+                MODEL_BADGE_CLASS.bordered_chip
+              }
+            >
+              {shortModel}
+            </span>
+          )}
           {liveOrchestrator && (
             <span className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
               {liveOrchestrator.tier} · {liveOrchestrator.stage}
@@ -1376,6 +1476,7 @@ function LiveAssistantTurn({
                 text={mergedText}
                 codeBlockStyle={chatSlot.code_block_style || 'aui_code_runner'}
                 tableStyle={ui.surface.table_style}
+                linkHoverStyle={ui.surface.link_hover_style}
               />
             </EaseStreamingResponse>
           ) : chatSlot.streaming_style === 'rareui_stream' ? (
@@ -1384,6 +1485,7 @@ function LiveAssistantTurn({
               status={isRunning ? 'streaming' : 'done'}
               ink="var(--accent)"
               actions={false}
+              linkHoverStyle={ui.surface.link_hover_style}
             />
           ) : chatSlot.streaming_style === 'beui_stream' ? (
             <StreamingResponse status="streaming" announce={false} showActions={false}>
@@ -1391,6 +1493,7 @@ function LiveAssistantTurn({
                 text={mergedText}
                 codeBlockStyle={chatSlot.code_block_style || 'aui_code_runner'}
                 tableStyle={ui.surface.table_style}
+                linkHoverStyle={ui.surface.link_hover_style}
               />
             </StreamingResponse>
           ) : (
@@ -1398,6 +1501,7 @@ function LiveAssistantTurn({
               text={mergedText}
               codeBlockStyle={chatSlot.code_block_style || 'aui_code_runner'}
               tableStyle={ui.surface.table_style}
+              linkHoverStyle={ui.surface.link_hover_style}
             />
           ))}
       </div>
@@ -1692,12 +1796,18 @@ export function ChatStream({
                     )}
                   </div>
                   <div className="flex max-w-[82%] items-start gap-2.5">
-                    <div
-                      data-slot="message-bubble-content"
-                      className={cn('text-[14.5px] leading-relaxed whitespace-pre-wrap', userBubbleClass)}
-                    >
-                      {text}
-                    </div>
+                    {chatSlot.user_bubble === 'easeui_bubble' ? (
+                      <EaseMessageBubble align="end" tone="neutral" className="whitespace-pre-wrap">
+                        {text}
+                      </EaseMessageBubble>
+                    ) : (
+                      <div
+                        data-slot="message-bubble-content"
+                        className={cn('text-[14.5px] leading-relaxed whitespace-pre-wrap', userBubbleClass)}
+                      >
+                        {text}
+                      </div>
+                    )}
                     {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
                       <div className="mt-0.5 shrink-0">
                         <UserAvatar

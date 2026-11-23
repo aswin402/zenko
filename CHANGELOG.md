@@ -4,6 +4,28 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2026-11-24
+
+Expanded Theme Studio customization with configurable Toast styles & 6-position placement (defaulting to Top Center), assistant model badge, composer model trigger pill, and user message bubble chrome controls, plus AIMRAN Library microinteractions, KokonutUI AI components, SkecherUI Gooey Tooltips, VengeanceUI Line Hover Links, EaseUI Message Bubbles, Responsive Glass Sidebar, and Skiper96 tabs across every tabbed panel.
+
+### Added
+- **Toast Customization & Placement (`surface.toast_style`, `surface.toast_position`, `App.tsx`, `easeui/toast.tsx`, `StudioPreviews.tsx`):**
+  - Added dedicated **Toasts & Notifications** page in Appearance Studio with 5 toast styles (`default`, `easeui_toast`, `minimal_pill`, `accent_bar`, `glass_toast`), 6 viewport placements (`top_center` default, `top_right`, `top_left`, `bottom_center`, `bottom_right`, `bottom_left`), visual anchor preview, and interactive Test Info / Success / Error triggers.
+- **Chat Header Model Badge, Composer Model Trigger & User Bubble Customization (`ChatStream.tsx`, `ModelPicker.tsx`, `easeui/message-bubble.tsx`):**
+  - Added `components.chat_page.model_badge_style` (`bordered_chip`, `border_only`, `soft_fill`, `accent_tint`, `minimal_text`, `hidden`) for customizing the model pill beside the Zenko assistant header.
+  - Added `components.composer.model_trigger_chrome` (`bordered_filled`, `border_only`, `background_only`, `accent_tint`, `minimal_bare`) for customizing the composer provider/model trigger pill.
+  - Expanded `components.chat_page.user_bubble` with **EaseUI Message Bubble** (`easeui_bubble`), **Solid Accent**, **Background Only**, and **Minimal Borderless** options.
+- **AIMRAN Library Microinteractions (`webui/src/components/aimran/{copy-command,stretchtext,marker-highlight}.tsx`):**
+  - Added `CopyCommand` (selection highlight sweep + self-drawing check icon, wired into `shell_style` and `code_block_style` as `aimran_copy_cmd`), `Stretchtext` (inline expanding text with no popups, wired into `thinking_style` and `dashboard.recap_style`), and `MarkerHighlight` (organic hand-drawn highlighter strokes, wired into `dashboard.recap_style`).
+- **KokonutUI AI Component Suite (`webui/src/components/kokonutui/ai-{diff-review,citations,context-meter,tool-calls,tool-approval,loading}.tsx`):**
+  - Added `kokonut_diff` (split/unified diff review with line numbers), `kokonut_citations` (`components.chat_page.citations_style`), `kokonut_meter` (live token breakdown context meter), `kokonut_tool_calls` (animated collapsible tool steps), `kokonut_approval` (permission card with Hold-to-Allow safeguard for dangerous tools), and `kokonut_loading` (wave spinner status indicator).
+- **SkecherUI Gooey Tooltip, VengeanceUI Line Hover Link & Responsive Glass Sidebar (`skecherui/gooey-tooltip.tsx`, `vengeanceui/line-hover-link.tsx`, `ui/responsive-sidebar.tsx`):**
+  - Added `surface.tooltip_style = "skecher_gooey"` spring-animated tooltip with subtle trailing arrow.
+  - Added `surface.link_hover_style` across 9 animated link hover variants (`zenko_underline`, `slide`, `double`, `grow`, `fade`, `swap`, `sweep`, `arc`, `scribble`) in markdown prose and RareUI streaming responses.
+  - Added `left_menubar.frame_style = "responsive_sidebar"` frosted glass collapsible sidebar with full keyboard navigation (`Enter`, `Space`, `Tab`, `Escape`) and slim theme scrollbar.
+- **Skiper96 Tabs Everywhere (`SetupView.tsx`, `GatewaysView.tsx`, `FloatingActivityMonitor.tsx`):**
+  - Extended `<Tabs variant={tabsVariant}>` (including `skiper96`) to Setup, Gateways, and the Floating Activity Monitor so tabbed views inherit the active global tab style everywhere.
+
 ## [0.0.9] - 2026-11-23
 
 Fixed Motion-Brew, VengeanceUI, SmoothUI, RareUI, EaseUI, and Skiper96 Theme Studio customization gaps so every component obeys Zenko's global 60/30/10 theme, slim theme scrollbar, corner radius, surface styles, and slot controls.

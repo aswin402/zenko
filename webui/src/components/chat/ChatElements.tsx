@@ -40,6 +40,15 @@ import { CodeBlock as EaseCodeBlock } from '@/components/easeui/code-block'
 import { PixelLoader as EasePixelLoader } from '@/components/easeui/pixel-loader'
 import { ToolApproval as EaseToolApproval } from '@/components/easeui/tool-approval'
 import { ToolChip as EaseToolChip } from '@/components/easeui/tool-chip'
+import { CopyCommand as AimranCopyCommand } from '@/components/aimran/copy-command'
+import { KokonutAICitations } from '@/components/kokonutui/ai-citations'
+import {
+  KokonutAIDiffReview,
+  unifiedDiffToKokonutFiles,
+} from '@/components/kokonutui/ai-diff-review'
+import { KokonutAILoading } from '@/components/kokonutui/ai-loading'
+import { KokonutAIToolApproval } from '@/components/kokonutui/ai-tool-approval'
+import { KokonutAIToolCalls } from '@/components/kokonutui/ai-tool-calls'
 import { AiStatus as RareAiStatus, type AiStatusState } from '@/components/rareui/ai-status'
 import { CodeBlock as RareCodeBlock } from '@/components/rareui/code-block'
 import { WebSearch as RareWebSearch } from '@/components/rareui/web-search'
@@ -96,6 +105,7 @@ type ShellStyle = NonNullable<ComponentSlots['chat_page']['shell_style']>
 type CodeBlockStyle = NonNullable<ComponentSlots['chat_page']['code_block_style']>
 type WebSearchStyle = NonNullable<ComponentSlots['chat_page']['web_search_style']>
 type MessageActionsStyle = NonNullable<ComponentSlots['chat_page']['message_actions_style']>
+type CitationsStyle = NonNullable<ComponentSlots['chat_page']['citations_style']>
 
 function resolveRareAiStatusState(label: string, active: boolean): AiStatusState {
   if (!active) return 'done'
@@ -159,6 +169,16 @@ export function LoadingStatusBar({
     const id = window.setInterval(() => setTick((t) => t + 1), 110)
     return () => window.clearInterval(id)
   }, [active, genVariant])
+
+  if (loadingStyle === 'kokonut_loading') {
+    return (
+      <KokonutAILoading
+        label={label}
+        elapsedLabel={elapsedLabel}
+        active={active}
+      />
+    )
+  }
 
   if (loadingStyle === 'easeui_pixel_loader') {
     return (
@@ -400,6 +420,29 @@ export function ActivityDisplay({
   }
 
   const ACTIVITY_RENDERERS: Partial<Record<typeof style, () => ReactNode>> = {
+    kokonut_tool_calls: () =>
+      tools.length === 0 ? null : (
+        <KokonutAIToolCalls
+          defaultOpen={defaultOpen}
+          calls={tools.map((t) => {
+            const detail =
+              extractJsonField(t.args_preview, ['path', 'command', 'cmd', 'query', 'url']) ||
+              (t.args_preview ? t.args_preview.slice(0, 48) : undefined)
+            return {
+              id: t.id,
+              tool: t.name,
+              detail,
+              state:
+                t.status === 'running'
+                  ? 'input-available'
+                  : t.status === 'error'
+                    ? 'output-error'
+                    : 'output-available',
+              durationMs: t.duration_ms,
+            }
+          })}
+        />
+      ),
     aui_run_activity: () => {
       const runStatus: RunActivityStatus = status === 'working' ? 'running' : 'complete'
       return (
@@ -776,6 +819,9 @@ export function SmartToolElement({
       const diffText = tool.diff || ''
       const fallbackName =
         extractJsonField(tool.args_preview, ['path', 'file', 'target']) || tool.name
+      if (diffStyle === 'kokonut_diff') {
+        return <KokonutAIDiffReview files={unifiedDiffToKokonutFiles(diffText, fallbackName)} />
+      }
       if (diffStyle === 'aui_reviewable_diff') {
         return <InteractiveReviewableDiff diff={diffText} fallbackName={fallbackName} />
       }
@@ -813,6 +859,18 @@ export function SmartToolElement({
     },
     shell: () => {
       const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, false)
+      if (shellStyle === 'aimran_copy_cmd') {
+        return (
+          <div className="flex flex-col gap-2">
+            <AimranCopyCommand command={sh.command} accent="var(--accent)" fullWidth />
+            {sh.stdoutLines.length > 0 && (
+              <pre className="zenko-thin-scroll max-h-40 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--muted)]">
+                {sh.stdoutLines.slice(0, 20).join('\n')}
+              </pre>
+            )}
+          </div>
+        )
+      }
       if (shellStyle === 'aui_code_runner') {
         const out = [...sh.stdoutLines, ...sh.stderrLines]
         return (
@@ -926,9 +984,59 @@ export function SkillAndMemoryBadges({
   )
 }
 
-/** 5. Assistant Message Actions Bar (Copy + Retry + inline Citations + tok · cached) */
+/** 5. Source Citations Renderer (BeUI Sources | KokonutUI Monogram Citations | Minimal Pills) */
+export function CitationsDisplay({
+  citations,
+  style = 'beui_citations',
+}: {
+  citations: CitationItem[]
+  style?: CitationsStyle
+}) {
+  if (citations.length === 0) return null
+
+  if (style === 'kokonut_citations') {
+    return (
+      <KokonutAICitations
+        sources={citations.map((c) => {
+          const domainStr = typeof c.domain === 'string' ? c.domain : undefined
+          const titleStr = typeof c.title === 'string' ? c.title : domainStr || c.url || c.id
+          return {
+            id: c.id,
+            title: titleStr,
+            url: c.url || (domainStr ? `https://${domainStr}` : '#'),
+            site: domainStr,
+          }
+        })}
+      />
+    )
+  }
+
+  if (style === 'minimal_pills') {
+    return (
+      <div className="inline-flex flex-wrap items-center gap-1.5">
+        {citations.map((c) => (
+          <a
+            key={c.id}
+            href={c.url || '#'}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--card)]/70 px-2 py-0.5 font-mono text-[10.5px] text-[var(--muted)] transition-colors hover:border-[var(--accent)]/50 hover:text-[var(--fg)]"
+          >
+            <Globe size={10} style={{ color: 'var(--accent)' }} />
+            <span className="max-w-[140px] truncate">{c.domain || c.title}</span>
+          </a>
+        ))}
+      </div>
+    )
+  }
+
+  return <Citations citations={citations} className="w-auto" />
+}
+
+/** 5b. Assistant Message Actions Bar (Copy + Retry + inline Citations + tok · cached) */
 export function AssistantMessageFooter({
   style = 'aui_message_actions',
+  citationsStyle = 'beui_citations',
   text,
   citations,
   tokenMeta,
@@ -936,6 +1044,7 @@ export function AssistantMessageFooter({
   onToggleSteps,
 }: {
   style?: MessageActionsStyle
+  citationsStyle?: CitationsStyle
   text: string
   citations: CitationItem[]
   tokenMeta?: ReactNode
@@ -979,7 +1088,7 @@ export function AssistantMessageFooter({
             Retry
           </button>
         )}
-        {citations.length > 0 && <Citations citations={citations} className="w-auto" />}
+        <CitationsDisplay citations={citations} style={citationsStyle} />
         {tokenMeta}
       </div>
     )
@@ -994,7 +1103,7 @@ export function AssistantMessageFooter({
         onRegenerate={onRegenerate ? handleRegenerate : undefined}
         onMore={onToggleSteps}
       />
-      {citations.length > 0 && <Citations citations={citations} className="w-auto" />}
+      <CitationsDisplay citations={citations} style={citationsStyle} />
       {tokenMeta}
     </div>
   )
@@ -1012,6 +1121,33 @@ export function ApprovalElement({
 }) {
   const [scope, setScope] = useState<GrantScope | 'pending'>('pending')
   const [easeStatus, setEaseStatus] = useState<'pending' | 'approved' | 'denied'>('pending')
+  const [kokoState, setKokoState] = useState<
+    'approval-requested' | 'approval-responded' | 'output-denied'
+  >('approval-requested')
+
+  if (style === 'kokonut_approval') {
+    const cmdOrArgs =
+      extractJsonField(approval.args_preview, ['command', 'cmd']) || approval.args_preview || '{}'
+    return (
+      <KokonutAIToolApproval
+        calls={[
+          {
+            id: approval.id,
+            tool: approval.tool_name,
+            title: `Allow ${approval.tool_name}`,
+            input: cmdOrArgs,
+            reason: `Risk: ${approval.risk} · Synced live with Zenko policy guard`,
+            destructive: approval.risk === 'dangerous',
+            state: kokoState,
+          },
+        ]}
+        onRespond={(_id, approved, always) => {
+          setKokoState(approved ? 'approval-responded' : 'output-denied')
+          onResolve(approval.id, !approved ? 'deny' : always ? 'always_allow' : 'approve')
+        }}
+      />
+    )
+  }
 
   if (style === 'easeui_approval') {
     return (
@@ -1154,6 +1290,26 @@ export function MarkdownCodeBlock({
   const [copied, setCopied] = useState(false)
   const raw = String(children).endsWith('\n') ? String(children).slice(0, -1) : String(children)
   const lang = className?.startsWith('language-') ? className.slice('language-'.length) : 'code'
+
+  if (style === 'aimran_copy_cmd') {
+    const firstLine = raw.split('\n').find((l) => l.trim().length > 0) || raw
+    const isMultiLine = raw.includes('\n')
+    return (
+      <div className="my-3 flex flex-col gap-2">
+        <AimranCopyCommand
+          command={isMultiLine ? firstLine : raw}
+          prefix={lang === 'bash' || lang === 'sh' || lang === 'shell' ? '$' : '>'}
+          accent="var(--accent)"
+          fullWidth
+        />
+        {isMultiLine && (
+          <pre className="zenko-thin-scroll overflow-x-auto rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--fg)]">
+            <code>{raw}</code>
+          </pre>
+        )}
+      </div>
+    )
+  }
 
   if (style === 'easeui_code') {
     return (

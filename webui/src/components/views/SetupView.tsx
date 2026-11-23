@@ -18,6 +18,7 @@ import type {
 } from '@/lib/types'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoSelect } from '@/components/ui/ZenkoSelect'
+import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
 import { InputField, ScrollPage, splitShellArgs, type SecondaryTabsVariant } from './shared'
 
 // ─── Setup & Settings View ────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ export function SetupView({
   smoothScroll?: boolean
   toast: (msg: string, kind?: 'info' | 'success' | 'error') => void
 }) {
-  void tabsVariant
+  const [setupSection, setSetupSection] = useState<'all' | 'core' | 'extensions'>('all')
   const initialKind = config?.provider?.kind || providers[0]?.id || 'openrouter'
   const [providerKind, setProviderKind] = useState(initialKind)
   const activeDesc =
@@ -191,15 +192,29 @@ export function SetupView({
   return (
     <ScrollPage smoothScroll={smoothScroll}>
       <div className="mx-auto flex w-full max-w-[860px] flex-col gap-6">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.03em]" style={{ fontFamily: 'var(--font-display)' }}>
-            Settings & Setup
-          </h1>
-          <p className="mt-1 text-[13px] text-[var(--muted)]">
-            Secrets are encrypted at rest with ChaCha20-Poly1305 and never exposed to shell tools or LLM context.
-          </p>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-[22px] font-semibold tracking-[-0.03em]" style={{ fontFamily: 'var(--font-display)' }}>
+              Settings & Setup
+            </h1>
+            <p className="mt-1 text-[13px] text-[var(--muted)]">
+              Secrets are encrypted at rest with ChaCha20-Poly1305 and never exposed to shell tools or LLM context.
+            </p>
+          </div>
+          <Tabs
+            value={setupSection}
+            onValueChange={(v) => setSetupSection(v as 'all' | 'core' | 'extensions')}
+            variant={tabsVariant}
+          >
+            <TabsList>
+              <TabsTrigger value="all">All</TabsTrigger>
+              <TabsTrigger value="core">Providers &amp; Policy</TabsTrigger>
+              <TabsTrigger value="extensions">Search &amp; MCP</TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
 
+        {setupSection !== 'extensions' && (
         <div className="grid gap-5 md:grid-cols-2">
           <div className="z-surface-card flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -412,8 +427,10 @@ export function SetupView({
             </button>
           </div>
         </div>
+        )}
 
         {/* Phase 7: Pluggable Web Search, External MCP Client Servers & Pooled LSP */}
+        {setupSection !== 'core' && (
         <div className="grid gap-5 md:grid-cols-2">
           <div className="z-surface-card flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -775,6 +792,7 @@ export function SetupView({
             </div>
           </div>
         </div>
+        )}
       </div>
     </ScrollPage>
   )

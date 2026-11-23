@@ -17,6 +17,23 @@ import { cn } from "@/lib/utils";
 
 export type ToastTone = "neutral" | "success" | "error";
 
+export type ToastPosition =
+  | "top_center"
+  | "top_right"
+  | "top_left"
+  | "bottom_center"
+  | "bottom_right"
+  | "bottom_left";
+
+const TOAST_POSITION_CLASS: Record<ToastPosition, string> = {
+  top_center: "top-4 left-1/2 -translate-x-1/2",
+  top_right: "top-4 right-4",
+  top_left: "top-4 left-4",
+  bottom_center: "bottom-4 left-1/2 -translate-x-1/2",
+  bottom_right: "bottom-4 right-4",
+  bottom_left: "bottom-4 left-4",
+};
+
 export interface ToastAction {
   label: string;
   onClick: () => void;
@@ -165,6 +182,7 @@ type CardProps = {
   frontHeight: number;
   paused: boolean;
   reduceMotion: boolean;
+  isTop: boolean;
   onHeight: (id: number, height: number) => void;
 };
 
@@ -176,6 +194,7 @@ function ToastCard({
   frontHeight,
   paused,
   reduceMotion,
+  isTop,
   onHeight,
 }: CardProps) {
   const contentRef = useRef<HTMLDivElement>(null);
@@ -228,14 +247,19 @@ function ToastCard({
   const onPointerMove = (event: PointerEvent<HTMLLIElement>) => {
     if (!drag) return;
     const raw = event.clientY - drag.startY;
-    // Down follows the finger. Up resists, since there is nowhere to go.
-    setDrag({ ...drag, y: raw > 0 ? raw : -Math.sqrt(-raw) });
+    // Swipe away from the anchored edge (up for top placement, down for bottom placement).
+    if (isTop) {
+      setDrag({ ...drag, y: raw < 0 ? raw : Math.sqrt(raw) });
+    } else {
+      setDrag({ ...drag, y: raw > 0 ? raw : -Math.sqrt(-raw) });
+    }
   };
 
   const onPointerUp = () => {
     if (!drag) return;
-    const velocity = drag.y / Math.max(1, Date.now() - drag.startedAt);
-    if (drag.y > SWIPE_DISTANCE || (drag.y > 8 && velocity > SWIPE_VELOCITY)) {
+    const away = isTop ? -drag.y : drag.y;
+    const velocity = away / Math.max(1, Date.now() - drag.startedAt);
+    if (away > SWIPE_DISTANCE || (away > 8 && velocity > SWIPE_VELOCITY)) {
       setSwipeY(drag.y);
       dismiss(item.id, true);
     }
@@ -246,16 +270,17 @@ function ToastCard({
   const hidden = index >= VISIBLE;
   const lift = expanded ? offset : index * PEEK;
   const scale = expanded ? 1 : 1 - index * SCALE_STEP;
+  const dir = isTop ? 1 : -1;
 
-  let transform = `translateY(${-lift + (drag?.y ?? 0)}px) scale(${scale})`;
+  let transform = `translateY(${dir * lift + (drag?.y ?? 0)}px) scale(${scale})`;
   let opacity = hidden ? 0 : 1;
   if (!mounted) {
-    transform = "translateY(100%)";
+    transform = isTop ? "translateY(-100%)" : "translateY(100%)";
     opacity = 0;
   } else if (item.closing) {
     transform = item.swiped
-      ? `translateY(calc(${-lift + swipeY}px + 100%))`
-      : `translateY(${-lift}px) translateY(${front ? "50%" : "0px"}) scale(${scale})`;
+      ? `translateY(calc(${dir * lift + swipeY}px ${isTop ? "-" : "+"} 100%))`
+      : `translateY(${dir * lift}px) translateY(${front ? (isTop ? "-50%" : "50%") : "0px"}) scale(${scale})`;
     opacity = 0;
   }
 
@@ -282,7 +307,8 @@ function ToastCard({
       onPointerCancel={() => setDrag(null)}
       style={style}
       className={cn(
-        "absolute inset-x-0 bottom-0 origin-bottom touch-none select-none overflow-hidden rounded-[var(--radius-lg)] bg-[var(--surface)]",
+        "absolute inset-x-0 touch-none select-none overflow-hidden rounded-[var(--radius-lg)] bg-[var(--surface)]",
+        isTop ? "top-0 origin-top" : "bottom-0 origin-bottom",
         "shadow-[0_0_0_1px_var(--border-strong),0_10px_30px_-12px_rgb(0_0_0/0.3)]",
         (hidden || item.closing) && "pointer-events-none",
       )}
@@ -331,7 +357,15 @@ function ToastCard({
  * back into a stack. Hovering spreads the stack out and pauses every countdown,
  * and so does leaving the tab. Swipe a toast down to dismiss it.
  */
-export function Toaster({ className }: { className?: string }) {
+export function Toaster({
+  position = "top_center",
+  className,
+}: {
+  position?: ToastPosition;
+  className?: string;
+}) {
+  const isTop = position.startsWith("top_");
+  const posClass = TOAST_POSITION_CLASS[position] || TOAST_POSITION_CLASS.top_center;
   const toasts = useSyncExternalStore(subscribe, () => items, () => EMPTY);
   const hiddenTab = useDocumentHidden();
   const reduceMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
@@ -375,7 +409,8 @@ export function Toaster({ className }: { className?: string }) {
         }}
         style={{ height: expanded ? spreadHeight : frontHeight }}
         className={cn(
-          "fixed bottom-4 right-4 z-[400] w-[min(22rem,calc(100vw-2rem))]",
+          "fixed z-[400] w-[min(22rem,calc(100vw-2rem))]",
+          posClass,
           toasts.length === 0 && "pointer-events-none",
           className,
         )}
@@ -390,6 +425,7 @@ export function Toaster({ className }: { className?: string }) {
             frontHeight={frontHeight}
             paused={expanded || hiddenTab}
             reduceMotion={reduceMotion}
+            isTop={isTop}
             onHeight={onHeight}
           />
         ))}

@@ -2,17 +2,21 @@ import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import type { GatewayPeer, PairingCode } from '@/lib/types'
 import { ZenkoSelect } from '@/components/ui/ZenkoSelect'
-import { InputField, ScrollPage } from './shared'
+import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
+import { InputField, ScrollPage, type SecondaryTabsVariant } from './shared'
 
 // ─── Gateways View ────────────────────────────────────────────────────────────
 
 export function GatewaysView({
   toast,
+  tabsVariant = 'pill',
   smoothScroll = true,
 }: {
   toast: (msg: string, kind?: 'info' | 'success' | 'error') => void
+  tabsVariant?: SecondaryTabsVariant
   smoothScroll?: boolean
 }) {
+  const [gwTab, setGwTab] = useState<'all' | 'setup' | 'peers'>('all')
   const [data, setData] = useState<{
     config: any
     connected: boolean
@@ -56,6 +60,19 @@ export function GatewaysView({
           </span>
         </div>
 
+        <Tabs
+          value={gwTab}
+          onValueChange={(v) => setGwTab(v as 'all' | 'setup' | 'peers')}
+          variant={tabsVariant}
+        >
+          <TabsList>
+            <TabsTrigger value="all">Overview</TabsTrigger>
+            <TabsTrigger value="setup">Connection &amp; Pairing</TabsTrigger>
+            <TabsTrigger value="peers">Paired Accounts ({data?.peers.length || 0})</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        {gwTab !== 'peers' && (
         <div className="grid gap-5 md:grid-cols-2">
           <div className="z-surface-card flex flex-col gap-3">
             <strong className="text-[14px]">Bot Connection</strong>
@@ -149,7 +166,9 @@ export function GatewaysView({
             ))}
           </div>
         </div>
+        )}
 
+        {gwTab !== 'setup' && (
         <div className="z-surface-card flex flex-col gap-3">
           <strong className="text-[14px]">Paired Accounts ({data?.peers.length || 0})</strong>
           {(data?.peers || []).length === 0 ? (
@@ -184,6 +203,7 @@ export function GatewaysView({
             ))
           )}
         </div>
+        )}
       </div>
     </ScrollPage>
   )

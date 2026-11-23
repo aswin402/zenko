@@ -304,6 +304,10 @@ pub struct SurfaceCustomization {
     pub command_palette_style: String,
     #[serde(default = "default_toast_style")]
     pub toast_style: String,
+    #[serde(default = "default_toast_position")]
+    pub toast_position: String,
+    #[serde(default = "default_link_hover_style")]
+    pub link_hover_style: String,
     #[serde(default = "default_modal_style")]
     pub modal_style: String,
     #[serde(default = "default_popover_style")]
@@ -335,6 +339,8 @@ impl Default for SurfaceCustomization {
             alert_style: default_alert_style(),
             command_palette_style: default_command_palette_style(),
             toast_style: default_toast_style(),
+            toast_position: default_toast_position(),
+            link_hover_style: default_link_hover_style(),
             modal_style: default_modal_style(),
             popover_style: default_popover_style(),
             element_chrome: default_element_chrome(),
@@ -370,6 +376,12 @@ fn default_command_palette_style() -> String {
 }
 fn default_toast_style() -> String {
     "default".to_string()
+}
+fn default_toast_position() -> String {
+    "top_center".to_string()
+}
+fn default_link_hover_style() -> String {
+    "zenko_underline".to_string()
 }
 fn default_modal_style() -> String {
     "center_morph".to_string()
@@ -642,6 +654,8 @@ pub struct ComposerSlotConfig {
     pub shell_variant: String,
     #[serde(default = "default_model_picker_style")]
     pub model_picker_style: String,
+    #[serde(default = "default_model_trigger_chrome")]
+    pub model_trigger_chrome: String,
     #[serde(default = "default_send_shape")]
     pub send_button_shape: String,
     #[serde(default = "default_send_icon")]
@@ -665,6 +679,7 @@ impl Default for ComposerSlotConfig {
         Self {
             shell_variant: default_composer_shell(),
             model_picker_style: default_model_picker_style(),
+            model_trigger_chrome: default_model_trigger_chrome(),
             send_button_shape: default_send_shape(),
             send_button_icon: default_send_icon(),
             context_meter: default_context_meter(),
@@ -679,6 +694,7 @@ impl Default for ComposerSlotConfig {
 
 fn default_composer_shell() -> String { "floating_card".into() }
 fn default_model_picker_style() -> String { "drilldown".into() }
+fn default_model_trigger_chrome() -> String { "bordered_filled".into() }
 fn default_send_shape() -> String { "rounded_square".into() }
 fn default_send_icon() -> String { "arrow_up".into() }
 fn default_context_meter() -> String { "progress_ring".into() }
@@ -740,6 +756,8 @@ pub struct ChatPageSlotConfig {
     pub content_width: String,
     #[serde(default = "default_user_bubble")]
     pub user_bubble: String,
+    #[serde(default = "default_model_badge_style")]
+    pub model_badge_style: String,
     #[serde(default = "default_thinking_style")]
     pub thinking_style: String,
     #[serde(default = "default_tool_card_style")]
@@ -782,6 +800,8 @@ pub struct ChatPageSlotConfig {
     pub show_day_separators: bool,
     #[serde(default = "default_true_ui")]
     pub show_citations: bool,
+    #[serde(default = "default_citations_style")]
+    pub citations_style: String,
     #[serde(default = "default_skill_badge_style")]
     pub skill_badge_style: String,
 }
@@ -792,6 +812,7 @@ impl Default for ChatPageSlotConfig {
             background: default_chat_background(),
             content_width: default_content_width(),
             user_bubble: default_user_bubble(),
+            model_badge_style: default_model_badge_style(),
             thinking_style: default_thinking_style(),
             tool_card_style: default_tool_card_style(),
             show_avatars: true,
@@ -813,6 +834,7 @@ impl Default for ChatPageSlotConfig {
             web_search_style: default_web_search_style(),
             show_day_separators: true,
             show_citations: true,
+            citations_style: default_citations_style(),
             skill_badge_style: default_skill_badge_style(),
         }
     }
@@ -821,6 +843,8 @@ impl Default for ChatPageSlotConfig {
 fn default_chat_background() -> String { "clean".into() }
 fn default_content_width() -> String { "balanced".into() }
 fn default_user_bubble() -> String { "soft_card".into() }
+fn default_model_badge_style() -> String { "bordered_chip".into() }
+fn default_citations_style() -> String { "beui_citations".into() }
 fn default_thinking_style() -> String { "collapsible_steps".into() }
 fn default_tool_card_style() -> String { "aui_smart".into() }
 fn default_scroller_style() -> String { "beui_rail".into() }
@@ -845,6 +869,8 @@ pub struct DashboardSlotConfig {
     pub layout: String,
     #[serde(default = "default_dashboard_widget_kit")]
     pub widget_kit: String,
+    #[serde(default = "default_dashboard_recap_style")]
+    pub recap_style: String,
     #[serde(default = "default_dashboard_chart_theme")]
     pub chart_theme: String,
     #[serde(default = "default_dashboard_heatmap_shape")]
@@ -876,6 +902,7 @@ impl Default for DashboardSlotConfig {
         Self {
             layout: default_dashboard_layout(),
             widget_kit: default_dashboard_widget_kit(),
+            recap_style: default_dashboard_recap_style(),
             chart_theme: default_dashboard_chart_theme(),
             heatmap_shape: default_dashboard_heatmap_shape(),
             heatmap_range: default_dashboard_heatmap_range(),
@@ -894,6 +921,7 @@ impl Default for DashboardSlotConfig {
 
 fn default_dashboard_layout() -> String { "bento_grid".into() }
 fn default_dashboard_widget_kit() -> String { "echarts".into() }
+fn default_dashboard_recap_style() -> String { "motion_brew_recap".into() }
 fn default_dashboard_chart_theme() -> String { "monochrome_accent".into() }
 fn default_dashboard_heatmap_shape() -> String { "rounded".into() }
 fn default_dashboard_heatmap_range() -> String { "year".into() }

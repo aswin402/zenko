@@ -5,6 +5,7 @@ import { AnimatePresence, motion, useReducedMotion, type Transition, type Varian
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
+import { LineHoverLink, type LineHoverVariant } from '@/components/vengeanceui/line-hover-link'
 
 export type StreamingResponseStatus = 'streaming' | 'done' | 'stopped'
 export type StreamingResponseFeedback = 'up' | 'down' | null
@@ -251,7 +252,7 @@ function Word({ animate, ink, children }: { animate: boolean; ink?: string; chil
     return <span ref={ref}>{children}</span>
 }
 
-type Ctx = { i: number; from: number; ink?: string; caret: React.ReactNode }
+type Ctx = { i: number; from: number; ink?: string; linkHoverStyle?: string; caret: React.ReactNode }
 
 function renderInline(nodes: Inline[], ctx: Ctx): React.ReactNode[] {
     return nodes.flatMap((node): React.ReactNode[] => {
@@ -295,15 +296,27 @@ function renderInline(nodes: Inline[], ctx: Ctx): React.ReactNode[] {
         }
         return [
             node.href ? (
-                <a
-                    key={`a${key}`}
-                    href={node.href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="zenko-prose-link"
-                >
-                    {children}
-                </a>
+                ctx.linkHoverStyle && ctx.linkHoverStyle !== 'zenko_underline' ? (
+                    <LineHoverLink
+                        key={`a${key}`}
+                        variant={ctx.linkHoverStyle as LineHoverVariant}
+                        href={node.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        {children}
+                    </LineHoverLink>
+                ) : (
+                    <a
+                        key={`a${key}`}
+                        href={node.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="zenko-prose-link"
+                    >
+                        {children}
+                    </a>
+                )
             ) : (
                 <span key={`a${key}`} className="zenko-prose-link opacity-80">
                     {children}
@@ -431,6 +444,7 @@ export type StreamingResponseProps = Omit<React.ComponentProps<'div'>, 'children
     status?: StreamingResponseStatus
     speed?: number
     ink?: string
+    linkHoverStyle?: string
     actions?: boolean
     defaultFeedback?: StreamingResponseFeedback
     onFeedback?: (feedback: StreamingResponseFeedback) => void
@@ -443,6 +457,7 @@ function StreamingResponse({
     status = 'done',
     speed = SPEED,
     ink,
+    linkHoverStyle,
     actions = true,
     defaultFeedback = null,
     onFeedback,
@@ -513,7 +528,7 @@ function StreamingResponse({
     const caretTrack = useRef<CaretTrack>(null)
     const caret = !settled ? <Caret key="caret" ink={ink} reduced={reduced} trackRef={caretTrack} /> : null
 
-    const ctx: Ctx = { i: 0, from: reduced ? Infinity : run ? 0 : initialWords, ink, caret }
+    const ctx: Ctx = { i: 0, from: reduced ? Infinity : run ? 0 : initialWords, ink, linkHoverStyle, caret }
     const blocks = parseBlocks(visible)
     const content = blocks.map((block, n) => (
         <React.Fragment key={`b${run}-${n}`}>{renderBlock(block, ctx, n === blocks.length - 1 && !!caret, !streaming)}</React.Fragment>

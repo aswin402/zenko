@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type { UiCustomization } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { SkecherGooeyTooltip } from '@/components/skecherui/gooey-tooltip'
 
 type TooltipSide = 'top' | 'bottom' | 'left' | 'right'
 type TooltipStyleVariant = NonNullable<UiCustomization['surface']['tooltip_style']>
@@ -76,6 +77,11 @@ const TOOLTIP_STYLE_SPEC: Record<
       'border bg-[var(--card)]/96 text-[var(--fg)] shadow-[0_10px_28px_rgba(0,0,0,0.34)] backdrop-blur-md',
     inlineStyle: { borderColor: 'color-mix(in srgb, var(--accent) 36%, var(--border))' },
     kbdClass: 'border-[var(--border)] bg-[var(--surface)] text-[var(--muted)]',
+  },
+  skecher_gooey: {
+    className:
+      'border border-transparent bg-[var(--fg)] text-[var(--bg)] shadow-[0_10px_28px_rgba(0,0,0,0.32)]',
+    kbdClass: 'border-[var(--bg)]/25 bg-[var(--bg)]/15 text-[var(--bg)]',
   },
   minimal_glass: {
     className:
@@ -226,6 +232,32 @@ export function ZenkoTooltip({
   const shapeClass = TOOLTIP_SHAPE_CLASS[cfg.shape] || TOOLTIP_SHAPE_CLASS.pill
   const useInstant = reduce || cfg.motion === 'instant'
   const useFadeOnly = cfg.motion === 'fade'
+
+  if (cfg.style === 'skecher_gooey' && !effectivelyDisabled) {
+    const gooRadius = cfg.shape === 'sharp' ? 6 : cfg.shape === 'rounded' ? 12 : 9999
+    return (
+      <SkecherGooeyTooltip
+        side={side}
+        radius={gooRadius}
+        delay={cfg.motion === 'instant' ? 10 : 60}
+        color="var(--fg)"
+        foreground="var(--bg)"
+        className={className}
+        content={
+          <span className="inline-flex items-center gap-1.5">
+            <span>{label}</span>
+            {shortcut && (
+              <kbd className="rounded border border-[var(--bg)]/25 bg-[var(--bg)]/15 px-1 py-0.5 font-mono text-[9.5px] leading-none">
+                {shortcut}
+              </kbd>
+            )}
+          </span>
+        }
+      >
+        {children}
+      </SkecherGooeyTooltip>
+    )
+  }
 
   return (
     <div

@@ -7,6 +7,7 @@ import { ZenkoFoxLogo } from '@/components/beui/ZenkoFoxLogo'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
 import { SidebarNav, type SidebarSection } from '@/components/motion-brew/sidebar-nav'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
+import { ResponsiveSidebar } from '@/components/ui/responsive-sidebar'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 
 const FRAME_WIDTH: Record<ComponentSlots['left_menubar']['frame_style'], number> = {
@@ -14,6 +15,7 @@ const FRAME_WIDTH: Record<ComponentSlots['left_menubar']['frame_style'], number>
   floating_card: 258,
   compact_rail: 224,
   motion_brew_nav: 268,
+  responsive_sidebar: 258,
 }
 
 const FRAME_CLASS: Record<ComponentSlots['left_menubar']['frame_style'], string> = {
@@ -22,6 +24,7 @@ const FRAME_CLASS: Record<ComponentSlots['left_menubar']['frame_style'], string>
     'm-2.5 h-[calc(100%-20px)] rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_12px_36px_rgba(0,0,0,0.32)]',
   compact_rail: 'h-full border-r border-[var(--border)] bg-[var(--surface)]',
   motion_brew_nav: 'h-full p-2 bg-transparent',
+  responsive_sidebar: 'h-full bg-transparent',
 }
 
 const NEW_SESSION_CLASS: Record<ComponentSlots['left_menubar']['new_session_style'], string> = {
@@ -106,6 +109,156 @@ export const Sidebar = memo(function Sidebar({
     ],
     [rootSessions, childCounts],
   )
+
+  if (slot.frame_style === 'responsive_sidebar') {
+    const respItems = rootSessions.map((s) => {
+      const subCount = Math.max(s.subagent_count ?? 0, childCounts[s.id] || 0)
+      return {
+        id: s.id,
+        label: s.title,
+        badge: subCount > 0 ? `${subCount} sub` : undefined,
+        channel: s.channel,
+      }
+    })
+    const respNode = (
+      <ResponsiveSidebar
+        brand={
+          <>
+            Zenko <span style={{ color: 'var(--accent)' }}>Agent</span>
+          </>
+        }
+        logo={<ZenkoFoxLogo size={20} variant="fox" />}
+        items={respItems}
+        activeId={activeView === 'chat' ? activeSessionId : null}
+        sessionItemStyle={slot.session_item_style}
+        smoothScroll={ui.motion.smooth_scroll !== false}
+        inlinePreview={inlinePreview}
+        onSelectItem={onSelectSession}
+        onDeleteItem={!inlinePreview ? onDeleteSession : undefined}
+        headerAction={(isCollapsed) =>
+          isCollapsed ? (
+            <ZenkoTooltip label="New Session" side="right" disabled={inlinePreview}>
+              <button
+                type="button"
+                aria-label="New Session"
+                onClick={onNewSession}
+                className={cn(newSessionClass, '!h-10 !w-10 !justify-center !p-0')}
+                style={
+                  slot.new_session_style === 'pill_soft'
+                    ? undefined
+                    : { borderRadius: 'var(--radius)' }
+                }
+              >
+                <ZenkoIcon slot="edit" icons={ui.icons} size={15} />
+              </button>
+            </ZenkoTooltip>
+          ) : (
+            <button
+              type="button"
+              onClick={onNewSession}
+              className={newSessionClass}
+              style={
+                slot.new_session_style === 'pill_soft'
+                  ? undefined
+                  : { borderRadius: 'var(--radius)' }
+              }
+            >
+              <ZenkoIcon slot="edit" icons={ui.icons} size={15} />
+              <span>New Session</span>
+            </button>
+          )
+        }
+        footer={(isCollapsed) =>
+          isCollapsed ? (
+            <div className="flex flex-col items-center gap-1.5">
+              <ZenkoTooltip label="Settings" side="right" disabled={inlinePreview}>
+                <button
+                  type="button"
+                  aria-label="Settings"
+                  onClick={onOpenSettings}
+                  className={cn(
+                    'flex h-9 w-9 cursor-pointer items-center justify-center rounded-[var(--radius-sm)] transition-colors hover:bg-[var(--card)]',
+                    activeView === 'setup'
+                      ? 'text-[var(--accent)]'
+                      : 'text-[var(--muted)] hover:text-[var(--fg)]',
+                  )}
+                >
+                  <ZenkoIcon slot="settings" icons={ui.icons} size={15} />
+                </button>
+              </ZenkoTooltip>
+              <ZenkoTooltip label="Clear Active Session" side="right" disabled={inlinePreview}>
+                <button
+                  type="button"
+                  aria-label="Clear Active Session"
+                  onClick={onClearActiveSession}
+                  className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--card)]/70 text-[var(--muted)] transition-colors hover:border-[var(--destructive)]/40 hover:text-[var(--fg)]"
+                >
+                  <ZenkoIcon slot="trash" icons={ui.icons} size={13.5} />
+                </button>
+              </ZenkoTooltip>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className={cn(
+                  'flex w-full cursor-pointer items-center gap-2.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-[13px] transition-colors hover:bg-[var(--card)]/60',
+                  activeView === 'setup'
+                    ? 'text-[var(--fg)]'
+                    : 'text-[var(--muted)] hover:text-[var(--fg)]',
+                )}
+              >
+                <ZenkoIcon slot="settings" icons={ui.icons} size={15} />
+                <span>Settings</span>
+              </button>
+              <button
+                type="button"
+                onClick={onClearActiveSession}
+                className="flex w-full cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--card)]/70 px-3 py-2 text-[12.5px] text-[var(--muted)] transition-colors hover:border-[var(--destructive)]/40 hover:text-[var(--fg)]"
+              >
+                <ZenkoIcon slot="trash" icons={ui.icons} size={13.5} />
+                <span>Clear Active Session</span>
+              </button>
+            </div>
+          )
+        }
+        className={cn(inlinePreview ? 'h-[390px] rounded-xl border' : 'h-full')}
+      />
+    )
+    if (inlinePreview) return respNode
+    return (
+      <>
+        {!open && (
+          <div className="fixed left-4 top-4 z-30">
+            <ZenkoTooltip label="Open sidebar" side="right">
+              <button
+                type="button"
+                onClick={onToggle}
+                aria-label="Open sidebar"
+                className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)]/90 text-[var(--muted)] backdrop-blur-md transition-colors hover:text-[var(--fg)]"
+              >
+                <ZenkoIcon slot="panelLeftOpen" icons={ui.icons} size={16} />
+              </button>
+            </ZenkoTooltip>
+          </div>
+        )}
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              initial={{ opacity: 0, x: -16 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.22, ease: EASE_DRAWER }}
+              className="flex h-full shrink-0"
+            >
+              {respNode}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </>
+    )
+  }
 
   if (slot.frame_style === 'motion_brew_nav') {
     const navNode = (

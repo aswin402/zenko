@@ -28,6 +28,7 @@ import {
 import type { BackgroundJob, JobReadChunk, SubagentRecord } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/motion/popover'
+import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 import { parseAnsi } from '@/components/assistant-ui/elements/terminal-block'
@@ -78,6 +79,7 @@ export function FloatingActivityMonitor({
   activeSessionId,
   isSessionRunning,
   popoverStyle = 'gooey',
+  tabsVariant = 'pill',
   onStopJob,
   onClearJobOutput,
   onDeleteJob,
@@ -96,6 +98,7 @@ export function FloatingActivityMonitor({
   activeSessionId: string | null
   isSessionRunning: boolean
   popoverStyle?: 'gooey' | 'crisp'
+  tabsVariant?: 'pill' | 'segment' | 'underline' | 'skiper96'
   onStopJob: (jobId: string) => void
   onClearJobOutput?: (jobId: string) => Promise<void> | void
   onDeleteJob?: (jobId: string) => Promise<void> | void
@@ -107,6 +110,7 @@ export function FloatingActivityMonitor({
 }) {
   const reduce = useReducedMotion() ?? false
   const [minimized, setMinimized] = useState(false)
+  const [overviewFilter, setOverviewFilter] = useState<'all' | 'jobs' | 'agents'>('all')
   const [selectorOpen, setSelectorOpen] = useState(false)
   const [selected, setSelected] = useState<SelectedTarget>(null)
   const [stdinText, setStdinText] = useState('')
@@ -737,8 +741,24 @@ export function FloatingActivityMonitor({
                   </div>
 
                   {(recentJobs.length > 0 || recentAgents.length > 0) && (
-                    <div className="mb-2 flex items-center justify-between px-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--muted)]">
-                      <span>Recent Tasks ({recentJobs.length})</span>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <Tabs
+                        value={overviewFilter}
+                        onValueChange={(v) => setOverviewFilter(v as 'all' | 'jobs' | 'agents')}
+                        variant={tabsVariant}
+                      >
+                        <TabsList>
+                          <TabsTrigger value="all" className="px-2.5 py-1 text-[11px]">
+                            All
+                          </TabsTrigger>
+                          <TabsTrigger value="jobs" className="px-2.5 py-1 text-[11px]">
+                            Tasks ({recentJobs.length})
+                          </TabsTrigger>
+                          <TabsTrigger value="agents" className="px-2.5 py-1 text-[11px]">
+                            Agents ({recentAgents.length})
+                          </TabsTrigger>
+                        </TabsList>
+                      </Tabs>
                       {finishedJobCount > 0 && onClearDoneJobs && (
                         <button
                           type="button"
@@ -746,14 +766,14 @@ export function FloatingActivityMonitor({
                           className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 normal-case text-[10.5px] text-[var(--muted)] transition-colors hover:bg-[var(--card)] hover:text-[var(--accent)]"
                         >
                           <Trash2 size={10.5} />
-                          <span>Clear Logs ({finishedJobCount})</span>
+                          <span>Clear ({finishedJobCount})</span>
                         </button>
                       )}
                     </div>
                   )}
 
                   <div className="flex flex-col gap-2">
-                    {recentJobs.slice(0, 6).map((job) => {
+                    {overviewFilter !== 'agents' && recentJobs.slice(0, 6).map((job) => {
                       const st = JOB_STATUS_STYLE[job.status]
                       return (
                         <div
@@ -807,7 +827,7 @@ export function FloatingActivityMonitor({
                       )
                     })}
 
-                    {recentAgents.slice(0, 2).map((ag) => {
+                    {overviewFilter !== 'jobs' && recentAgents.slice(0, 2).map((ag) => {
                       const st = AGENT_STATUS_STYLE[ag.status]
                       return (
                         <button
@@ -839,9 +859,15 @@ export function FloatingActivityMonitor({
                       )
                     })}
 
-                    {recentJobs.length === 0 && recentAgents.length === 0 && (
+                    {((overviewFilter === 'all' && recentJobs.length === 0 && recentAgents.length === 0) ||
+                      (overviewFilter === 'jobs' && recentJobs.length === 0) ||
+                      (overviewFilter === 'agents' && recentAgents.length === 0)) && (
                       <div className="rounded-xl border border-dashed border-[var(--border)] px-3.5 py-4 text-center font-mono text-[11px] text-[var(--muted)]">
-                        No background builds, dev servers, or tasks yet.
+                        {overviewFilter === 'agents'
+                          ? 'No active or recent subagents yet.'
+                          : overviewFilter === 'jobs'
+                            ? 'No background builds, dev servers, or tasks yet.'
+                            : 'No background builds, dev servers, or tasks yet.'}
                       </div>
                     )}
                   </div>
