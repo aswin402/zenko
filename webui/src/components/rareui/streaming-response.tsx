@@ -296,7 +296,17 @@ function renderInline(nodes: Inline[], ctx: Ctx): React.ReactNode[] {
         }
         return [
             node.href ? (
-                ctx.linkHoverStyle && ctx.linkHoverStyle !== 'zenko_underline' ? (
+                ctx.linkHoverStyle && ctx.linkHoverStyle.startsWith('skiper40_') ? (
+                    <a
+                        key={`a${key}`}
+                        href={node.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={cn('skiper40-link', `skiper40-link--${ctx.linkHoverStyle.slice('skiper40_'.length)}`)}
+                    >
+                        {children}
+                    </a>
+                ) : ctx.linkHoverStyle && ctx.linkHoverStyle !== 'zenko_underline' ? (
                     <LineHoverLink
                         key={`a${key}`}
                         variant={ctx.linkHoverStyle as LineHoverVariant}

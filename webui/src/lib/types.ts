@@ -493,6 +493,28 @@ export interface ComponentSlots {
       | 'hidden'
     context_meter_chrome?: 'bordered_filled' | 'border_only' | 'background_only' | 'minimal_bare'
     action_pills: 'soft_tint' | 'outline' | 'ghost' | 'solid_chip'
+    border_animation?:
+      | 'border_beam_md'
+      | 'border_beam_sm'
+      | 'border_beam_line'
+      | 'border_beam_pulse_out'
+      | 'border_beam_pulse_in'
+      | 'accent_orbit'
+      | 'accent_shimmer_edge'
+      | 'accent_breathe_halo'
+      | 'none'
+    animation_trigger?: 'while_working' | 'always' | 'on_focus' | 'off'
+    beam_color_variant?:
+      | 'theme_accent'
+      | 'colorful'
+      | 'mono'
+      | 'ocean'
+      | 'sunset'
+      | 'forest'
+      | 'candy'
+      | 'ice'
+      | 'gold'
+    beam_strength?: number
     show_attach: boolean
     show_policy: boolean
     show_streaming_toggle: boolean
@@ -514,6 +536,7 @@ export interface ComponentSlots {
       | 'attached_rail'
       | 'glass_pill'
       | 'vengeance_glass_dock'
+      | 'skiper98_vtooltip'
       | 'minimal_strip'
     active_indicator: 'vermilion_pill' | 'solid_accent' | 'side_bar' | 'dot_indicator'
   }
@@ -574,6 +597,7 @@ export interface ComponentSlots {
       | 'aui_streaming_text'
       | 'editorial'
     emphasis_style?: 'accent' | 'accent_glow' | 'marker_stroke' | 'neutral_bold'
+    heading_style?: 'accent' | 'accent_bar' | 'accent_underline' | 'soft_tint' | 'neutral'
     message_actions_style?: 'aui_message_actions' | 'beui_inline' | 'minimal'
     approval_style:
       | 'aui_permission_grant'
@@ -712,7 +736,17 @@ export interface UiCustomization {
   preset_id: string
   colors: ColorTokens
   buttons: {
-    style: 'solid' | 'soft' | 'outline' | 'ghost' | 'glass' | 'glow' | 'tactile3d' | 'shimmer'
+    style:
+      | 'solid'
+      | 'soft'
+      | 'outline'
+      | 'ghost'
+      | 'glass'
+      | 'glow'
+      | 'tactile3d'
+      | 'shimmer'
+      | 'vengeance_liquid'
+      | 'vengeance_animated'
     shape: 'sharp' | 'rounded' | 'soft' | 'pill'
     size: 'compact' | 'default' | 'comfortable'
     motion: 'none' | 'subtle_lift' | 'scale_press' | 'magnetic_glow'
@@ -752,6 +786,13 @@ export interface UiCustomization {
     radius_px: number
     border_contrast: string
     scrollbar_style?: 'accent_thin' | 'muted_thin' | 'minimal'
+    scroll_indicator?:
+      | 'none'
+      | 'skiper87_fade'
+      | 'skiper89_bar'
+      | 'skiper94_ring'
+      | 'skiper87_and_89'
+    input_caret_style?: 'skiper106_smooth' | 'native_accent' | 'native_default'
     tabs_variant?: 'pill' | 'segment' | 'underline' | 'skiper96'
     accordion_style?: 'bouncy' | 'compact' | 'rareui_faq'
     alert_style?: 'beui_alert' | 'easeui_alert' | 'compact'
@@ -766,12 +807,18 @@ export interface UiCustomization {
       | 'bottom_left'
     link_hover_style?:
       | 'zenko_underline'
+      | 'skiper40_bracket'
+      | 'skiper40_arrow_shift'
+      | 'skiper40_highlight_fill'
       | 'slide'
       | 'double'
       | 'grow'
+      | 'strike'
       | 'fade'
+      | 'pulse'
       | 'swap'
       | 'sweep'
+      | 'bounce'
       | 'arc'
       | 'scribble'
     modal_style?: 'center_morph' | 'scale'
@@ -780,6 +827,8 @@ export interface UiCustomization {
     table_style?: 'borderless' | 'minimal' | 'striped' | 'bordered' | 'easeui_table'
     tooltip_style?:
       | 'accent_edge'
+      | 'skiper101_arrow'
+      | 'skiper43_vercel'
       | 'skecher_gooey'
       | 'minimal_glass'
       | 'solid_contrast'
@@ -805,7 +854,21 @@ export interface UiCustomization {
   motion: {
     preset: 'snappy' | 'fluid_spring' | 'reduced' | 'instant'
     orb_style: AgentAvatarStyle
-    theme_transition?: 'circle-blur' | 'circle' | 'rectangle' | 'blinds'
+    theme_transition?:
+      | 'circle-blur'
+      | 'circle'
+      | 'skiper26_bottom_up'
+      | 'skiper26_top_down'
+      | 'skiper26_diagonal'
+      | 'rectangle'
+      | 'blinds'
+    theme_toggle_icon?:
+      | 'default'
+      | 'skiper4_eclipse'
+      | 'skiper4_rays'
+      | 'skiper4_horizon'
+      | 'skiper4_classic_fill'
+      | 'skiper4_minimal_dot'
     smooth_scroll?: boolean
   }
   widgets: {

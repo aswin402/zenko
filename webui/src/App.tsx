@@ -66,6 +66,7 @@ import {
   CenterMorphModalContent,
 } from '@/components/motion/center-morph-modal'
 import { ThemeToggle } from '@/components/motion/theme-toggle'
+import { SmoothCaretInput } from '@/components/skiperui/smooth-caret'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { FloatingActivityMonitor } from '@/components/ui/FloatingActivityMonitor'
 import { ThemeSelector } from '@/components/ui/ThemeSelector'
@@ -1122,6 +1123,7 @@ export default function App() {
               }}
               isRunning={isRunning}
               isOrchestratingBg={isOrchestratingBg}
+              themeMode={ui.mode === 'light' ? 'light' : 'dark'}
               activeProvider={activeProvider}
               activeModel={activeModel}
               providers={providers}
@@ -1740,8 +1742,8 @@ export default function App() {
             className="max-w-[500px] rounded-[24px] bg-[var(--surface)]"
           >
             <div className="flex items-center gap-2.5 border-b border-[var(--border)] px-4 py-3">
-              <Search size={15} className="text-[var(--muted)]" />
-              <input
+              <Search size={15} className="shrink-0 text-[var(--muted)]" />
+              <SmoothCaretInput
                 autoFocus
                 value={cmdQuery}
                 onChange={(e) => setCmdQuery(e.target.value)}
@@ -1785,8 +1787,8 @@ export default function App() {
                 className="w-full max-w-[500px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl"
               >
                 <div className="flex items-center gap-2.5 border-b border-[var(--border)] px-4 py-3">
-                  <Search size={15} className="text-[var(--muted)]" />
-                  <input
+                  <Search size={15} className="shrink-0 text-[var(--muted)]" />
+                  <SmoothCaretInput
                     autoFocus
                     value={cmdQuery}
                     onChange={(e) => setCmdQuery(e.target.value)}

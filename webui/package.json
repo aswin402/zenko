@@ -1,7 +1,7 @@
 {
   "name": "zenko-webui",
   "private": true,
-  "version": "0.0.12",
+  "version": "0.0.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
+    "border-beam": "^1.4.1",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
     "gsap": "^3.15.1",

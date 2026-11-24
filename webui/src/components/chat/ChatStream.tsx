@@ -430,6 +430,20 @@ export const MarkdownProse = memo(function MarkdownProse({
         if (!validated) {
           return <span className="zenko-prose-link">{children}</span>
         }
+        if (linkHoverStyle && linkHoverStyle.startsWith('skiper40_')) {
+          const skiperVariant = linkHoverStyle.slice('skiper40_'.length)
+          return (
+            <a
+              {...props}
+              href={validated}
+              target={isExternal ? '_blank' : undefined}
+              rel={isExternal ? 'noopener noreferrer' : undefined}
+              className={cn('skiper40-link', `skiper40-link--${skiperVariant}`)}
+            >
+              {children}
+            </a>
+          )
+        }
         if (linkHoverStyle && linkHoverStyle !== 'zenko_underline') {
           return (
             <LineHoverLink

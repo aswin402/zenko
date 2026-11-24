@@ -420,6 +420,49 @@ html, body, #root {
     color: var(--primary-fg);
     animation: z-shimmer 2.6s linear infinite;
   }
+  [data-btn-style="vengeance_liquid"] .z-btn-primary {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--primary) 28%, var(--surface)) 0%,
+      color-mix(in srgb, var(--primary) 16%, var(--surface)) 100%
+    );
+    color: var(--fg);
+    border-color: color-mix(in srgb, var(--primary) 58%, var(--border));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 6px 20px color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+  [data-btn-style="vengeance_liquid"] .z-btn-primary:hover:not(:disabled) {
+    background: var(--primary);
+    color: var(--primary-fg);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      0 8px 24px color-mix(in srgb, var(--primary) 42%, transparent);
+  }
+  [data-btn-style="vengeance_animated"] .z-btn-primary {
+    position: relative;
+    overflow: hidden;
+    background: var(--primary);
+    color: var(--primary-fg);
+    border-color: color-mix(in srgb, var(--primary) 72%, #fff);
+    box-shadow: 0 6px 22px color-mix(in srgb, var(--primary) 30%, transparent);
+  }
+  [data-btn-style="vengeance_animated"] .z-btn-primary::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      112deg,
+      transparent 22%,
+      rgba(255, 255, 255, 0.34) 48%,
+      transparent 74%
+    );
+    transform: translateX(-130%);
+    animation: zenko-btn-sheen 3.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+    pointer-events: none;
+  }
 
   .z-btn-vermilion-soft {
     background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -471,11 +514,68 @@ html, body, #root {
 .zenko-prose p:last-child { margin-bottom: 0; }
 .zenko-prose ul, .zenko-prose ol { margin: 0.45rem 0 0.75rem; padding-left: 1.35rem; }
 .zenko-prose li { margin: 0.25rem 0; }
-.zenko-prose h1, .zenko-prose h2, .zenko-prose h3 {
+.zenko-prose h1, .zenko-prose h2, .zenko-prose h3, .zenko-prose h4, .zenko-prose h5,
+[data-slot="streaming-response"] h3,
+[data-slot="streaming-response"] h4,
+[data-slot="streaming-response"] h5 {
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: -0.02em;
   margin: 1rem 0 0.45rem;
+  color: var(--accent);
+}
+.zenko-prose h3, .zenko-prose h4, .zenko-prose h5,
+[data-slot="streaming-response"] h4,
+[data-slot="streaming-response"] h5 {
+  color: color-mix(in srgb, var(--accent) 84%, var(--fg));
+}
+[data-heading-style="accent_bar"] .zenko-prose h1,
+[data-heading-style="accent_bar"] .zenko-prose h2,
+[data-heading-style="accent_bar"] .zenko-prose h3,
+[data-heading-style="accent_bar"] .zenko-prose h4,
+[data-heading-style="accent_bar"] .zenko-prose h5,
+[data-heading-style="accent_bar"] [data-slot="streaming-response"] h3,
+[data-heading-style="accent_bar"] [data-slot="streaming-response"] h4,
+[data-heading-style="accent_bar"] [data-slot="streaming-response"] h5 {
+  color: var(--fg);
+  border-left: 3px solid var(--accent);
+  padding-left: 0.65rem;
+}
+[data-heading-style="accent_underline"] .zenko-prose h1,
+[data-heading-style="accent_underline"] .zenko-prose h2,
+[data-heading-style="accent_underline"] .zenko-prose h3,
+[data-heading-style="accent_underline"] .zenko-prose h4,
+[data-heading-style="accent_underline"] .zenko-prose h5,
+[data-heading-style="accent_underline"] [data-slot="streaming-response"] h3,
+[data-heading-style="accent_underline"] [data-slot="streaming-response"] h4,
+[data-heading-style="accent_underline"] [data-slot="streaming-response"] h5 {
+  color: var(--accent);
+  padding-bottom: 0.28rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+[data-heading-style="soft_tint"] .zenko-prose h1,
+[data-heading-style="soft_tint"] .zenko-prose h2,
+[data-heading-style="soft_tint"] .zenko-prose h3,
+[data-heading-style="soft_tint"] .zenko-prose h4,
+[data-heading-style="soft_tint"] .zenko-prose h5,
+[data-heading-style="soft_tint"] [data-slot="streaming-response"] h3,
+[data-heading-style="soft_tint"] [data-slot="streaming-response"] h4,
+[data-heading-style="soft_tint"] [data-slot="streaming-response"] h5 {
+  display: inline-block;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  padding: 0.14rem 0.52rem;
+  border-radius: 6px;
+}
+[data-heading-style="neutral"] .zenko-prose h1,
+[data-heading-style="neutral"] .zenko-prose h2,
+[data-heading-style="neutral"] .zenko-prose h3,
+[data-heading-style="neutral"] .zenko-prose h4,
+[data-heading-style="neutral"] .zenko-prose h5,
+[data-heading-style="neutral"] [data-slot="streaming-response"] h3,
+[data-heading-style="neutral"] [data-slot="streaming-response"] h4,
+[data-heading-style="neutral"] [data-slot="streaming-response"] h5 {
+  color: var(--fg);
 }
 .zenko-prose strong,
 .zenko-prose b,
@@ -1166,4 +1266,191 @@ html, body, #root {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .kokonut-ai-wave { animation: none !important; }
+}
+
+/* Skiper106 Smooth Caret Idle Blink */
+@keyframes zenko-caret-blink-kf {
+  0%, 48% { opacity: 1; }
+  52%, 100% { opacity: 0.2; }
+}
+.zenko-caret-blink {
+  animation: zenko-caret-blink-kf 1.05s ease-in-out infinite;
+}
+
+/* VengeanceUI Animated Button Sheen */
+@keyframes zenko-btn-sheen {
+  0% { transform: translateX(-130%); }
+  45%, 100% { transform: translateX(130%); }
+}
+.zenko-animated-btn-sheen {
+  background: linear-gradient(
+    112deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.34) 48%,
+    transparent 76%
+  );
+  transform: translateX(-130%);
+  animation: zenko-btn-sheen 3.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* Skiper40 Pure-CSS Animated Links (@skiper-ui/skiper40) */
+.skiper40-link {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 180ms ease;
+}
+.skiper40-link--bracket {
+  padding-inline: 2px;
+}
+.skiper40-link--bracket::before,
+.skiper40-link--bracket::after {
+  display: inline-block;
+  opacity: 0;
+  color: var(--accent);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
+}
+.skiper40-link--bracket::before {
+  content: "[";
+  margin-right: 2px;
+  transform: translateX(5px);
+}
+.skiper40-link--bracket::after {
+  content: "]";
+  margin-left: 2px;
+  transform: translateX(-5px);
+}
+.skiper40-link--bracket:hover::before,
+.skiper40-link--bracket:hover::after,
+.skiper40-link--bracket:focus-visible::before,
+.skiper40-link--bracket:focus-visible::after {
+  opacity: 1;
+  transform: translateX(0);
+}
+.skiper40-link--arrow_shift::after {
+  content: "↗";
+  font-size: 0.8em;
+  display: inline-block;
+  margin-left: 1px;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.skiper40-link--arrow_shift {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0% 1.5px;
+  transition: background-size 240ms cubic-bezier(0.22, 1, 0.36, 1), color 180ms ease;
+}
+.skiper40-link--arrow_shift:hover,
+.skiper40-link--arrow_shift:focus-visible {
+  background-size: 100% 1.5px;
+}
+.skiper40-link--arrow_shift:hover::after,
+.skiper40-link--arrow_shift:focus-visible::after {
+  transform: translate(2.5px, -2px);
+}
+.skiper40-link--highlight_fill {
+  padding: 0 4px;
+  margin: 0 -4px;
+  border-radius: 4px;
+  background-image: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 24%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 24%, transparent) 100%
+  );
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 2px;
+  transition: background-size 220ms cubic-bezier(0.22, 1, 0.36, 1), color 180ms ease;
+}
+.skiper40-link--highlight_fill:hover,
+.skiper40-link--highlight_fill:focus-visible {
+  background-size: 100% 100%;
+  color: var(--fg);
+}
+
+/* Composer Active Task Animations (BorderBeam Theme Accent Halo + 60/30/10 GPU Animations) */
+@property --zenko-beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes zenko-beam-spin {
+  to { --zenko-beam-angle: 360deg; }
+}
+@keyframes zenko-beam-shimmer {
+  0% { background-position: -180% 0; }
+  100% { background-position: 180% 0; }
+}
+@keyframes zenko-beam-breathe {
+  0%, 100% { opacity: calc(var(--beam-strength-val, 0.7) * 0.42); transform: scale(1); }
+  50% { opacity: calc(var(--beam-strength-val, 0.7) * 0.92); transform: scale(1.006); }
+}
+.zenko-composer-accent-halo {
+  border-radius: var(--beam-radius, 20px);
+  box-shadow: 0 0 calc(26px * var(--beam-strength-val, 0.7)) color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.zenko-composer-anim-shell {
+  border-radius: var(--beam-radius, 20px);
+}
+.zenko-composer-anim-shell[data-composer-anim="accent_orbit"] > .zenko-composer-anim-layer {
+  position: absolute;
+  inset: -1.5px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: calc(var(--beam-radius, 20px) + 1.5px);
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--zenko-beam-angle),
+    transparent 0deg,
+    transparent 245deg,
+    color-mix(in srgb, var(--accent) 55%, transparent) 295deg,
+    var(--accent) 340deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: var(--beam-strength-val, 0.7);
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 55%, transparent));
+  animation: zenko-beam-spin 2.4s linear infinite;
+}
+.zenko-composer-anim-shell[data-composer-anim="accent_shimmer_edge"] > .zenko-composer-anim-layer {
+  position: absolute;
+  inset: -1.5px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: calc(var(--beam-radius, 20px) + 1.5px);
+  padding: 1.5px;
+  background: linear-gradient(
+    110deg,
+    transparent 18%,
+    color-mix(in srgb, var(--accent) 32%, transparent) 38%,
+    var(--accent) 50%,
+    color-mix(in srgb, var(--accent) 32%, transparent) 62%,
+    transparent 82%
+  );
+  background-size: 240% 100%;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: var(--beam-strength-val, 0.7);
+  animation: zenko-beam-shimmer 2.1s linear infinite;
+}
+.zenko-composer-anim-shell[data-composer-anim="accent_breathe_halo"] > .zenko-composer-anim-layer {
+  position: absolute;
+  inset: -2px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: calc(var(--beam-radius, 20px) + 2px);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  box-shadow:
+    0 0 22px color-mix(in srgb, var(--accent) 44%, transparent),
+    inset 0 0 12px color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: zenko-beam-breathe 2.2s ease-in-out infinite;
 }

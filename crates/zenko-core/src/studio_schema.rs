@@ -142,6 +142,7 @@ const OPT_DOCK_SHELL: &[StudioOption] = &[
     StudioOption { value: "attached_rail", label: "Attached Rail", hint: "Full-height docked right border rail" },
     StudioOption { value: "glass_pill", label: "Frosted Glass", hint: "Translucent blurred glass capsule" },
     StudioOption { value: "vengeance_glass_dock", label: "VengeanceUI Glass Dock", hint: "Frosted specular glass dock with directional spring-gliding tooltip" },
+    StudioOption { value: "skiper98_vtooltip", label: "Skiper98 Vertical Tooltip", hint: "Skiper98 vertical dock with clip-path sliding label tooltips" },
     StudioOption { value: "minimal_strip", label: "Minimal Strip", hint: "Borderless quiet icon strip" },
 ];
 
@@ -226,6 +227,14 @@ const OPT_EMPHASIS_STYLE: &[StudioOption] = &[
     StudioOption { value: "neutral_bold", label: "Neutral Bold", hint: "High-contrast monochrome bold text without accent tint" },
 ];
 
+const OPT_HEADING_STYLE: &[StudioOption] = &[
+    StudioOption { value: "accent", label: "Theme Accent", hint: "Markdown headings colored with your active theme accent (Default)" },
+    StudioOption { value: "accent_bar", label: "Accent Left Bar", hint: "Crisp 3px accent bar beside display headings" },
+    StudioOption { value: "accent_underline", label: "Accent Hairline", hint: "Accent-colored headings with quiet bottom divider line" },
+    StudioOption { value: "soft_tint", label: "Soft Accent Tint", hint: "Accent headings over a subtle translucent accent wash" },
+    StudioOption { value: "neutral", label: "Neutral Foreground", hint: "Classic monochrome bold display headings" },
+];
+
 const OPT_MESSAGE_ACTIONS_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_message_actions", label: "Assistant Actions", hint: "Copy, retry & steps action strip (Default)" },
     StudioOption { value: "beui_inline", label: "BeUI Inline", hint: "Integrated BeUI streaming copy & retry bar" },
@@ -266,6 +275,8 @@ const OPT_ACTIVITY_STYLE: &[StudioOption] = &[
 
 const OPT_TOOLTIP_STYLE: &[StudioOption] = &[
     StudioOption { value: "accent_edge", label: "Accent Edge", hint: "Dark card with subtle accent hairline edge (Default)" },
+    StudioOption { value: "skiper101_arrow", label: "Skiper101 Arrow Tooltip", hint: "Crisp outlined tooltip with directional bordered pointer arrow" },
+    StudioOption { value: "skiper43_vercel", label: "Skiper43 Vercel Tooltip", hint: "Precision clip-path inverted Vercel tooltip with shortcut keycap" },
     StudioOption { value: "skecher_gooey", label: "SkecherUI Gooey Tooltip", hint: "Liquid SVG metaball droplet detaching with tactile spring physics" },
     StudioOption { value: "minimal_glass", label: "Frosted Glass", hint: "Translucent blurred glass hover badge" },
     StudioOption { value: "solid_contrast", label: "High Contrast", hint: "Inverted foreground pill for instant legibility" },
@@ -414,16 +425,73 @@ const OPT_LOADER_VARIANT: &[StudioOption] = &[
 ];
 
 const OPT_THEME_TRANSITION: &[StudioOption] = &[
-    StudioOption { value: "circle-blur", label: "Circle + Blur", hint: "Radial circular reveal with soft blur sweep" },
-    StudioOption { value: "circle", label: "Crisp Circle", hint: "Sharp circular radial reveal" },
+    StudioOption { value: "circle-blur", label: "Circle + Blur (Skiper26)", hint: "Radial circular reveal with soft blur sweep (Default)" },
+    StudioOption { value: "circle", label: "Crisp Circle (Skiper26)", hint: "Sharp circular radial reveal from toggle origin" },
+    StudioOption { value: "skiper26_bottom_up", label: "Skiper26 Bottom-Up", hint: "Smooth upward clip-path reveal sweeping from bottom edge" },
+    StudioOption { value: "skiper26_top_down", label: "Skiper26 Top-Down", hint: "Crisp downward curtain reveal from top edge" },
+    StudioOption { value: "skiper26_diagonal", label: "Skiper26 Diagonal Sweep", hint: "Angled polygon curtain sweep across the viewport" },
     StudioOption { value: "rectangle", label: "Wipe Sweep", hint: "Directional rectangular curtain reveal" },
     StudioOption { value: "blinds", label: "Shutter Blinds", hint: "Tiled vertical louver reveal" },
+];
+
+const OPT_THEME_TOGGLE_ICON: &[StudioOption] = &[
+    StudioOption { value: "default", label: "Classic Sun / Moon", hint: "Standard crisp Sun / Moon icon swap (Default)" },
+    StudioOption { value: "skiper4_eclipse", label: "Skiper4 Eclipse Morph", hint: "Animated SVG circular mask morphing into crescent moon" },
+    StudioOption { value: "skiper4_rays", label: "Skiper4 Sun Rays", hint: "Spring-rotating solar core with expanding/collapsing rays" },
+    StudioOption { value: "skiper4_horizon", label: "Skiper4 Horizon Split", hint: "180° geometric half-moon/sun disc flip" },
+    StudioOption { value: "skiper4_classic_fill", label: "Skiper4 Expand Fill", hint: "Rising circular dark/light fill mask transition" },
+    StudioOption { value: "skiper4_minimal_dot", label: "Skiper4 Minimal Orbit", hint: "Accent orbiting dot sliding inside precision ring" },
 ];
 
 const OPT_SCROLLBAR_STYLE: &[StudioOption] = &[
     StudioOption { value: "accent_thin", label: "Slim Accent", hint: "3.5px slim scrollbar tinted with active theme accent" },
     StudioOption { value: "muted_thin", label: "Slim Neutral", hint: "3.5px quiet neutral hairline scrollbar" },
     StudioOption { value: "minimal", label: "Ultra-Thin", hint: "2.5px minimal scrollbar fading on hover" },
+];
+
+const OPT_SCROLL_INDICATOR: &[StudioOption] = &[
+    StudioOption { value: "none", label: "Clean / None", hint: "No overlay fade or scroll meter (Default)" },
+    StudioOption { value: "skiper87_fade", label: "Skiper87 Scroll Fade", hint: "Soft top & bottom boundary fade masks while scrolling" },
+    StudioOption { value: "skiper89_bar", label: "Skiper89 Progress Bar 001", hint: "Accent top scroll progress bar with live percentage pill" },
+    StudioOption { value: "skiper94_ring", label: "Skiper94 Progress Ring 002", hint: "Floating circular SVG scroll progress ring & percent readout" },
+    StudioOption { value: "skiper87_and_89", label: "Skiper87 Fade + 89 Bar", hint: "Combines smooth top/bottom edge fade with top progress bar" },
+];
+
+const OPT_INPUT_CARET_STYLE: &[StudioOption] = &[
+    StudioOption { value: "skiper106_smooth", label: "Skiper106 Smooth Caret", hint: "Spring-animated glowing accent caret across Chat & Search inputs (Default)" },
+    StudioOption { value: "native_accent", label: "Native Accent Caret", hint: "Standard OS blinking caret tinted with active theme accent" },
+    StudioOption { value: "native_default", label: "System Default", hint: "Native browser text cursor with zero overlay" },
+];
+
+const OPT_COMPOSER_BORDER_ANIM: &[StudioOption] = &[
+    StudioOption { value: "border_beam_md", label: "Border Beam Glow", hint: "Libraries.dev BorderBeam (md) — luminous beam orbiting the composer (Default)" },
+    StudioOption { value: "border_beam_sm", label: "Border Beam Compact", hint: "Libraries.dev BorderBeam (sm) — tighter compact light runner" },
+    StudioOption { value: "border_beam_line", label: "Border Beam Line", hint: "Libraries.dev BorderBeam (line) — crisp traveling light bar along bottom edge" },
+    StudioOption { value: "border_beam_pulse_out", label: "Border Beam Pulse Out", hint: "Libraries.dev BorderBeam (pulse-outside) — outward breathing bloom aura" },
+    StudioOption { value: "border_beam_pulse_in", label: "Border Beam Pulse In", hint: "Libraries.dev BorderBeam (pulse-inner) — contained soft inner breathe" },
+    StudioOption { value: "accent_orbit", label: "Accent Comet Orbit", hint: "Strict 60/30/10 single-accent comet gliding cleanly around composer rim" },
+    StudioOption { value: "accent_shimmer_edge", label: "Accent Edge Shimmer", hint: "Subtle traveling theme-accent highlight sweeping across top & bottom borders" },
+    StudioOption { value: "accent_breathe_halo", label: "Accent Breathe Halo", hint: "Calm rhythmic ambient halo pulsing while Zenko executes tasks" },
+    StudioOption { value: "none", label: "Off / Static", hint: "Disable animated composer border effects" },
+];
+
+const OPT_COMPOSER_ANIM_TRIGGER: &[StudioOption] = &[
+    StudioOption { value: "while_working", label: "While Agent Works", hint: "Activates smoothly when Zenko is thinking, streaming, or running tasks (Default)" },
+    StudioOption { value: "always", label: "Always Active", hint: "Continuously animates around the chat input box" },
+    StudioOption { value: "on_focus", label: "On Focus & Working", hint: "Lights up when typing in the input or while Zenko executes tasks" },
+    StudioOption { value: "off", label: "Disabled", hint: "Keep the composer border completely static" },
+];
+
+const OPT_BEAM_COLOR_VARIANT: &[StudioOption] = &[
+    StudioOption { value: "theme_accent", label: "Theme Accent (60/30/10)", hint: "Matches your active global theme accent color automatically (Default)" },
+    StudioOption { value: "colorful", label: "Colorful Spectrum", hint: "Full multi-hue prismatic BorderBeam spectrum" },
+    StudioOption { value: "mono", label: "Monochrome", hint: "Sleek neutral white/silver light beam" },
+    StudioOption { value: "ocean", label: "Ocean", hint: "Cool sapphire & violet luminous tones" },
+    StudioOption { value: "sunset", label: "Sunset", hint: "Warm vermilion, amber & crimson tones" },
+    StudioOption { value: "forest", label: "Forest", hint: "Emerald & teal ambient light beam" },
+    StudioOption { value: "candy", label: "Candy", hint: "Rose & magenta neon sheen" },
+    StudioOption { value: "ice", label: "Ice", hint: "Crisp cyan & frost-blue glow" },
+    StudioOption { value: "gold", label: "Gold", hint: "Warm amber & champagne light beam" },
 ];
 
 const OPT_TABS_VARIANT: &[StudioOption] = &[
@@ -469,12 +537,18 @@ const OPT_TOAST_POSITION: &[StudioOption] = &[
 
 const OPT_LINK_HOVER_STYLE: &[StudioOption] = &[
     StudioOption { value: "zenko_underline", label: "Zenko Accent Sweep", hint: "Clean theme underline reveal with subtle tint (Default)" },
+    StudioOption { value: "skiper40_bracket", label: "Skiper40 Brackets", hint: "Pure-CSS Skiper40 expanding corner brackets & accent pop on hover" },
+    StudioOption { value: "skiper40_arrow_shift", label: "Skiper40 Arrow Shift", hint: "Skiper40 crisp sliding accent underline with gliding arrow glide" },
+    StudioOption { value: "skiper40_highlight_fill", label: "Skiper40 Fill Reveal", hint: "Skiper40 bottom-to-top accent highlight wash reveal" },
     StudioOption { value: "slide", label: "VengeanceUI Slide", hint: "Crisp horizontal underline sliding across on hover" },
     StudioOption { value: "double", label: "VengeanceUI Double", hint: "Dual opposing underlines with staggered easing" },
     StudioOption { value: "grow", label: "VengeanceUI Grow", hint: "Thickening primary line with secondary underline trail" },
+    StudioOption { value: "strike", label: "VengeanceUI Strike", hint: "Horizontal accent strike-sweep scaling the link text" },
     StudioOption { value: "fade", label: "VengeanceUI Fade", hint: "Soft upward-fading dual underline" },
+    StudioOption { value: "pulse", label: "VengeanceUI Pulse", hint: "Snappy vertical pulse flash rising along the baseline" },
     StudioOption { value: "swap", label: "VengeanceUI Swap", hint: "Opposite-direction swapping lines on hover" },
     StudioOption { value: "sweep", label: "VengeanceUI Sweep", hint: "Full link background sweep animation" },
+    StudioOption { value: "bounce", label: "VengeanceUI Bounce", hint: "Elastic pill bar compressing beneath lifted link text" },
     StudioOption { value: "arc", label: "VengeanceUI SVG Arc", hint: "Hand-drawn SVG arc stroke under link" },
     StudioOption { value: "scribble", label: "VengeanceUI SVG Scribble", hint: "Organic SVG scribble stroke drawing under link" },
 ];
@@ -587,6 +661,8 @@ const OPT_USER_AVATAR: &[StudioOption] = &[
 
 const OPT_BTN_STYLE: &[StudioOption] = &[
     StudioOption { value: "solid", label: "Solid", hint: "Filled primary accent button" },
+    StudioOption { value: "vengeance_liquid", label: "VengeanceUI Liquid", hint: "Glossy liquid-glass button with fluid rising accent wave on hover" },
+    StudioOption { value: "vengeance_animated", label: "VengeanceUI Animated", hint: "Smooth diagonal moving shine sweep with spring press physics" },
     StudioOption { value: "soft", label: "Soft Tint", hint: "Subtle tinted fill + border" },
     StudioOption { value: "outline", label: "Outline", hint: "Crisp bordered transparent fill" },
     StudioOption { value: "ghost", label: "Ghost", hint: "Borderless hover surface" },
@@ -1034,7 +1110,7 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 id: "streaming_response",
                 group: "Responses & Elements",
                 label: "Streaming Response",
-                description: "Live text reveal style plus important-word accent highlighting across all chat outputs.",
+                description: "Live text reveal style plus colored markdown headings and important-word highlights.",
                 preview: "streaming_response",
                 controls: &[
                     StudioControl {
@@ -1043,6 +1119,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         description: "Live text reveal and markdown stream presentation.",
                         kind: ControlKind::Cards,
                         options: OPT_STREAMING_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.heading_style",
+                        label: "Output Headings Color",
+                        description: "Controls how markdown headings (H1–H5) are colored in assistant responses.",
+                        kind: ControlKind::Cards,
+                        options: OPT_HEADING_STYLE,
                         min: None,
                         max: None,
                         step: None,
@@ -1328,6 +1415,17 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         unit: "",
                     },
                     StudioControl {
+                        path: "surface.input_caret_style",
+                        label: "Input Caret (Skiper106 Smooth Caret)",
+                        description: "Spring-animated accent caret across Chat input and all Search bars (Default: Skiper106).",
+                        kind: ControlKind::Cards,
+                        options: OPT_INPUT_CARET_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
                         path: "components.composer.show_attach",
                         label: "Attach Path Action",
                         description: "Display quick workspace path hint icon on the left.",
@@ -1358,6 +1456,59 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         min: None,
                         max: None,
                         step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "composer_animation",
+                group: "",
+                label: "Active Task Animation",
+                description: "Libraries.dev BorderBeam and theme-accent border animations while Zenko works on tasks.",
+                preview: "composer_animation",
+                controls: &[
+                    StudioControl {
+                        path: "components.composer.border_animation",
+                        label: "Border & Task Animation",
+                        description: "BorderBeam (md/sm/line/pulse) or 60/30/10 accent orbit/shimmer around the chat input.",
+                        kind: ControlKind::Cards,
+                        options: OPT_COMPOSER_BORDER_ANIM,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.animation_trigger",
+                        label: "When to Animate",
+                        description: "Run only while Zenko is executing tasks (Default), always, on focus, or off.",
+                        kind: ControlKind::Cards,
+                        options: OPT_COMPOSER_ANIM_TRIGGER,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.beam_color_variant",
+                        label: "Beam Color Palette",
+                        description: "Match your active global Theme Accent or choose a Libraries.dev BorderBeam spectrum.",
+                        kind: ControlKind::Cards,
+                        options: OPT_BEAM_COLOR_VARIANT,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.beam_strength",
+                        label: "Glow Intensity",
+                        description: "Controls beam & halo opacity (0.2 subtle to 1.0 vivid).",
+                        kind: ControlKind::Range,
+                        options: &[],
+                        min: Some(0.2),
+                        max: Some(1.0),
+                        step: Some(0.1),
                         unit: "",
                     },
                 ],
@@ -1522,6 +1673,28 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         unit: "",
                     },
                     StudioControl {
+                        path: "surface.scroll_indicator",
+                        label: "Scroll Fade & Progress (Skiper87 / 89 / 94)",
+                        description: "Edge fade masks (Skiper87) and live scroll progress bar (Skiper89) or radial ring (Skiper94).",
+                        kind: ControlKind::Cards,
+                        options: OPT_SCROLL_INDICATOR,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "surface.input_caret_style",
+                        label: "Chat & Search Caret (Skiper106)",
+                        description: "Spring-gliding smooth accent cursor across chat and search inputs.",
+                        kind: ControlKind::Cards,
+                        options: OPT_INPUT_CARET_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
                         path: "motion.smooth_scroll",
                         label: "Smooth Scroll Animation",
                         description: "Enable Lenis inertia smooth scrolling on scrollable pages.",
@@ -1596,10 +1769,21 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                     },
                     StudioControl {
                         path: "motion.theme_transition",
-                        label: "Theme Toggle Animation",
+                        label: "Theme Toggle Animation (Skiper26)",
                         description: "View Transition reveal used when toggling Dark & Light mode.",
                         kind: ControlKind::Cards,
                         options: OPT_THEME_TRANSITION,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "motion.theme_toggle_icon",
+                        label: "Theme Toggle Icon (Skiper4)",
+                        description: "Animated SVG Dark/Light switch icon rendered in the Dock & Studio header.",
+                        kind: ControlKind::Cards,
+                        options: OPT_THEME_TOGGLE_ICON,
                         min: None,
                         max: None,
                         step: None,

@@ -78,6 +78,16 @@ const TOOLTIP_STYLE_SPEC: Record<
     inlineStyle: { borderColor: 'color-mix(in srgb, var(--accent) 36%, var(--border))' },
     kbdClass: 'border-[var(--border)] bg-[var(--surface)] text-[var(--muted)]',
   },
+  skiper101_arrow: {
+    className:
+      'border border-[var(--border)] bg-[var(--surface)] text-[var(--fg)] shadow-[0_8px_24px_rgba(0,0,0,0.3)]',
+    kbdClass: 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)]',
+  },
+  skiper43_vercel: {
+    className:
+      'border border-[color-mix(in_srgb,var(--fg)_18%,transparent)] bg-[var(--fg)] text-[var(--bg)] shadow-[0_12px_30px_rgba(0,0,0,0.4)] font-medium tracking-[-0.015em]',
+    kbdClass: 'border-[var(--bg)]/25 bg-[var(--bg)]/15 text-[var(--bg)]',
+  },
   skecher_gooey: {
     className:
       'border border-transparent bg-[var(--fg)] text-[var(--bg)] shadow-[0_10px_28px_rgba(0,0,0,0.32)]',
@@ -174,8 +184,21 @@ export function ZenkoTooltipBadge({
           className="pointer-events-none absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 rounded-[2px] bg-[var(--fg)]"
         />
       )}
+      {styleKey === 'skiper101_arrow' && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-[5px] left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-b border-r border-[var(--border)] bg-[var(--surface)]"
+        />
+      )}
     </div>
   )
+}
+
+const SKIPER101_ARROW_POS: Record<TooltipSide, string> = {
+  top: '-bottom-[5px] left-1/2 -translate-x-1/2 border-b border-r',
+  bottom: '-top-[5px] left-1/2 -translate-x-1/2 border-t border-l',
+  left: '-right-[5px] top-1/2 -translate-y-1/2 border-t border-r',
+  right: '-left-[5px] top-1/2 -translate-y-1/2 border-b border-l',
 }
 
 /**
@@ -300,11 +323,13 @@ export function ZenkoTooltip({
                   initial={
                     useInstant
                       ? { opacity: 1 }
-                      : useFadeOnly
-                        ? { opacity: 0 }
-                        : { opacity: 0, x: offset.x, y: offset.y, scale: 0.95 }
+                      : cfg.style === 'skiper43_vercel'
+                        ? { opacity: 0, scale: 0.92, y: offset.y * 0.6, clipPath: 'inset(12% 0% 12% 0% round 6px)' }
+                        : useFadeOnly
+                          ? { opacity: 0 }
+                          : { opacity: 0, x: offset.x, y: offset.y, scale: 0.95 }
                   }
-                  animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+                  animate={{ opacity: 1, x: 0, y: 0, scale: 1, clipPath: 'inset(0% 0% 0% 0% round 6px)' }}
                   exit={
                     useInstant
                       ? { opacity: 0 }
@@ -320,8 +345,8 @@ export function ZenkoTooltip({
                         : { type: 'spring', stiffness: 460, damping: 28, mass: 0.65 }
                   }
                   className={cn(
-                    'flex items-center gap-2 whitespace-nowrap text-[11.5px] font-medium tracking-[-0.01em]',
-                    shapeClass,
+                    'relative flex items-center gap-2 whitespace-nowrap text-[11.5px] font-medium tracking-[-0.01em]',
+                    cfg.style === 'skiper43_vercel' ? 'rounded-[7px] px-2.5 py-1' : shapeClass,
                     styleSpec.className,
                   )}
                   style={styleSpec.inlineStyle}
@@ -336,6 +361,15 @@ export function ZenkoTooltip({
                     >
                       {shortcut}
                     </kbd>
+                  )}
+                  {cfg.style === 'skiper101_arrow' && (
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'pointer-events-none absolute h-2 w-2 rotate-45 border-[var(--border)] bg-[var(--surface)]',
+                        SKIPER101_ARROW_POS[side],
+                      )}
+                    />
                   )}
                 </motion.div>
               </div>

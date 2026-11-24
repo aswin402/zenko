@@ -15,6 +15,10 @@ export const DEFAULT_COMPONENT_SLOTS: ComponentSlots = {
     context_meter: 'progress_ring',
     context_meter_chrome: 'bordered_filled',
     action_pills: 'soft_tint',
+    border_animation: 'border_beam_md',
+    animation_trigger: 'while_working',
+    beam_color_variant: 'theme_accent',
+    beam_strength: 0.7,
     show_attach: true,
     show_policy: true,
     show_streaming_toggle: true,
@@ -45,6 +49,7 @@ export const DEFAULT_COMPONENT_SLOTS: ComponentSlots = {
     scroller_style: 'beui_rail',
     streaming_style: 'beui_stream',
     emphasis_style: 'accent',
+    heading_style: 'accent',
     message_actions_style: 'aui_message_actions',
     approval_style: 'aui_permission_grant',
     activity_style: 'aui_tool_call_icon',
@@ -87,6 +92,8 @@ export function normalizeUiCustomization(cfg: UiCustomization): UiCustomization 
     ...cfg,
     surface: {
       scrollbar_style: 'accent_thin',
+      scroll_indicator: 'none',
+      input_caret_style: 'skiper106_smooth',
       tabs_variant: 'pill',
       accordion_style: 'bouncy',
       alert_style: 'beui_alert',
@@ -106,6 +113,7 @@ export function normalizeUiCustomization(cfg: UiCustomization): UiCustomization 
     },
     motion: {
       theme_transition: 'circle-blur',
+      theme_toggle_icon: 'default',
       smooth_scroll: true,
       ...(cfg.motion || {}),
     },
@@ -216,9 +224,12 @@ export function applyUiCustomization(cfg: UiCustomization) {
   root.dataset.surface = cfg.surface.card_style
   root.dataset.bgPattern = cfg.surface.bg_pattern
   root.dataset.scrollbar = cfg.surface.scrollbar_style || 'accent_thin'
+  root.dataset.scrollIndicator = cfg.surface.scroll_indicator || 'none'
+  root.dataset.inputCaret = cfg.surface.input_caret_style || 'skiper106_smooth'
   root.dataset.tabsVariant = cfg.surface.tabs_variant || 'pill'
   root.dataset.elementChrome = cfg.surface.element_chrome || 'minimal'
   root.dataset.emphasisStyle = cfg.components?.chat_page?.emphasis_style || 'accent'
+  root.dataset.headingStyle = cfg.components?.chat_page?.heading_style || 'accent'
   root.dataset.tableStyle = cfg.surface.table_style || 'borderless'
   root.dataset.tooltipStyle = cfg.surface.tooltip_style || 'accent_edge'
   root.dataset.tooltipShape = cfg.surface.tooltip_shape || 'pill'
@@ -234,6 +245,7 @@ export function applyUiCustomization(cfg: UiCustomization) {
   root.dataset.chatLayout = cfg.layout.chat_layout
   root.dataset.orbStyle = cfg.motion.orb_style
   root.dataset.themeTransition = cfg.motion.theme_transition || 'circle-blur'
+  root.dataset.themeToggleIcon = cfg.motion.theme_toggle_icon || 'default'
 
   updateDynamicFoxFavicon(c.accent)
 }

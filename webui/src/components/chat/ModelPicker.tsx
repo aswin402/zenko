@@ -15,6 +15,7 @@ import { SPRING_PANEL } from '@/lib/ease'
 import type { ModelInfo, ProviderDescriptor } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
+import { SmoothCaretInput } from '@/components/skiperui/smooth-caret'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 import { ModelPicker as RareModelPicker, type PickerModel } from '@/components/rareui/model-picker'
 
@@ -291,9 +292,9 @@ export function ModelPicker({
         <div className="relative mb-2">
           <Search
             size={12}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)]"
+            className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2 text-[var(--muted)]"
           />
-          <input
+          <SmoothCaretInput
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}

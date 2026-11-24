@@ -4,6 +4,12 @@ import { SPRING_LAYOUT, SPRING_PRESS } from '@/lib/ease'
 import type { ActiveView, ComponentSlots, UiCustomization } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/motion/theme-toggle'
+import {
+  Skiper98VerticalDock,
+  VtooltipContent,
+  VtooltipItem,
+  type Skiper98DockItem,
+} from '@/components/skiperui/vertical-tooltip-menu'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 import { GlassDock, type GlassDockItem } from '@/components/vengeanceui/glass-dock'
 import { ZenkoIcon } from './ZenkoIcon'
@@ -27,6 +33,7 @@ const DOCK_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_style'], st
   glass_pill:
     'fixed right-4 top-4 z-30 rounded-full border border-[var(--border)] bg-[var(--card)]/72 p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.36)] backdrop-blur-md',
   vengeance_glass_dock: 'fixed right-4 top-4 z-30',
+  skiper98_vtooltip: 'fixed right-4 top-4 z-30',
   minimal_strip:
     'fixed right-3 top-4 z-30 rounded-xl border border-transparent bg-transparent p-1',
 }
@@ -39,6 +46,7 @@ const DOCK_PREVIEW_SHELL_CLASS: Record<ComponentSlots['right_menubar']['dock_sty
   glass_pill:
     'rounded-full border border-[var(--border)] bg-[var(--card)]/72 p-1.5 backdrop-blur-md shadow-lg',
   vengeance_glass_dock: '',
+  skiper98_vtooltip: '',
   minimal_strip: 'rounded-xl border border-dashed border-[var(--border)]/60 bg-transparent p-1',
 }
 
@@ -207,6 +215,80 @@ export const FloatingDock = memo(function FloatingDock({
                     <ZenkoIcon slot="panelRightClose" icons={ui.icons} size={17} />
                   </button>
                 </ZenkoTooltip>
+              )}
+            </>
+          }
+        />
+      </aside>
+    )
+  }
+
+  if (slot.dock_style === 'skiper98_vtooltip') {
+    const skiperItems: Skiper98DockItem[] = [
+      ...DOCK_ITEMS.map((item) => ({
+        id: item.id,
+        label: item.label,
+        icon: <ZenkoIcon slot={item.icon} icons={ui.icons} size={17} />,
+        active: activeView === item.id,
+        onClick: () => onSelectView(item.id),
+      })),
+      {
+        id: 'zenko_task',
+        label: activeBgCount > 0 ? `zenko_task (${activeBgCount} running)` : 'zenko_task',
+        icon: <ZenkoIcon slot="terminal" icons={ui.icons} size={17} />,
+        active: monitorOpen,
+        badge: activeBgCount,
+        onClick: onToggleMonitor,
+      },
+      {
+        id: 'appearance',
+        label: 'Customization',
+        shortcut: '⌘.',
+        icon: <ZenkoIcon slot="palette" icons={ui.icons} size={17} />,
+        active: activeView === 'appearance',
+        onClick: () =>
+          activeView === 'appearance' ? onOpenQuickCustomizer() : onSelectView('appearance'),
+      },
+    ]
+
+    return (
+      <aside aria-label="Workspace navigation dock" className={shellClass}>
+        <Skiper98VerticalDock
+          items={skiperItems}
+          activeIndicator={slot.active_indicator}
+          layoutId={layoutId}
+          disableLabels={false}
+          trailing={
+            <>
+              <div className="my-0.5 h-px w-5 bg-[var(--border)]" />
+              <VtooltipItem id="theme-mode">
+                <ThemeToggle
+                  mode={ui.mode === 'light' ? 'light' : 'dark'}
+                  variant={ui.motion.theme_transition || 'circle-blur'}
+                  start="top-right"
+                  onToggle={onToggleMode}
+                  aria-label="Toggle Dark / Light mode"
+                  className="h-9 w-9 rounded-[12px] text-[var(--muted)] transition-colors hover:bg-[var(--card)]/85 hover:text-[var(--fg)]"
+                  iconClassName="size-[17px]"
+                />
+                <VtooltipContent
+                  id="theme-mode"
+                  label={ui.mode === 'light' ? 'Switch to Dark mode' : 'Switch to Light mode'}
+                  side="left"
+                />
+              </VtooltipItem>
+              {!inlinePreview && (
+                <VtooltipItem id="collapse-dock">
+                  <button
+                    type="button"
+                    aria-label="Collapse navigation dock"
+                    onClick={onToggleCollapse}
+                    className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-[12px] text-[var(--muted)] transition-colors hover:bg-[var(--card)]/85 hover:text-[var(--fg)]"
+                  >
+                    <ZenkoIcon slot="panelRightClose" icons={ui.icons} size={17} />
+                  </button>
+                  <VtooltipContent id="collapse-dock" label="Collapse dock" side="left" />
+                </VtooltipItem>
               )}
             </>
           }

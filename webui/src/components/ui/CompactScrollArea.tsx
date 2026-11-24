@@ -9,6 +9,7 @@ import {
 import Lenis from 'lenis'
 import { useReducedMotion } from 'motion/react'
 import { cn } from '@/lib/utils'
+import { ScrollEffectsOverlay } from '@/components/skiperui/scroll-effects'
 
 const MIN_THUMB_PX = 28
 const MAX_THUMB_PX = 44
@@ -46,6 +47,9 @@ export function CompactScrollArea({
     overflow: false,
     thumbHeight: 36,
     thumbTop: TRACK_INSET_PX,
+    progress: 0,
+    atTop: true,
+    atBottom: true,
   })
   const [dragging, setDragging] = useState(false)
   const [scrolling, setScrolling] = useState(false)
@@ -68,7 +72,16 @@ export function CompactScrollArea({
     }
     if (maxScroll <= 1 || clientHeight <= TRACK_INSET_PX * 2) {
       setMetrics((prev) =>
-        prev.overflow ? { overflow: false, thumbHeight: 36, thumbTop: TRACK_INSET_PX } : prev,
+        prev.overflow
+          ? {
+              overflow: false,
+              thumbHeight: 36,
+              thumbTop: TRACK_INSET_PX,
+              progress: 0,
+              atTop: true,
+              atBottom: true,
+            }
+          : prev,
       )
       return
     }
@@ -76,13 +89,18 @@ export function CompactScrollArea({
     const proportional = Math.round((clientHeight / scrollHeight) * trackHeight)
     const thumbHeight = Math.max(MIN_THUMB_PX, Math.min(MAX_THUMB_PX, proportional))
     const travel = Math.max(1, trackHeight - thumbHeight)
-    const thumbTop = TRACK_INSET_PX + (scrollTop / maxScroll) * travel
+    const progress = Math.max(0, Math.min(1, scrollTop / maxScroll))
+    const thumbTop = TRACK_INSET_PX + progress * travel
+    const atTop = scrollTop <= 4
+    const atBottom = maxScroll - scrollTop <= 4
     setMetrics((prev) =>
       prev.overflow &&
       prev.thumbHeight === thumbHeight &&
-      Math.abs(prev.thumbTop - thumbTop) < 0.5
+      Math.abs(prev.thumbTop - thumbTop) < 0.5 &&
+      prev.atTop === atTop &&
+      prev.atBottom === atBottom
         ? prev
-        : { overflow: true, thumbHeight, thumbTop },
+        : { overflow: true, thumbHeight, thumbTop, progress, atTop, atBottom },
     )
   }, [stickToBottom])
 
@@ -228,6 +246,8 @@ export function CompactScrollArea({
           {children}
         </div>
       </div>
+
+      <ScrollEffectsOverlay metrics={metrics} scrolling={scrolling || dragging} />
 
       {metrics.overflow && (
         <div

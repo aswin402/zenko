@@ -15,6 +15,7 @@ import {
   PreviewRail,
   type PreviewRailItem,
 } from "@/components/motion/preview-rail";
+import { ScrollEffectsOverlay } from "@/components/skiperui/scroll-effects";
 import { useMessages } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -157,6 +158,39 @@ export function MessageScroller({
   const [railItems, setRailItems] = useState<PreviewRailItem[]>([]);
   const [activeRailId, setActiveRailId] = useState("");
   const [railOverflowing, setRailOverflowing] = useState(false);
+  const [scrollMetrics, setScrollMetrics] = useState({
+    overflow: false,
+    progress: 0,
+    atTop: true,
+    atBottom: true,
+  });
+  const [scrollingActive, setScrollingActive] = useState(false);
+  const scrollFadeTimerRef = useRef<number | undefined>(undefined);
+
+  const syncScrollMetrics = useCallback(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const maxScroll = Math.max(0, vp.scrollHeight - vp.clientHeight);
+    if (maxScroll <= 1) {
+      setScrollMetrics((prev) =>
+        prev.overflow
+          ? { overflow: false, progress: 0, atTop: true, atBottom: true }
+          : prev,
+      );
+      return;
+    }
+    const progress = Math.max(0, Math.min(1, vp.scrollTop / maxScroll));
+    const atTop = vp.scrollTop <= 6;
+    const atBottom = maxScroll - vp.scrollTop <= 6;
+    setScrollMetrics((prev) =>
+      prev.overflow &&
+      Math.abs(prev.progress - progress) < 0.005 &&
+      prev.atTop === atTop &&
+      prev.atBottom === atBottom
+        ? prev
+        : { overflow: true, progress, atTop, atBottom },
+    );
+  }, []);
   const {
     onScroll: onViewportScroll,
     onWheel: onViewportWheel,
@@ -399,6 +433,7 @@ export function MessageScroller({
       if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
       if (railFrameRef.current) cancelAnimationFrame(railFrameRef.current);
+      if (scrollFadeTimerRef.current) window.clearTimeout(scrollFadeTimerRef.current);
     },
     [],
   );
@@ -448,6 +483,10 @@ export function MessageScroller({
       {...restViewportProps}
       onScroll={(event) => {
         handleScroll();
+        syncScrollMetrics();
+        setScrollingActive(true);
+        if (scrollFadeTimerRef.current) window.clearTimeout(scrollFadeTimerRef.current);
+        scrollFadeTimerRef.current = window.setTimeout(() => setScrollingActive(false), 900);
         onViewportScroll?.(event);
       }}
       onWheel={(event) => {
@@ -490,9 +529,10 @@ export function MessageScroller({
   return (
     <div
       data-slot="message-scroller"
-      className={cn("min-h-0", className)}
+      className={cn("relative min-h-0", className)}
       {...props}
     >
+      <ScrollEffectsOverlay metrics={scrollMetrics} scrolling={scrollingActive} />
       {navigation === "rail" ? (
         <PreviewRail
           items={railOverflowing ? railItems : []}

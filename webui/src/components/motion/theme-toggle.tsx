@@ -6,11 +6,22 @@ import { useReducedMotion } from "motion/react";
 import { type ComponentPropsWithoutRef, useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { ActionSwapIcon } from "@/components/motion/action-swap";
+import {
+  Skiper4ToggleIcon,
+  type ThemeToggleIconVariant,
+} from "@/components/skiperui/theme-toggle-icons";
 import { EASE_OUT_CSS } from "@/lib/ease";
 import { useMessages } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-export type ThemeVariant = "rectangle" | "circle" | "circle-blur" | "blinds";
+export type ThemeVariant =
+  | "rectangle"
+  | "circle"
+  | "circle-blur"
+  | "blinds"
+  | "skiper26_bottom_up"
+  | "skiper26_top_down"
+  | "skiper26_diagonal";
 
 export type RectStart =
   | "top-left"
@@ -38,6 +49,8 @@ export interface ThemeToggleProps
   variant?: ThemeVariant;
   /** Origin direction for the reveal. Default: "top-right". */
   start?: RectStart;
+  /** Animated icon variant (`@skiper-ui/skiper4`). Defaults to global `motion.theme_toggle_icon`. */
+  iconVariant?: ThemeToggleIconVariant;
   iconClassName?: string;
   /** Override any built-in string. */
   labels?: Partial<ThemeToggleMessages>;
@@ -103,6 +116,36 @@ html[data-beui-vt="blinds"]::view-transition-new(root) {
   from { --beui-vt-slat: -20px; }
   to   { --beui-vt-slat: 72px; }
 }
+html[data-beui-vt="skiper26-bottom-up"]::view-transition-old(root),
+html[data-beui-vt="skiper26-top-down"]::view-transition-old(root),
+html[data-beui-vt="skiper26-diagonal"]::view-transition-old(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+html[data-beui-vt="skiper26-bottom-up"]::view-transition-new(root) {
+  mix-blend-mode: normal;
+  animation: skiper26-bottom-up-reveal 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+html[data-beui-vt="skiper26-top-down"]::view-transition-new(root) {
+  mix-blend-mode: normal;
+  animation: skiper26-top-down-reveal 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+html[data-beui-vt="skiper26-diagonal"]::view-transition-new(root) {
+  mix-blend-mode: normal;
+  animation: skiper26-diagonal-reveal 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes skiper26-bottom-up-reveal {
+  from { clip-path: inset(100% 0 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+@keyframes skiper26-top-down-reveal {
+  from { clip-path: inset(0 0 100% 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+@keyframes skiper26-diagonal-reveal {
+  from { clip-path: polygon(0 0, 0 0, 0 0, 0 0); }
+  to   { clip-path: polygon(0 0, 200% 0, 100% 200%, 0 100%); }
+}
 `;
 
 const RECT_FROM: Record<RectStart, string> = {
@@ -166,6 +209,12 @@ export function runThemeViewTransition(
     root.dataset.beuiVt = "rect";
   } else if (variant === "blinds") {
     root.dataset.beuiVt = "blinds";
+  } else if (variant === "skiper26_bottom_up") {
+    root.dataset.beuiVt = "skiper26-bottom-up";
+  } else if (variant === "skiper26_top_down") {
+    root.dataset.beuiVt = "skiper26-top-down";
+  } else if (variant === "skiper26_diagonal") {
+    root.dataset.beuiVt = "skiper26-diagonal";
   } else {
     const originStr = options?.origin
       ? `${options.origin.x}px ${options.origin.y}px`
@@ -224,11 +273,46 @@ export function useThemeToggle({
   return { isDark, mounted, toggle };
 }
 
+function useGlobalToggleIconVariant(override?: ThemeToggleIconVariant): ThemeToggleIconVariant {
+  const [iconStyle, setIconStyle] = useState<ThemeToggleIconVariant>(() => {
+    if (override) return override;
+    if (typeof document === "undefined") return "default";
+    return (
+      (document.documentElement.dataset.themeToggleIcon as ThemeToggleIconVariant | undefined) ||
+      "default"
+    );
+  });
+
+  useEffect(() => {
+    if (override) {
+      setIconStyle(override);
+      return;
+    }
+    if (typeof document === "undefined") return;
+    const sync = () => {
+      setIconStyle(
+        (document.documentElement.dataset.themeToggleIcon as ThemeToggleIconVariant | undefined) ||
+          "default",
+      );
+    };
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme-toggle-icon"],
+    });
+    return () => obs.disconnect();
+  }, [override]);
+
+  return override ?? iconStyle;
+}
+
 export function ThemeToggle({
   mode = "dark",
   onToggle,
   variant = "circle-blur",
   start = "top-right",
+  iconVariant: iconOverride,
   className,
   iconClassName,
   labels,
@@ -241,6 +325,7 @@ export function ThemeToggle({
     variant,
     start,
   });
+  const activeIconVariant = useGlobalToggleIconVariant(iconOverride);
 
   return (
     <button
@@ -251,17 +336,25 @@ export function ThemeToggle({
       {...rest}
     >
       {mounted ? (
-        <ActionSwapIcon
-          value={isDark ? "dark" : "light"}
-          animation="blur"
-          className={iconClassName}
-        >
-          {isDark ? (
-            <Sun className={cn("size-4", iconClassName)} />
-          ) : (
-            <Moon className={cn("size-4", iconClassName)} />
-          )}
-        </ActionSwapIcon>
+        activeIconVariant !== "default" ? (
+          <Skiper4ToggleIcon
+            variant={activeIconVariant}
+            isDark={isDark}
+            className={iconClassName}
+          />
+        ) : (
+          <ActionSwapIcon
+            value={isDark ? "dark" : "light"}
+            animation="blur"
+            className={iconClassName}
+          >
+            {isDark ? (
+              <Sun className={cn("size-4", iconClassName)} />
+            ) : (
+              <Moon className={cn("size-4", iconClassName)} />
+            )}
+          </ActionSwapIcon>
+        )
       ) : (
         <span className={cn("size-4", iconClassName)} aria-hidden="true" />
       )}

@@ -49,6 +49,8 @@ pub enum ButtonStyle {
     Glow,
     Tactile3d,
     Shimmer,
+    VengeanceLiquid,
+    VengeanceAnimated,
 }
 
 impl ButtonStyle {
@@ -62,6 +64,8 @@ impl ButtonStyle {
             Self::Glow => "glow",
             Self::Tactile3d => "tactile3d",
             Self::Shimmer => "shimmer",
+            Self::VengeanceLiquid => "vengeance_liquid",
+            Self::VengeanceAnimated => "vengeance_animated",
         }
     }
 }
@@ -294,6 +298,10 @@ pub struct SurfaceCustomization {
     pub border_contrast: String,
     #[serde(default = "default_scrollbar_style")]
     pub scrollbar_style: String,
+    #[serde(default = "default_scroll_indicator")]
+    pub scroll_indicator: String,
+    #[serde(default = "default_input_caret_style")]
+    pub input_caret_style: String,
     #[serde(default = "default_tabs_variant")]
     pub tabs_variant: String,
     #[serde(default = "default_accordion_style")]
@@ -334,6 +342,8 @@ impl Default for SurfaceCustomization {
             radius_px: default_radius_px(),
             border_contrast: default_border_contrast(),
             scrollbar_style: default_scrollbar_style(),
+            scroll_indicator: default_scroll_indicator(),
+            input_caret_style: default_input_caret_style(),
             tabs_variant: default_tabs_variant(),
             accordion_style: default_accordion_style(),
             alert_style: default_alert_style(),
@@ -361,6 +371,12 @@ fn default_border_contrast() -> String {
 }
 fn default_scrollbar_style() -> String {
     "accent_thin".to_string()
+}
+fn default_scroll_indicator() -> String {
+    "none".to_string()
+}
+fn default_input_caret_style() -> String {
+    "skiper106_smooth".to_string()
 }
 fn default_tabs_variant() -> String {
     "pill".to_string()
@@ -599,6 +615,8 @@ pub struct MotionCustomization {
     pub orb_style: OrbStyle,
     #[serde(default = "default_theme_transition")]
     pub theme_transition: String,
+    #[serde(default = "default_theme_toggle_icon")]
+    pub theme_toggle_icon: String,
     #[serde(default = "default_true_ui")]
     pub smooth_scroll: bool,
 }
@@ -609,6 +627,7 @@ impl Default for MotionCustomization {
             preset: MotionPreset::default(),
             orb_style: OrbStyle::default(),
             theme_transition: default_theme_transition(),
+            theme_toggle_icon: default_theme_toggle_icon(),
             smooth_scroll: true,
         }
     }
@@ -616,6 +635,9 @@ impl Default for MotionCustomization {
 
 fn default_theme_transition() -> String {
     "circle-blur".to_string()
+}
+fn default_theme_toggle_icon() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -666,6 +688,14 @@ pub struct ComposerSlotConfig {
     pub context_meter_chrome: String,
     #[serde(default = "default_action_pills")]
     pub action_pills: String,
+    #[serde(default = "default_border_animation")]
+    pub border_animation: String,
+    #[serde(default = "default_animation_trigger")]
+    pub animation_trigger: String,
+    #[serde(default = "default_beam_color_variant")]
+    pub beam_color_variant: String,
+    #[serde(default = "default_beam_strength")]
+    pub beam_strength: f32,
     #[serde(default = "default_true_ui")]
     pub show_attach: bool,
     #[serde(default = "default_true_ui")]
@@ -685,6 +715,10 @@ impl Default for ComposerSlotConfig {
             context_meter: default_context_meter(),
             context_meter_chrome: default_context_meter_chrome(),
             action_pills: default_action_pills(),
+            border_animation: default_border_animation(),
+            animation_trigger: default_animation_trigger(),
+            beam_color_variant: default_beam_color_variant(),
+            beam_strength: default_beam_strength(),
             show_attach: true,
             show_policy: true,
             show_streaming_toggle: true,
@@ -700,6 +734,10 @@ fn default_send_icon() -> String { "arrow_up".into() }
 fn default_context_meter() -> String { "progress_ring".into() }
 fn default_context_meter_chrome() -> String { "bordered_filled".into() }
 fn default_action_pills() -> String { "soft_tint".into() }
+fn default_border_animation() -> String { "border_beam_md".into() }
+fn default_animation_trigger() -> String { "while_working".into() }
+fn default_beam_color_variant() -> String { "theme_accent".into() }
+fn default_beam_strength() -> f32 { 0.7 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftMenubarSlotConfig {
@@ -780,6 +818,8 @@ pub struct ChatPageSlotConfig {
     pub streaming_style: String,
     #[serde(default = "default_emphasis_style")]
     pub emphasis_style: String,
+    #[serde(default = "default_heading_style")]
+    pub heading_style: String,
     #[serde(default = "default_approval_style")]
     pub approval_style: String,
     #[serde(default = "default_activity_style")]
@@ -832,6 +872,7 @@ impl Default for ChatPageSlotConfig {
             scroller_style: default_scroller_style(),
             streaming_style: default_streaming_style(),
             emphasis_style: default_emphasis_style(),
+            heading_style: default_heading_style(),
             approval_style: default_approval_style(),
             activity_style: default_activity_style(),
             loader_variant: default_loader_variant(),
@@ -862,6 +903,7 @@ fn default_tool_card_style() -> String { "aui_smart".into() }
 fn default_scroller_style() -> String { "beui_rail".into() }
 fn default_streaming_style() -> String { "beui_stream".into() }
 fn default_emphasis_style() -> String { "accent".into() }
+fn default_heading_style() -> String { "accent".into() }
 fn default_approval_style() -> String { "aui_permission_grant".into() }
 fn default_activity_style() -> String { "aui_tool_call_icon".into() }
 fn default_loader_variant() -> String { "dot-matrix".into() }
@@ -1422,6 +1464,13 @@ mod tests {
         assert_eq!(parsed.components.chat_page.scroller_style, "beui_rail");
         assert_eq!(parsed.components.chat_page.streaming_style, "beui_stream");
         assert_eq!(parsed.components.chat_page.emphasis_style, "accent");
+        assert_eq!(parsed.components.chat_page.heading_style, "accent");
+        assert_eq!(parsed.surface.input_caret_style, "skiper106_smooth");
+        assert_eq!(parsed.surface.scroll_indicator, "none");
+        assert_eq!(parsed.motion.theme_toggle_icon, "default");
+        assert_eq!(parsed.components.composer.border_animation, "border_beam_md");
+        assert_eq!(parsed.components.composer.animation_trigger, "while_working");
+        assert_eq!(parsed.components.composer.beam_color_variant, "theme_accent");
         assert_eq!(parsed.components.chat_page.error_state_style, "aui_error_card");
         assert_eq!(parsed.components.chat_page.stopped_run_style, "aui_stopped_run");
         assert_eq!(parsed.components.chat_page.file_tree_style, "aui_file_tree");

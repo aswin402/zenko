@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils'
 import { CUSTOMIZABLE_ICON_OPTIONS, ZenkoIcon } from '@/components/beui/ZenkoIcon'
 import { AgentAvatar, UserAvatar } from '@/components/beui/ZenkoAvatars'
 import { BouncyAccordion } from '@/components/motion/bouncy-accordion'
+import { SmoothCaretInput } from '@/components/skiperui/smooth-caret'
 import {
   ColorPicker,
   ColorPickerArea,
@@ -1173,9 +1174,9 @@ export function AppearanceStudio({
           <div className="relative flex items-center">
             <Search
               size={13}
-              className="pointer-events-none absolute left-2.5 text-[var(--muted)]"
+              className="pointer-events-none absolute left-2.5 z-10 text-[var(--muted)]"
             />
-            <input
+            <SmoothCaretInput
               ref={searchInputRef}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}

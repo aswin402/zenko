@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.13] - 2026-11-24
+
+Added colored markdown headings in chat output, made Skiper106 Smooth Caret the default across chat & search inputs, integrated Skiper UI (`skiper106`, `skiper101`, `skiper98`, `skiper96`, `skiper89`, `skiper94`, `skiper87`, `skiper43`, `skiper40`, `skiper26`, `skiper4`) and VengeanceUI (`line-hover-link`, `liquid-button`, `animated-button`) theme options, and installed Libraries.dev `border-beam` with active agent-task animations for the Chat Input Box.
+
+### Added
+- **Colored Markdown Headings in Chat Output (`components.chat_page.heading_style`, `index.css`, `StudioPreviews.tsx`):**
+  - Colored all assistant markdown headings (`H1–H5`) with your active global theme accent by default, with 5 customizable styles under **Chat Page → Responses & Elements → Streaming Response**: `accent` (Default), `accent_bar`, `accent_underline`, `soft_tint`, and `neutral`.
+- **Skiper106 Smooth Caret Default (`skiperui/smooth-caret.tsx`, `surface.input_caret_style`):**
+  - Added `SmoothCaretInput` (Canvas 2D spring caret) and `SmoothCaretTextarea` (multiline wrapped mirror spring caret) as the **default** (`skiper106_smooth`) across the Chat Input Box and all Search inputs (Appearance Studio, Model Picker, Memory Search, Flight Recorder Logs, and Command Palette), with theme toggle options (`skiper106_smooth`, `native_accent`, `native_default`).
+- **Libraries.dev `border-beam` & Active Agent Task Animations (`border-beam@1.4.1`, `ui/ComposerBeam.tsx`, `PromptComposer.tsx`):**
+  - Added dedicated **Chat Input Box → Active Task Animation** page in Appearance Studio featuring `BorderBeam` (`md`, `sm`, `line`, `pulse-outside`, `pulse-inner`) plus 60/30/10 Accent Task Animations (`accent_orbit`, `accent_shimmer_edge`, `accent_breathe_halo`), trigger modes (`while_working` default, `always`, `on_focus`, `off`), color palettes (`theme_accent`, `colorful`, `mono`, `ocean`, `sunset`, `forest`, `candy`, `ice`, `gold`), and glow intensity slider (`0.2–1.0`).
+- **Skiper UI Theme Options (`skiper101`, `skiper98`, `skiper96`, `skiper89`, `skiper94`, `skiper87`, `skiper43`, `skiper40`, `skiper26`, `skiper4`):**
+  - **Tooltips (`Tooltip.tsx`):** Added `skiper101_arrow` (outlined directional arrow tooltip) and `skiper43_vercel` (precision clip-path inverted Vercel tooltip).
+  - **Right Dock (`skiperui/vertical-tooltip-menu.tsx`, `FloatingDock.tsx`):** Added `skiper98_vtooltip` vertical tooltip menu with clip-path sliding labels.
+  - **Scroll Fade & Progress (`skiperui/scroll-effects.tsx`, `CompactScrollArea.tsx`, `message-scroller.tsx`):** Added `surface.scroll_indicator` supporting `skiper87_fade` (boundary edge fades), `skiper89_bar` (top progress bar 001 + percentage pill), `skiper94_ring` (floating circular SVG ring 002), and `skiper87_and_89`.
+  - **Animated Links (`index.css`, `ChatStream.tsx`, `rareui/streaming-response.tsx`):** Added pure-CSS Skiper40 links (`skiper40_bracket`, `skiper40_arrow_shift`, `skiper40_highlight_fill`) and exposed all 11 VengeanceUI `LineHoverLink` variants (including `strike`, `pulse`, `bounce`).
+  - **Theme Toggle Transitions & Icons (`motion/theme-toggle.tsx`, `skiperui/theme-toggle-icons.tsx`):** Added Skiper26 View Transition variants (`skiper26_bottom_up`, `skiper26_top_down`, `skiper26_diagonal`) and 5 Skiper4 animated SVG toggle icons (`skiper4_eclipse`, `skiper4_rays`, `skiper4_horizon`, `skiper4_classic_fill`, `skiper4_minimal_dot`).
+- **VengeanceUI Liquid & Animated Buttons (`vengeanceui/liquid-button.tsx`, `vengeanceui/animated-button.tsx`, `index.css`):**
+  - Added `vengeance_liquid` and `vengeance_animated` to global `buttons.style` so primary buttons across the entire WebUI inherit glossy liquid wave or moving diagonal shine physics.
+
 ## [0.0.12] - 2026-11-24
 
 Split Theme Studio's bundled `Borders, Errors & States` section into 5 separate independently customizable components and restored active theme accent-color highlighting on important bold words across all chat output renderers.

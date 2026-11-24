@@ -27,6 +27,7 @@ import type {
   WorkspaceSnapshot,
 } from '@/lib/types'
 import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
+import { SmoothCaretInput } from '@/components/skiperui/smooth-caret'
 import { ZenkoSelect } from '@/components/ui/ZenkoSelect'
 import { ScrollPage, type SecondaryTabsVariant } from './shared'
 
@@ -628,8 +629,8 @@ export function MemoryView({
 
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <Search size={13} className="absolute left-2.5 top-2.5 text-[var(--muted)]" />
-              <input
+              <Search size={13} className="pointer-events-none absolute left-2.5 top-2.5 z-10 text-[var(--muted)]" />
+              <SmoothCaretInput
                 value={sessionQuery}
                 onChange={(e) => setSessionQuery(e.target.value)}
                 onKeyDown={(e) => {

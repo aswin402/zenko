@@ -34,10 +34,14 @@ import { StreamingResponse as EaseStreamingResponse } from '@/components/easeui/
 import { Faq as RareFaq } from '@/components/rareui/faq'
 import { StreamingResponse as RareStreamingResponse } from '@/components/rareui/streaming-response'
 import { ExpandableTabs } from '@/components/skiperui/expandable-tabs'
+import { SmoothCaretInput } from '@/components/skiperui/smooth-caret'
+import { AnimatedButton } from '@/components/vengeanceui/animated-button'
 import {
   LineHoverLink,
   type LineHoverVariant,
 } from '@/components/vengeanceui/line-hover-link'
+import { LiquidButton } from '@/components/vengeanceui/liquid-button'
+import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { Sidebar } from '@/components/chat/Sidebar'
@@ -382,15 +386,18 @@ function StreamingPreview({ ui }: { ui: UiCustomization }) {
   const [replayCount, setReplayCount] = useState(0)
   const style = ui.components.chat_page.streaming_style
   const emphasisStyle = ui.components.chat_page.emphasis_style || 'accent'
+  const headingStyle = ui.components.chat_page.heading_style || 'accent'
   const sample =
-    'Daemon is healthy at **28.4 MB VmRSS** with **SQLite WAL mode** and `zero warnings` across all crates.'
-  const parsedSegments = splitIntoStreamingSegments(sample)
+    '### Runtime Health\nDaemon is healthy at **28.4 MB VmRSS** with **SQLite WAL mode** and `zero warnings` across all crates.'
+  const flatSample =
+    'Runtime Health — Daemon is healthy at **28.4 MB VmRSS** with **SQLite WAL mode** and `zero warnings`.'
+  const parsedSegments = splitIntoStreamingSegments(flatSample)
 
   return (
     <div className="flex w-full max-w-[600px] flex-col gap-3">
       <div className="flex items-center justify-between font-mono text-[11px] text-[var(--muted)]">
         <span>
-          stream: {style} · emphasis: {emphasisStyle}
+          stream: {style} · heading: {headingStyle} · emphasis: {emphasisStyle}
         </span>
         <button
           type="button"
@@ -427,6 +434,64 @@ function StreamingPreview({ ui }: { ui: UiCustomization }) {
           <MarkdownProse text={sample} />
         )}
       </div>
+    </div>
+  )
+}
+
+function ComposerAnimationPreview({ ctx }: { ctx: StudioPreviewContext }) {
+  const { ui, activeModel, activeMode } = ctx
+  const [simWorking, setSimWorking] = useState(true)
+  const anim = ui.components.composer.border_animation || 'border_beam_md'
+  const trigger = ui.components.composer.animation_trigger || 'while_working'
+  const colorVar = ui.components.composer.beam_color_variant || 'theme_accent'
+
+  return (
+    <div className="flex w-full max-w-[660px] flex-col gap-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-[var(--muted)]">
+        <span>
+          {anim} · {trigger} · {colorVar}
+        </span>
+        <button
+          type="button"
+          onClick={() => setSimWorking((v) => !v)}
+          className={cn(
+            'inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10.5px] font-medium transition-colors',
+            simWorking
+              ? 'border-[var(--accent)]/55 bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--accent)]'
+              : 'border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--fg)]',
+          )}
+        >
+          <span
+            className="h-1.5 w-1.5 rounded-full"
+            style={{ backgroundColor: simWorking ? 'var(--accent)' : 'var(--muted)' }}
+          />
+          {simWorking ? 'Simulating Agent Working' : 'Idle (Click to Simulate Task)'}
+        </button>
+      </div>
+      <PromptComposer
+        compactWrapper
+        value={ctx.previewPrompt}
+        onChange={ctx.setPreviewPrompt}
+        onSend={() => {}}
+        onStop={() => setSimWorking(false)}
+        isRunning={simWorking}
+        themeMode={activeMode}
+        activeProvider={ctx.activeProvider}
+        activeModel={activeModel}
+        providers={ctx.providers}
+        configuredProviders={ctx.configuredProviders}
+        models={ctx.models}
+        onSelectProviderModel={() => {}}
+        permissionMode="autonomous"
+        onChangePermission={() => {}}
+        streamingEnabled={true}
+        onToggleStreaming={() => {}}
+        totalTokens={10300}
+        branchEditBanner={false}
+        onCancelBranchEdit={() => {}}
+        composerStyle={ui.components.composer}
+        popoverStyle={ui.surface.popover_style || 'gooey'}
+      />
     </div>
   )
 }
@@ -1193,6 +1258,7 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
           onSend={() => {}}
           onStop={() => {}}
           isRunning={false}
+          themeMode={activeMode}
           activeProvider={ctx.activeProvider}
           activeModel={activeModel}
           providers={ctx.providers}
@@ -1211,6 +1277,8 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
         />
       </div>
     ),
+
+    composer_animation: () => <ComposerAnimationPreview ctx={ctx} />,
 
     model_picker: () => (
       <ModelPicker
@@ -1295,8 +1363,8 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
     ),
 
     layout: () => (
-      <div className="zenko-canvas flex w-full max-w-[600px] flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-6">
-        <div className="flex items-center justify-between">
+      <div className="zenko-canvas flex w-full max-w-[600px] flex-col gap-3.5 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <AgentAvatar
               variant={ui.motion.orb_style === 'hidden' ? 'liquid_halo' : ui.motion.orb_style}
@@ -1308,8 +1376,8 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
             />
             <div>
               <div className="text-[14px] font-semibold text-[var(--fg)]">Zenko Canvas &amp; Motion</div>
-              <div className="font-mono text-[11px] text-[var(--muted)]">
-                {ui.surface.bg_pattern} · {ui.layout.density} · {ui.motion.preset}
+              <div className="font-mono text-[10.5px] text-[var(--muted)]">
+                {ui.surface.bg_pattern} · {ui.layout.density} · {ui.surface.scroll_indicator || 'none'}
               </div>
             </div>
           </div>
@@ -1317,42 +1385,73 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
             <ThemeToggle
               mode={activeMode}
               variant={themeTransition}
+              iconVariant={ui.motion.theme_toggle_icon || 'default'}
               start="center"
               onToggle={toggleMode}
-              className="h-7 w-7 rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--fg)]"
-              iconClassName="size-3.5"
+              className="h-8 w-8 rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--fg)]"
+              iconClassName="size-4"
             />
-            <span className="rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--muted)]">
-              {themeTransition}
+            <span className="rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
+              {themeTransition} · {ui.motion.theme_toggle_icon || 'default'}
             </span>
           </div>
         </div>
-        <div className="z-surface-card text-[13px] leading-relaxed text-[var(--fg)]/90">
-          The quick brown fox ships 24/7 native Rust agents.{' '}
-          <code className="font-mono text-[12px]" style={{ color: 'var(--accent)' }}>
-            --&gt; AGENT ok 1.1s
-          </code>
-        </div>
+        <SmoothCaretInput
+          defaultValue="Type here to test Skiper106 smooth caret..."
+          aria-label="Skiper106 smooth caret sandbox"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-[12.5px] text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
+        />
+        <CompactScrollArea
+          autoHeight
+          className="rounded-lg border border-[var(--border)]/75 bg-[var(--surface)]/70"
+          viewportClassName="max-h-24 p-3 pr-5 text-[12px] leading-relaxed text-[var(--fg)]/85"
+        >
+          <p className="mb-2">
+            Scroll inside this box to preview <strong>Skiper87 Edge Fade</strong>,{' '}
+            <strong>Skiper89 Progress Bar</strong>, or <strong>Skiper94 Progress Ring</strong> live.
+          </p>
+          <p className="mb-2 text-[var(--muted)]">
+            Native Rust 24/7 daemon with SQLite WAL storage, mimalloc, rustls, and bounded Tokio workers.
+          </p>
+          <p className="font-mono text-[11px]" style={{ color: 'var(--accent)' }}>
+            --&gt; AGENT ok 1.1s · 28.4 MB VmRSS
+          </p>
+        </CompactScrollArea>
       </div>
     ),
 
     buttons: () => (
-      <div className="flex flex-wrap items-center justify-center gap-2.5">
-        <button type="button" className="z-btn z-btn-primary">
-          <ZenkoIcon slot="sparkle" icons={ui.icons} size={14} /> Primary
-        </button>
-        <button type="button" className="z-btn z-btn-vermilion-soft">
-          <ZenkoIcon slot="plus" icons={ui.icons} size={14} /> Accent Soft
-        </button>
-        <button type="button" className="z-btn z-btn-secondary">
-          <ZenkoIcon slot="terminal" icons={ui.icons} size={14} /> Secondary
-        </button>
-        <button type="button" className="z-btn z-btn-ghost">
-          Ghost
-        </button>
-        <button type="button" className="z-btn z-btn-danger">
-          Danger
-        </button>
+      <div className="flex flex-col items-center gap-3.5">
+        <div className="flex flex-wrap items-center justify-center gap-2.5">
+          {ui.buttons.style === 'vengeance_liquid' ? (
+            <LiquidButton>
+              <ZenkoIcon slot="sparkle" icons={ui.icons} size={14} /> Primary Liquid
+            </LiquidButton>
+          ) : ui.buttons.style === 'vengeance_animated' ? (
+            <AnimatedButton>
+              <ZenkoIcon slot="sparkle" icons={ui.icons} size={14} /> Primary Animated
+            </AnimatedButton>
+          ) : (
+            <button type="button" className="z-btn z-btn-primary">
+              <ZenkoIcon slot="sparkle" icons={ui.icons} size={14} /> Primary
+            </button>
+          )}
+          <button type="button" className="z-btn z-btn-vermilion-soft">
+            <ZenkoIcon slot="plus" icons={ui.icons} size={14} /> Accent Soft
+          </button>
+          <button type="button" className="z-btn z-btn-secondary">
+            <ZenkoIcon slot="terminal" icons={ui.icons} size={14} /> Secondary
+          </button>
+          <button type="button" className="z-btn z-btn-ghost">
+            Ghost
+          </button>
+          <button type="button" className="z-btn z-btn-danger">
+            Danger
+          </button>
+        </div>
+        <span className="font-mono text-[10.5px] text-[var(--muted)]">
+          style:{ui.buttons.style} · shape:{ui.buttons.shape} · size:{ui.buttons.size} · motion:{ui.buttons.motion}
+        </span>
       </div>
     ),
 
@@ -1364,6 +1463,14 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
             href="#preview-link"
             onClick={(e) => e.preventDefault()}
             className="zenko-prose-link font-medium"
+          >
+            {label}
+          </a>
+        ) : linkHoverStyle.startsWith('skiper40_') ? (
+          <a
+            href="#preview-link"
+            onClick={(e) => e.preventDefault()}
+            className={cn('skiper40-link', `skiper40-link--${linkHoverStyle.slice('skiper40_'.length)}`)}
           >
             {label}
           </a>

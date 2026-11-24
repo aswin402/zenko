@@ -13,6 +13,7 @@ import type {
   WorktreeDiffReport,
 } from '@/lib/types'
 import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
+import { SmoothCaretInput } from '@/components/skiperui/smooth-caret'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ScrollPage, type SecondaryTabsVariant } from './shared'
 
@@ -769,8 +770,8 @@ export function TelemetryView({
 
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[200px] flex-1">
-              <Search size={12.5} className="absolute left-2.5 top-2.5 text-[var(--muted)]" />
-              <input
+              <Search size={12.5} className="pointer-events-none absolute left-2.5 top-2.5 z-10 text-[var(--muted)]" />
+              <SmoothCaretInput
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search message, tool, path, or JSON payload..."

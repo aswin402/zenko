@@ -26,10 +26,12 @@ import { ModelPicker } from '@/components/chat/ModelPicker'
 import { KokonutContextMeter } from '@/components/kokonutui/ai-context-meter'
 import { PromptInput as MotionBrewPromptInput } from '@/components/motion-brew/prompt-input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/motion/popover'
+import { SmoothCaretTextarea } from '@/components/skiperui/smooth-caret'
 import AIContextMeter, {
   CONTEXT_METER_CHROME_CLASS,
   type ContextMeterChrome,
 } from '@/components/smoothui/ai-context-meter'
+import { ComposerBeam } from '@/components/ui/ComposerBeam'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
 
 const SHELL_VARIANT_CLASS: Record<ComponentSlots['composer']['shell_variant'], string> = {
@@ -155,6 +157,7 @@ export const PromptComposer = memo(function PromptComposer({
   onOpenSettings,
   composerStyle,
   popoverStyle = 'gooey',
+  themeMode = 'dark',
   extraTools,
   compactWrapper = false,
 }: {
@@ -184,10 +187,12 @@ export const PromptComposer = memo(function PromptComposer({
   onOpenSettings?: () => void
   composerStyle: ComponentSlots['composer']
   popoverStyle?: 'gooey' | 'crisp'
+  themeMode?: 'dark' | 'light'
   extraTools?: ReactNode
   compactWrapper?: boolean
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [composerFocused, setComposerFocused] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
@@ -666,7 +671,22 @@ export const PromptComposer = memo(function PromptComposer({
           </div>
         )}
 
+        <ComposerBeam
+          animation={composerStyle.border_animation}
+          trigger={composerStyle.animation_trigger}
+          colorVariant={composerStyle.beam_color_variant}
+          strength={composerStyle.beam_strength}
+          shellVariant={composerStyle.shell_variant}
+          isWorking={isRunning || isOrchestratingBg}
+          isFocused={composerFocused}
+          themeMode={themeMode}
+        >
         {composerStyle.shell_variant === 'motion_brew_prompt' ? (
+          <div
+            onFocusCapture={() => setComposerFocused(true)}
+            onBlurCapture={() => setComposerFocused(false)}
+            className="w-full"
+          >
           <MotionBrewPromptInput
             value={value}
             onValueChange={onChange}
@@ -688,9 +708,14 @@ export const PromptComposer = memo(function PromptComposer({
             sendButton={sendActionControl}
             className="w-full"
           />
+          </div>
         ) : (
-        <div className={cn('transition-all duration-150', shellClass)}>
-          <textarea
+        <div
+          onFocusCapture={() => setComposerFocused(true)}
+          onBlurCapture={() => setComposerFocused(false)}
+          className={cn('transition-all duration-150', shellClass)}
+        >
+          <SmoothCaretTextarea
             ref={textareaRef}
             rows={1}
             value={value}
@@ -720,6 +745,7 @@ export const PromptComposer = memo(function PromptComposer({
           </div>
         </div>
         )}
+        </ComposerBeam>
       </div>
     </div>
   )
