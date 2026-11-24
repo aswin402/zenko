@@ -237,3 +237,88 @@
         rt.active_cancels.lock().expect("lock").remove(&sess.id);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[tokio::test]
+    async fn sovereign_orchestrate_control_shifts_gear_and_refreshes_recon_live() {
+        let dir = std::env::temp_dir().join(format!("zenko_orch_ctrl_{}", new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write");
+
+        let mut cfg = ZenkoConfig::default();
+        cfg.general.data_dir = dir.join("data").display().to_string();
+        cfg.general.hub_dir = dir.join("hub").display().to_string();
+        cfg.general.workspace_dir = dir.display().to_string();
+        cfg.provider.lead_model = "slot/lead".into();
+        cfg.provider.advisor_model = "slot/advisor".into();
+
+        let (rt, _logs) = AgentRuntime::build(dir.join("zenko.toml"), cfg).expect("runtime");
+        assert!(
+            rt.tools.get(TOOL_ORCHESTRATE_CONTROL).is_some(),
+            "orchestrate_control must be registered eagerly"
+        );
+        let sess = rt
+            .store
+            .create_session("Control Test", "webui", None, None, PermissionMode::Autonomous)
+            .expect("session");
+
+        // 1. Unlocked session resolves configured advisor slot + returns fresh workspace recon
+        let receipt = rt
+            .clarifications
+            .apply_orchestrate_control(
+                &sess.id,
+                &dir,
+                OrchestrateControlRequest {
+                    posture: Some(TurnPosture::Brainstorm),
+                    cognitive_tier: Some(ModelRoutingRole::Advisor),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    refresh_recon: true,
+                    recon_query: Some("Cargo.toml".into()),
+                    rationale: Some("Deep architecture comparison".into()),
+                },
+            )
+            .await
+            .expect("apply control");
+        assert_eq!(receipt.posture, Some(TurnPosture::Brainstorm));
+        assert_eq!(receipt.resolved_model.as_deref(), Some("slot/advisor"));
+        assert!(!receipt.model_locked_by_override);
+        assert!(
+            receipt
+                .recon_summary
+                .as_deref()
+                .is_some_and(|s| s.contains("Cargo.toml")),
+            "expected live recon to include Cargo.toml, got {:?}",
+            receipt.recon_summary
+        );
+
+        let pending = rt.take_pending_control(&sess.id).expect("pending shift");
+        assert_eq!(pending.posture, Some(TurnPosture::Brainstorm));
+        assert_eq!(pending.cognitive_tier, Some(ModelRoutingRole::Advisor));
+        assert_eq!(pending.reasoning_effort, Some(ReasoningEffort::High));
+        assert!(rt.take_pending_control(&sess.id).is_none());
+
+        // 2. Explicit model override lock prevents model swap while still allowing posture/effort shifts
+        rt.session_control(&sess.id)
+            .explicit_model_locked
+            .store(true, Ordering::Relaxed);
+        let locked_receipt = rt
+            .clarifications
+            .apply_orchestrate_control(
+                &sess.id,
+                &dir,
+                OrchestrateControlRequest {
+                    posture: Some(TurnPosture::Review),
+                    cognitive_tier: Some(ModelRoutingRole::Fast),
+                    reasoning_effort: Some(ReasoningEffort::Low),
+                    refresh_recon: false,
+                    recon_query: None,
+                    rationale: None,
+                },
+            )
+            .await
+            .expect("apply locked control");
+        assert!(locked_receipt.model_locked_by_override);
+        assert!(locked_receipt.resolved_model.is_none());
+        assert_eq!(locked_receipt.reasoning_effort, Some(ReasoningEffort::Low));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }

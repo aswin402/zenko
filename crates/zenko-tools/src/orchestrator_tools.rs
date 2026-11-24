@@ -11,13 +11,15 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    BrainstormOption, BrainstormSpec, ClarificationOption, ExecutionPlan,
-    ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_DEFAULT_OPTION_SCORE, ORCH_PLAN_MAX_STEPS,
-    OrchestratorBridge, PlanStep, PlanStepStatus, ResourceLockKey, Result, RiskLevel,
-    SESSION_TASK_ACTIONS, SESSION_TASK_DAG_LOCK_KEY, SESSION_TASK_STATUSES, SessionTask,
+    BRAINSTORM_STAGES, BrainstormOption, BrainstormSpec, BrainstormStage, ClarificationOption,
+    ExecutionPlan, MODEL_ROUTING_ROLES, ModelRoutingRole, ORCH_BRAINSTORM_MAX_OPTIONS,
+    ORCH_DEFAULT_OPTION_SCORE, ORCH_PLAN_MAX_STEPS, OrchestrateControlRequest, OrchestratorBridge,
+    PlanStep, PlanStepStatus, REASONING_EFFORTS, ReasoningEffort, ResourceLockKey, Result,
+    RiskLevel, SESSION_TASK_ACTIONS, SESSION_TASK_DAG_LOCK_KEY, SESSION_TASK_STATUSES, SessionTask,
     SessionTaskAction, SessionTaskPatch, SessionTaskStatus, TOOL_ASK_CLARIFICATION,
-    TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, Tool, ToolConcurrency,
-    ToolContext, ToolOutput, ToolSpec, ZenkoError, new_id, new_session_task_id,
+    TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK,
+    TURN_POSTURES, Tool, ToolConcurrency, ToolContext, ToolOutput, ToolSpec, TurnPosture,
+    ZenkoError, new_id, new_session_task_id,
 };
 
 pub struct RecordBrainstormTool {
@@ -50,17 +52,30 @@ impl Tool for RecordBrainstormTool {
     }
 
     fn spec(&self) -> ToolSpec {
+        let stage_enum: Vec<Value> = BRAINSTORM_STAGES
+            .iter()
+            .map(|&s| Value::String(s.to_string()))
+            .collect();
         ToolSpec {
             name: TOOL_RECORD_BRAINSTORM.into(),
-            description: "Record an evidence-weighted multi-option architectural brainstorm & verification plan for complex tasks (persisted in session trace and displayed in WebUI). Keep summaries and each bullet concise (<= 15 words, max 3 bullets per list) so payloads stay compact.".into(),
+            description: "Record or iteratively evolve an LLM-sovereign architectural brainstorm (`exploring` -> `refined` -> `committed`) with assumptions, blind spots, decision criteria, candidate options, adversarial self-critique, and optional verification plan. Leave `selected_option_id` empty while still exploring or awaiting user input.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "problem": { "type": "string", "description": "Concise problem statement anchored to inspected files" },
-                    "invariants": { "type": "array", "items": { "type": "string" }, "description": "Constraints and invariants that must hold" },
+                    "stage": {
+                        "type": "string",
+                        "enum": stage_enum,
+                        "description": "Brainstorm lifecycle stage: `exploring` (diverging/open), `refined` (incorporating feedback/evidence), or `committed` (chosen direction)."
+                    },
+                    "parent_spec_id": { "type": "string", "description": "Optional ID of an earlier brainstorm being refined or superseded." },
+                    "problem": { "type": "string", "description": "Concise problem framing grounded in inspected context." },
+                    "invariants": { "type": "array", "items": { "type": "string" }, "description": "Hard constraints and invariants that must hold." },
+                    "assumptions": { "type": "array", "items": { "type": "string" }, "description": "Explicit premises being assumed (surface so they can be challenged)." },
+                    "blind_spots": { "type": "array", "items": { "type": "string" }, "description": "Identified unknowns, edge cases, or missing requirements." },
+                    "decision_criteria": { "type": "array", "items": { "type": "string" }, "description": "Problem-specific criteria guiding option selection." },
                     "options": {
                         "type": "array",
-                        "description": "2-4 concrete candidate approaches with tradeoffs and objective rollback/file evidence",
+                        "description": "Candidate approaches with tradeoffs and structural evidence.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -81,11 +96,12 @@ impl Tool for RecordBrainstormTool {
                             "required": ["id", "title", "summary"]
                         }
                     },
-                    "selected_option_id": { "type": "string", "description": "Chosen option ID (optional; auto-scores optimal option if omitted)" },
-                    "selection_rationale": { "type": "string" },
+                    "selected_option_id": { "type": "string", "description": "Option ID chosen by you (optional while `stage` is `exploring`)." },
+                    "selection_rationale": { "type": "string", "description": "Why this direction fits the problem and criteria." },
+                    "critique": { "type": "array", "items": { "type": "string" }, "description": "Adversarial counterarguments or sharpest objections against the leading option." },
                     "open_questions": { "type": "array", "items": { "type": "string" } },
-                    "pre_mortem": { "type": "array", "items": { "type": "string" }, "description": "Concrete failure modes and mitigations for high-risk changes (at least 2 in deliberate mode)" },
-                    "verification_plan": { "type": "array", "items": { "type": "string" }, "description": "Exact executable build/test/smoke checks defining done" }
+                    "pre_mortem": { "type": "array", "items": { "type": "string" }, "description": "Concrete failure modes and mitigations if this path goes wrong." },
+                    "verification_plan": { "type": "array", "items": { "type": "string" }, "description": "Checks or experiments that will confirm success." }
                 },
                 "required": ["problem", "options"]
             }),
@@ -174,23 +190,45 @@ impl Tool for RecordBrainstormTool {
             ));
         }
 
+        let selected_option_id = args
+            .get("selected_option_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let stage = args
+            .get("stage")
+            .and_then(Value::as_str)
+            .and_then(BrainstormStage::parse)
+            .unwrap_or_else(|| match selected_option_id.is_empty() {
+                true => BrainstormStage::Exploring,
+                false => BrainstormStage::Committed,
+            });
+        let parent_spec_id = args
+            .get("parent_spec_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
         let spec = BrainstormSpec {
             id: new_id(),
+            stage,
+            parent_spec_id,
             problem,
             invariants: parse_string_vec(args.get("invariants")),
+            assumptions: parse_string_vec(args.get("assumptions")),
+            blind_spots: parse_string_vec(args.get("blind_spots")),
+            decision_criteria: parse_string_vec(args.get("decision_criteria")),
             options,
-            selected_option_id: args
-                .get("selected_option_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string(),
+            selected_option_id,
             selection_rationale: args
                 .get("selection_rationale")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim()
                 .to_string(),
+            critique: parse_string_vec(args.get("critique")),
             open_questions: parse_string_vec(args.get("open_questions")),
             pre_mortem: parse_string_vec(args.get("pre_mortem")),
             verification_plan: parse_string_vec(args.get("verification_plan")),
@@ -199,19 +237,23 @@ impl Tool for RecordBrainstormTool {
         };
 
         let finalized = self.bridge.record_brainstorm(&ctx.session_id, &spec)?;
+        let selected_label = match finalized.selected_option_id.is_empty() {
+            true => "open".to_string(),
+            false => format!("`{}`", finalized.selected_option_id),
+        };
         let rubric_note = match finalized.rubric_warnings.is_empty() {
             true => String::new(),
             false => format!(
-                "\nRubric checks: {}",
+                "\nAdvisory reflections: {}",
                 finalized.rubric_warnings.join(" | ")
             ),
         };
         Ok(ToolOutput {
             content: format!(
-                "Recorded structured brainstorm `{}` ({} options, selected=`{}`).{rubric_note}",
+                "Recorded brainstorm `{}` [stage={}, {} options, selected={selected_label}].{rubric_note}",
                 finalized.id,
+                finalized.stage.as_str(),
                 finalized.options.len(),
-                finalized.selected_option_id
             ),
             is_error: false,
             diff: None,
@@ -367,6 +409,175 @@ impl Tool for PlanUpdateTool {
 
 pub struct AskClarificationTool {
     bridge: Arc<dyn OrchestratorBridge>,
+}
+
+/// LLM-sovereign live orchestration tool (`orchestrate_control`): lets Zenko declare/transition
+/// turn posture, dynamically shift cognitive gear (model slot + reasoning effort) mid-turn,
+/// or refresh 5-way parallel workspace/git/memory/DAG recon on demand with zero `/commands`.
+pub struct OrchestrateControlTool {
+    bridge: Arc<dyn OrchestratorBridge>,
+}
+
+impl OrchestrateControlTool {
+    pub fn new(bridge: Arc<dyn OrchestratorBridge>) -> Self {
+        Self { bridge }
+    }
+}
+
+#[async_trait]
+impl Tool for OrchestrateControlTool {
+    fn concurrency(&self) -> ToolConcurrency {
+        ToolConcurrency::Global
+    }
+
+    fn spec(&self) -> ToolSpec {
+        let posture_enum: Vec<Value> = TURN_POSTURES
+            .iter()
+            .map(|&p| Value::String(p.to_string()))
+            .collect();
+        let tier_enum: Vec<Value> = MODEL_ROUTING_ROLES
+            .iter()
+            .map(|&r| Value::String(r.to_string()))
+            .collect();
+        let effort_enum: Vec<Value> = REASONING_EFFORTS
+            .iter()
+            .map(|&e| Value::String(e.to_string()))
+            .collect();
+        ToolSpec {
+            name: TOOL_ORCHESTRATE_CONTROL.into(),
+            description: "Exercise sovereign control over your own turn orchestration (zero /commands): declare or transition your turn posture, dynamically shift cognitive gear (configured model tier & reasoning effort) for subsequent iterations, or refresh live 5-way parallel workspace/git/memory/DAG recon on demand.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "posture": {
+                        "type": "string",
+                        "enum": posture_enum,
+                        "description": "Self-declared turn posture streamed live to WebUI/CLI."
+                    },
+                    "cognitive_tier": {
+                        "type": "string",
+                        "enum": tier_enum,
+                        "description": "Configured model slot for subsequent iterations (`fast`, `lead`, `plan`, `advisor`; respects explicit user model locks)."
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "enum": effort_enum,
+                        "description": "Reasoning depth for subsequent iterations (`low`, `medium`, `high`)."
+                    },
+                    "refresh_recon": {
+                        "type": "boolean",
+                        "description": "When true, runs a fresh parallel workspace/git/memory/task recon snapshot and returns it."
+                    },
+                    "recon_query": {
+                        "type": "string",
+                        "description": "Optional focused search terms for memory/session recall when `refresh_recon` is true."
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Concise 1-line rationale recorded in session trace."
+                    }
+                }
+            }),
+            risk: RiskLevel::Safe,
+        }
+    }
+
+    async fn execute(
+        &self,
+        ctx: &ToolContext,
+        args: Value,
+        _cancel: CancellationToken,
+    ) -> Result<ToolOutput> {
+        let posture = match args.get("posture").and_then(Value::as_str) {
+            Some(raw) => Some(TurnPosture::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Unknown `posture` `{raw}`. Valid values: {}.",
+                    TURN_POSTURES.join(", ")
+                ))
+            })?),
+            None => None,
+        };
+        let cognitive_tier = match args.get("cognitive_tier").and_then(Value::as_str) {
+            Some(raw) => Some(ModelRoutingRole::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Unknown `cognitive_tier` `{raw}`. Valid values: {}.",
+                    MODEL_ROUTING_ROLES.join(", ")
+                ))
+            })?),
+            None => None,
+        };
+        let reasoning_effort = match args.get("reasoning_effort").and_then(Value::as_str) {
+            Some(raw) => Some(ReasoningEffort::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Unknown `reasoning_effort` `{raw}`. Valid values: {}.",
+                    REASONING_EFFORTS.join(", ")
+                ))
+            })?),
+            None => None,
+        };
+        let refresh_recon = args
+            .get("refresh_recon")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let recon_query = args
+            .get("recon_query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let rationale = args
+            .get("rationale")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let receipt = self
+            .bridge
+            .apply_orchestrate_control(
+                &ctx.session_id,
+                &ctx.workspace_dir,
+                OrchestrateControlRequest {
+                    posture,
+                    cognitive_tier,
+                    reasoning_effort,
+                    refresh_recon,
+                    recon_query,
+                    rationale,
+                },
+            )
+            .await?;
+
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(p) = receipt.posture {
+            parts.push(format!("posture={}", p.as_str()));
+        }
+        if let Some(t) = receipt.cognitive_tier {
+            let model_note = match (receipt.model_locked_by_override, receipt.resolved_model.as_deref()) {
+                (true, _) => " (model locked by explicit override)".to_string(),
+                (false, Some(m)) => format!(" -> `{m}`"),
+                (false, None) => String::new(),
+            };
+            parts.push(format!("tier={}{model_note}", t.as_str()));
+        }
+        if let Some(e) = receipt.reasoning_effort {
+            parts.push(format!("effort={}", e.as_str()));
+        }
+        let header = match parts.is_empty() {
+            true => "Orchestration state inspected.".to_string(),
+            false => format!("Orchestration updated: {}.", parts.join(", ")),
+        };
+        let content = match receipt.recon_summary.as_deref().filter(|s| !s.is_empty()) {
+            Some(recon) => format!("{header}\n\n<situational_awareness>\n{recon}\n</situational_awareness>"),
+            None => header,
+        };
+        Ok(ToolOutput {
+            content,
+            is_error: false,
+            diff: None,
+            metadata: serde_json::to_value(&receipt).ok(),
+        })
+    }
 }
 
 impl AskClarificationTool {

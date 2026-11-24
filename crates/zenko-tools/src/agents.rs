@@ -7,12 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    AgentDeliveryAction, AgentMessageOptions, ResourceLockKey, Result, RiskLevel,
-    SUBAGENT_DEFAULT_WAIT_SECS, SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAX_WAIT_SECS,
-    SUBAGENT_ROLE_REGISTRY, SubagentBridge, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_KILL, TOOL_AGENT_LIST, TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE,
-    TOOL_SPAWN_AGENT, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec,
-    WORKTREE_ACTIONS, WorktreeAction, ZenkoError,
+    AgentDeliveryAction, AgentMessageOptions, MODEL_ROUTING_ROLES, ModelRoutingRole,
+    ResourceLockKey, Result, RiskLevel, SUBAGENT_DEFAULT_WAIT_SECS, SUBAGENT_LIST_DEFAULT_LIMIT,
+    SUBAGENT_MAX_WAIT_SECS, SUBAGENT_ROLE_REGISTRY, SubagentBridge, SubagentSpawnRequest,
+    SubagentWorkspaceMode, TOOL_AGENT_KILL, TOOL_AGENT_LIST, TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT,
+    TOOL_AGENT_WORKTREE, TOOL_SPAWN_AGENT, Tool, ToolConcurrency, ToolContext, ToolExposure,
+    ToolOutput, ToolSpec, WORKTREE_ACTIONS, WorktreeAction, ZenkoError,
 };
 
 pub struct SpawnAgentTool {
@@ -36,12 +36,16 @@ impl Tool for SpawnAgentTool {
             .iter()
             .map(|r| format!("`{}` ({})", r.id, r.description))
             .collect();
+        let tier_enum: Vec<Value> = MODEL_ROUTING_ROLES
+            .iter()
+            .map(|&r| Value::String(r.to_string()))
+            .collect();
         ToolSpec {
             name: TOOL_SPAWN_AGENT.into(),
             description: format!(
                 "Delegate a focused subtask to an isolated child subagent with its own clean context window. Roles: {}. \
                  Set `run_in_background: true` to fan out parallel workers and collect results via `agent_wait`. \
-                 `coder` defaults to an isolated git worktree so parallel edits never collide.",
+                 Use `role: \"custom\"` (with `custom_directive`, `cognitive_tier`, `read_only`, and optional `tool_subset`) to compose bespoke specialists dynamically; `coder` defaults to an isolated git worktree.",
                 role_help.join("; ")
             ),
             parameters: json!({
@@ -50,7 +54,7 @@ impl Tool for SpawnAgentTool {
                     "role": {
                         "type": "string",
                         "enum": role_enum,
-                        "description": "Declarative role profile controlling model tier, tool allowlist, and default isolation."
+                        "description": "Declarative role profile (`explorer`, `architect`, `coder`, `verifier`, `critic`, `researcher`, or dynamic `custom`)."
                     },
                     "goal": {
                         "type": "string",
@@ -59,6 +63,24 @@ impl Tool for SpawnAgentTool {
                     "context": {
                         "type": "string",
                         "description": "Optional focused handoff notes (exact file paths, constraints, prior findings)."
+                    },
+                    "custom_directive": {
+                        "type": "string",
+                        "description": "Optional specialist persona/instructions authored by you (used with `role: \"custom\"` or to tailor any role)."
+                    },
+                    "cognitive_tier": {
+                        "type": "string",
+                        "enum": tier_enum,
+                        "description": "Optional category/intent model slot override (`fast`, `lead`, `plan`, `advisor`) without hardcoding model IDs."
+                    },
+                    "read_only": {
+                        "type": "boolean",
+                        "description": "When true, strictly clamps the child specialist to read-only tools."
+                    },
+                    "tool_subset": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional narrowed allowlist of tool names for surgical specialist focus."
                     },
                     "run_in_background": {
                         "type": "boolean",
@@ -75,7 +97,7 @@ impl Tool for SpawnAgentTool {
                     },
                     "model": {
                         "type": "string",
-                        "description": "Optional explicit model ID override (normally routed dynamically by role)."
+                        "description": "Optional explicit model ID override (normally routed dynamically by role or `cognitive_tier`)."
                     },
                     "fork_context": {
                         "type": "boolean",
@@ -148,6 +170,29 @@ impl Tool for SpawnAgentTool {
             .unwrap_or(false);
         let max_duration_secs = args.get("max_duration_secs").and_then(Value::as_u64);
         let max_cost_usd = args.get("max_cost_usd").and_then(Value::as_f64);
+        let custom_directive = args
+            .get("custom_directive")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let cognitive_tier = args
+            .get("cognitive_tier")
+            .and_then(Value::as_str)
+            .and_then(ModelRoutingRole::parse);
+        let read_only = args.get("read_only").and_then(Value::as_bool);
+        let tool_subset: Vec<String> = args
+            .get("tool_subset")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let rec = self
             .bridge
@@ -164,6 +209,10 @@ impl Tool for SpawnAgentTool {
                 include_uncommitted,
                 max_duration_secs,
                 max_cost_usd,
+                custom_directive,
+                cognitive_tier,
+                read_only,
+                tool_subset,
             })
             .await?;
 

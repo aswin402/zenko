@@ -9,17 +9,14 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use zenko_core::{
     BackgroundJobStatus, DeliberationDepth, ExecutionPlan, ExecutionTier, IntentKind,
-    MUTATING_FILE_TOOLS, ORCH_ADVISORY_EXPLORE_SOFT_LIMIT, ORCH_IMPLEMENT_PRE_PLAN_SOFT_LIMIT,
-    ORCH_ITER_WRAPUP_REMAINING, ORCH_LOOP_REPEAT_THRESHOLD, ORCH_LOOP_WINDOW_SIZE,
-    ORCH_MAX_CONSECUTIVE_ERRORS, ORCH_MAX_PHASE_GATE_NUDGES, ORCH_MAX_PIVOTS_BEFORE_ESCALATE,
-    ORCH_MAX_PLAN_CONTINUATION_NUDGES, ORCH_MAX_TOTAL_CONTINUATION_NUDGES, ORCH_MAX_VERIFY_NUDGES,
-    ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD,
-    ORCH_RESEARCH_EXPLORE_SOFT_LIMIT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_PHASE_GATE,
-    ORCH_TEXT_DOOM_MIN_LINE_CHARS, ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD,
-    OrchestratorPhase, PLANNING_TOOLS, READ_ONLY_FIND_MUTATING_FLAGS,
-    READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, TOOL_AGENT_KILL, TOOL_AGENT_WORKTREE,
-    TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_JOB_WAIT, TOOL_MEMORY, TOOL_PLAN_UPDATE,
-    TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
+    MUTATING_FILE_TOOLS, ORCH_ITER_WRAPUP_REMAINING, ORCH_LOOP_REPEAT_THRESHOLD,
+    ORCH_LOOP_WINDOW_SIZE, ORCH_MAX_CONSECUTIVE_ERRORS, ORCH_MAX_PIVOTS_BEFORE_ESCALATE,
+    ORCH_MAX_PLAN_CONTINUATION_NUDGES, ORCH_MAX_TOTAL_CONTINUATION_NUDGES,
+    ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD, ORCH_TEXT_DOOM_MIN_LINE_CHARS,
+    ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD, OrchestratorPhase, PLANNING_TOOLS,
+    READ_ONLY_FIND_MUTATING_FLAGS, READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, TOOL_AGENT_KILL,
+    TOOL_AGENT_WORKTREE, TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY,
+    TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
     VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
     VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
     is_git_tool_args_mutating, is_goal_loop_args_mutating, is_memory_mutating_action,
@@ -128,7 +125,6 @@ pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategor
 /// 6. Post-edit build/test verification gate + unfinished DAG plan-step completion gate
 #[derive(Debug, Default)]
 pub struct ExecutionGuard {
-    tier: ExecutionTier,
     intent: IntentKind,
     deliberation: DeliberationDepth,
     phase: OrchestratorPhase,
@@ -150,7 +146,6 @@ pub struct ExecutionGuard {
     brainstorm_recorded: bool,
     plan_recorded: bool,
     read_probe_streak: usize,
-    explore_nudge_sent: bool,
     wrapup_nudge_sent: bool,
 }
 
@@ -161,7 +156,6 @@ impl ExecutionGuard {
             (ExecutionTier::Instant | ExecutionTier::Standard, false) => OrchestratorPhase::Execute,
         };
         Self {
-            tier,
             intent,
             deliberation,
             phase: initial_phase,
@@ -223,106 +217,16 @@ impl ExecutionGuard {
         self.pivot_count = self.pivot_count.saturating_add(1);
     }
 
-    /// Pure pre-tool gate evaluation (mutates zero counters per call so an entire wave is judged
-    /// atomically against the pre-wave state):
-    /// 1. Phase-0 Read-Only Intent Gate: blocks file mutations AND non-read-only `shell_exec`
-    ///    commands on `Research` / `Advisory` turns.
-    /// 2. Orchestrated Phase Gate (`Recon -> Plan -> Execute`): blocks premature mutations before
-    ///    read-only inspection or planning (max `ORCH_MAX_PHASE_GATE_NUDGES` waves).
+    /// LLM-sovereign pre-tool evaluation: never blocks tool calls based on guessed prompt keywords
+    /// or artificial phase ordering. Explicit user-selected `PermissionMode::Plan` and security
+    /// rules are enforced cleanly by `ExecPolicy` and schema filtering.
     pub fn check_pre_tool_phase_gate(
         &self,
-        enabled: bool,
-        tool_name: &str,
-        arguments: &Value,
+        _enabled: bool,
+        _tool_name: &str,
+        _arguments: &Value,
     ) -> PhaseGateDecision {
-        let category = classify_tool_category(tool_name, arguments);
-        if enabled && self.intent.is_read_only() {
-            if category == ToolCategory::Mutation {
-                let target = arguments
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("target file");
-                let reason = format!(
-                    "Blocked `{tool_name}` on `{target}`: turn intent is read-only (`{}`)",
-                    self.intent.as_str()
-                );
-                let hint = format!(
-                    "<orchestrator_hint type=\"intent_gate\">\n\
-                     Read-only Intent Gate (`intent={}`): the user asked for investigation/comparison rather than file mutations. \
-                     Do NOT modify `{target}`; answer using read-only inspection (`read_file`, `code_search`, `list_dir`) and `record_brainstorm` if comparing options.\n\
-                     </orchestrator_hint>",
-                    self.intent.as_str()
-                );
-                return PhaseGateDecision::Redirect {
-                    stage: ORCH_STAGE_INTENT_GATE,
-                    reason,
-                    hint,
-                };
-            }
-            if tool_name == TOOL_SHELL_EXEC {
-                let cmd = arguments
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if !is_read_only_shell_command(cmd) {
-                    let preview = compact_preview(cmd, 80);
-                    let reason = format!(
-                        "Blocked non-read-only `{tool_name}` (`{preview}`): turn intent is read-only (`{}`)",
-                        self.intent.as_str()
-                    );
-                    let hint = format!(
-                        "<orchestrator_hint type=\"intent_gate\">\n\
-                         Read-only Intent Gate (`intent={}`): shell command `{preview}` is not provably read-only. \
-                         Do NOT mutate files or state; inspect strictly via `read_file`, `code_search`, `list_dir`, or strictly read-only shell commands (`git status`, `git diff`, `rg`, `ls`).\n\
-                         </orchestrator_hint>",
-                        self.intent.as_str()
-                    );
-                    return PhaseGateDecision::Redirect {
-                        stage: ORCH_STAGE_INTENT_GATE,
-                        reason,
-                        hint,
-                    };
-                }
-            }
-        }
-        match (
-            enabled,
-            self.tier,
-            self.phase,
-            category,
-            self.read_or_planned,
-            self.phase_gate_nudges < ORCH_MAX_PHASE_GATE_NUDGES,
-        ) {
-            (
-                true,
-                ExecutionTier::Orchestrated,
-                OrchestratorPhase::Recon,
-                ToolCategory::Mutation,
-                false,
-                true,
-            ) => {
-                let target = arguments
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("target file");
-                let reason = format!(
-                    "Blocked premature `{tool_name}` on `{target}` during `recon` phase before read/plan"
-                );
-                let hint = format!(
-                    "<orchestrator_hint type=\"phase_gate\">\n\
-                     Phase gate (`recon -> plan -> execute`): inspect existing files with read-only tools \
-                     (`read_file`, `code_search`, `list_dir`) and record a structured `record_brainstorm` or \
-                     `plan_update` BEFORE mutating `{target}`.\n\
-                     </orchestrator_hint>"
-                );
-                PhaseGateDecision::Redirect {
-                    stage: ORCH_STAGE_PHASE_GATE,
-                    reason,
-                    hint,
-                }
-            }
-            _ => PhaseGateDecision::Allow,
-        }
+        PhaseGateDecision::Allow
     }
 
     fn advance_phase(&mut self, category: ToolCategory, is_error: bool) {
@@ -409,15 +313,18 @@ impl ExecutionGuard {
                         .get("command")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    if is_verification_command(cmd) {
-                        let status = metadata.and_then(|m| m.get("status")).and_then(Value::as_str);
-                        let job_id = metadata.and_then(|m| m.get("id")).and_then(Value::as_str);
+                    let status = metadata.and_then(|m| m.get("status")).and_then(Value::as_str);
+                    let job_id = metadata.and_then(|m| m.get("id")).and_then(Value::as_str);
+                    // Accept any passing non-spoof shell check (not restricted solely to hardcoded command prefixes)
+                    let is_explicit_verify = is_verification_command(cmd);
+                    let is_substantive_check = !self.mutated_files.is_empty()
+                        && !cmd.trim().is_empty()
+                        && !is_read_only_shell_command(cmd);
+                    if is_explicit_verify || is_substantive_check {
                         match (status, job_id) {
-                            // Backgrounded or demoted verification job: still running, track ID until job_wait confirms exit 0
                             (Some(s), Some(jid)) if s == BackgroundJobStatus::Running.as_str() => {
                                 self.pending_verification_jobs.insert(jid.to_string());
                             }
-                            // Synchronous foreground completion (`is_error == false` => exit code 0)
                             (None, _) => {
                                 self.verification_ran = true;
                                 self.last_verification_failed = false;
@@ -434,6 +341,24 @@ impl ExecutionGuard {
                             }
                             _ => {}
                         }
+                    }
+                }
+                TOOL_LSP => {
+                    if !self.mutated_files.is_empty() {
+                        self.verification_ran = true;
+                        self.last_verification_failed = false;
+                    }
+                }
+                TOOL_SPAWN_AGENT => {
+                    let role = arguments.get("role").and_then(Value::as_str).unwrap_or("");
+                    let bg = arguments
+                        .get("run_in_background")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if !bg && matches!(role, "verifier" | "critic") && !self.mutated_files.is_empty()
+                    {
+                        self.verification_ran = true;
+                        self.last_verification_failed = false;
                     }
                 }
                 TOOL_JOB_WAIT => {
@@ -593,8 +518,8 @@ impl ExecutionGuard {
         GuardVerdict::Continue
     }
 
-    /// Deterministic Exploration-Saturation & Iteration-Budget Pacing check called once after each
-    /// tool-executing iteration so real LLMs never wander into 15-24-iteration research/probe rabbit holes.
+    /// Purely objective iteration-budget awareness: notifies the LLM ONCE when only a few
+    /// iterations remain before wrap-up, without ever nagging or cutting off research/brainstorming.
     pub fn check_iteration_pacing(
         &mut self,
         enabled: bool,
@@ -616,103 +541,28 @@ impl ExecutionGuard {
             let detail = format!("Iteration budget low ({remaining} remaining)");
             let hint = format!(
                 "<orchestrator_hint type=\"pacing\">\n\
-                 Only {remaining} tool iteration(s) remain before wrap-up. Stop exploring immediately, finalize any required `record_brainstorm`/`plan_update`/edit/verification, and deliver your complete response.\n\
+                 Heads-up: {remaining} tool iteration(s) remain in this turn's budget. Wrap up any pending steps or synthesize your response cleanly.\n\
                  </orchestrator_hint>"
             );
             return Some((detail, hint));
         }
-
-        if self.tier != ExecutionTier::Orchestrated || self.explore_nudge_sent {
-            return None;
-        }
-
-        match (
-            self.intent,
-            self.read_probe_streak,
-            self.brainstorm_recorded,
-            self.plan_recorded,
-            self.mutated_files.is_empty(),
-        ) {
-            (IntentKind::Research, s, _, _, _) if s >= ORCH_RESEARCH_EXPLORE_SOFT_LIMIT => {
-                self.explore_nudge_sent = true;
-                Some((
-                    format!("Research exploration checkpoint ({s} read iterations)"),
-                    format!(
-                        "<orchestrator_hint type=\"pacing\">\n\
-                         Exploration budget checkpoint ({s} inspection iterations completed): you already have sufficient source evidence. \
-                         Stop opening tangential files and synthesize your concise, file/line-cited answer NOW.\n\
-                         </orchestrator_hint>"
-                    ),
-                ))
-            }
-            (IntentKind::Advisory, s, false, _, _) if s >= ORCH_ADVISORY_EXPLORE_SOFT_LIMIT => {
-                self.explore_nudge_sent = true;
-                Some((
-                    format!("Advisory brainstorm checkpoint ({s} inspection iterations)"),
-                    format!(
-                        "<orchestrator_hint type=\"pacing\">\n\
-                         Advisory brainstorm checkpoint ({s} inspection iterations completed, 0 brainstorm recorded): stop reading tangential subsystems. \
-                         Call `record_brainstorm` NOW with 2-3 evidence-backed options (`touched_files`, `rollback_steps`, `risks`, `pre_mortem`, `verification_plan`) and then deliver your concise recommendation.\n\
-                         </orchestrator_hint>"
-                    ),
-                ))
-            }
-            (IntentKind::Implement, s, false, false, true)
-                if s >= ORCH_IMPLEMENT_PRE_PLAN_SOFT_LIMIT =>
-            {
-                self.explore_nudge_sent = true;
-                Some((
-                    format!("Execution pacing checkpoint ({s} recon/probe iterations without plan/edit)"),
-                    format!(
-                        "<orchestrator_hint type=\"pacing\">\n\
-                         Execution pacing checkpoint ({s} recon/probe iterations completed without planning or editing target files): stop tangential dependency experiments or scratch probes. \
-                         Call `record_brainstorm` and `plan_update` NOW using the simplest clean design (prefer stdlib/existing dependencies unless new crates are explicitly requested), then edit the target file and run verification.\n\
-                         </orchestrator_hint>"
-                    ),
-                ))
-            }
-            _ => None,
-        }
+        None
     }
 
-    /// Progress-aware bounded Completion & Verification Gate:
-    /// - On `Advisory` turns without a recorded brainstorm, nudges ONCE to capture `record_brainstorm`.
-    /// - Skips `Research` turns cleanly.
-    /// - Enforces separate bounded budgets for build/test verification (`ORCH_MAX_VERIFY_NUDGES`)
-    ///   and DAG plan continuation (`ORCH_MAX_PLAN_CONTINUATION_NUDGES`, resetting on forward progress
-    ///   under hard cap `ORCH_MAX_TOTAL_CONTINUATION_NUDGES`).
+    /// Single-shot, non-blocking advisory completion check:
+    /// - Never forces brainstorming or nags on read-only turns.
+    /// - Offers at most ONE concise advisory note if files were mutated without any verification
+    ///   check yet, or if the LLM's own active DAG plan still has unfinished steps (resets only
+    ///   when the LLM makes genuine forward DAG progress, capped by `ORCH_MAX_TOTAL_CONTINUATION_NUDGES`).
     pub fn check_completion_gate(&mut self, enabled: bool) -> Option<String> {
-        if !enabled {
-            return None;
-        }
-        if self.intent == IntentKind::Advisory {
-            return match self.tier == ExecutionTier::Orchestrated
-                && !self.brainstorm_recorded
-                && self.verify_nudges == 0
-            {
-                true => {
-                    self.verify_nudges += 1;
-                    Some(
-                        "<orchestrator_hint type=\"advisory_brainstorm\">\n\
-                         Before concluding this design comparison, call `record_brainstorm` once to persist your 2-3 structured options (`touched_files`, `rollback_steps`, `risks`, `pre_mortem`, `verification_plan`), then summarize your recommendation.\n\
-                         </orchestrator_hint>"
-                            .into(),
-                    )
-                }
-                false => {
-                    self.phase = OrchestratorPhase::Done;
-                    None
-                }
-            };
-        }
-        if self.intent.is_read_only() {
+        if !enabled || self.intent.is_read_only() {
+            self.phase = OrchestratorPhase::Done;
             return None;
         }
 
-        let needs_verify = self.tier == ExecutionTier::Orchestrated
-            && !self.mutated_files.is_empty()
+        let needs_verify = !self.mutated_files.is_empty()
             && !self.verification_ran
-            && self.verify_nudges < ORCH_MAX_VERIFY_NUDGES;
+            && self.verify_nudges == 0;
         let unfinished_plan: Vec<String> = self
             .active_plan
             .as_ref()
@@ -724,11 +574,11 @@ impl ExecutionGuard {
             })
             .unwrap_or_default();
         let needs_plan_continue = !unfinished_plan.is_empty()
-            && self.plan_nudges < ORCH_MAX_PLAN_CONTINUATION_NUDGES
+            && self.plan_nudges < ORCH_MAX_PLAN_CONTINUATION_NUDGES.min(1)
             && self.total_continuation_nudges < ORCH_MAX_TOTAL_CONTINUATION_NUDGES;
 
         let fail_note = match self.last_verification_failed {
-            true => " Your previous verification command FAILED — fix the root cause and re-run until green.",
+            true => " Your last verification command FAILED — consider fixing the root cause and re-checking.",
             false => "",
         };
 
@@ -741,9 +591,9 @@ impl ExecutionGuard {
                 self.verify_nudges += 1;
                 let files: Vec<&str> = self.mutated_files.iter().map(String::as_str).collect();
                 Some(format!(
-                    "<orchestrator_hint type=\"verification_gate\">\n\
-                     You modified {} file(s) ({}) during an orchestrated task without a passing build/test check afterwards.{fail_note} \
-                     Run the appropriate verification command (e.g. `cargo pretty check`, `cargo test`, `npm run build`, `pytest`) via `shell_exec` and report verified results before concluding.\n\
+                    "<orchestrator_hint type=\"advisory_check\">\n\
+                     Advisory: {} file(s) were modified ({}) with no passing check recorded yet.{fail_note} \
+                     Run a relevant verification check if appropriate, or respond directly if verification is unnecessary.\n\
                      </orchestrator_hint>",
                     files.len(),
                     files.join(", ")
@@ -753,9 +603,9 @@ impl ExecutionGuard {
                 self.plan_nudges += 1;
                 self.total_continuation_nudges += 1;
                 Some(format!(
-                    "<orchestrator_hint type=\"plan_completion_gate\">\n\
-                     Active execution plan still has {} unfinished step(s): {}. \
-                     Continue executing the next concrete step or update statuses via `plan_update` (`completed` / `blocked`) before concluding.\n\
+                    "<orchestrator_hint type=\"advisory_check\">\n\
+                     Advisory: your active DAG still lists {} open step(s): {}. \
+                     Continue executing or update/close them via `plan_update`/`session_task`, or conclude directly if done.\n\
                      </orchestrator_hint>",
                     unfinished_plan.len(),
                     unfinished_plan.join(", ")
@@ -767,11 +617,12 @@ impl ExecutionGuard {
                 self.total_continuation_nudges += 1;
                 let files: Vec<&str> = self.mutated_files.iter().map(String::as_str).collect();
                 Some(format!(
-                    "<orchestrator_hint type=\"verification_gate\">\n\
-                     Before concluding: (1) verify modified file(s) ({}) with a real passing build/test command via `shell_exec`{fail_note}, and \
-                     (2) close out unfinished plan step(s) ({}) via `plan_update`.\n\
+                    "<orchestrator_hint type=\"advisory_check\">\n\
+                     Advisory: (1) modified file(s) ({}) have no passing check yet{fail_note}, and \
+                     (2) active DAG still has {} open step(s) ({}). Verify/update if needed, or conclude directly.\n\
                      </orchestrator_hint>",
                     files.join(", "),
+                    unfinished_plan.len(),
                     unfinished_plan.join(", ")
                 ))
             }
@@ -1350,25 +1201,23 @@ mod tests {
     }
 
     #[test]
-    fn phase_gate_blocks_multi_write_waves_and_read_only_intent_blocks_mutating_shell() {
-        // Read-only Research intent blocks file mutations AND non-read-only shell commands
-        let mut research = ExecutionGuard::new(
+    fn sovereign_guard_allows_all_llm_tools_while_keeping_shell_classifier_and_wrapup_intact() {
+        // LLM-sovereign guard NEVER keyword-blocks writes or interrupts exploration
+        let mut guard = ExecutionGuard::new(
             ExecutionTier::Orchestrated,
-            IntentKind::Research,
+            IntentKind::Implement,
             DeliberationDepth::Standard,
         );
-        research.record_tool_outcome("read_file", &json!({"path": "src/app.rs"}), false, "fn main() {}", None);
-        let ro_block = research.check_pre_tool_phase_gate(
-            true,
-            "write_file",
-            &json!({"path": "src/app.rs"}),
+        assert_eq!(
+            guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
+            PhaseGateDecision::Allow
         );
-        assert!(matches!(
-            ro_block,
-            PhaseGateDecision::Redirect { stage, ref hint, .. }
-            if stage == ORCH_STAGE_INTENT_GATE && hint.contains("intent_gate")
-        ));
-        // Mutating shell commands MUST be blocked on read-only turns
+        assert_eq!(
+            guard.check_pre_tool_phase_gate(true, "shell_exec", &json!({"command": "cargo test"})),
+            PhaseGateDecision::Allow
+        );
+
+        // Read-only shell classifier (used by ExecPolicy in explicit Plan Mode) remains strict
         for unsafe_cmd in [
             "sed -i 's/a/b/g' src/app.rs",
             "echo x > src/app.rs",
@@ -1380,17 +1229,11 @@ mod tests {
             "ls \"$(touch pwned)\"",
             "find . -name '*.rs' -delete",
         ] {
-            let shell_block = research.check_pre_tool_phase_gate(
-                true,
-                "shell_exec",
-                &json!({"command": unsafe_cmd}),
-            );
             assert!(
-                matches!(shell_block, PhaseGateDecision::Redirect { stage, .. } if stage == ORCH_STAGE_INTENT_GATE),
-                "expected read-only intent gate to block `{unsafe_cmd}`"
+                !is_read_only_shell_command(unsafe_cmd),
+                "expected `{unsafe_cmd}` to be classified as non-read-only"
             );
         }
-        // Strictly read-only shell commands (including benign `2>/dev/null` and `2>&1`) MUST be allowed
         for safe_cmd in [
             "git status",
             "rg -i \"foo > bar\" src/ | head -n 20",
@@ -1399,67 +1242,31 @@ mod tests {
             "cd crates && ls -la 2>&1 | head -n 5",
             "find src -name '*.rs'",
         ] {
-            assert_eq!(
-                research.check_pre_tool_phase_gate(true, "shell_exec", &json!({"command": safe_cmd})),
-                PhaseGateDecision::Allow,
-                "expected read-only shell `{safe_cmd}` to be allowed"
+            assert!(
+                is_read_only_shell_command(safe_cmd),
+                "expected `{safe_cmd}` to be classified as read-only"
             );
         }
 
-        // Exploration pacing fires ONCE after soft limit on Research, Advisory, and Implement turns
-        let mut pacing_adv = ExecutionGuard::new(
-            ExecutionTier::Orchestrated,
-            IntentKind::Advisory,
-            DeliberationDepth::Standard,
-        );
-        assert!(pacing_adv.check_iteration_pacing(true, 0, 24, false).is_none());
-        assert!(pacing_adv.check_iteration_pacing(true, 1, 24, false).is_none());
-        let adv_nudge = pacing_adv.check_iteration_pacing(true, 2, 24, false);
-        assert!(
-            matches!(adv_nudge, Some((_, ref h)) if h.contains("record_brainstorm")),
-            "expected advisory brainstorm pacing nudge at iter 3"
-        );
-        // Advisory completion gate nudges once if model tries to conclude without calling record_brainstorm
-        let adv_complete = pacing_adv.check_completion_gate(true);
-        assert!(adv_complete.as_deref().is_some_and(|s| s.contains("advisory_brainstorm")));
-        assert!(pacing_adv.check_completion_gate(true).is_none(), "advisory nudge capped at 1");
-        // Wrap-up countdown fires when remaining <= ORCH_ITER_WRAPUP_REMAINING
-        let wrap = pacing_adv.check_iteration_pacing(true, 20, 24, false);
+        // Exploration never gets nagged mid-research; only near-end wrap-up notice fires
+        for i in 0..10 {
+            assert!(guard.check_iteration_pacing(true, i, 24, false).is_none());
+        }
+        let wrap = guard.check_iteration_pacing(true, 20, 24, false);
         assert!(matches!(wrap, Some((_, ref h)) if h.contains("3 tool iteration")));
-
-        // Multi-mutation wave during Recon MUST redirect EVERY write in the same wave!
-        let mut guard = ExecutionGuard::new(
-            ExecutionTier::Orchestrated,
-            IntentKind::Implement,
-            DeliberationDepth::Standard,
-        );
-        assert_eq!(guard.phase(), OrchestratorPhase::Recon);
-
-        let first_write = guard.check_pre_tool_phase_gate(
-            true,
-            "write_file",
-            &json!({"path": "src/a.rs"}),
-        );
-        let second_write = guard.check_pre_tool_phase_gate(
-            true,
-            "write_file",
-            &json!({"path": "src/b.rs"}),
-        );
-        assert!(matches!(first_write, PhaseGateDecision::Redirect { stage, .. } if stage == ORCH_STAGE_PHASE_GATE));
-        assert!(matches!(second_write, PhaseGateDecision::Redirect { stage, .. } if stage == ORCH_STAGE_PHASE_GATE));
-        guard.record_phase_gate_nudge();
 
         // Text doom-loop pivot counter increments cleanly so retries stay bounded
         assert_eq!(guard.pivot_count(), 0);
         guard.record_text_doom_pivot();
         assert_eq!(guard.pivot_count(), 1);
 
-        guard.record_tool_outcome("read_file", &json!({"path": "src/a.rs"}), false, "fn main() {}", None);
-        assert_eq!(guard.phase(), OrchestratorPhase::Plan);
-        assert_eq!(
-            guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
-            PhaseGateDecision::Allow
+        // Advisory turns NEVER get nagged to call record_brainstorm
+        let mut advisory = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Advisory,
+            DeliberationDepth::Standard,
         );
+        assert!(advisory.check_completion_gate(true).is_none());
     }
 
     #[test]
@@ -1546,27 +1353,30 @@ mod tests {
     }
 
     #[test]
-    fn completion_gate_supports_failed_verification_retry_and_progress_aware_boulder() {
+    fn completion_gate_is_single_shot_advisory_and_progress_aware() {
         let mut guard = ExecutionGuard::new(
             ExecutionTier::Orchestrated,
             IntentKind::Implement,
             DeliberationDepth::Standard,
         );
         guard.record_tool_outcome("write_file", &json!({"path": "src/lib.rs"}), false, "ok", None);
-        // 1st verification nudge
-        assert!(guard.check_completion_gate(true).is_some());
-        // Agent runs cargo test -> FAILS -> 2nd verification nudge mentions FAILED!
-        guard.record_tool_outcome(
-            "shell_exec",
-            &json!({"command": "cargo test"}),
-            true,
-            "test failed",
-            None,
-        );
-        let retry = guard.check_completion_gate(true).expect("failed test must re-nudge");
-        assert!(retry.contains("FAILED"));
+        // Single non-blocking advisory reminder when unverified
+        let first = guard.check_completion_gate(true).expect("single advisory check");
+        assert!(first.contains("advisory_check"));
+        // Second call respects LLM decision without nagging repeatedly
+        assert!(guard.check_completion_gate(true).is_none());
 
-        // Progress-aware plan continuation resets local nudge when a step completes
+        // Passing LSP check clears verification state cleanly
+        let mut lsp_guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        lsp_guard.record_tool_outcome("write_file", &json!({"path": "src/lib.rs"}), false, "ok", None);
+        lsp_guard.record_tool_outcome("lsp_tool", &json!({"action": "diagnostics"}), false, "0 errors", None);
+        assert!(lsp_guard.check_completion_gate(true).is_none());
+
+        // Progress-aware plan continuation emits 1 advisory note, unlocks on genuine forward progress
         let mut pguard = ExecutionGuard::new(
             ExecutionTier::Standard,
             IntentKind::Implement,
@@ -1595,9 +1405,7 @@ mod tests {
             updated_at: Utc::now(),
         });
         assert!(pguard.check_completion_gate(true).is_some());
-        assert!(pguard.check_completion_gate(true).is_some());
-        assert!(pguard.check_completion_gate(true).is_none(), "capped when no progress");
-        // Complete s1 -> genuine progress unlocks continuation budget (still capped by total max)
+        assert!(pguard.check_completion_gate(true).is_none(), "single-shot advisory when no progress");
         pguard.update_active_plan(ExecutionPlan {
             id: "p2".into(),
             goal: "Ship feature".into(),
@@ -1620,6 +1428,6 @@ mod tests {
             rubric_warnings: vec![],
             updated_at: Utc::now(),
         });
-        assert!(pguard.check_completion_gate(true).is_some(), "progress unlocks next nudge");
+        assert!(pguard.check_completion_gate(true).is_some(), "progress unlocks next advisory note");
     }
 }

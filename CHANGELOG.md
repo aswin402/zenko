@@ -4,6 +4,28 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] - 2026-11-24
+
+Rebuilt Zenko's core Orchestrator & Brainstorming engine into **Orchestrator v2 ("LLM-Sovereign Membrane")**, synthesizing ideas from Hermes Agent, Oh My OpenCode, and Prime Agent to hand full control and freedom to the LLM with zero hardcoded keyword dictionaries, zero `if/else` ladders, zero regex, and zero `/commands`.
+
+### Added
+- **Sovereign Live Control Tool (`orchestrate_control` across `zenko-core`, `zenko-tools`, `zenko-runtime`):**
+  - Added eager tool `orchestrate_control` allowing Zenko to self-declare/transition turn posture (`direct`, `research`, `brainstorm`, `plan`, `implement`, `verify`, `review`), dynamically shift its own cognitive gear (`fast`, `lead`, `plan`, `advisor` configured model slots + `low`/`medium`/`high` reasoning effort) mid-turn while respecting explicit user model overrides, and trigger fresh 5-way parallel workspace/git/memory/DAG recon on demand.
+- **Iterative Metis/Momus Brainstorming (`record_brainstorm` v2, `BrainstormSpec`, `ChatStream.tsx`):**
+  - Upgraded `BrainstormSpec` with multi-round lifecycle `stage` (`exploring` → `refined` → `committed`), `parent_spec_id`, `assumptions`, `blind_spots`, `decision_criteria`, and adversarial `critique`, rendered cleanly inside the WebUI `BrainstormCard` under the active 60/30/10 theme.
+  - Preserved 100% LLM selection authority (never overrides `selected_option_id` or forces choices on `exploring` drafts; returns only non-blocking structural reflections).
+- **Category-Aware & Dynamic Specialist Subagents (`SUBAGENT_ROLE_REGISTRY`, `spawn_agent` v2, `agents.rs`):**
+  - Added declarative read-only `critic` (adversarial Metis + Momus plan/diff reviewer on `Advisor` tier) and `researcher` (web/docs/memory/session investigator on `Fast` tier) specialist roles.
+  - Added dynamic `custom` specialist composition (`custom_directive`, `cognitive_tier`, `read_only`, `tool_subset`) strictly bounded by the parent's monotonic `PermissionMode` ceiling and resource/cost limits.
+
+### Changed
+- **Language-Agnostic Structural Profiler & Neutral Situational Membrane (`triage.rs`, `orchestrator/mod.rs`, `snapshot.rs`):**
+  - Replaced ~180 hardcoded English keyword/phrase rules in `triage.rs` with objective, language-neutral structural profiling (`PermissionMode::Plan`, `is_first_turn`, mentioned paths, prior errors) so prompts in any phrasing or language are never misclassified or locked out.
+  - Replaced 7 hardcoded step-by-step protocol templates in `orchestrator/mod.rs` with a neutral Tier-3 `<situational_awareness>` snapshot and concise Tier-1 capability posture in `snapshot.rs`.
+- **Zero Keyword-Guessed Handcuffs (`guard.rs`):**
+  - Removed keyword-guessed pre-tool `IntentGate`/`PhaseGate` mutation blocks and hardcoded exploration-streak soft-limit nags; kept explicit `PermissionMode::Plan`, `ExecPolicy`, spend/iteration caps, and objective infinite-loop / doom-loop circuit breaking intact.
+  - Broadened post-edit verification evidence to recognize any passing shell check, `lsp_tool` diagnostics, or `verifier`/`critic` subagent completion, and softened completion checks into a single non-blocking advisory note.
+
 ## [0.0.14] - 2026-11-24
 
 Aligned chat message edges and the Chat Input Box to the exact same column width by hanging the Agent avatar outside the left edge and the User avatar outside the right edge on desktop viewports.

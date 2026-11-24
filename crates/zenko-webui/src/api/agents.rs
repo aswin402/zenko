@@ -57,6 +57,14 @@ pub struct SpawnAgentReq {
     max_duration_secs: Option<u64>,
     #[serde(default)]
     max_cost_usd: Option<f64>,
+    #[serde(default)]
+    custom_directive: Option<String>,
+    #[serde(default)]
+    cognitive_tier: Option<String>,
+    #[serde(default)]
+    read_only: Option<bool>,
+    #[serde(default)]
+    tool_subset: Vec<String>,
 }
 
 pub async fn api_spawn_agent(
@@ -82,6 +90,13 @@ pub async fn api_spawn_agent(
         include_uncommitted: req.include_uncommitted.unwrap_or(false),
         max_duration_secs: req.max_duration_secs,
         max_cost_usd: req.max_cost_usd,
+        custom_directive: req.custom_directive,
+        cognitive_tier: req
+            .cognitive_tier
+            .as_deref()
+            .and_then(zenko_core::ModelRoutingRole::parse),
+        read_only: req.read_only,
+        tool_subset: req.tool_subset,
     };
     match state
         .runtime

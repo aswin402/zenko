@@ -1042,6 +1042,29 @@ impl AgentRuntime {
                 let max_cost_usd = params
                     .and_then(|p| p.get("max_cost_usd"))
                     .and_then(Value::as_f64);
+                let custom_directive = params
+                    .and_then(|p| p.get("custom_directive"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let cognitive_tier = params
+                    .and_then(|p| p.get("cognitive_tier"))
+                    .and_then(Value::as_str)
+                    .and_then(ModelRoutingRole::parse);
+                let read_only = params.and_then(|p| p.get("read_only")).and_then(Value::as_bool);
+                let tool_subset = params
+                    .and_then(|p| p.get("tool_subset"))
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 match self
                     .subagents
                     .spawn_agent(
@@ -1059,6 +1082,10 @@ impl AgentRuntime {
                             include_uncommitted,
                             max_duration_secs,
                             max_cost_usd,
+                            custom_directive,
+                            cognitive_tier,
+                            read_only,
+                            tool_subset,
                         },
                     )
                     .await

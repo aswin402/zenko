@@ -904,12 +904,38 @@ function BrainstormCard({
   bouncy: boolean
 }) {
   const [open, setOpen] = useState(true)
+  const stageLabel = spec.stage || (spec.selected_option_id ? 'committed' : 'exploring')
+  const badgeSummary = `${stageLabel} · ${spec.options.length} options · ${spec.selected_option_id || 'open'}`
   const body = (
     <div className="flex flex-col gap-3">
       <p className="text-[13px] leading-relaxed text-[var(--fg)]/90">{spec.problem}</p>
+      {((spec.assumptions && spec.assumptions.length > 0) ||
+        (spec.blind_spots && spec.blind_spots.length > 0) ||
+        (spec.decision_criteria && spec.decision_criteria.length > 0)) && (
+        <div className="grid gap-2 sm:grid-cols-3">
+          {spec.assumptions && spec.assumptions.length > 0 && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-[11px] text-[var(--muted)]">
+              <strong className="block text-[var(--fg)]/85">Assumptions</strong>
+              <span className="mt-0.5 block">{spec.assumptions.join(' · ')}</span>
+            </div>
+          )}
+          {spec.blind_spots && spec.blind_spots.length > 0 && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-[11px] text-[var(--muted)]">
+              <strong className="block text-[var(--fg)]/85">Blind Spots</strong>
+              <span className="mt-0.5 block">{spec.blind_spots.join(' · ')}</span>
+            </div>
+          )}
+          {spec.decision_criteria && spec.decision_criteria.length > 0 && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-[11px] text-[var(--muted)]">
+              <strong className="block text-[var(--fg)]/85">Criteria</strong>
+              <span className="mt-0.5 block">{spec.decision_criteria.join(' · ')}</span>
+            </div>
+          )}
+        </div>
+      )}
       <div className="grid gap-2 sm:grid-cols-2">
         {spec.options.map((opt) => {
-          const isSelected = opt.id === spec.selected_option_id
+          const isSelected = Boolean(spec.selected_option_id) && opt.id === spec.selected_option_id
           return (
             <div
               key={opt.id}
@@ -947,9 +973,19 @@ function BrainstormCard({
           <strong className="text-[var(--fg)]/85">Rationale:</strong> {spec.selection_rationale}
         </div>
       )}
+      {spec.critique && spec.critique.length > 0 && (
+        <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
+          <strong className="text-[var(--fg)]/85">Critique:</strong> {spec.critique.join(' · ')}
+        </div>
+      )}
       {spec.pre_mortem && spec.pre_mortem.length > 0 && (
         <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
           <strong className="text-[var(--fg)]/85">Pre-Mortem:</strong> {spec.pre_mortem.join(' · ')}
+        </div>
+      )}
+      {spec.open_questions && spec.open_questions.length > 0 && (
+        <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
+          <strong className="text-[var(--fg)]/85">Open Questions:</strong> {spec.open_questions.join(' · ')}
         </div>
       )}
       {spec.verification_plan.length > 0 && (
@@ -959,7 +995,7 @@ function BrainstormCard({
       )}
       {spec.rubric_warnings && spec.rubric_warnings.length > 0 && (
         <div className="font-mono text-[10.5px] text-[var(--muted)]">
-          Rubric: {spec.rubric_warnings.join(' · ')}
+          Notes: {spec.rubric_warnings.join(' · ')}
         </div>
       )}
     </div>
@@ -978,7 +1014,7 @@ function BrainstormCard({
               <span className="inline-flex items-center gap-2 text-[13px]">
                 <span>Structured Brainstorm</span>
                 <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-                  {spec.options.length} options · {spec.selected_option_id}
+                  {badgeSummary}
                 </span>
               </span>
             ),
@@ -1005,7 +1041,7 @@ function BrainstormCard({
           <BrainIcon size={13.5} style={{ color: 'var(--accent)' }} />
           <span>Structured Brainstorm</span>
           <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-            {spec.options.length} options · {spec.selected_option_id}
+            {badgeSummary}
           </span>
         </button>
         <ChevronDown

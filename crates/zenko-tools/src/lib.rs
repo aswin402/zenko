@@ -80,6 +80,9 @@ impl ToolRegistry {
             reg.register(Arc::new(orchestrator_tools::SessionTaskTool::new(
                 bridge.clone(),
             )));
+            reg.register(Arc::new(orchestrator_tools::OrchestrateControlTool::new(
+                bridge.clone(),
+            )));
             reg.register(Arc::new(orchestrator_tools::AskClarificationTool::new(
                 bridge,
             )));

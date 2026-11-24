@@ -1,35 +1,37 @@
-//! Evidence-Weighted Structured Brainstorming Engine & Interactive/Headless Clarification Hub.
-//! - Anti-confirmation-bias scoring using centralized `ORCH_SCORE_*` constants + concrete evidence
-//!   (`touched_files`, `rollback_steps`, `risks`) alongside bounded self-scores.
+//! LLM-Sovereign Iterative Brainstorming Engine & Interactive/Headless Clarification Hub.
+//! - Preserves full LLM decision authority across multi-round `exploring` -> `refined` -> `committed`
+//!   brainstorms with Metis assumptions/blind-spots and Momus adversarial self-critique.
+//! - Supplies purely advisory structural reflections (never overrides the LLM's selected option).
 //! - Auto-resolves clarifications with zero blocking in headless 24/7 mode (`headless_no_wait = true`).
 //! - Waits event-driven (zero busy-polling) via `tokio::sync::oneshot` in interactive mode.
-//! - Bridges `plan_update`, `record_brainstorm`, and `ask_clarification` across WebUI, CLI, IPC,
-//!   MCP, and Telegram inline-keyboard buttons.
+//! - Bridges `record_brainstorm`, `plan_update`, `session_task`, `orchestrate_control`, and
+//!   `ask_clarification` across WebUI, CLI, IPC, MCP, and Telegram inline-keyboard buttons.
 
-use crate::orchestrator::guard::is_verification_command;
 use crate::orchestrator::plan::{
     compute_ready_session_tasks, validate_and_normalize_plan, validate_and_normalize_session_tasks,
 };
+use crate::orchestrator::recon::{format_recon_context, run_parallel_recon};
+use crate::runtime::AgentRuntime;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    AgentEvent, BrainstormOption, BrainstormSpec, CLARIFICATION_RESOLVER_HEADLESS,
+    AgentEvent, BrainstormOption, BrainstormSpec, BrainstormStage, CLARIFICATION_RESOLVER_HEADLESS,
     CLARIFICATION_RESOLVER_STEERED, CLARIFICATION_RESOLVER_TIMEOUT, ClarificationAnswer,
     ClarificationOption, ClarificationRecord, ClarificationStatus, ExecutionPlan,
-    ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_CLARIFICATION_TIMEOUT_SECS, ORCH_DELIBERATE_MIN_OPTIONS,
-    ORCH_DELIBERATE_MIN_PREMORTEM, ORCH_SCORE_BLAST_HIGH, ORCH_SCORE_BLAST_LOW,
-    ORCH_SCORE_BLAST_MED, ORCH_SCORE_EVIDENCE_RISKS_BONUS, ORCH_SCORE_EVIDENCE_ROLLBACK_BONUS,
-    ORCH_SCORE_INFLATED_SAFETY_PENALTY, ORCH_SCORE_PREMORTEM_BONUS, ORCH_SCORE_REC_BONUS,
+    ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_CLARIFICATION_TIMEOUT_SECS, ORCH_SCORE_BLAST_HIGH,
+    ORCH_SCORE_BLAST_LOW, ORCH_SCORE_BLAST_MED, ORCH_SCORE_EVIDENCE_RISKS_BONUS,
+    ORCH_SCORE_EVIDENCE_ROLLBACK_BONUS, ORCH_SCORE_INFLATED_SAFETY_PENALTY, ORCH_SCORE_REC_BONUS,
     ORCH_SCORE_REV_HIGH, ORCH_SCORE_REV_LOW, ORCH_SCORE_REV_MED, ORCH_SCORE_SAFETY_MULT,
     ORCH_SCORE_TESTABILITY_MULT, ORCH_SCORE_WIDE_FILES_THRESHOLD,
-    ORCH_SCORE_WIDE_UNPROTECTED_PENALTY, OrchestratorBridge, Result,
-    SESSION_TASK_EVIDENCE_MAX_CHARS, SessionTask, SessionTaskPatch, SessionTaskStatus, ZenkoError,
-    compact_preview, new_id,
+    ORCH_SCORE_WIDE_UNPROTECTED_PENALTY, OrchestrateControlReceipt, OrchestrateControlRequest,
+    OrchestratorBridge, Result, SESSION_TASK_EVIDENCE_MAX_CHARS, SessionTask, SessionTaskPatch,
+    SessionTaskStatus, ZenkoError, compact_preview, new_id,
 };
 use zenko_memory::SqliteStore;
 
@@ -99,75 +101,68 @@ pub fn select_optimal_option(options: &[BrainstormOption]) -> Option<&Brainstorm
         .max_by_key(|opt| score_brainstorm_option(opt))
 }
 
-/// Deterministic Momus-style structural rubric auditing a `BrainstormSpec` (zero LLM tokens).
+/// Purely advisory, zero-hardcoding structural reflections on a `BrainstormSpec`.
+/// Never blocks, never checks hardcoded shell-command lists, and respects `Exploring` drafts.
 pub fn audit_brainstorm_rubric(spec: &BrainstormSpec) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if spec.options.len() < ORCH_DELIBERATE_MIN_OPTIONS {
-        warnings.push(format!(
-            "Only {} option provided; evaluate at least {ORCH_DELIBERATE_MIN_OPTIONS} concrete alternatives before committing.",
-            spec.options.len()
-        ));
-    }
-    if spec.verification_plan.is_empty() {
-        warnings.push("Missing `verification_plan` defining exact build/test checks for done.".into());
-    } else if !spec
-        .verification_plan
-        .iter()
-        .any(|cmd| is_verification_command(cmd))
-    {
-        warnings.push(
-            "`verification_plan` contains no recognized executable build/test command (e.g. `cargo test`, `npm run build`, `pytest`).".into(),
-        );
-    }
-
-    let selected = spec
-        .options
-        .iter()
-        .find(|o| o.id == spec.selected_option_id);
-    if let Some(opt) = selected {
-        let non_trivial_blast = !matches!(
-            opt.blast_radius.trim().to_ascii_lowercase().as_str(),
-            "low" | "small" | "isolated"
-        ) || opt.touched_files.len() >= ORCH_SCORE_WIDE_FILES_THRESHOLD;
-        if non_trivial_blast && opt.rollback_steps.is_empty() {
-            warnings.push(format!(
-                "Selected option `{}` has non-trivial blast radius without explicit `rollback_steps`.",
-                opt.id
-            ));
-        }
-        if non_trivial_blast && spec.pre_mortem.len() < ORCH_DELIBERATE_MIN_PREMORTEM {
-            warnings.push(format!(
-                "High-impact approach `{}` has {} pre-mortem failure mode(s); include at least {ORCH_DELIBERATE_MIN_PREMORTEM} failure modes + mitigations.",
-                opt.id,
-                spec.pre_mortem.len()
-            ));
+    let mut notes = Vec::new();
+    let mut seen_ids: HashSet<&str> = HashSet::with_capacity(spec.options.len());
+    for opt in &spec.options {
+        if !seen_ids.insert(opt.id.as_str()) {
+            notes.push(format!("Duplicate option ID `{}` detected.", opt.id));
         }
     }
 
-    warnings
-}
-
-/// Normalizes, scores, and rubric-audits a `BrainstormSpec`, auto-selecting the optimal option if omitted.
-pub fn finalize_brainstorm_spec(mut spec: BrainstormSpec) -> BrainstormSpec {
-    spec.options.truncate(ORCH_BRAINSTORM_MAX_OPTIONS);
-    let premortem_bonus = match spec.pre_mortem.len() >= ORCH_DELIBERATE_MIN_PREMORTEM {
-        true => ORCH_SCORE_PREMORTEM_BONUS,
-        false => 0,
-    };
-    if (spec.selected_option_id.trim().is_empty()
-        || !spec.options.iter().any(|o| o.id == spec.selected_option_id))
-        && let Some(best) = select_optimal_option(&spec.options) {
-            spec.selected_option_id = best.id.clone();
-            if spec.selection_rationale.trim().is_empty() {
-                spec.selection_rationale = format!(
-                    "Auto-selected `{}` (evidence_score={}, reversibility={}, blast_radius={}) as the safest reversible path.",
-                    best.title,
-                    score_brainstorm_option(best) + premortem_bonus,
-                    best.reversibility,
-                    best.blast_radius
+    match spec.stage {
+        BrainstormStage::Exploring => {
+            if spec.open_questions.is_empty() && spec.blind_spots.is_empty() && spec.options.len() < 2 {
+                notes.push(
+                    "Exploration draft has a single option and no open questions/blind spots; consider widening alternatives or advancing to `committed`.".into(),
                 );
             }
         }
+        BrainstormStage::Refined | BrainstormStage::Committed => {
+            let sel = spec.selected_option_id.trim();
+            match (spec.stage, sel.is_empty(), spec.options.iter().find(|o| o.id == sel)) {
+                (BrainstormStage::Committed, true, _) => {
+                    notes.push(
+                        "Stage is `committed` without a `selected_option_id`; set `selected_option_id` or keep `stage` as `exploring`.".into(),
+                    );
+                }
+                (_, false, None) => {
+                    notes.push(format!(
+                        "`selected_option_id` (`{sel}`) does not match any listed option ID."
+                    ));
+                }
+                (_, false, Some(opt)) => {
+                    if opt.touched_files.len() >= ORCH_SCORE_WIDE_FILES_THRESHOLD
+                        && opt.rollback_steps.is_empty()
+                    {
+                        notes.push(format!(
+                            "Option `{}` touches {} files with no rollback steps noted.",
+                            opt.id,
+                            opt.touched_files.len()
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            if spec.stage == BrainstormStage::Committed && !spec.open_questions.is_empty() {
+                notes.push(format!(
+                    "{} open question(s) remain listed on a committed brainstorm.",
+                    spec.open_questions.len()
+                ));
+            }
+        }
+    }
+
+    notes
+}
+
+/// Normalizes and attaches non-blocking structural reflections to a `BrainstormSpec` while
+/// strictly honoring the LLM's chosen `stage` and `selected_option_id` (zero score override!).
+pub fn finalize_brainstorm_spec(mut spec: BrainstormSpec) -> BrainstormSpec {
+    spec.options.truncate(ORCH_BRAINSTORM_MAX_OPTIONS);
+    spec.selected_option_id = spec.selected_option_id.trim().to_string();
     spec.rubric_warnings = audit_brainstorm_rubric(&spec);
     spec
 }
@@ -207,6 +202,8 @@ pub struct ClarificationHub {
     /// Serializes read-modify-write DAG operations per hub so concurrent subagents & tool waves
     /// never suffer lost updates across `list -> validate -> replace_session_tasks`.
     dag_lock: Mutex<()>,
+    /// Leak-free weak handle to `AgentRuntime` powering `orchestrate_control` live shifts & recon.
+    runtime: OnceLock<Weak<AgentRuntime>>,
 }
 
 impl ClarificationHub {
@@ -216,7 +213,12 @@ impl ClarificationHub {
             events,
             pending: Mutex::new(HashMap::new()),
             dag_lock: Mutex::new(()),
+            runtime: OnceLock::new(),
         })
+    }
+
+    pub fn bind_runtime(&self, weak: Weak<AgentRuntime>) {
+        let _ = self.runtime.set(weak);
     }
 
     /// Resolves the shared root session Task DAG board so spawned Phase 5 subagents collaborate
@@ -684,6 +686,49 @@ impl OrchestratorBridge for ClarificationHub {
         }
         Ok(removed)
     }
+
+    async fn apply_orchestrate_control(
+        &self,
+        session_id: &str,
+        workspace_dir: &Path,
+        req: OrchestrateControlRequest,
+    ) -> Result<OrchestrateControlReceipt> {
+        let rt_opt = self.runtime.get().and_then(Weak::upgrade);
+        let mut receipt = match rt_opt.as_ref() {
+            Some(rt) => rt.queue_orchestrate_control(session_id, &req),
+            None => OrchestrateControlReceipt {
+                posture: req.posture,
+                cognitive_tier: req.cognitive_tier,
+                resolved_model: None,
+                reasoning_effort: req.reasoning_effort,
+                recon_summary: None,
+                rationale: req.rationale.clone(),
+                model_locked_by_override: false,
+            },
+        };
+
+        if req.refresh_recon
+            && let Some(rt) = rt_opt
+        {
+            let cfg = rt.config();
+            let query = req.recon_query.as_deref().unwrap_or("");
+            let recon = run_parallel_recon(
+                workspace_dir.to_path_buf(),
+                cfg.resolved_hub_dir(),
+                session_id.to_string(),
+                query,
+                rt.store.clone(),
+                rt.jobs.clone(),
+            )
+            .await;
+            let formatted = format_recon_context(&recon);
+            if !formatted.is_empty() {
+                receipt.recon_summary = Some(formatted);
+            }
+        }
+
+        Ok(receipt)
+    }
 }
 
 #[cfg(test)]
@@ -727,21 +772,63 @@ mod tests {
         let best = select_optimal_option(&opts).expect("best option");
         assert_eq!(best.id, "evidence_adapter");
 
-        // Momus rubric validator flags single-option, missing rollback, missing pre_mortem, and non-executable verification
-        let weak_spec = finalize_brainstorm_spec(BrainstormSpec {
-            id: "bs_weak".into(),
-            problem: "Migrate auth DB".into(),
-            invariants: vec![],
-            options: vec![opts[0].clone()],
-            selected_option_id: "inflated_rewrite".into(),
+        // LLM-sovereign brainstorm: honors Exploring drafts (no forced selection) and Committed choices without score override
+        let exploring_spec = finalize_brainstorm_spec(BrainstormSpec {
+            id: "bs_explore".into(),
+            stage: BrainstormStage::Exploring,
+            parent_spec_id: None,
+            problem: "Explore cache invalidation strategies".into(),
+            invariants: vec!["No stale auth reads".into()],
+            assumptions: vec!["Single-node SQLite WAL".into()],
+            blind_spots: vec!["Multi-process reload behavior".into()],
+            decision_criteria: vec!["Simplicity".into(), "Zero lock contention".into()],
+            options: vec![opts[0].clone(), opts[1].clone()],
+            selected_option_id: String::new(),
             selection_rationale: String::new(),
-            open_questions: vec![],
+            critique: vec!["Big rewrite risks silent regressions".into()],
+            open_questions: vec!["Do we need cross-process invalidation?".into()],
             pre_mortem: vec![],
-            verification_plan: vec!["visually check it works".into()],
+            verification_plan: vec![],
             rubric_warnings: vec![],
             created_at: Utc::now(),
         });
-        assert!(weak_spec.rubric_warnings.len() >= 3, "expected rubric warnings, got {:?}", weak_spec.rubric_warnings);
+        assert!(
+            exploring_spec.selected_option_id.is_empty(),
+            "exploring brainstorm must not force an option selection"
+        );
+        assert!(exploring_spec.rubric_warnings.is_empty());
+
+        let committed_spec = finalize_brainstorm_spec(BrainstormSpec {
+            id: "bs_commit".into(),
+            stage: BrainstormStage::Committed,
+            parent_spec_id: Some("bs_explore".into()),
+            problem: "Migrate auth DB".into(),
+            invariants: vec![],
+            assumptions: vec![],
+            blind_spots: vec![],
+            decision_criteria: vec![],
+            options: vec![opts[0].clone(), opts[1].clone()],
+            selected_option_id: "inflated_rewrite".into(),
+            selection_rationale: "User explicitly requested full rewrite.".into(),
+            critique: vec![],
+            open_questions: vec![],
+            pre_mortem: vec![],
+            verification_plan: vec![],
+            rubric_warnings: vec![],
+            created_at: Utc::now(),
+        });
+        assert_eq!(
+            committed_spec.selected_option_id, "inflated_rewrite",
+            "LLM-selected option must never be overridden"
+        );
+        assert!(
+            committed_spec
+                .rubric_warnings
+                .iter()
+                .any(|w| w.contains("rollback")),
+            "wide multi-file edit without rollback should surface a neutral reflection, got {:?}",
+            committed_spec.rubric_warnings
+        );
 
         let test_dir = std::env::temp_dir().join(format!("zenko_bs_hub_{}", new_id()));
         let store = SqliteStore::open(test_dir.join("zenko.db")).expect("db");

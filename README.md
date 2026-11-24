@@ -12,7 +12,7 @@
   </p>
 
   <p>
-    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.14-ea5829?style=flat-square" alt="Version 0.0.14" /></a>
+    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.15-ea5829?style=flat-square" alt="Version 0.0.15" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88%2B-141417?style=flat-square&logo=rust&logoColor=f5f5f6" alt="Rust 1.88+" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-141417?style=flat-square" alt="MIT License" /></a>
     <img src="https://img.shields.io/badge/runtime-Zero%20Node%20%7C%20Zero%20Python%20%7C%20rustls-141417?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -49,7 +49,7 @@
 
 | Area | Highlights |
 | :--- | :--- |
-| **Orchestration & Safety** | Complexity triage, read/plan-before-write gate, Read-Only `Plan` mode, SQLite Task DAG, Shadow-Git checkpoints, 3-mode Rewind & undo-of-undo |
+| **Orchestration & Safety** | LLM-sovereign Orchestrator v2 (`orchestrate_control` live posture & cognitive gear, iterative Metis/Momus brainstorming, dynamic `critic`/`researcher`/`custom` specialists, zero keyword blocks, zero `/commands`), Read-Only `Plan` mode, SQLite Task DAG, Shadow-Git checkpoints & 3-mode Rewind |
 | **Async Execution (`zenko_task`)** | 3-state parallel tool scheduler, live background build/dev runner with ANSI logs & log clearing, mid-flight steering, and `git worktree` subagents |
 | **Memory & Skills** | Surgical `patch_doc` with 1-click `.history/` rollback, hybrid FTS5/RRF/SimHash recall, auto-compaction, Dream consolidation, and `SKILL.md` drafting |
 | **Deep Engineering Tools** | Native `glob_find`, argv-only `git_tool`, pluggable `web_search` cascade, pooled LSP diagnostics-on-edit, and Universal MCP Client |

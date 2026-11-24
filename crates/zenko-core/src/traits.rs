@@ -3,8 +3,9 @@ use crate::types::{
     AgentMailMessage, AgentMessageOptions, BackgroundJobRecord, BrainstormSpec, ChatRequest,
     ClarificationAnswer, ClarificationOption, ClarificationRecord, ContextBreakdown, ExecutionPlan,
     GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta,
-    ModelInfo, SessionTask, SessionTaskPatch, SubagentRecord, SubagentSpawnRequest, TaskKind,
-    ToolConcurrency, ToolExposure, ToolOutput, ToolSpec, WorktreeDiffReport, WorktreePruneReport,
+    ModelInfo, OrchestrateControlReceipt, OrchestrateControlRequest, SessionTask, SessionTaskPatch,
+    SubagentRecord, SubagentSpawnRequest, TaskKind, ToolConcurrency, ToolExposure, ToolOutput,
+    ToolSpec, WorktreeDiffReport, WorktreePruneReport,
 };
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -193,6 +194,14 @@ pub trait OrchestratorBridge: Send + Sync {
 
     /// Clears all task DAG nodes for `session_id`.
     fn clear_session_tasks(&self, session_id: &str) -> Result<usize>;
+
+    /// Applies an LLM-initiated orchestration directive (posture, cognitive gear shift, or on-demand recon).
+    async fn apply_orchestrate_control(
+        &self,
+        session_id: &str,
+        workspace_dir: &Path,
+        req: OrchestrateControlRequest,
+    ) -> Result<OrchestrateControlReceipt>;
 }
 
 /// Bridge connecting Phase 3 context tools (`tool_search`, `context_inspect`) in `zenko-tools`

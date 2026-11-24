@@ -95,13 +95,21 @@ export interface ClarificationDecisionNote {
   auto_resolved: boolean
 }
 
+export type BrainstormStage = 'exploring' | 'refined' | 'committed'
+
 export interface BrainstormSpec {
   id: string
+  stage?: BrainstormStage
+  parent_spec_id?: string | null
   problem: string
   invariants: string[]
+  assumptions?: string[]
+  blind_spots?: string[]
+  decision_criteria?: string[]
   options: BrainstormOption[]
   selected_option_id: string
   selection_rationale: string
+  critique?: string[]
   open_questions: string[]
   pre_mortem?: string[]
   verification_plan: string[]

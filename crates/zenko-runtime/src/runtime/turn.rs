@@ -544,15 +544,42 @@ impl AgentRuntime {
             false => None,
         };
         let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
+        let effective_custom_read_only = opts.custom_read_only.unwrap_or(false);
+        let custom_tool_subset: HashSet<String> = opts
+            .custom_tool_subset
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         if let Some(role_desc) = active_role {
+            let is_ro = role_desc.read_only || effective_custom_read_only;
+            let custom_block = opts
+                .custom_directive
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|d| {
+                    format!(
+                        "\n\nSpecialist Directive:\n{}",
+                        compact_preview(d, SUBAGENT_CUSTOM_DIRECTIVE_MAX_CHARS)
+                    )
+                })
+                .unwrap_or_default();
             effective_system_prompt.push_str(&format!(
-                "\n\n<subagent_directive role=\"{}\" read_only=\"{}\">\n{}\n</subagent_directive>",
-                role_desc.id, role_desc.read_only, role_desc.system_addendum
+                "\n\n<subagent_directive role=\"{}\" read_only=\"{is_ro}\">\n{}{custom_block}\n</subagent_directive>",
+                role_desc.id, role_desc.system_addendum
             ));
         }
         if let Some(ref schema) = opts.output_schema {
             effective_system_prompt.push_str("\n\n");
             effective_system_prompt.push_str(&format_output_schema_instruction(schema));
+        }
+        let session_ctrl = self.session_control(&session_id);
+        session_ctrl
+            .explicit_model_locked
+            .store(orch.has_explicit_model_override, Ordering::Relaxed);
+        if let Ok(mut pending) = session_ctrl.pending_control.lock() {
+            *pending = None;
         }
         let effective_sys_tokens = estimate_text_tokens(&effective_system_prompt);
         let tool_ctx = ToolContext {
@@ -598,6 +625,30 @@ impl AgentRuntime {
             }
 
             if iter_idx > 0 {
+                if let Some(shift) = self.take_pending_control(&session_id) {
+                    if let Some(tier_role) = shift.cognitive_tier
+                        && !orch.has_explicit_model_override
+                        && let Some(dec) = orchestrator::router::select_turn_model(
+                            cfg,
+                            None,
+                            None,
+                            tier_role,
+                            None,
+                        )
+                        && dec.model_id != model
+                    {
+                        model = dec.model_id;
+                        context_window = self.resolve_context_window(&model);
+                        active_max_tokens = self.effective_output_budget(
+                            cfg.provider.max_tokens,
+                            &model,
+                            true,
+                        );
+                    }
+                    if let Some(eff) = shift.reasoning_effort {
+                        reasoning_effort = Some(eff);
+                    }
+                }
                 for steer_text in self.drain_steering(&session_id) {
                     let steer_ev = self.store.append_event(
                         &session_id,
@@ -621,8 +672,11 @@ impl AgentRuntime {
             if let Some(role_desc) = active_role {
                 active_tool_specs.retain(|spec| role_desc.permits_tool(&spec.name));
             }
-            if effective_permission == PermissionMode::Plan {
+            if effective_permission == PermissionMode::Plan || effective_custom_read_only {
                 active_tool_specs.retain(is_tool_allowed_in_plan_schema);
+            }
+            if !custom_tool_subset.is_empty() {
+                active_tool_specs.retain(|spec| custom_tool_subset.contains(&spec.name));
             }
             let prefix_tokens =
                 effective_sys_tokens + estimate_tool_specs_tokens(&active_tool_specs);
@@ -1229,7 +1283,18 @@ impl AgentRuntime {
                         && is_memory_mutating_action(
                             tc.arguments.get("action").and_then(Value::as_str).unwrap_or(""),
                         );
-                    if !role_desc.permits_tool(&tc.name) || mutating_mem {
+                    let outside_subset = !custom_tool_subset.is_empty()
+                        && !custom_tool_subset.contains(&tc.name);
+                    let blocked_by_custom_ro = effective_custom_read_only
+                        && matches!(
+                            orchestrator::classify_tool_category(&tc.name, &tc.arguments),
+                            orchestrator::ToolCategory::Mutation
+                        );
+                    if !role_desc.permits_tool(&tc.name)
+                        || mutating_mem
+                        || outside_subset
+                        || blocked_by_custom_ro
+                    {
                         redirected_indexed.push((
                             idx,
                             ExecutedToolCall {
@@ -1580,6 +1645,14 @@ impl AgentRuntime {
                             json!({
                                 "note_kind": NOTE_KIND_CLARIFICATION_DECISION,
                                 "decision": dec,
+                            })
+                        })
+                    }
+                    (false, TOOL_ORCHESTRATE_CONTROL, false) => {
+                        done.output.metadata.as_ref().map(|ctrl| {
+                            json!({
+                                "note_kind": NOTE_KIND_ORCHESTRATE_CONTROL,
+                                "control": ctrl,
                             })
                         })
                     }

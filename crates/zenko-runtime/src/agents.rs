@@ -26,15 +26,16 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use zenko_core::{
     AgentDeliveryAction, AgentEvent, AgentMailMessage, AgentMessageOptions, EventKind, EventRole,
-    HookEvent, JobSupervisor, NOTE_KIND_SUBAGENT_REPORT, ORCH_STAGE_SUBAGENT, PermissionMode,
-    Result, SUBAGENT_CANCEL_GRACE_SECS, SUBAGENT_FORK_MAX_CHARS, SUBAGENT_FORK_RECENT_EVENTS,
-    SUBAGENT_FORK_TOOL_PREVIEW_CHARS, SUBAGENT_FORK_TURN_PREVIEW_CHARS, SUBAGENT_LIST_DEFAULT_LIMIT,
-    SUBAGENT_MAIL_REPORT_PREVIEW_CHARS, SUBAGENT_MAX_DURATION_SECS, SUBAGENT_ROLE_REGISTRY,
-    SUBAGENT_SCHEMA_MAX_DEPTH, SUBAGENT_SUMMARY_MAX_CHARS, SUBAGENT_TIMEOUT_HARD_GRACE_SECS,
-    SUBAGENT_TITLE_PREVIEW_CHARS, SendMode, SubagentModelTier, SubagentRecord,
-    SubagentRoleDescriptor, SubagentSpawnRequest, SubagentStatus, SubagentWorkspaceDefault,
-    SubagentWorkspaceMode, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError,
-    compact_preview, find_subagent_role, is_operator_session,
+    HookEvent, JobSupervisor, ModelRoutingRole, NOTE_KIND_SUBAGENT_REPORT, ORCH_STAGE_SUBAGENT,
+    PermissionMode, Result, SUBAGENT_CANCEL_GRACE_SECS, SUBAGENT_FORK_MAX_CHARS,
+    SUBAGENT_FORK_RECENT_EVENTS, SUBAGENT_FORK_TOOL_PREVIEW_CHARS, SUBAGENT_FORK_TURN_PREVIEW_CHARS,
+    SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAIL_REPORT_PREVIEW_CHARS, SUBAGENT_MAX_DURATION_SECS,
+    SUBAGENT_ROLE_CUSTOM, SUBAGENT_ROLE_REGISTRY, SUBAGENT_SCHEMA_MAX_DEPTH,
+    SUBAGENT_SUMMARY_MAX_CHARS, SUBAGENT_TIMEOUT_HARD_GRACE_SECS, SUBAGENT_TITLE_PREVIEW_CHARS,
+    SendMode, SubagentModelTier, SubagentRecord, SubagentRoleDescriptor, SubagentSpawnRequest,
+    SubagentStatus, SubagentWorkspaceDefault, SubagentWorkspaceMode, WorktreeDiffReport,
+    WorktreePruneReport, ZenkoConfig, ZenkoError, compact_preview, find_subagent_role,
+    is_operator_session,
 };
 use zenko_memory::SqliteStore;
 
@@ -290,7 +291,12 @@ impl SubagentSupervisor {
         .await
         .map_err(|reason| ZenkoError::PolicyDenied(format!("Blocked by SubagentStart hook: {reason}")))?;
 
-        let resolved_model = resolve_role_model(&cfg, role, req.model_override.as_deref());
+        let resolved_model = resolve_specialist_model(
+            &cfg,
+            role,
+            req.cognitive_tier,
+            req.model_override.as_deref(),
+        );
         let child_title = format!(
             "[{}] {}",
             role.label,
@@ -298,9 +304,12 @@ impl SubagentSupervisor {
         );
 
         // Hermes monotonic permission ceiling: child can NEVER exceed parent privilege!
-        let role_perm = match role.read_only {
-            true => PermissionMode::Balanced,
-            false => parent_perm,
+        // Dynamic read-only requests strictly clamp permissions downward (never escalate).
+        let effective_read_only = role.read_only || req.read_only.unwrap_or(false);
+        let role_perm = match (role.id == SUBAGENT_ROLE_CUSTOM, effective_read_only) {
+            (true, true) => PermissionMode::Plan,
+            (false, true) => PermissionMode::Balanced,
+            (_, false) => parent_perm,
         };
         let child_perm = PermissionMode::strictest(parent_perm, role_perm);
 
@@ -465,6 +474,9 @@ impl SubagentSupervisor {
             req.run_in_background,
             max_duration_secs,
             max_cost_usd,
+            req.custom_directive.clone(),
+            Some(effective_read_only),
+            req.tool_subset.clone(),
         );
 
         match req.run_in_background {
@@ -496,6 +508,9 @@ impl SubagentSupervisor {
         notify_parent_mailbox: bool,
         max_duration_secs: Option<u64>,
         max_cost_usd: Option<f64>,
+        custom_directive: Option<String>,
+        custom_read_only: Option<bool>,
+        custom_tool_subset: Vec<String>,
     ) -> watch::Receiver<SubagentStatus> {
         let child_id_bg = record_bg.id.clone();
         let parent_sid_bg = record_bg.parent_session_id.clone();
@@ -533,6 +548,9 @@ impl SubagentSupervisor {
                     output_schema: output_schema.clone(),
                     external_cancel: Some(child_cancel.clone()),
                     max_cost_usd_override: max_cost_usd,
+                    custom_directive: custom_directive.clone(),
+                    custom_read_only,
+                    custom_tool_subset: custom_tool_subset.clone(),
                 },
             );
 
@@ -801,6 +819,9 @@ impl SubagentSupervisor {
             true,
             max_duration_secs,
             max_cost_usd,
+            None,
+            None,
+            Vec::new(),
         );
         Ok(())
     }
@@ -1251,16 +1272,24 @@ pub fn is_nuclear_family(store: &SqliteStore, from_sid: &str, to_sid: &str) -> R
     Ok(parent_to_child || child_to_parent || siblings)
 }
 
-/// Dynamic model router for subagent roles (zero hardcoded model IDs).
-pub fn resolve_role_model(
+/// Dynamic model router for subagent roles & optional category/cognitive tier override (zero hardcoded model IDs).
+pub fn resolve_specialist_model(
     cfg: &ZenkoConfig,
     role: &SubagentRoleDescriptor,
+    cognitive_tier: Option<ModelRoutingRole>,
     explicit_override: Option<&str>,
 ) -> Option<String> {
     if let Some(m) = explicit_override.map(str::trim).filter(|s| !s.is_empty()) {
         return Some(m.to_string());
     }
-    let candidates: [&str; 3] = match role.model_tier {
+    let effective_tier = match cognitive_tier {
+        Some(ModelRoutingRole::Fast) => SubagentModelTier::Fast,
+        Some(ModelRoutingRole::Lead) => SubagentModelTier::Lead,
+        Some(ModelRoutingRole::Plan) => SubagentModelTier::Plan,
+        Some(ModelRoutingRole::Advisor) => SubagentModelTier::Advisor,
+        None => role.model_tier,
+    };
+    let candidates: [&str; 3] = match effective_tier {
         SubagentModelTier::Fast => [&cfg.provider.fast_model, &cfg.provider.lead_model, ""],
         SubagentModelTier::Plan => [&cfg.provider.plan_model, &cfg.provider.lead_model, ""],
         SubagentModelTier::Lead => [&cfg.provider.lead_model, &cfg.provider.fast_model, ""],
@@ -1275,6 +1304,15 @@ pub fn resolve_role_model(
         .map(str::trim)
         .find(|m| !m.is_empty())
         .map(String::from)
+}
+
+/// Dynamic model router for subagent roles (zero hardcoded model IDs).
+pub fn resolve_role_model(
+    cfg: &ZenkoConfig,
+    role: &SubagentRoleDescriptor,
+    explicit_override: Option<&str>,
+) -> Option<String> {
+    resolve_specialist_model(cfg, role, None, explicit_override)
 }
 
 fn distill_summary(text: &str, max_chars: usize) -> String {
@@ -1803,6 +1841,46 @@ mod tests {
         );
         assert_eq!(sup.active_count(), 1);
         assert!(sup.is_active("child_1"));
+    }
+
+    #[test]
+    fn specialist_roles_and_cognitive_tier_routing_work_without_hardcoded_models() {
+        let mut cfg = ZenkoConfig::default();
+        cfg.provider.fast_model = "slot/fast".into();
+        cfg.provider.lead_model = "slot/lead".into();
+        cfg.provider.plan_model = "slot/plan".into();
+        cfg.provider.advisor_model = "slot/advisor".into();
+
+        let critic = find_subagent_role("critic").expect("critic role");
+        assert!(critic.read_only);
+        assert!(!critic.permits_tool("write_file"));
+        assert!(critic.permits_tool("read_file"));
+        assert_eq!(
+            resolve_specialist_model(&cfg, critic, None, None).as_deref(),
+            Some("slot/advisor")
+        );
+
+        let researcher = find_subagent_role("researcher").expect("researcher role");
+        assert!(researcher.read_only);
+        assert!(researcher.permits_tool("web_search"));
+        assert!(!researcher.permits_tool("shell_exec"));
+        assert_eq!(
+            resolve_specialist_model(&cfg, researcher, None, None).as_deref(),
+            Some("slot/fast")
+        );
+
+        let custom = find_subagent_role(SUBAGENT_ROLE_CUSTOM).expect("custom role");
+        assert!(!custom.permits_tool("spawn_agent"));
+        assert!(!custom.permits_tool("orchestrate_control"));
+        assert_eq!(
+            resolve_specialist_model(&cfg, custom, Some(ModelRoutingRole::Advisor), None).as_deref(),
+            Some("slot/advisor")
+        );
+        assert_eq!(
+            resolve_specialist_model(&cfg, custom, Some(ModelRoutingRole::Fast), Some("explicit/m"))
+                .as_deref(),
+            Some("explicit/m")
+        );
     }
 
     #[test]

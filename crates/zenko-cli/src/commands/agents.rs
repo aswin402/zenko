@@ -161,6 +161,10 @@ pub async fn run_agents_spawn(
                         include_uncommitted,
                         max_duration_secs,
                         max_cost_usd,
+                        custom_directive: None,
+                        cognitive_tier: None,
+                        read_only: None,
+                        tool_subset: Vec::new(),
                     },
                 )
                 .await?;

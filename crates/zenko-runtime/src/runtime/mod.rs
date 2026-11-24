@@ -91,30 +91,32 @@ use zenko_core::{
     MEMORY_AUTO_RECALL_MIN_SCORE, MEMORY_SCOPE_GLOBAL, MODEL_CACHE_TTL_SECS,
     MODEL_KV_COMPACT_REGISTRY_KEY, MODEL_KV_LEGACY_COMPACT_THRESHOLD_BYTES,
     MODEL_KV_PROVIDER_PREFIX, MODEL_KV_REGISTRY_KEY, MUTATING_FILE_TOOLS, McpServerConfig,
-    McpServerStatus, ModelInfo, NOTE_KIND_BRAINSTORM_SPEC, NOTE_KIND_CLARIFICATION_DECISION,
-    NOTE_KIND_DEFERRED_TOOLS, NOTE_KIND_EXECUTION_PLAN, NOTE_KIND_MEMORY_RECALL,
-    NOTE_KIND_PLAN_APPROVED, NOTE_KIND_REWIND_SUMMARY, ORCH_MAX_TRUNCATION_RETRIES,
-    ORCH_MONITORING_TOOLS, ORCH_REASONING_MAX_OUTPUT_CAP, ORCH_REASONING_MIN_MAX_TOKENS,
-    ORCH_STAGE_BUDGET_GUARD,
+    McpServerStatus, ModelInfo, ModelRoutingRole, NOTE_KIND_BRAINSTORM_SPEC,
+    NOTE_KIND_CLARIFICATION_DECISION, NOTE_KIND_DEFERRED_TOOLS, NOTE_KIND_EXECUTION_PLAN,
+    NOTE_KIND_MEMORY_RECALL, NOTE_KIND_ORCHESTRATE_CONTROL, NOTE_KIND_PLAN_APPROVED,
+    NOTE_KIND_REWIND_SUMMARY, ORCH_MAX_TRUNCATION_RETRIES, ORCH_MONITORING_TOOLS,
+    ORCH_REASONING_MAX_OUTPUT_CAP, ORCH_REASONING_MIN_MAX_TOKENS, ORCH_STAGE_BUDGET_GUARD,
     ORCH_STAGE_CHECKPOINT, ORCH_STAGE_CIRCUIT_BREAKER, ORCH_STAGE_COMPACTION, ORCH_STAGE_ESCALATED,
-    ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT, ORCH_STAGE_PACING, ORCH_STAGE_PHASE_GATE,
-    ORCH_STAGE_PLAN_MODE, ORCH_STAGE_RECON, ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TOOL_ACTIVATED,
-    ORCH_STAGE_TRIAGED, ORCH_STAGE_TRUNCATION_RECOVERY, ORCH_STAGE_VERIFICATION_GATE,
-    OrchestratorBridge, PeerRole, PermissionMode, QueuedPrompt, Result, RewindMode, RewindRequest,
-    SESSION_MAX_JOB_NOTICES, SHELL_BIN_UNIX, STEERING_PREVIEW_CHARS, SUBAGENT_DEFAULT_WAIT_SECS,
+    ORCH_STAGE_GEAR_SHIFT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT, ORCH_STAGE_PACING,
+    ORCH_STAGE_PHASE_GATE, ORCH_STAGE_PLAN_MODE, ORCH_STAGE_POSTURE, ORCH_STAGE_RECON,
+    ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TOOL_ACTIVATED, ORCH_STAGE_TRIAGED,
+    ORCH_STAGE_TRUNCATION_RECOVERY, ORCH_STAGE_VERIFICATION_GATE, OrchestrateControlReceipt,
+    OrchestrateControlRequest, OrchestratorBridge, PeerRole, PermissionMode, QueuedPrompt,
+    ReasoningEffort, Result, RewindMode, RewindRequest, SESSION_MAX_JOB_NOTICES, SHELL_BIN_UNIX,
+    STEERING_PREVIEW_CHARS, SUBAGENT_CUSTOM_DIRECTIVE_MAX_CHARS, SUBAGENT_DEFAULT_WAIT_SECS,
     SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAX_WAIT_SECS, SUBAGENT_SCHEMA_MAX_RETRIES, SecretVault,
     SendMode, Session, SessionDispatchState, SessionEvent, SessionSearchFilter, SessionStatus,
     SessionTask, AutoDispatchDecision, resolve_auto_send_mode,
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_GIT, TOOL_MEMORY, TOOL_PLAN_UPDATE,
-    TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH,
+    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_GIT, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL,
+    TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
+    TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH,
     TaskKind, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec, TriageReport,
-    TriggerRateLimiter, TriggerStatusEntry, UsageStats, WebSearchConfig, WorktreeAction,
-    WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError, compact_preview,
-    find_provider, find_subagent_role, is_git_tool_args_mutating, is_memory_mutating_action,
-    new_goal_loop_id, new_id, new_session_task_id,
+    TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
+    WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError,
+    compact_preview, find_provider, find_subagent_role, is_git_tool_args_mutating,
+    is_memory_mutating_action, new_goal_loop_id, new_id, new_session_task_id,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
@@ -147,6 +149,20 @@ pub struct TurnOptions {
     pub external_cancel: Option<CancellationToken>,
     /// Optional per-turn/subagent USD spend ceiling enforced alongside `daily_spend_limit_usd`.
     pub max_cost_usd_override: Option<f64>,
+    /// Optional LLM-authored specialist directive appended to subagent system instructions.
+    pub custom_directive: Option<String>,
+    /// Optional explicit read-only clamp for dynamic specialist subagents.
+    pub custom_read_only: Option<bool>,
+    /// Optional narrowed tool allowlist intersected with role & permission policy.
+    pub custom_tool_subset: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PendingControlShift {
+    pub posture: Option<TurnPosture>,
+    pub cognitive_tier: Option<ModelRoutingRole>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub rationale: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +185,8 @@ struct SessionControl {
     steer_queue: Mutex<VecDeque<String>>,
     job_notices: Mutex<VecDeque<WakeupNotice>>,
     active_tools: Mutex<HashMap<String, usize>>,
+    pending_control: Mutex<Option<PendingControlShift>>,
+    explicit_model_locked: AtomicBool,
 }
 
 /// RAII multiset counter tracking in-flight tool names on a session (cleanup guaranteed on cancel/error).
@@ -455,6 +473,7 @@ impl AgentRuntime {
         ctx_bridge.bind(Arc::downgrade(&rt));
         subagent_bridge.bind(Arc::downgrade(&rt));
         goal_bridge.bind(Arc::downgrade(&rt));
+        rt.clarifications.bind_runtime(Arc::downgrade(&rt));
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let art_dir = data_dir.clone();
@@ -1529,6 +1548,96 @@ impl AgentRuntime {
             .lock()
             .map(|mut q| q.drain(..).collect())
             .unwrap_or_default()
+    }
+
+    /// Queues an LLM-sovereign live orchestration directive (`posture`, `cognitive_tier`,
+    /// `reasoning_effort`) onto the active session control block and emits live WebUI/CLI events.
+    pub(crate) fn queue_orchestrate_control(
+        &self,
+        session_id: &str,
+        req: &OrchestrateControlRequest,
+    ) -> OrchestrateControlReceipt {
+        let cfg = self.config();
+        let ctrl = self.session_control(session_id);
+        let model_locked = ctrl.explicit_model_locked.load(Ordering::Relaxed);
+        let resolved_model = match (req.cognitive_tier, model_locked) {
+            (Some(role), false) => {
+                orchestrator::router::select_turn_model(&cfg, None, None, role, None)
+                    .map(|dec| dec.model_id)
+            }
+            _ => None,
+        };
+
+        let has_shift = req.posture.is_some()
+            || req.cognitive_tier.is_some()
+            || req.reasoning_effort.is_some();
+        if has_shift && let Ok(mut slot) = ctrl.pending_control.lock() {
+            let entry = slot.get_or_insert_with(PendingControlShift::default);
+            if req.posture.is_some() {
+                entry.posture = req.posture;
+            }
+            if req.cognitive_tier.is_some() {
+                entry.cognitive_tier = req.cognitive_tier;
+            }
+            if req.reasoning_effort.is_some() {
+                entry.reasoning_effort = req.reasoning_effort;
+            }
+            if req.rationale.is_some() {
+                entry.rationale = req.rationale.clone();
+            }
+        }
+
+        if let Some(posture) = req.posture {
+            let reason_suffix = req
+                .rationale
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default();
+            self.emit(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: ORCH_STAGE_POSTURE.into(),
+                tier: zenko_core::ExecutionTier::Orchestrated,
+                detail: format!("LLM posture -> `{}`{reason_suffix}", posture.as_str()),
+                model: None,
+            });
+        }
+        if req.cognitive_tier.is_some() || req.reasoning_effort.is_some() {
+            let mut tags = Vec::new();
+            if let Some(t) = req.cognitive_tier {
+                tags.push(format!("tier={}", t.as_str()));
+            }
+            if let Some(e) = req.reasoning_effort {
+                tags.push(format!("effort={}", e.as_str()));
+            }
+            if model_locked && req.cognitive_tier.is_some() {
+                tags.push("model_locked".into());
+            }
+            self.emit(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: ORCH_STAGE_GEAR_SHIFT.into(),
+                tier: zenko_core::ExecutionTier::Orchestrated,
+                detail: format!("LLM gear shift ({})", tags.join(", ")),
+                model: resolved_model.clone(),
+            });
+        }
+
+        OrchestrateControlReceipt {
+            posture: req.posture,
+            cognitive_tier: req.cognitive_tier,
+            resolved_model,
+            reasoning_effort: req.reasoning_effort,
+            recon_summary: None,
+            rationale: req.rationale.clone(),
+            model_locked_by_override: model_locked,
+        }
+    }
+
+    fn take_pending_control(&self, session_id: &str) -> Option<PendingControlShift> {
+        let ctrl = self.session_control(session_id);
+        ctrl.pending_control
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     fn drain_job_notices(&self, session_id: &str) -> Vec<WakeupNotice> {

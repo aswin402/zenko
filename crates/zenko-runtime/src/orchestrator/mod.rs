@@ -1,8 +1,8 @@
-//! Autonomous Orchestrator & Structured Brainstorming Engine for Zenko.
-//! Drives Phase-0 Intent Gate -> Token-Boundary Triage -> 5-Way Parallel Read-Only Recon ->
-//! Risk-Scaled Deliberate Brainstorming (Pre-Mortem + Momus Rubric) & Kahn's DAG Planning ->
-//! Adaptive Role/Effort Routing -> Mid-Turn Budget & Doom-Loop Guards -> Progress-Aware Completion Gate
-//! with zero `/commands` dependency.
+//! LLM-Sovereign Autonomous Orchestrator & Iterative Brainstorming Membrane for Zenko.
+//! Supplies fast 5-way parallel read-only situational awareness (`recon`), durable Kahn's DAG
+//! planning (`plan`), iterative Metis/Momus brainstorming (`brainstorm`), live cognitive-gear
+//! routing (`router`), and purely mechanical safety guards (`guard`) — with zero hardcoded
+//! keyword rules, zero `if/else` chains, zero regex, and zero `/commands`.
 
 pub mod brainstorm;
 pub mod guard;
@@ -51,11 +51,11 @@ pub struct OrchestratorTurnPlan {
     pub guard: ExecutionGuard,
 }
 
-/// Runs pre-execution orchestration for a turn:
-/// 1. Phase-0 Intent Gate + Token-boundary complexity, ambiguity & risk triage
-/// 2. Adaptive multi-role model & reasoning-effort routing
-/// 3. Automatic 5-way parallel read-only recon (`tokio::join!`) for `Orchestrated` runs
-/// 4. Non-cache-breaking volatile `<orchestrator_plan>` tailored by `IntentKind` & `DeliberationDepth`
+/// Runs lightweight, non-blocking pre-turn membrane preparation:
+/// 1. Language-agnostic structural profiling (zero keyword tables, zero forced blocks)
+/// 2. Initial model & effort selection (LLM can dynamically shift anytime via `orchestrate_control`)
+/// 3. Fast 5-way parallel read-only recon (`tokio::join!`) when structurally useful
+/// 4. Neutral, non-bossy Tier-3 `<situational_awareness>` snapshot preserving full LLM sovereignty
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_turn(
     cfg: &ZenkoConfig,
@@ -68,7 +68,7 @@ pub async fn prepare_turn(
     prior_turn_errors: usize,
     opt_model_override: Option<&str>,
     session_model_override: Option<&str>,
-    headless_no_wait: bool,
+    _headless_no_wait: bool,
     store: SqliteStore,
     jobs: Arc<LocalJobSupervisor>,
 ) -> OrchestratorTurnPlan {
@@ -96,7 +96,7 @@ pub async fn prepare_turn(
             tier: ExecutionTier::Standard,
             intent: IntentKind::Implement,
             deliberation: DeliberationDepth::Standard,
-            complexity_score: 2,
+            complexity_score: 0,
             ambiguity_score: 0,
             risk_score: 0,
             matched_signals: vec!["orchestrator:disabled".into()],
@@ -104,7 +104,7 @@ pub async fn prepare_turn(
             recommended_effort: ReasoningEffort::Medium,
             needs_recon: false,
             needs_brainstorm: false,
-            reason: "Orchestrator disabled in config.".into(),
+            reason: "Orchestrator membrane disabled in config.".into(),
         },
     };
 
@@ -136,70 +136,13 @@ pub async fn prepare_turn(
         false => None,
     };
 
-    let recon_txt_opt = recon
+    let guidance_block = recon
         .as_ref()
         .map(format_recon_context)
-        .filter(|s| !s.is_empty());
-
-    let guidance_block = match (
-        cfg.orchestrator.enabled && triage.tier == ExecutionTier::Orchestrated,
-        cfg.orchestrator.auto_brainstorm,
-        recon_txt_opt,
-    ) {
-        (true, true, recon_opt) => {
-            let recon_txt = recon_opt.unwrap_or_else(|| "No workspace markers detected yet.".into());
-            let protocol = match (triage.intent, triage.deliberation, headless_no_wait) {
-                (IntentKind::Research, _, _) => "Execution protocol (read-only research — focused budget):\n\
-                 1. Inspect ONLY the directly referenced files in 1-3 focused parallel waves (`read_file`, `code_search`, `list_dir`); avoid wandering into unrelated files.\n\
-                 2. Do NOT mutate workspace files on this read-only investigation turn.\n\
-                 3. Once core files are read, immediately synthesize a concise, accurate answer with exact file/line evidence.",
-                (IntentKind::Advisory, _, false) => "Execution protocol (read-only design advisory — focused budget):\n\
-                 1. Inspect the directly relevant files in 1-3 focused parallel waves (`read_file`, `code_search`, `list_dir`) — do NOT explore unrelated subsystems.\n\
-                 2. Call `record_brainstorm` with 2-3 evidence-backed options (`touched_files`, `rollback_steps`, `risks`, `pre_mortem`, `verification_plan`).\n\
-                 3. Present a clear recommendation without mutating files until the user confirms.",
-                (IntentKind::Advisory, _, true) => "Execution protocol (headless advisory — focused budget):\n\
-                 1. Inspect the directly relevant files in 1-3 focused parallel waves — avoid wandering into unrelated subsystems.\n\
-                 2. Call `record_brainstorm` with 2-3 evidence-backed options (`touched_files`, `rollback_steps`, `risks`, `pre_mortem`, `verification_plan`) and present the optimal reversible path without mutating files.",
-                (_, DeliberationDepth::Deliberate, true) => "Execution protocol (HIGH-RISK DELIBERATE — headless, focused execution):\n\
-                 1. Inspect affected files in 1-2 focused parallel waves BEFORE editing; prefer existing dependencies/stdlib unless new crates are explicitly requested, and avoid creating scratch `/tmp` probe projects.\n\
-                 2. Call `record_brainstorm` (>=2 options, `touched_files`, `rollback_steps`, >=2 `pre_mortem`, executable `verification_plan`) AND `plan_update` right after recon.\n\
-                 3. Implement the edits cleanly, update `plan_update` to `completed`, and verify with real build/test commands before concluding.",
-                (_, DeliberationDepth::Deliberate, false) => "Execution protocol (HIGH-RISK DELIBERATE — phase-gated, focused execution):\n\
-                 1. Inspect affected files in 1-2 focused parallel waves BEFORE editing; prefer existing dependencies/stdlib unless new crates are explicitly requested, and avoid scratch `/tmp` probe projects.\n\
-                 2. Call `record_brainstorm` (>=2 options, `touched_files`, `rollback_steps`, >=2 `pre_mortem`, executable `verification_plan`) AND `plan_update`; call `ask_clarification` ONLY for genuine high-impact design forks.\n\
-                 3. Close every step via `plan_update` and verify modified code with real build/test commands before concluding.",
-                (_, DeliberationDepth::Standard, true) => "Execution protocol (phase-gated — headless, focused execution):\n\
-                 1. Inspect relevant files in 1-2 focused parallel waves before editing.\n\
-                 2. Record 2-3 reversible options via `record_brainstorm`, track concrete steps via `plan_update`, and proceed cleanly without tangential probing.\n\
-                 3. Verify modified code with real build/test commands before reporting completion.",
-                (_, DeliberationDepth::Standard, false) => "Execution protocol (phase-gated — focused execution):\n\
-                 1. Inspect relevant files in 1-2 focused parallel waves before editing.\n\
-                 2. Use `record_brainstorm` (with `touched_files`, `rollback_steps`, `risks`) and `plan_update` (DAG step list) before heavy mutations; call `ask_clarification` ONLY if a high-impact decision genuinely requires user input.\n\
-                 3. Update step statuses via `plan_update` and verify modified code with real build/test commands before reporting completion.",
-            };
-            Some(format!(
-                "<orchestrator_plan tier=\"orchestrated\" intent=\"{}\" depth=\"{}\" complexity=\"{}\" ambiguity=\"{}\" risk=\"{}\" effort=\"{}\">\n\
-                 {}\n\n\
-                 {}\n\
-                 </orchestrator_plan>",
-                triage.intent.as_str(),
-                triage.deliberation.as_str(),
-                triage.complexity_score,
-                triage.ambiguity_score,
-                triage.risk_score,
-                triage.recommended_effort.as_str(),
-                recon_txt,
-                protocol
-            ))
-        }
-        (true, false, Some(recon_txt)) => Some(format!(
-            "<recon_context intent=\"{}\" effort=\"{}\">\n{}\n</recon_context>",
-            triage.intent.as_str(),
-            triage.recommended_effort.as_str(),
-            recon_txt
-        )),
-        _ => None,
-    };
+        .filter(|s| !s.is_empty())
+        .map(|recon_txt| {
+            format!("<situational_awareness>\n{recon_txt}\n</situational_awareness>")
+        });
 
     OrchestratorTurnPlan {
         guard: ExecutionGuard::new(triage.tier, triage.intent, triage.deliberation),

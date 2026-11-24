@@ -218,6 +218,8 @@ pub const SUBAGENT_MAILBOX_MAX_MESSAGES: usize = 32;
 pub const SUBAGENT_LIST_DEFAULT_LIMIT: usize = 30;
 pub const SUBAGENT_SCHEMA_MAX_RETRIES: usize = 1;
 pub const SUBAGENT_SCHEMA_MAX_DEPTH: usize = 32;
+pub const SUBAGENT_ROLE_CUSTOM: &str = "custom";
+pub const SUBAGENT_CUSTOM_DIRECTIVE_MAX_CHARS: usize = 2_400;
 
 // Phase 6: Durable SQLite Session Task DAG, Read-Only Plan Mode & Shadow-Git Workspace Checkpoints
 pub const SESSION_TASK_ID_PREFIX: &str = "task_";
@@ -427,6 +429,7 @@ pub const MEMORY_INJECTION_BLOCKED_TAGS: &[&str] = &[
     "system",
     "instructions",
     "system_reminder",
+    "situational_awareness",
     "repo_rules",
     "user_profile",
     "memory_snapshot",
@@ -569,6 +572,7 @@ pub const TOOL_RECORD_BRAINSTORM: &str = "record_brainstorm";
 pub const TOOL_ASK_CLARIFICATION: &str = "ask_clarification";
 pub const TOOL_PLAN_UPDATE: &str = "plan_update";
 pub const TOOL_SESSION_TASK: &str = "session_task";
+pub const TOOL_ORCHESTRATE_CONTROL: &str = "orchestrate_control";
 pub const TOOL_SHELL_EXEC: &str = "shell_exec";
 pub const TOOL_JOB_LIST: &str = "job_list";
 pub const TOOL_JOB_READ: &str = "job_read";
@@ -616,8 +620,11 @@ pub const NOTE_KIND_MEMORY_RECALL: &str = "memory_recall";
 pub const NOTE_KIND_SUBAGENT_REPORT: &str = "subagent_report";
 pub const NOTE_KIND_REWIND_SUMMARY: &str = "rewind_summary";
 pub const NOTE_KIND_PLAN_APPROVED: &str = "plan_approved";
+pub const NOTE_KIND_ORCHESTRATE_CONTROL: &str = "orchestrate_control";
 
 pub const ORCH_STAGE_TRIAGED: &str = "triaged";
+pub const ORCH_STAGE_POSTURE: &str = "posture";
+pub const ORCH_STAGE_GEAR_SHIFT: &str = "gear_shift";
 pub const ORCH_STAGE_RECON: &str = "recon";
 pub const ORCH_STAGE_INTENT_GATE: &str = "intent_gate";
 pub const ORCH_STAGE_PHASE_GATE: &str = "phase_gate";
@@ -681,7 +688,7 @@ pub const ORCH_TEXT_DOOM_MIN_LINES: usize = 6;
 pub const ORCH_TEXT_DOOM_REPEAT_THRESHOLD: usize = 4;
 pub const ORCH_TEXT_DOOM_MIN_LINE_CHARS: usize = 18;
 pub const ORCH_CLARIFICATION_TIMEOUT_SECS: u64 = 180;
-pub const ORCH_BRAINSTORM_MAX_OPTIONS: usize = 4;
+pub const ORCH_BRAINSTORM_MAX_OPTIONS: usize = 6;
 pub const ORCH_PLAN_MAX_STEPS: usize = 16;
 
 // Evidence-weighted brainstorm scoring constants (anti-confirmation-bias)
@@ -730,6 +737,7 @@ pub const PLANNING_TOOLS: &[&str] = &[
     TOOL_ASK_CLARIFICATION,
     TOOL_PLAN_UPDATE,
     TOOL_SESSION_TASK,
+    TOOL_ORCHESTRATE_CONTROL,
 ];
 /// Tools that are conditionally permitted in Read-Only Plan Mode (enforced per-argument by ExecPolicy):
 /// read-only shell commands, read-only memory actions, read-only subagent roles, worktree diff,
@@ -765,6 +773,7 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_PLAN_UPDATE,
     TOOL_SESSION_TASK,
     TOOL_ASK_CLARIFICATION,
+    TOOL_ORCHESTRATE_CONTROL,
     "memory_tool",
     TOOL_SKILL_VIEW,
     TOOL_SKILL_MANAGE,

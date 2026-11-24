@@ -351,12 +351,23 @@ pub enum ReasoningEffort {
     High,
 }
 
+pub const REASONING_EFFORTS: &[&str] = &["low", "medium", "high"];
+
 impl ReasoningEffort {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" | "minimal" => Some(Self::Low),
+            "medium" | "balanced" | "standard" => Some(Self::Medium),
+            "high" | "deep" | "max" => Some(Self::High),
+            _ => None,
         }
     }
 
@@ -1481,6 +1492,8 @@ pub enum ModelRoutingRole {
     Advisor,
 }
 
+pub const MODEL_ROUTING_ROLES: &[&str] = &["fast", "lead", "plan", "advisor"];
+
 impl ModelRoutingRole {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1490,6 +1503,103 @@ impl ModelRoutingRole {
             Self::Advisor => "advisor",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "fast" | "quick" => Some(Self::Fast),
+            "lead" | "default" | "standard" => Some(Self::Lead),
+            "plan" | "architect" => Some(Self::Plan),
+            "advisor" | "deep" | "critic" => Some(Self::Advisor),
+            _ => None,
+        }
+    }
+}
+
+/// LLM-sovereign execution posture declared dynamically via `orchestrate_control` (zero `/commands`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPosture {
+    Direct,
+    Research,
+    Brainstorm,
+    Plan,
+    #[default]
+    Implement,
+    Verify,
+    Review,
+}
+
+pub const TURN_POSTURES: &[&str] = &[
+    "direct",
+    "research",
+    "brainstorm",
+    "plan",
+    "implement",
+    "verify",
+    "review",
+];
+
+impl TurnPosture {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Research => "research",
+            Self::Brainstorm => "brainstorm",
+            Self::Plan => "plan",
+            Self::Implement => "implement",
+            Self::Verify => "verify",
+            Self::Review => "review",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "direct" => Some(Self::Direct),
+            "research" | "explore" | "investigate" => Some(Self::Research),
+            "brainstorm" | "ideate" | "design" => Some(Self::Brainstorm),
+            "plan" => Some(Self::Plan),
+            "implement" | "execute" | "build" => Some(Self::Implement),
+            "verify" | "test" => Some(Self::Verify),
+            "review" | "critique" | "audit" => Some(Self::Review),
+            _ => None,
+        }
+    }
+}
+
+/// Live orchestration directive emitted by the LLM via `orchestrate_control`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OrchestrateControlRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture: Option<TurnPosture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognitive_tier: Option<ModelRoutingRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub refresh_recon: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recon_query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+}
+
+/// Structured acknowledgement returned by `orchestrate_control` to the LLM.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OrchestrateControlReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture: Option<TurnPosture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognitive_tier: Option<ModelRoutingRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recon_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(default)]
+    pub model_locked_by_override: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1690,16 +1800,61 @@ pub struct ExecutionPlan {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Lifecycle stage for iterative, multi-round LLM-sovereign brainstorming (`exploring` -> `refined` -> `committed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainstormStage {
+    Exploring,
+    Refined,
+    #[default]
+    Committed,
+}
+
+pub const BRAINSTORM_STAGES: &[&str] = &["exploring", "refined", "committed"];
+
+impl BrainstormStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exploring => "exploring",
+            Self::Refined => "refined",
+            Self::Committed => "committed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "exploring" | "draft" | "open" => Some(Self::Exploring),
+            "refined" | "converging" | "revised" => Some(Self::Refined),
+            "committed" | "final" | "decided" => Some(Self::Committed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrainstormSpec {
     pub id: String,
+    #[serde(default)]
+    pub stage: BrainstormStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_spec_id: Option<String>,
     pub problem: String,
     #[serde(default)]
     pub invariants: Vec<String>,
     #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub blind_spots: Vec<String>,
+    #[serde(default)]
+    pub decision_criteria: Vec<String>,
+    #[serde(default)]
     pub options: Vec<BrainstormOption>,
+    #[serde(default)]
     pub selected_option_id: String,
+    #[serde(default)]
     pub selection_rationale: String,
+    #[serde(default)]
+    pub critique: Vec<String>,
     #[serde(default)]
     pub open_questions: Vec<String>,
     #[serde(default)]
@@ -1908,6 +2063,18 @@ pub struct SubagentSpawnRequest {
     /// Optional per-subagent USD spend ceiling (clamped to `[subagents].max_cost_usd`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_usd: Option<f64>,
+    /// Optional LLM-authored specialist instructions/persona (used with `role: "custom"` or to specialize any role).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_directive: Option<String>,
+    /// Optional declarative cognitive tier (`fast` | `lead` | `plan` | `advisor`) routed dynamically to configured slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognitive_tier: Option<ModelRoutingRole>,
+    /// Optional explicit read-only clamp (strictly enforced alongside parent's monotonic permission ceiling).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    /// Optional narrowed allowlist of tool names for surgical subagent focus (intersected with role policy).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_subset: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
