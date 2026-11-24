@@ -7,6 +7,7 @@ import { take } from "../utils/range";
 export interface Segment {
   text: string;
   mono?: boolean;
+  bold?: boolean;
 }
 
 export function StreamingText({
@@ -28,7 +29,12 @@ export function StreamingText({
       segments.flatMap((segment) =>
         segment.text
           .split(" ")
-          .map((word) => ({ word, mono: segment.mono ?? false })),
+          .filter((word) => word.length > 0)
+          .map((word) => ({
+            word,
+            mono: segment.mono ?? false,
+            bold: segment.bold ?? false,
+          })),
       ),
     [segments],
   );
@@ -43,8 +49,13 @@ export function StreamingText({
       )}
       {...props}
     >
-      {shown.map(({ word, mono: isMono }, i) => {
+      {shown.map(({ word, mono: isMono, bold: isBold }, i) => {
         const fresh = streaming && shown.length - 1 - i < 2;
+        const inner = isBold ? (
+          <strong className="font-semibold">{word}</strong>
+        ) : (
+          word
+        );
         return (
           <span
             key={i}
@@ -55,10 +66,10 @@ export function StreamingText({
                 "transition-colors duration-700 motion-reduce:transition-none",
                 fresh && "text-[var(--accent)]",
                 isMono &&
-                  "bg-foreground/[0.06] rounded-md px-1.5 py-0.5 font-mono text-[0.85em]",
+                  "rounded-md bg-[color-mix(in_srgb,var(--accent)_13%,var(--card))] px-1.5 py-0.5 font-mono text-[0.85em] text-[color-mix(in_srgb,var(--accent)_78%,var(--fg))]",
               )}
             >
-              {word}
+              {inner}
             </span>{" "}
           </span>
         );

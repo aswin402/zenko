@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Activity, BrainIcon, ChevronDown, Clock, Layers, RotateCcw, Settings } from 'lucide-react'
+import { splitIntoStreamingSegments } from '@/lib/elements'
 import { ICON_PACK_META_MAP } from '@/lib/icon-packs'
 import type {
   ActiveView,
@@ -32,7 +33,6 @@ import { MessageBubble as EaseMessageBubble } from '@/components/easeui/message-
 import { StreamingResponse as EaseStreamingResponse } from '@/components/easeui/streaming-response'
 import { Faq as RareFaq } from '@/components/rareui/faq'
 import { StreamingResponse as RareStreamingResponse } from '@/components/rareui/streaming-response'
-import { WebSearch as RareWebSearch } from '@/components/rareui/web-search'
 import { ExpandableTabs } from '@/components/skiperui/expandable-tabs'
 import {
   LineHoverLink,
@@ -41,16 +41,20 @@ import {
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { Sidebar } from '@/components/chat/Sidebar'
-import { MODEL_BADGE_CLASS, USER_BUBBLE_CLASS } from '@/components/chat/ChatStream'
+import { MODEL_BADGE_CLASS, MarkdownProse, USER_BUBBLE_CLASS } from '@/components/chat/ChatStream'
 import {
   ActivityDisplay,
   ApprovalElement,
   AssistantMessageFooter,
   CitationsDisplay,
+  ErrorStateDisplay,
+  FileTreeDisplay,
   LoadingStatusBar,
   MarkdownCodeBlock,
   SkillAndMemoryBadges,
   SmartToolElement,
+  StoppedRunDisplay,
+  WebSearchDisplay,
   type NormalizedToolStep,
 } from '@/components/chat/ChatElements'
 import {
@@ -74,11 +78,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
 import { ThemeToggle } from '@/components/motion/theme-toggle'
 import { DataTable } from '@/components/assistant-ui/elements/data-table'
 import { DayDivider } from '@/components/assistant-ui/elements/day-separator'
-import { ErrorState } from '@/components/assistant-ui/elements/error-state'
-import { FileTree } from '@/components/assistant-ui/elements/file-tree'
-import { StoppedRun } from '@/components/assistant-ui/elements/stopped-run'
 import { StreamingText } from '@/components/assistant-ui/elements/streaming-text'
-import { WebSearch } from '@/components/assistant-ui/elements/web-search'
 import { ZenkoTooltip, ZenkoTooltipBadge } from '@/components/ui/Tooltip'
 import { DashboardMiniPreview } from '@/components/views/DashboardView'
 
@@ -381,12 +381,17 @@ function IconFamiliesPreview({ ui }: { ui: UiCustomization }) {
 function StreamingPreview({ ui }: { ui: UiCustomization }) {
   const [replayCount, setReplayCount] = useState(0)
   const style = ui.components.chat_page.streaming_style
-  const sample = 'Daemon is healthy at 28.4 MB VmRSS with SQLite WAL mode and zero warnings.'
+  const emphasisStyle = ui.components.chat_page.emphasis_style || 'accent'
+  const sample =
+    'Daemon is healthy at **28.4 MB VmRSS** with **SQLite WAL mode** and `zero warnings` across all crates.'
+  const parsedSegments = splitIntoStreamingSegments(sample)
 
   return (
     <div className="flex w-full max-w-[600px] flex-col gap-3">
       <div className="flex items-center justify-between font-mono text-[11px] text-[var(--muted)]">
-        <span>Active stream mode: {style}</span>
+        <span>
+          stream: {style} · emphasis: {emphasisStyle}
+        </span>
         <button
           type="button"
           onClick={() => setReplayCount((c) => c + 1)}
@@ -398,17 +403,13 @@ function StreamingPreview({ ui }: { ui: UiCustomization }) {
       <div key={replayCount} className="rounded-xl border border-[var(--border)]/70 bg-[var(--surface)]/55 p-4">
         {style === 'aui_streaming_text' ? (
           <StreamingText
-            segments={[
-              { text: 'Daemon is healthy at ' },
-              { text: '28.4 MB VmRSS', mono: true },
-              { text: ' with SQLite WAL mode and zero warnings.' },
-            ]}
-            count={16}
+            segments={parsedSegments.segments}
+            count={parsedSegments.wordCount}
             streaming={true}
           />
         ) : style === 'easeui_stream' ? (
           <EaseStreamingResponse status="complete" copyText={sample} onRetry={() => setReplayCount((c) => c + 1)} showFeedback>
-            <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/92">{sample}</p>
+            <MarkdownProse text={sample} />
           </EaseStreamingResponse>
         ) : style === 'rareui_stream' ? (
           <RareStreamingResponse
@@ -420,83 +421,131 @@ function StreamingPreview({ ui }: { ui: UiCustomization }) {
           />
         ) : style === 'beui_stream' ? (
           <StreamingResponse status="complete" copyText={sample} showActions={false} announce={false}>
-            <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/92">{sample}</p>
+            <MarkdownProse text={sample} />
           </StreamingResponse>
         ) : (
-          <p className="text-[13.5px] leading-relaxed text-[var(--fg)]/92">{sample}</p>
+          <MarkdownProse text={sample} />
         )}
       </div>
     </div>
   )
 }
 
-function ElementStatesPreview({ ui }: { ui: UiCustomization }) {
-  const [retrying, setRetrying] = useState(false)
-  const webSearchStyle = ui.components.chat_page.web_search_style || 'aui_web_search'
+const PREVIEW_FILE_TREE_NODES = [
+  { path: 'crates/zenko-core/src', name: 'src', depth: 0, kind: 'folder' as const },
+  { path: 'crates/zenko-core/src/ui.rs', name: 'ui.rs', depth: 1, kind: 'file' as const, additions: 32, deletions: 4 },
+  { path: 'crates/zenko-core/src/studio_schema.rs', name: 'studio_schema.rs', depth: 1, kind: 'file' as const, additions: 16, deletions: 2 },
+]
+
+const PREVIEW_WEB_SEARCH_RESULTS = [
+  { title: 'Zenko Native Rust Runtime', domain: 'rust-lang.org', url: 'https://rust-lang.org' },
+  { title: 'SQLite WAL Concurrency Guide', domain: 'sqlite.org', url: 'https://sqlite.org/wal.html' },
+]
+
+function ElementChromePreview({ ui }: { ui: UiCustomization }) {
+  const chrome = ui.surface.element_chrome || 'minimal'
   return (
-    <div className="grid w-full max-w-[680px] gap-3 md:grid-cols-2">
-      <div className="flex flex-col gap-3">
-        <ErrorState
-          title="Provider request timed out"
-          detail="Upstream stream closed after 30s — click retry to resume."
-          retrying={retrying}
-          onRetry={() => {
-            setRetrying(true)
-            window.setTimeout(() => setRetrying(false), 1100)
-          }}
-        />
-        <StoppedRun
-          words={['Analyzing', 'workspace', 'crates', 'and', 'compiling', 'the', 'release...']}
-          reason="Stopped by user"
-          onContinue={() => {}}
-          onDiscard={() => {}}
-        />
+    <div className="flex w-full max-w-[600px] flex-col gap-3.5">
+      <div className="flex items-center justify-between font-mono text-[11px] text-[var(--muted)]">
+        <span>Active element chrome</span>
+        <span style={{ color: 'var(--accent)' }}>{chrome}</span>
       </div>
-      <div className="flex flex-col gap-3">
-        <FileTree
-          title="crates/zenko-core · 3 files"
-          visibleCount={4}
-          totalAdditions={48}
-          totalDeletions={6}
-          nodes={[
-            { path: 'src', name: 'src', depth: 0, kind: 'folder' },
-            { path: 'src/ui.rs', name: 'ui.rs', depth: 1, kind: 'file', additions: 32, deletions: 4 },
-            { path: 'src/studio_schema.rs', name: 'studio_schema.rs', depth: 1, kind: 'file', additions: 16, deletions: 2 },
-          ]}
-        />
-        {webSearchStyle === 'rareui_web_search' ? (
-          <RareWebSearch
-            query="zenko rust agent architecture"
-            status="done"
-            defaultOpen={true}
-            sources={[
-              {
-                id: 's1',
-                title: 'Zenko Native Rust Runtime',
-                url: 'https://rust-lang.org',
-                snippet: 'Single-binary Tokio + SQLite WAL agent orchestrator under 30 MB VmRSS.',
-              },
-              {
-                id: 's2',
-                title: 'SQLite WAL Concurrency Guide',
-                url: 'https://sqlite.org/wal.html',
-                snippet: 'Concurrent readers and non-blocking writes for local-first AI state.',
-              },
-            ]}
-          />
-        ) : (
-          <WebSearch
-            query="zenko rust agent architecture"
-            searching={false}
-            visibleResults={2}
-            cycle={1}
-            results={[
-              { title: 'Zenko Native Rust Runtime', domain: 'rust-lang.org', url: 'https://rust-lang.org' },
-              { title: 'SQLite WAL Concurrency Guide', domain: 'sqlite.org', url: 'https://sqlite.org/wal.html' },
-            ]}
-          />
-        )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="zenko-aui-paper rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3.5 text-[12.5px]">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[11.5px] font-semibold text-[var(--fg)]">shell_exec</span>
+            <span className="font-mono text-[10.5px] text-[var(--success)]">exit 0</span>
+          </div>
+          <div className="mt-2 font-mono text-[11px] text-[var(--muted)]">
+            $ cargo test --workspace --offline
+          </div>
+        </div>
+        <div className="zenko-aui-paper rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3.5 text-[12.5px]">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-[var(--fg)]">crates/zenko-core</span>
+            <span className="font-mono text-[11px] tabular-nums">
+              <span className="text-[var(--success)]">+48</span>{' '}
+              <span className="text-[var(--destructive)]">−6</span>
+            </span>
+          </div>
+          <div className="mt-2 font-mono text-[11px] text-[var(--muted)]">
+            ui.rs · studio_schema.rs
+          </div>
+        </div>
       </div>
+    </div>
+  )
+}
+
+function ErrorStatePreview({ ui }: { ui: UiCustomization }) {
+  const [retrying, setRetrying] = useState(false)
+  return (
+    <div className="flex w-full max-w-[580px] flex-col gap-2.5">
+      <ErrorStateDisplay
+        style={ui.components.chat_page.error_state_style}
+        title="Provider request timed out"
+        detail="Upstream stream closed after 30s — click retry to resume."
+        retrying={retrying}
+        onRetry={() => {
+          setRetrying(true)
+          window.setTimeout(() => setRetrying(false), 1100)
+        }}
+      />
+      <span className="font-mono text-[10.5px] text-[var(--muted)]">
+        style: {ui.components.chat_page.error_state_style || 'aui_error_card'}
+      </span>
+    </div>
+  )
+}
+
+function StoppedRunPreview({ ui }: { ui: UiCustomization }) {
+  return (
+    <div className="flex w-full max-w-[580px] flex-col gap-2.5">
+      <StoppedRunDisplay
+        style={ui.components.chat_page.stopped_run_style}
+        words={['Analyzing', 'workspace', 'crates', 'and', 'compiling', 'the', 'release...']}
+        reason="Stopped by user"
+        onContinue={() => {}}
+        onDiscard={() => {}}
+      />
+      <span className="font-mono text-[10.5px] text-[var(--muted)]">
+        style: {ui.components.chat_page.stopped_run_style || 'aui_stopped_run'}
+      </span>
+    </div>
+  )
+}
+
+function FileTreePreview({ ui }: { ui: UiCustomization }) {
+  return (
+    <div className="flex w-full max-w-[580px] flex-col gap-2.5">
+      <FileTreeDisplay
+        style={ui.components.chat_page.file_tree_style}
+        title="crates/zenko-core · 2 files"
+        visibleCount={PREVIEW_FILE_TREE_NODES.length}
+        totalAdditions={48}
+        totalDeletions={6}
+        nodes={PREVIEW_FILE_TREE_NODES}
+      />
+      <span className="font-mono text-[10.5px] text-[var(--muted)]">
+        style: {ui.components.chat_page.file_tree_style || 'aui_file_tree'}
+      </span>
+    </div>
+  )
+}
+
+function WebSearchPreview({ ui }: { ui: UiCustomization }) {
+  return (
+    <div className="flex w-full max-w-[580px] flex-col gap-2.5">
+      <WebSearchDisplay
+        style={ui.components.chat_page.web_search_style}
+        query="zenko rust agent architecture"
+        searching={false}
+        results={PREVIEW_WEB_SEARCH_RESULTS}
+        idPrefix="studio-ws"
+      />
+      <span className="font-mono text-[10.5px] text-[var(--muted)]">
+        style: {ui.components.chat_page.web_search_style || 'aui_web_search'}
+      </span>
     </div>
   )
 }
@@ -899,6 +948,7 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
           style={chatSlot.activity_style}
           diffStyle={chatSlot.diff_style}
           shellStyle={chatSlot.shell_style}
+          fileTreeStyle={chatSlot.file_tree_style}
           webSearchStyle={chatSlot.web_search_style}
           status="complete"
           statusLabel="Completed 3 steps"
@@ -1127,7 +1177,12 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
       </div>
     ),
 
-    element_states: () => <ElementStatesPreview ui={ui} />,
+    element_chrome: () => <ElementChromePreview ui={ui} />,
+    error_state: () => <ErrorStatePreview ui={ui} />,
+    stopped_run: () => <StoppedRunPreview ui={ui} />,
+    file_tree: () => <FileTreePreview ui={ui} />,
+    web_search: () => <WebSearchPreview ui={ui} />,
+    element_states: () => <ElementChromePreview ui={ui} />,
 
     chat_input: () => (
       <div className="w-full max-w-[660px]">

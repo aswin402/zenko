@@ -477,6 +477,56 @@ html, body, #root {
   letter-spacing: -0.02em;
   margin: 1rem 0 0.45rem;
 }
+.zenko-prose strong,
+.zenko-prose b,
+[data-slot="streaming-response"] strong,
+[data-slot="streaming-text"] strong {
+  font-weight: 600;
+  color: var(--accent);
+}
+[data-emphasis-style="accent_glow"] .zenko-prose strong,
+[data-emphasis-style="accent_glow"] .zenko-prose b,
+[data-emphasis-style="accent_glow"] [data-slot="streaming-response"] strong,
+[data-emphasis-style="accent_glow"] [data-slot="streaming-text"] strong {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  padding: 0.03em 0.32em;
+  border-radius: 5px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+[data-emphasis-style="marker_stroke"] .zenko-prose strong,
+[data-emphasis-style="marker_stroke"] .zenko-prose b,
+[data-emphasis-style="marker_stroke"] [data-slot="streaming-response"] strong,
+[data-emphasis-style="marker_stroke"] [data-slot="streaming-text"] strong {
+  color: var(--fg);
+  padding: 0.02em 0.18em;
+  margin: 0 -0.1em;
+  border-radius: 0.35em 0.2em 0.4em 0.18em;
+  background: linear-gradient(
+      100deg,
+      transparent 0.18em,
+      color-mix(in srgb, var(--accent) 32%, transparent) 0.34em,
+      color-mix(in srgb, var(--accent) 44%, transparent) 92%,
+      transparent
+    )
+    0 86% / 100% 66% no-repeat;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+[data-emphasis-style="neutral_bold"] .zenko-prose strong,
+[data-emphasis-style="neutral_bold"] .zenko-prose b,
+[data-emphasis-style="neutral_bold"] [data-slot="streaming-response"] strong,
+[data-emphasis-style="neutral_bold"] [data-slot="streaming-text"] strong {
+  color: var(--fg);
+  font-weight: 650;
+}
+.zenko-prose mark {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  padding: 0.04em 0.28em;
+  border-radius: 4px;
+}
 .zenko-prose code:not(pre code) {
   font-family: var(--font-mono);
   font-size: 0.84em;

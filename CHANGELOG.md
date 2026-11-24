@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.12] - 2026-11-24
+
+Split Theme Studio's bundled `Borders, Errors & States` section into 5 separate independently customizable components and restored active theme accent-color highlighting on important bold words across all chat output renderers.
+
+### Added
+- **Separate Theme Studio Components (`studio_schema.rs`, `ui.rs`, `ChatElements.tsx`, `ChatStream.tsx`, `StudioPreviews.tsx`):**
+  - Split `Chat Page → Responses & Elements → Borders, Errors & States` into 5 dedicated sub-component pages, each with its own focused live preview and independent controls:
+    1. **Element Borders** (`surface.element_chrome`: `borderless`, `minimal`, `bordered`)
+    2. **Error State** (`components.chat_page.error_state_style`: `aui_error_card`, `easeui_alert`, `beui_alert`, `compact_bar`, `minimal_text`)
+    3. **Stopped Run** (`components.chat_page.stopped_run_style`: `aui_stopped_run`, `compact_banner`, `accent_rail`, `minimal_notice`)
+    4. **File Tree** (`components.chat_page.file_tree_style`: `aui_file_tree`, `compact_list`, `minimal_flat`, `bordered_panel`)
+    5. **Web Search** (`components.chat_page.web_search_style`: `aui_web_search`, `rareui_web_search`, `compact_cards`, `minimal_links`)
+- **Customizable Important-Word Highlight (`components.chat_page.emphasis_style`, `index.css`, `StudioPreviews.tsx`):**
+  - Added `Important Words Highlight` control under `Chat Page → Responses & Elements → Streaming Response` with 4 theme-aware styles: **Theme Accent** (`accent`, default), **Soft Accent Pill** (`accent_glow`), **Marker Pen Stroke** (`marker_stroke`), and **Neutral Bold** (`neutral_bold`).
+
+### Fixed
+- **Missing Accent Color on Important Words in Chat Output (`index.css`, `agents/streaming-response.tsx`, `rareui/web-search.tsx`, `assistant-ui/elements/streaming-text.tsx`, `lib/elements.ts`):**
+  - Restored active theme `var(--accent)` coloring on `<strong>` / `<b>` markdown emphasis across `.zenko-prose`, `BeUI StreamingResponse`, `EaseUI StreamingResponse`, `RareUI StreamingResponse`, `RareUI WebSearch`, and `Word-Stream Accent` (`StreamingText` now deterministically parses `**bold**` segments alongside inline `` `code` ``).
+  - Removed conflicting `[&_code]:bg-muted` and `[&_a]:underline` overrides from `BeUI StreamingResponse` so `.zenko-prose` accent inline code pills and animated underline links render cleanly without override clashes.
+
 ## [0.0.11] - 2026-11-24
 
 Cleaned up the Theme page cards by removing redundant per-card dark/light switches and fixed end-to-end theme & live WebUI integration gaps across SkecherUI, KokonutUI, Skiper96, AIMRAN, EaseUI, RareUI, Motion-Brew, and Assistant-UI Elements.

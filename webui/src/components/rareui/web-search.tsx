@@ -902,7 +902,7 @@ function WebSearchAnswer({
       aria-busy={writing}
       className={cn(
         "text-[14.5px] font-medium leading-7 text-[var(--fg)]/85",
-        "[&_li]:pl-1 [&_li+li]:mt-1.5 [&_li::marker]:text-[var(--muted)] [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_strong]:text-[var(--fg)] [&_ul]:list-disc [&_ul]:pl-5 [&>*+*]:mt-3",
+        "[&_li]:pl-1 [&_li+li]:mt-1.5 [&_li::marker]:text-[var(--muted)] [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_strong]:text-[var(--accent)] [&_ul]:list-disc [&_ul]:pl-5 [&>*+*]:mt-3",
         className,
       )}
       {...props}

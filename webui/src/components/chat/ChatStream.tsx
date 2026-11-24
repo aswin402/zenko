@@ -69,18 +69,18 @@ import { BouncyAccordion } from '@/components/motion/bouncy-accordion'
 import type { LoaderVariant } from '@/components/motion/loader'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { DayDivider } from '@/components/assistant-ui/elements/day-separator'
-import { ErrorState } from '@/components/assistant-ui/elements/error-state'
-import { StoppedRun } from '@/components/assistant-ui/elements/stopped-run'
 import { StreamingText } from '@/components/assistant-ui/elements/streaming-text'
 import {
   ActivityDisplay,
   ApprovalElement,
   AssistantMessageFooter,
   CitationsDisplay,
+  ErrorStateDisplay,
   LoadingStatusBar,
   MarkdownCodeBlock,
   MarkdownDataTable,
   SkillAndMemoryBadges,
+  StoppedRunDisplay,
   type NormalizedToolStep,
 } from '@/components/chat/ChatElements'
 
@@ -392,7 +392,7 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
   return blocks
 }
 
-const MarkdownProse = memo(function MarkdownProse({
+export const MarkdownProse = memo(function MarkdownProse({
   text,
   codeBlockStyle = 'aui_code_runner',
   tableStyle,
@@ -774,6 +774,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
                             defaultOpen={true}
                             diffStyle={chatSlot.diff_style}
                             shellStyle={chatSlot.shell_style}
+                            fileTreeStyle={chatSlot.file_tree_style}
                             webSearchStyle={chatSlot.web_search_style}
                             onRetryTool={onRetryTool}
                           />
@@ -1461,6 +1462,7 @@ function LiveAssistantTurn({
                         defaultOpen={true}
                         diffStyle={chatSlot.diff_style}
                         shellStyle={chatSlot.shell_style}
+                        fileTreeStyle={chatSlot.file_tree_style}
                         webSearchStyle={chatSlot.web_search_style}
                       />
                     )}
@@ -1901,9 +1903,10 @@ export function ChatStream({
         />
       )}
 
-      {/* Agent Error State (Assistant-UI ErrorState with one-click Retry) */}
+      {/* Agent Error State (customizable via chat_page.error_state_style) */}
       {liveTurnError && onRetryTurn && (
-        <ErrorState
+        <ErrorStateDisplay
+          style={chatSlot.error_state_style}
           title={liveTurnError.title}
           detail={liveTurnError.detail}
           retrying={liveTurnError.retrying}
@@ -1911,9 +1914,10 @@ export function ChatStream({
         />
       )}
 
-      {/* User Stopped Run State (Assistant-UI StoppedRun with Continue / Discard) */}
+      {/* User Stopped Run State (customizable via chat_page.stopped_run_style) */}
       {stoppedRun && !isRunning && (
-        <StoppedRun
+        <StoppedRunDisplay
+          style={chatSlot.stopped_run_style}
           words={stoppedRun.words}
           reason={stoppedRun.reason}
           onContinue={onContinueStopped}

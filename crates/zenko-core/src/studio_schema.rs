@@ -219,6 +219,13 @@ const OPT_STREAMING_STYLE: &[StudioOption] = &[
     StudioOption { value: "editorial", label: "Editorial Minimal", hint: "Quiet borderless prose stream" },
 ];
 
+const OPT_EMPHASIS_STYLE: &[StudioOption] = &[
+    StudioOption { value: "accent", label: "Theme Accent", hint: "Important bold words highlighted in your active theme accent color (Default)" },
+    StudioOption { value: "accent_glow", label: "Soft Accent Pill", hint: "Subtle accent-tinted pill around important bold phrases" },
+    StudioOption { value: "marker_stroke", label: "Marker Pen Stroke", hint: "Hand-drawn accent highlighter brush under key phrases" },
+    StudioOption { value: "neutral_bold", label: "Neutral Bold", hint: "High-contrast monochrome bold text without accent tint" },
+];
+
 const OPT_MESSAGE_ACTIONS_STYLE: &[StudioOption] = &[
     StudioOption { value: "aui_message_actions", label: "Assistant Actions", hint: "Copy, retry & steps action strip (Default)" },
     StudioOption { value: "beui_inline", label: "BeUI Inline", hint: "Integrated BeUI streaming copy & retry bar" },
@@ -348,9 +355,33 @@ const OPT_CODE_BLOCK_STYLE: &[StudioOption] = &[
     StudioOption { value: "bordered_code", label: "Classic Bordered", hint: "Framed code block with header bar" },
 ];
 
+const OPT_ERROR_STATE_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_error_card", label: "Assistant-UI Error Card", hint: "Soft destructive tinted card with icon & pill Retry button (Default)" },
+    StudioOption { value: "easeui_alert", label: "EaseUI Stripe Alert", hint: "High-contrast neutral surface with destructive left stripe & Retry action" },
+    StudioOption { value: "beui_alert", label: "BeUI Motion Alert", hint: "Animated spring error alert with structured message & Retry action" },
+    StudioOption { value: "compact_bar", label: "Compact Strip", hint: "Single-row low-profile error strip with inline Retry" },
+    StudioOption { value: "minimal_text", label: "Minimal Inline", hint: "Borderless quiet error notice with accent Retry link" },
+];
+
+const OPT_STOPPED_RUN_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_stopped_run", label: "Assistant-UI Stopped Run", hint: "Partial response cursor, stopped pill & Continue / Discard actions (Default)" },
+    StudioOption { value: "compact_banner", label: "Compact Banner", hint: "Single-row muted banner bar with stop icon & Continue / Discard buttons" },
+    StudioOption { value: "accent_rail", label: "Accent Left Rail", hint: "Left-bordered partial trace with inline Continue / Discard controls" },
+    StudioOption { value: "minimal_notice", label: "Minimal Notice", hint: "Borderless understated stopped label with quiet inline actions" },
+];
+
+const OPT_FILE_TREE_STYLE: &[StudioOption] = &[
+    StudioOption { value: "aui_file_tree", label: "Assistant-UI File Tree", hint: "Indented folder/file hierarchy card with +/− diff totals (Default)" },
+    StudioOption { value: "compact_list", label: "Compact Path List", hint: "Dense monospace file path list with inline +/− badges" },
+    StudioOption { value: "minimal_flat", label: "Minimal Flat", hint: "Borderless left-rail file tree with zero outer card chrome" },
+    StudioOption { value: "bordered_panel", label: "Framed Explorer", hint: "Structured explorer header bar with full hairline panel border" },
+];
+
 const OPT_WEB_SEARCH_STYLE: &[StudioOption] = &[
-    StudioOption { value: "aui_web_search", label: "Assistant-UI Search", hint: "Compact collapsible source domain list (Default)" },
+    StudioOption { value: "aui_web_search", label: "Assistant-UI Search", hint: "Compact query pill & collapsible source domain list (Default)" },
     StudioOption { value: "rareui_web_search", label: "RareUI Web Search", hint: "Animated globe progress ring, favicon stack & expandable source cards" },
+    StudioOption { value: "compact_cards", label: "Compact Source Cards", hint: "Clean 2-column source cards with host domain badges" },
+    StudioOption { value: "minimal_links", label: "Minimal Link List", hint: "Borderless quiet search query header with clean source links" },
 ];
 
 const OPT_ELEMENT_CHROME: &[StudioOption] = &[
@@ -1003,19 +1034,32 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                 id: "streaming_response",
                 group: "Responses & Elements",
                 label: "Streaming Response",
-                description: "Choose between BeUI Markdown Stream, Word-Stream Accent (StreamingText), or Editorial.",
+                description: "Live text reveal style plus important-word accent highlighting across all chat outputs.",
                 preview: "streaming_response",
-                controls: &[StudioControl {
-                    path: "components.chat_page.streaming_style",
-                    label: "Streaming Response Style",
-                    description: "Live text reveal and markdown stream presentation.",
-                    kind: ControlKind::Cards,
-                    options: OPT_STREAMING_STYLE,
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: "",
-                }],
+                controls: &[
+                    StudioControl {
+                        path: "components.chat_page.streaming_style",
+                        label: "Streaming Response Style",
+                        description: "Live text reveal and markdown stream presentation.",
+                        kind: ControlKind::Cards,
+                        options: OPT_STREAMING_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.chat_page.emphasis_style",
+                        label: "Important Words Highlight",
+                        description: "Controls how bold/important phrases (**text**) stand out in assistant responses.",
+                        kind: ControlKind::Cards,
+                        options: OPT_EMPHASIS_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
             },
             StudioSubComponent {
                 id: "message_actions",
@@ -1170,33 +1214,92 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
             StudioSubComponent {
                 id: "element_chrome",
                 group: "Responses & Elements",
-                label: "Borders, Errors & States",
-                description: "Global borderless/minimal chrome plus live ErrorState, StoppedRun, FileTree & WebSearch.",
-                preview: "element_states",
-                controls: &[
-                    StudioControl {
-                        path: "surface.element_chrome",
-                        label: "Element Chrome (Borderless / Minimal)",
-                        description: "Control borders across Terminal, CodeRunner, Diff, FileTree, Permission, and Error elements.",
-                        kind: ControlKind::Cards,
-                        options: OPT_ELEMENT_CHROME,
-                        min: None,
-                        max: None,
-                        step: None,
-                        unit: "",
-                    },
-                    StudioControl {
-                        path: "components.chat_page.web_search_style",
-                        label: "Web Search Element",
-                        description: "Choose Assistant-UI compact search list or RareUI animated globe + source cards.",
-                        kind: ControlKind::Cards,
-                        options: OPT_WEB_SEARCH_STYLE,
-                        min: None,
-                        max: None,
-                        step: None,
-                        unit: "",
-                    },
-                ],
+                label: "Element Borders",
+                description: "Global borderless, minimal hairline, or framed border chrome across chat elements.",
+                preview: "element_chrome",
+                controls: &[StudioControl {
+                    path: "surface.element_chrome",
+                    label: "Element Chrome (Borderless / Minimal)",
+                    description: "Control borders across Terminal, CodeRunner, Diff, FileTree, Permission, and Error elements.",
+                    kind: ControlKind::Cards,
+                    options: OPT_ELEMENT_CHROME,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "error_state",
+                group: "Responses & Elements",
+                label: "Error State",
+                description: "Turn failure cards and one-click Retry notices when an upstream model request fails.",
+                preview: "error_state",
+                controls: &[StudioControl {
+                    path: "components.chat_page.error_state_style",
+                    label: "Error State Style",
+                    description: "Customize how turn errors and Retry controls appear in chat.",
+                    kind: ControlKind::Cards,
+                    options: OPT_ERROR_STATE_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "stopped_run",
+                group: "Responses & Elements",
+                label: "Stopped Run",
+                description: "Interrupted generation state with partial output and Continue / Discard controls.",
+                preview: "stopped_run",
+                controls: &[StudioControl {
+                    path: "components.chat_page.stopped_run_style",
+                    label: "Stopped Run Style",
+                    description: "Customize how user-stopped responses and Resume actions render.",
+                    kind: ControlKind::Cards,
+                    options: OPT_STOPPED_RUN_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "file_tree",
+                group: "Responses & Elements",
+                label: "File Tree",
+                description: "Workspace directory listings and changed-file trees with line diff totals.",
+                preview: "file_tree",
+                controls: &[StudioControl {
+                    path: "components.chat_page.file_tree_style",
+                    label: "File Tree Style",
+                    description: "Choose hierarchical tree card, compact path list, minimal flat, or framed explorer.",
+                    kind: ControlKind::Cards,
+                    options: OPT_FILE_TREE_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
+            },
+            StudioSubComponent {
+                id: "web_search",
+                group: "Responses & Elements",
+                label: "Web Search",
+                description: "Live web search query pills, progress rings, and expandable source link lists.",
+                preview: "web_search",
+                controls: &[StudioControl {
+                    path: "components.chat_page.web_search_style",
+                    label: "Web Search Style",
+                    description: "Choose Assistant-UI list, RareUI animated globe + cards, compact grid, or minimal links.",
+                    kind: ControlKind::Cards,
+                    options: OPT_WEB_SEARCH_STYLE,
+                    min: None,
+                    max: None,
+                    step: None,
+                    unit: "",
+                }],
             },
         ],
     },

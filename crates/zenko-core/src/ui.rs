@@ -778,6 +778,8 @@ pub struct ChatPageSlotConfig {
     pub scroller_style: String,
     #[serde(default = "default_streaming_style")]
     pub streaming_style: String,
+    #[serde(default = "default_emphasis_style")]
+    pub emphasis_style: String,
     #[serde(default = "default_approval_style")]
     pub approval_style: String,
     #[serde(default = "default_activity_style")]
@@ -794,6 +796,12 @@ pub struct ChatPageSlotConfig {
     pub shell_style: String,
     #[serde(default = "default_code_block_style")]
     pub code_block_style: String,
+    #[serde(default = "default_error_state_style")]
+    pub error_state_style: String,
+    #[serde(default = "default_stopped_run_style")]
+    pub stopped_run_style: String,
+    #[serde(default = "default_file_tree_style")]
+    pub file_tree_style: String,
     #[serde(default = "default_web_search_style")]
     pub web_search_style: String,
     #[serde(default = "default_true_ui")]
@@ -823,6 +831,7 @@ impl Default for ChatPageSlotConfig {
             user_avatar_color: String::new(),
             scroller_style: default_scroller_style(),
             streaming_style: default_streaming_style(),
+            emphasis_style: default_emphasis_style(),
             approval_style: default_approval_style(),
             activity_style: default_activity_style(),
             loader_variant: default_loader_variant(),
@@ -831,6 +840,9 @@ impl Default for ChatPageSlotConfig {
             diff_style: default_diff_style(),
             shell_style: default_shell_style(),
             code_block_style: default_code_block_style(),
+            error_state_style: default_error_state_style(),
+            stopped_run_style: default_stopped_run_style(),
+            file_tree_style: default_file_tree_style(),
             web_search_style: default_web_search_style(),
             show_day_separators: true,
             show_citations: true,
@@ -849,6 +861,7 @@ fn default_thinking_style() -> String { "collapsible_steps".into() }
 fn default_tool_card_style() -> String { "aui_smart".into() }
 fn default_scroller_style() -> String { "beui_rail".into() }
 fn default_streaming_style() -> String { "beui_stream".into() }
+fn default_emphasis_style() -> String { "accent".into() }
 fn default_approval_style() -> String { "aui_permission_grant".into() }
 fn default_activity_style() -> String { "aui_tool_call_icon".into() }
 fn default_loader_variant() -> String { "dot-matrix".into() }
@@ -857,6 +870,9 @@ fn default_message_actions_style() -> String { "aui_message_actions".into() }
 fn default_diff_style() -> String { "aui_code_diff".into() }
 fn default_shell_style() -> String { "aui_terminal_block".into() }
 fn default_code_block_style() -> String { "aui_code_runner".into() }
+fn default_error_state_style() -> String { "aui_error_card".into() }
+fn default_stopped_run_style() -> String { "aui_stopped_run".into() }
+fn default_file_tree_style() -> String { "aui_file_tree".into() }
 fn default_web_search_style() -> String { "aui_web_search".into() }
 fn default_skill_badge_style() -> String { "aui_memory_chips".into() }
 fn default_agent_avatar_frame() -> String { "squircle".into() }
@@ -1405,6 +1421,11 @@ mod tests {
         let parsed: UiCustomization = serde_json::from_value(legacy_json).expect("legacy profile");
         assert_eq!(parsed.components.chat_page.scroller_style, "beui_rail");
         assert_eq!(parsed.components.chat_page.streaming_style, "beui_stream");
+        assert_eq!(parsed.components.chat_page.emphasis_style, "accent");
+        assert_eq!(parsed.components.chat_page.error_state_style, "aui_error_card");
+        assert_eq!(parsed.components.chat_page.stopped_run_style, "aui_stopped_run");
+        assert_eq!(parsed.components.chat_page.file_tree_style, "aui_file_tree");
+        assert_eq!(parsed.components.chat_page.web_search_style, "aui_web_search");
         assert_eq!(parsed.components.chat_page.approval_style, "aui_permission_grant");
         assert_eq!(parsed.components.chat_page.activity_style, "aui_tool_call_icon");
         assert_eq!(parsed.components.chat_page.loader_variant, "dot-matrix");

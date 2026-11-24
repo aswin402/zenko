@@ -44,6 +44,7 @@ export const DEFAULT_COMPONENT_SLOTS: ComponentSlots = {
     user_avatar_color: '',
     scroller_style: 'beui_rail',
     streaming_style: 'beui_stream',
+    emphasis_style: 'accent',
     message_actions_style: 'aui_message_actions',
     approval_style: 'aui_permission_grant',
     activity_style: 'aui_tool_call_icon',
@@ -51,6 +52,9 @@ export const DEFAULT_COMPONENT_SLOTS: ComponentSlots = {
     diff_style: 'aui_code_diff',
     shell_style: 'aui_terminal_block',
     code_block_style: 'aui_code_runner',
+    error_state_style: 'aui_error_card',
+    stopped_run_style: 'aui_stopped_run',
+    file_tree_style: 'aui_file_tree',
     web_search_style: 'aui_web_search',
     show_day_separators: true,
     loader_variant: 'dot-matrix',
@@ -214,6 +218,7 @@ export function applyUiCustomization(cfg: UiCustomization) {
   root.dataset.scrollbar = cfg.surface.scrollbar_style || 'accent_thin'
   root.dataset.tabsVariant = cfg.surface.tabs_variant || 'pill'
   root.dataset.elementChrome = cfg.surface.element_chrome || 'minimal'
+  root.dataset.emphasisStyle = cfg.components?.chat_page?.emphasis_style || 'accent'
   root.dataset.tableStyle = cfg.surface.table_style || 'borderless'
   root.dataset.tooltipStyle = cfg.surface.tooltip_style || 'accent_edge'
   root.dataset.tooltipShape = cfg.surface.tooltip_shape || 'pill'

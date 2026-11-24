@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
+  ArrowRight,
   ArrowUpRight,
   Braces,
   Check,
+  ChevronDown,
+  CircleAlert,
   Copy,
   FileCode2,
+  FileIcon,
+  FolderIcon,
   FolderSearch,
   Globe,
+  RefreshCw,
   RotateCcw,
+  Search,
   ShieldAlert,
+  Square,
   SquareTerminal,
   Terminal,
   Wrench,
@@ -36,6 +44,11 @@ import {
   ToolResultOutput,
   type ToolResultKind,
 } from '@/components/agents/tool-result'
+import {
+  Alert as EaseAlert,
+  AlertDescription as EaseAlertDescription,
+  AlertTitle as EaseAlertTitle,
+} from '@/components/easeui/alert'
 import { CodeBlock as EaseCodeBlock } from '@/components/easeui/code-block'
 import { PixelLoader as EasePixelLoader } from '@/components/easeui/pixel-loader'
 import { ToolApproval as EaseToolApproval } from '@/components/easeui/tool-approval'
@@ -52,12 +65,21 @@ import { KokonutAIToolCalls } from '@/components/kokonutui/ai-tool-calls'
 import { AiStatus as RareAiStatus, type AiStatusState } from '@/components/rareui/ai-status'
 import { CodeBlock as RareCodeBlock } from '@/components/rareui/code-block'
 import { WebSearch as RareWebSearch } from '@/components/rareui/web-search'
+import {
+  Alert,
+  AlertAction,
+  AlertContent,
+  AlertDescription,
+  AlertIcon,
+  AlertTitle,
+} from '@/components/motion/alert'
 import { Loader, type LoaderVariant } from '@/components/motion/loader'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { CodeDiff } from '@/components/assistant-ui/elements/code-diff'
 import { CodeRunner } from '@/components/assistant-ui/elements/code-runner'
 import { DataTable } from '@/components/assistant-ui/elements/data-table'
-import { FileTree } from '@/components/assistant-ui/elements/file-tree'
+import { ErrorState } from '@/components/assistant-ui/elements/error-state'
+import { FileTree, type FileTreeNode } from '@/components/assistant-ui/elements/file-tree'
 import {
   GenerationLoader,
   type GenerationLoaderVariant,
@@ -77,6 +99,7 @@ import {
   type RunActivityEntry,
   type RunActivityStatus,
 } from '@/components/assistant-ui/elements/run-activity'
+import { StoppedRun } from '@/components/assistant-ui/elements/stopped-run'
 import { TerminalBlock } from '@/components/assistant-ui/elements/terminal-block'
 import { ThinkingIndicator } from '@/components/assistant-ui/elements/thinking-indicator'
 import { ToolCall } from '@/components/assistant-ui/elements/tool-call'
@@ -86,7 +109,8 @@ import {
   type TimelineStat,
   type TimelineStep,
 } from '@/components/assistant-ui/elements/tool-timeline'
-import { WebSearch } from '@/components/assistant-ui/elements/web-search'
+import { WebSearch, type WebSearchResult } from '@/components/assistant-ui/elements/web-search'
+import { safeHref } from '@/components/assistant-ui/utils/href'
 
 export interface NormalizedToolStep {
   id: string
@@ -103,6 +127,9 @@ type SkillBadgeStyle = NonNullable<ComponentSlots['chat_page']['skill_badge_styl
 type DiffStyle = NonNullable<ComponentSlots['chat_page']['diff_style']>
 type ShellStyle = NonNullable<ComponentSlots['chat_page']['shell_style']>
 type CodeBlockStyle = NonNullable<ComponentSlots['chat_page']['code_block_style']>
+type ErrorStateStyle = NonNullable<ComponentSlots['chat_page']['error_state_style']>
+type StoppedRunStyle = NonNullable<ComponentSlots['chat_page']['stopped_run_style']>
+type FileTreeStyle = NonNullable<ComponentSlots['chat_page']['file_tree_style']>
 type WebSearchStyle = NonNullable<ComponentSlots['chat_page']['web_search_style']>
 type MessageActionsStyle = NonNullable<ComponentSlots['chat_page']['message_actions_style']>
 type CitationsStyle = NonNullable<ComponentSlots['chat_page']['citations_style']>
@@ -326,6 +353,7 @@ export function ActivityDisplay({
   defaultOpen = true,
   diffStyle = 'aui_code_diff',
   shellStyle = 'aui_terminal_block',
+  fileTreeStyle = 'aui_file_tree',
   webSearchStyle = 'aui_web_search',
   onRetryTool,
 }: {
@@ -339,6 +367,7 @@ export function ActivityDisplay({
   defaultOpen?: boolean
   diffStyle?: DiffStyle
   shellStyle?: ShellStyle
+  fileTreeStyle?: FileTreeStyle
   webSearchStyle?: WebSearchStyle
   onRetryTool?: (toolName: string, argsPreview?: string) => void
 }) {
@@ -411,6 +440,7 @@ export function ActivityDisplay({
             toolCardStyle={style as ComponentSlots['chat_page']['tool_card_style']}
             diffStyle={diffStyle}
             shellStyle={shellStyle}
+            fileTreeStyle={fileTreeStyle}
             webSearchStyle={webSearchStyle}
             onRetryTool={onRetryTool}
           />
@@ -642,6 +672,7 @@ export function SmartToolElement({
   toolCardStyle = 'aui_smart',
   diffStyle = 'aui_code_diff',
   shellStyle = 'aui_terminal_block',
+  fileTreeStyle = 'aui_file_tree',
   webSearchStyle = 'aui_web_search',
   onRetryTool,
 }: {
@@ -649,6 +680,7 @@ export function SmartToolElement({
   toolCardStyle?: ComponentSlots['chat_page']['tool_card_style']
   diffStyle?: DiffStyle
   shellStyle?: ShellStyle
+  fileTreeStyle?: FileTreeStyle
   webSearchStyle?: WebSearchStyle
   onRetryTool?: (toolName: string, argsPreview?: string) => void
 }) {
@@ -708,28 +740,13 @@ export function SmartToolElement({
       }
       case 'web_search': {
         const ws = parseWebSearchFromTool(tool.args_preview, tool.content)
-        if (webSearchStyle === 'rareui_web_search') {
-          return (
-            <RareWebSearch
-              query={ws.query}
-              status={tool.status === 'running' ? 'searching' : 'done'}
-              defaultOpen={true}
-              sources={ws.results.map((r, idx) => ({
-                id: `${tool.id}-${idx}`,
-                title: r.title,
-                url: r.url || `https://${r.domain}`,
-                snippet: r.domain,
-              }))}
-            />
-          )
-        }
         return (
-          <WebSearch
+          <WebSearchDisplay
+            style={webSearchStyle}
             query={ws.query}
             results={ws.results}
-            visibleResults={ws.results.length}
             searching={tool.status === 'running'}
-            cycle={1}
+            idPrefix={tool.id}
           />
         )
       }
@@ -737,7 +754,8 @@ export function SmartToolElement({
         const tree = parseFileTreeFromTool(tool.name, tool.args_preview, tool.content)
         if (tree.nodes.length === 0) return null
         return (
-          <FileTree
+          <FileTreeDisplay
+            style={fileTreeStyle}
             title={tree.title}
             nodes={tree.nodes}
             visibleCount={tree.nodes.length}
@@ -1415,4 +1433,492 @@ export function MarkdownDataTable({
       />
     </div>
   )
+}
+
+/** 9. Turn Error State Renderer (Assistant-UI Error Card | EaseUI Stripe Alert | BeUI Alert | Compact Strip | Minimal Inline) */
+export function ErrorStateDisplay({
+  style = 'aui_error_card',
+  title,
+  detail,
+  retrying,
+  onRetry,
+}: {
+  style?: ErrorStateStyle
+  title: string
+  detail: string
+  retrying: boolean
+  onRetry: () => void
+}) {
+  const retryButton = (
+    <button
+      type="button"
+      onClick={onRetry}
+      disabled={retrying}
+      className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--destructive)]/35 bg-[color-mix(in_srgb,var(--destructive)_10%,transparent)] px-3 py-1 text-[11.5px] font-medium text-[var(--destructive)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_18%,transparent)] disabled:opacity-60"
+    >
+      <RefreshCw size={11.5} className={cn(retrying && 'animate-spin')} />
+      <span>{retrying ? 'Retrying…' : 'Retry'}</span>
+    </button>
+  )
+
+  const RENDERERS: Record<ErrorStateStyle, () => ReactNode> = {
+    aui_error_card: () => (
+      <ErrorState title={title} detail={detail} retrying={retrying} onRetry={onRetry} />
+    ),
+    easeui_alert: () => (
+      <EaseAlert variant="destructive">
+        <div className="flex flex-1 flex-wrap items-center justify-between gap-2.5">
+          <div className="min-w-0 flex-1">
+            <EaseAlertTitle>{title}</EaseAlertTitle>
+            <EaseAlertDescription>{detail}</EaseAlertDescription>
+          </div>
+          {retryButton}
+        </div>
+      </EaseAlert>
+    ),
+    beui_alert: () => (
+      <Alert variant="destructive">
+        <AlertIcon />
+        <AlertContent>
+          <AlertTitle>{title}</AlertTitle>
+          <AlertDescription>{detail}</AlertDescription>
+          <AlertAction>{retryButton}</AlertAction>
+        </AlertContent>
+      </Alert>
+    ),
+    compact_bar: () => (
+      <div
+        role="alert"
+        className="zenko-aui-paper flex flex-wrap items-center gap-2.5 rounded-[var(--radius-sm)] border border-[color-mix(in_srgb,var(--destructive)_32%,var(--border))] bg-[var(--surface)] px-3.5 py-2 text-[12.5px]"
+      >
+        <CircleAlert size={14} className="shrink-0 text-[var(--destructive)]" />
+        <span className="font-medium text-[var(--fg)]">{title}</span>
+        <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--muted)]">{detail}</span>
+        {retryButton}
+      </div>
+    ),
+    minimal_text: () => (
+      <div
+        role="alert"
+        className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-l-2 border-[var(--destructive)] pl-3 text-[12.5px]"
+      >
+        <span className="font-medium text-[var(--destructive)]">{title}</span>
+        <span className="text-[12px] text-[var(--muted)]">{detail}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={retrying}
+          className="inline-flex cursor-pointer items-center gap-1 font-mono text-[11.5px] font-medium text-[var(--accent)] hover:underline disabled:opacity-60"
+        >
+          <RefreshCw size={11} className={cn(retrying && 'animate-spin')} />
+          {retrying ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    ),
+  }
+
+  return <>{(RENDERERS[style] || RENDERERS.aui_error_card)()}</>
+}
+
+/** 10. User-Stopped Run Renderer (Assistant-UI StoppedRun | Compact Banner | Accent Left Rail | Minimal Notice) */
+export function StoppedRunDisplay({
+  style = 'aui_stopped_run',
+  words,
+  reason,
+  onContinue,
+  onDiscard,
+}: {
+  style?: StoppedRunStyle
+  words: readonly string[]
+  reason: string
+  onContinue?: () => void
+  onDiscard?: () => void
+}) {
+  const partialText = words.length > 0 ? words.join(' ') : ''
+
+  const RENDERERS: Record<StoppedRunStyle, () => ReactNode> = {
+    aui_stopped_run: () => (
+      <StoppedRun
+        words={words}
+        reason={reason}
+        onContinue={onContinue}
+        onDiscard={onDiscard}
+      />
+    ),
+    compact_banner: () => (
+      <div className="zenko-aui-paper flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5">
+        {partialText && (
+          <p className="truncate text-[12.5px] text-[var(--muted)]">{partialText}</p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--fg)]">
+            <Square size={10} className="fill-current text-[var(--accent)]" />
+            {reason}
+          </span>
+          <div className="ms-auto flex items-center gap-1.5">
+            {onContinue && (
+              <button type="button" onClick={onContinue} className="z-btn z-btn-primary z-btn-sm">
+                Continue <ArrowRight size={12} />
+              </button>
+            )}
+            {onDiscard && (
+              <button type="button" onClick={onDiscard} className="z-btn z-btn-ghost z-btn-sm">
+                Discard
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    ),
+    accent_rail: () => (
+      <div className="flex flex-col gap-2 border-l-2 border-[var(--accent)] pl-3.5">
+        {partialText && (
+          <p className="text-[13px] leading-relaxed text-[var(--fg)]/80">{partialText}</p>
+        )}
+        <div className="flex flex-wrap items-center gap-3 text-[11.5px]">
+          <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--muted)]">
+            <Square size={9} className="fill-current text-[var(--accent)]" />
+            {reason}
+          </span>
+          {onContinue && (
+            <button
+              type="button"
+              onClick={onContinue}
+              className="inline-flex cursor-pointer items-center gap-1 font-medium text-[var(--accent)] hover:underline"
+            >
+              Continue <ArrowRight size={11.5} />
+            </button>
+          )}
+          {onDiscard && (
+            <button
+              type="button"
+              onClick={onDiscard}
+              className="cursor-pointer text-[var(--muted)] hover:text-[var(--fg)]"
+            >
+              Discard
+            </button>
+          )}
+        </div>
+      </div>
+    ),
+    minimal_notice: () => (
+      <div className="flex flex-wrap items-center gap-2.5 text-[12px] text-[var(--muted)]">
+        <Square size={9} className="fill-current text-[var(--accent)]" />
+        <span className="font-mono text-[11px]">{reason}</span>
+        {onContinue && (
+          <button
+            type="button"
+            onClick={onContinue}
+            className="ms-auto inline-flex cursor-pointer items-center gap-1 font-medium text-[var(--fg)] hover:text-[var(--accent)]"
+          >
+            Continue <ArrowRight size={11.5} />
+          </button>
+        )}
+        {onDiscard && (
+          <button
+            type="button"
+            onClick={onDiscard}
+            className={cn(
+              'cursor-pointer text-[var(--muted)] hover:text-[var(--fg)]',
+              !onContinue && 'ms-auto',
+            )}
+          >
+            Discard
+          </button>
+        )}
+      </div>
+    ),
+  }
+
+  return <>{(RENDERERS[style] || RENDERERS.aui_stopped_run)()}</>
+}
+
+/** 11. Workspace File Tree Renderer (Assistant-UI FileTree | Compact Path List | Minimal Flat | Framed Explorer) */
+export function FileTreeDisplay({
+  style = 'aui_file_tree',
+  title,
+  nodes,
+  visibleCount,
+  totalAdditions,
+  totalDeletions,
+}: {
+  style?: FileTreeStyle
+  title?: string
+  nodes: readonly FileTreeNode[]
+  visibleCount: number
+  totalAdditions: number
+  totalDeletions: number
+}) {
+  const shown = nodes.slice(0, visibleCount)
+  const files = shown.filter((n) => n.kind === 'file')
+  const hasStats = totalAdditions > 0 || totalDeletions > 0
+  const heading =
+    title ?? (hasStats ? `${files.length} files changed` : `${files.length} files`)
+
+  const statsNode = hasStats ? (
+    <span className="font-mono text-[11px] tabular-nums">
+      <span className="text-[var(--success)]">+{totalAdditions}</span>{' '}
+      <span className="text-[var(--destructive)]">−{totalDeletions}</span>
+    </span>
+  ) : (
+    <span className="font-mono text-[11px] tabular-nums text-[var(--muted)]">
+      {shown.length} entries
+    </span>
+  )
+
+  const RENDERERS: Record<FileTreeStyle, () => ReactNode> = {
+    aui_file_tree: () => (
+      <FileTree
+        title={title}
+        nodes={nodes}
+        visibleCount={visibleCount}
+        totalAdditions={totalAdditions}
+        totalDeletions={totalDeletions}
+      />
+    ),
+    compact_list: () => (
+      <div className="zenko-aui-paper flex flex-col gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2 text-[11.5px]">
+          <span className="font-medium text-[var(--fg)]">{heading}</span>
+          {statsNode}
+        </div>
+        <div className="flex flex-col gap-0.5 font-mono text-[11.5px]">
+          {(files.length > 0 ? files : shown).map((node) => (
+            <div
+              key={node.path}
+              className="flex items-center justify-between gap-2 rounded px-1.5 py-0.5 hover:bg-[var(--card)]/70"
+            >
+              <span className="truncate text-[var(--fg)]/85">{node.path}</span>
+              {(node.additions || node.deletions) && (
+                <span className="shrink-0 tabular-nums text-[10.5px]">
+                  {node.additions ? (
+                    <span className="text-[var(--success)]">+{node.additions}</span>
+                  ) : null}{' '}
+                  {node.deletions ? (
+                    <span className="text-[var(--destructive)]">−{node.deletions}</span>
+                  ) : null}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+    minimal_flat: () => (
+      <div className="flex flex-col gap-1 border-l-2 border-[var(--border)] pl-3 text-[12.5px]">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium text-[var(--fg)]">{heading}</span>
+          {statsNode}
+        </div>
+        {shown.map((node) => (
+          <div
+            key={node.path}
+            className="flex items-center gap-1.5 py-0.5 text-[12px]"
+            style={{ paddingInlineStart: `${node.depth * 0.75}rem` }}
+          >
+            {node.kind === 'folder' ? (
+              <FolderIcon size={12.5} className="shrink-0 text-[var(--muted)]" />
+            ) : (
+              <FileIcon size={12.5} className="shrink-0 text-[var(--accent)]" />
+            )}
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate font-mono',
+                node.kind === 'folder' ? 'text-[var(--muted)]' : 'text-[var(--fg)]/90',
+              )}
+            >
+              {node.name}
+            </span>
+            {(node.additions || node.deletions) && (
+              <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
+                {node.additions ? (
+                  <span className="text-[var(--success)]">+{node.additions}</span>
+                ) : null}{' '}
+                {node.deletions ? (
+                  <span className="text-[var(--destructive)]">−{node.deletions}</span>
+                ) : null}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    ),
+    bordered_panel: () => (
+      <div className="overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)]">
+        <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-[12px]">
+          <span className="inline-flex items-center gap-1.5 font-medium text-[var(--fg)]">
+            <FolderIcon size={13} className="text-[var(--accent)]" />
+            {heading}
+          </span>
+          {statsNode}
+        </div>
+        <div className="flex flex-col p-2">
+          {shown.map((node) => (
+            <div
+              key={node.path}
+              className="flex items-center gap-2 rounded-md px-2 py-1 text-[12.5px] hover:bg-[var(--surface)]"
+              style={{ paddingInlineStart: `${0.5 + node.depth * 0.85}rem` }}
+            >
+              {node.kind === 'folder' ? (
+                <>
+                  <ChevronDown size={11.5} className="shrink-0 text-[var(--muted)]" />
+                  <FolderIcon size={13} className="shrink-0 text-[var(--muted)]" />
+                  <span className="min-w-0 flex-1 truncate text-[var(--muted)]">{node.name}</span>
+                </>
+              ) : (
+                <>
+                  <FileIcon size={13} className="ms-3 shrink-0 text-[var(--muted)]" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--fg)]">
+                    {node.name}
+                  </span>
+                  {(node.additions || node.deletions) && (
+                    <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
+                      {node.additions ? (
+                        <span className="text-[var(--success)]">+{node.additions}</span>
+                      ) : null}{' '}
+                      {node.deletions ? (
+                        <span className="text-[var(--destructive)]">−{node.deletions}</span>
+                      ) : null}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+  }
+
+  return <>{(RENDERERS[style] || RENDERERS.aui_file_tree)()}</>
+}
+
+/** 12. Web Search Renderer (Assistant-UI Search | RareUI Web Search | Compact Source Cards | Minimal Link List) */
+export function WebSearchDisplay({
+  style = 'aui_web_search',
+  query,
+  results,
+  searching,
+  cycle = 1,
+  idPrefix = 'ws',
+}: {
+  style?: WebSearchStyle
+  query: string
+  results: readonly WebSearchResult[]
+  searching: boolean
+  cycle?: number
+  idPrefix?: string
+}) {
+  const RENDERERS: Record<WebSearchStyle, () => ReactNode> = {
+    aui_web_search: () => (
+      <WebSearch
+        query={query}
+        results={results}
+        visibleResults={results.length}
+        searching={searching}
+        cycle={cycle}
+      />
+    ),
+    rareui_web_search: () => (
+      <RareWebSearch
+        query={query}
+        status={searching ? 'searching' : 'done'}
+        defaultOpen={true}
+        sources={results.map((r, idx) => ({
+          id: `${idPrefix}-${idx}`,
+          title: r.title,
+          url: r.url || `https://${r.domain}`,
+          snippet: r.domain,
+        }))}
+      />
+    ),
+    compact_cards: () => (
+      <div className="flex w-full flex-col gap-2">
+        <div className="flex items-center justify-between gap-2 text-[11.5px] text-[var(--muted)]">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <Search size={12} className="shrink-0 text-[var(--accent)]" />
+            <span className="truncate font-mono text-[var(--fg)]/85">{query}</span>
+          </span>
+          <span className="shrink-0 font-mono text-[10.5px]">
+            {searching ? 'Searching…' : `${results.length} sources`}
+          </span>
+        </div>
+        {results.length > 0 && (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {results.map((res, idx) => {
+              const href = safeHref(res.url)
+              const body = (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="rounded bg-[var(--card)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--muted)]">
+                      {res.domain}
+                    </span>
+                    <ArrowUpRight size={12} className="shrink-0 text-[var(--accent)] opacity-70" />
+                  </div>
+                  <div className="mt-1.5 line-clamp-2 text-[12.5px] font-medium text-[var(--fg)]">
+                    {res.title}
+                  </div>
+                </>
+              )
+              const cardCls =
+                'zenko-aui-paper block rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-2.5 transition-colors hover:border-[var(--accent)]/45'
+              return href ? (
+                <a
+                  key={`${idPrefix}-${idx}-${res.domain}`}
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={cardCls}
+                >
+                  {body}
+                </a>
+              ) : (
+                <div key={`${idPrefix}-${idx}-${res.domain}`} className={cardCls}>
+                  {body}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    ),
+    minimal_links: () => (
+      <div className="flex w-full flex-col gap-1.5 border-l-2 border-[var(--border)] pl-3 text-[12.5px]">
+        <div className="flex items-center gap-1.5 font-mono text-[11px] text-[var(--muted)]">
+          <Globe size={11.5} className="text-[var(--accent)]" />
+          <span className="truncate">{query}</span>
+          <span className="ms-auto shrink-0">
+            {searching ? 'Searching…' : `${results.length} links`}
+          </span>
+        </div>
+        {results.map((res, idx) => {
+          const href = safeHref(res.url)
+          return (
+            <div
+              key={`${idPrefix}-${idx}-${res.domain}`}
+              className="flex items-baseline justify-between gap-2 text-[12.5px]"
+            >
+              {href ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="zenko-prose-link truncate"
+                >
+                  {res.title}
+                </a>
+              ) : (
+                <span className="truncate text-[var(--fg)]/85">{res.title}</span>
+              )}
+              <span className="shrink-0 font-mono text-[10.5px] text-[var(--muted)]">
+                {res.domain}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    ),
+  }
+
+  return <>{(RENDERERS[style] || RENDERERS.aui_web_search)()}</>
 }

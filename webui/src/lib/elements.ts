@@ -493,7 +493,7 @@ export function parsePermissionGrantProps(apr: ApprovalRecord): {
   }
 }
 
-/** Splits streaming text into StreamingText segments (marking inline `code` spans deterministically). */
+/** Splits streaming text into StreamingText segments (marking inline `code` and **bold** spans deterministically). */
 export function splitIntoStreamingSegments(text: string): {
   segments: Segment[]
   wordCount: number
@@ -501,22 +501,33 @@ export function splitIntoStreamingSegments(text: string): {
   const segments: Segment[] = []
   let idx = 0
   let inCode = false
+  let inBold = false
   let buf = ''
+
+  const flush = () => {
+    if (!buf) return
+    segments.push({ text: buf, mono: inCode, bold: !inCode && inBold })
+    buf = ''
+  }
 
   while (idx < text.length) {
     const ch = text[idx]
     if (ch === '`') {
-      if (buf) {
-        segments.push({ text: buf, mono: inCode })
-        buf = ''
-      }
+      flush()
       inCode = !inCode
-    } else {
-      buf += ch
+      idx += 1
+      continue
     }
+    if (!inCode && ch === '*' && text[idx + 1] === '*') {
+      flush()
+      inBold = !inBold
+      idx += 2
+      continue
+    }
+    buf += ch
     idx += 1
   }
-  if (buf) segments.push({ text: buf, mono: inCode })
+  flush()
 
   const wordCount = segments.reduce(
     (sum, seg) => sum + seg.text.split(' ').filter(Boolean).length,

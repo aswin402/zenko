@@ -573,6 +573,7 @@ export interface ComponentSlots {
       | 'rareui_stream'
       | 'aui_streaming_text'
       | 'editorial'
+    emphasis_style?: 'accent' | 'accent_glow' | 'marker_stroke' | 'neutral_bold'
     message_actions_style?: 'aui_message_actions' | 'beui_inline' | 'minimal'
     approval_style:
       | 'aui_permission_grant'
@@ -614,7 +615,15 @@ export interface ComponentSlots {
       | 'aimran_copy_cmd'
       | 'minimal_code'
       | 'bordered_code'
-    web_search_style?: 'aui_web_search' | 'rareui_web_search'
+    error_state_style?:
+      | 'aui_error_card'
+      | 'easeui_alert'
+      | 'beui_alert'
+      | 'compact_bar'
+      | 'minimal_text'
+    stopped_run_style?: 'aui_stopped_run' | 'compact_banner' | 'accent_rail' | 'minimal_notice'
+    file_tree_style?: 'aui_file_tree' | 'compact_list' | 'minimal_flat' | 'bordered_panel'
+    web_search_style?: 'aui_web_search' | 'rareui_web_search' | 'compact_cards' | 'minimal_links'
     show_day_separators?: boolean
     loader_variant:
       | 'dot-matrix'
