@@ -2,7 +2,7 @@
 //! and a pure-Rust deterministic 2-pointer / DP glob matcher — ZERO regex, zero shell calls,
 //! with `mtime` (newest-first, Claude Code style) and lexicographical `path` sorting.
 
-use crate::jail::resolve_readable_path;
+use crate::jail::{format_display_rel_path, resolve_readable_path};
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use serde_json::{Value, json};
@@ -10,9 +10,8 @@ use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     DEFAULT_SEARCH_SKIP_DIRS, GLOB_DEFAULT_MAX_RESULTS, GLOB_MAX_BRACE_EXPANSIONS,
-    GLOB_MAX_RESULTS_CAP, GlobFileType, GlobSort, HUB_PATH_PREFIX, Result, RiskLevel,
-    TOOL_GLOB_FIND, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
-    ToolSpec, ZenkoError,
+    GLOB_MAX_RESULTS_CAP, GlobFileType, GlobSort, Result, RiskLevel, TOOL_GLOB_FIND, Tool,
+    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 pub struct GlobFindTool;
@@ -168,13 +167,8 @@ impl Tool for GlobFindTool {
                     continue;
                 }
 
-                let display_rel = if let Ok(rel) = dent.path().strip_prefix(&ws_root) {
-                    rel.to_string_lossy().replace('\\', "/")
-                } else if let Ok(rel) = dent.path().strip_prefix(&hub_root) {
-                    format!("{HUB_PATH_PREFIX}{}", rel.to_string_lossy().replace('\\', "/"))
-                } else {
-                    rel_from_search
-                };
+                let display_rel =
+                    format_display_rel_path(dent.path(), &ws_root, &hub_root, &rel_from_search);
                 let mtime = dent
                     .metadata()
                     .ok()
@@ -363,19 +357,26 @@ fn match_wildcard_ascii(pat: &[u8], text: &[u8]) -> bool {
     let mut star_ti = 0usize;
 
     while ti < text.len() {
-        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == text[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < pat.len() && pat[pi] == b'*' {
-            star_pi = Some(pi);
-            star_ti = ti;
-            pi += 1;
-        } else if let Some(sp) = star_pi {
-            star_ti += 1;
-            ti = star_ti;
-            pi = sp + 1;
-        } else {
-            return false;
+        match (pat.get(pi).copied(), star_pi) {
+            (Some(b'?'), _) => {
+                pi += 1;
+                ti += 1;
+            }
+            (Some(p), _) if p == text[ti] => {
+                pi += 1;
+                ti += 1;
+            }
+            (Some(b'*'), _) => {
+                star_pi = Some(pi);
+                star_ti = ti;
+                pi += 1;
+            }
+            (_, Some(sp)) => {
+                star_ti += 1;
+                ti = star_ti;
+                pi = sp + 1;
+            }
+            (_, None) => return false,
         }
     }
     while pi < pat.len() && pat[pi] == b'*' {

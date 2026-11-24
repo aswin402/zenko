@@ -4,6 +4,23 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.17] - 2026-11-24
+
+Hardened Zenko's Minicode Tool System & Runtime Dispatch after a full forensic audit: fixed 8 subtle tool/runtime bugs, centralized every remaining tool literal and magic number into `zenko-core/src/constants.rs`, and refactored all remaining `if/else if` and disguised `match ()` ladders into declarative tables and pure `match` dispatch.
+
+### Fixed
+- **UTF-8 & Raw Byte String Fidelity in Structural Outline (`outline.rs`):** Fixed UTF-8 mojibake in `scan_brace_line` by buffering raw UTF-8 bytes cleanly instead of casting bytes to Latin-1 chars, and added full `r#*"` / `br#*"` / `cr#*"` Rust raw-string detection so quotes/braces inside raw byte strings never desync brace depth.
+- **Byte-Budget vs. Past-EOF Attribution in Multi-Range `read_file` (`fs_tools.rs`):** Tracked `hit_byte_budget` separately so omitted slices after hitting the read byte cap report budget exhaustion instead of falsely claiming `past EOF`.
+- **Safe Integer Coercion Bounds (`coerce.rs`):** Guarded float-to-`i64` coercion to the exact lossless IEEE-754 integer range (`±COERCE_SAFE_INT_MAX_F64`) so oversized numeric strings like `"1e30"` never silently saturate to `i64::MAX`.
+- **Policy-First Deferred Tool Activation (`turn.rs`):** Moved auto-activation of deferred tools behind `PreToolUse` hooks and `evaluate_policy` so denied calls in Plan Mode never leak into `activated_deferred`.
+- **Mixed Edit + Verify Tracking & Inner Batch Coercion (`guard.rs`, `runtime/mod.rs`):** Added per-step mutation/verification accounting for `batch_tools` in `OrchestratorGuard::record_tool_outcome`, and recursively coerced inner `batch_tools` arguments upfront so lazy pre-mutation Shadow-Git checkpoints inspect normalized inner payloads.
+- **Scoped `context_inspect` Counts & MCP Shadow Protection (`lib.rs`, `mcp_client.rs`, `runtime/mod.rs`):** Scoped `inspect_session_context` tool counts and deferred catalogs via `effective_session_scope`, and added Hermes-style `ToolRegistry::register_if_absent` shadow protection for external MCP proxy tools.
+
+### Changed
+- **Zero Hardcoding & Declarative Tables (`constants.rs`, `outline.rs`, `policy.rs`, `jail.rs`, `glob.rs`, `search.rs`, `lib.rs`, `coerce.rs`, `shell.rs`, `web.rs`, `jobs.rs`, `memory_cron.rs`, `lsp.rs`, `web_search.rs`, `agents.rs`):**
+  - Centralized all remaining tool name literals (`TOOL_*`, `SUBAGENT_ROLE_CUSTOM`) and magic constants (`FS_MAX_*`, `JAIL_MAX_SYMLINK_HOPS`, `LSP_LOCATION_SNIPPET_MAX_BYTES`, `TOOL_BM25_*`, `TOOL_FUZZY_*`, `OUTLINE_MAX_*`, `CODE_SEARCH_*`, `BATCH_TOOLS_MIN_STEP_CHARS`) in `zenko-core/src/constants.rs`.
+  - Replaced all `match () { _ if ... }` prefix ladders in `outline.rs`, all 4 repetitive shell wrapper loops in `policy.rs` (`SHELL_WRAPPER_SPECS`), duplicated path display logic (`jail::format_display_rel_path`), and all remaining `if/else if` chains across `zenko-tools` and `zenko-runtime/src/policy.rs` with declarative tables and `match` dispatch.
+
 ## [0.0.16] - 2026-11-24
 
 Upgraded Zenko's minicode tool system and runtime execution architecture into **Minicode Tool Architecture v2**, synthesizing patterns from Hermes Agent, Oh My OpenCode, and Prime Agent in 100% pure Rust with zero hardcoding, zero `if/else` ladders, zero ad-hoc regex, and zero `/commands`.

@@ -22,10 +22,10 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    LSP_ACTIONS, LSP_AUTO_DIAG_MAX_ITEMS, LSP_AUTO_DIAG_WAIT_MS, LSP_MAX_FRAME_BYTES,
-    LSP_MAX_RESULTS, LSP_SERVER_REGISTRY, LSP_STARTUP_TIMEOUT_SECS, LSP_STDERR_RING_BYTES,
-    LspAction, LspConfig, LspServerRuntimeStatus, Result, RiskLevel, TOOL_LSP, Tool,
-    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError,
+    LSP_ACTIONS, LSP_AUTO_DIAG_MAX_ITEMS, LSP_AUTO_DIAG_WAIT_MS, LSP_LOCATION_SNIPPET_MAX_BYTES,
+    LSP_MAX_FRAME_BYTES, LSP_MAX_RESULTS, LSP_SERVER_REGISTRY, LSP_STARTUP_TIMEOUT_SECS,
+    LSP_STDERR_RING_BYTES, LspAction, LspConfig, LspServerRuntimeStatus, Result, RiskLevel,
+    TOOL_LSP, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError,
     find_lsp_server_by_extension, find_lsp_server_by_id,
 };
 
@@ -880,37 +880,41 @@ impl Tool for LspTool {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim();
-            let sess = if let Some(req_path) = args.get("path").and_then(Value::as_str) {
-                let abs = resolve_readable_path(
-                    &ctx.workspace_dir,
-                    &ctx.hub_dir,
-                    &ctx.data_dir,
-                    req_path,
-                    true,
-                )?;
-                let spec = self.pool.resolve_server_for_file(&cfg, &abs, explicit_server)?;
-                let root = find_project_root(&abs, &ws_canon, &spec.root_markers);
-                self.pool.get_or_spawn(&spec, root).await?
-            } else if let Some(id) = explicit_server {
-                let spec = self
-                    .pool
-                    .resolve_server_for_file(&cfg, &ws_canon, Some(id))?;
-                self.pool.get_or_spawn(&spec, ws_canon.clone()).await?
-            } else {
-                let active = self
-                    .pool
-                    .sessions
-                    .lock()
-                    .await
-                    .values()
-                    .find(|s| s.is_alive())
-                    .cloned();
-                match active {
-                    Some(s) => s,
-                    None => {
-                        return Ok(ToolOutput::err(
-                            "Pass `path` (any file in the target language) or `server` (e.g. `rust-analyzer`) to start the LSP server for `workspace_symbols`.",
-                        ));
+            let sess = match (args.get("path").and_then(Value::as_str), explicit_server) {
+                (Some(req_path), _) => {
+                    let abs = resolve_readable_path(
+                        &ctx.workspace_dir,
+                        &ctx.hub_dir,
+                        &ctx.data_dir,
+                        req_path,
+                        true,
+                    )?;
+                    let spec = self.pool.resolve_server_for_file(&cfg, &abs, explicit_server)?;
+                    let root = find_project_root(&abs, &ws_canon, &spec.root_markers);
+                    self.pool.get_or_spawn(&spec, root).await?
+                }
+                (None, Some(id)) => {
+                    let spec = self
+                        .pool
+                        .resolve_server_for_file(&cfg, &ws_canon, Some(id))?;
+                    self.pool.get_or_spawn(&spec, ws_canon.clone()).await?
+                }
+                (None, None) => {
+                    let active = self
+                        .pool
+                        .sessions
+                        .lock()
+                        .await
+                        .values()
+                        .find(|s| s.is_alive())
+                        .cloned();
+                    match active {
+                        Some(s) => s,
+                        None => {
+                            return Ok(ToolOutput::err(
+                                "Pass `path` (any file in the target language) or `server` (e.g. `rust-analyzer`) to start the LSP server for `workspace_symbols`.",
+                            ));
+                        }
                     }
                 }
             };
@@ -1363,8 +1367,6 @@ fn format_diagnostics_output(path: &str, file_text: &str, items: &[Value]) -> To
     out
 }
 
-const LSP_LOCATION_SNIPPET_MAX_BYTES: u64 = 256 * 1024;
-
 async fn format_locations_output(ws_root: &Path, res: &Value, label: &str) -> ToolOutput {
     let locs: Vec<&Value> = match res {
         Value::Array(arr) => arr.iter().collect(),
@@ -1475,21 +1477,22 @@ fn collect_symbol_lines(ws_root: &Path, items: &[Value], depth: usize, out: &mut
         }
         let name = item.get("name").and_then(Value::as_str).unwrap_or("");
         let kind = symbol_kind_label(item.get("kind").and_then(Value::as_u64).unwrap_or(0));
-        let loc_tag = if let Some(uri) = item.pointer("/location/uri").and_then(Value::as_str) {
-            let line = item
-                .pointer("/location/range/start/line")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                + 1;
-            format!(" ({}:{line})", file_uri_to_display(ws_root, uri))
-        } else if let Some(line) = item
-            .pointer("/selectionRange/start/line")
-            .or_else(|| item.pointer("/range/start/line"))
-            .and_then(Value::as_u64)
-        {
-            format!(" (L{})", line + 1)
-        } else {
-            String::new()
+        let loc_tag = match (
+            item.pointer("/location/uri").and_then(Value::as_str),
+            item.pointer("/selectionRange/start/line")
+                .or_else(|| item.pointer("/range/start/line"))
+                .and_then(Value::as_u64),
+        ) {
+            (Some(uri), _) => {
+                let line = item
+                    .pointer("/location/range/start/line")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    + 1;
+                format!(" ({}:{line})", file_uri_to_display(ws_root, uri))
+            }
+            (None, Some(line)) => format!(" (L{})", line + 1),
+            (None, None) => String::new(),
         };
         out.push(format!("{indent}- [{kind}] {name}{loc_tag}"));
         if let Some(children) = item.get("children").and_then(Value::as_array) {

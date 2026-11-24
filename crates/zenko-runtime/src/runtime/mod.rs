@@ -109,10 +109,10 @@ use zenko_core::{
     SessionTask, AutoDispatchDecision, resolve_auto_send_mode,
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_MEMORY,
-    TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM,
-    TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
+    TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT,
+    TOOL_HASH_EDIT, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE,
+    TOOL_RECORD_BRAINSTORM, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
+    TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
     ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
     TriageReport,
     TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
@@ -226,33 +226,36 @@ impl SessionToolScope {
                 "Tool `{tool_name}` is outside this session's scoped `tool_subset`."
             ));
         }
-        if let Some(role_desc) = self.role_id.as_deref().and_then(find_subagent_role) {
-            let mutating_mem = tool_name == TOOL_MEMORY
-                && is_memory_mutating_action(
-                    args.get("action").and_then(Value::as_str).unwrap_or(""),
-                );
-            let blocked_by_custom_ro = self.custom_read_only
-                && matches!(
-                    orchestrator::classify_tool_category(tool_name, args),
-                    orchestrator::ToolCategory::Mutation
-                );
-            if !role_desc.permits_tool(tool_name) || mutating_mem || blocked_by_custom_ro {
-                return Err(format!(
-                    "Subagent role `{}` policy denied tool `{}`.",
-                    role_desc.id, tool_name
-                ));
+        match (
+            self.role_id.as_deref().and_then(find_subagent_role),
+            self.custom_read_only,
+        ) {
+            (Some(role_desc), _) => {
+                let mutating_mem = tool_name == TOOL_MEMORY
+                    && is_memory_mutating_action(
+                        args.get("action").and_then(Value::as_str).unwrap_or(""),
+                    );
+                let blocked_by_custom_ro = self.custom_read_only
+                    && matches!(
+                        orchestrator::classify_tool_category(tool_name, args),
+                        orchestrator::ToolCategory::Mutation
+                    );
+                match !role_desc.permits_tool(tool_name) || mutating_mem || blocked_by_custom_ro {
+                    true => Err(format!(
+                        "Subagent role `{}` policy denied tool `{}`.",
+                        role_desc.id, tool_name
+                    )),
+                    false => Ok(()),
+                }
             }
-        } else if self.custom_read_only
-            && matches!(
-                orchestrator::classify_tool_category(tool_name, args),
-                orchestrator::ToolCategory::Mutation
-            )
-        {
-            return Err(format!(
-                "Read-only session scope denied mutating tool `{tool_name}`."
-            ));
+            (None, true) => match orchestrator::classify_tool_category(tool_name, args) {
+                orchestrator::ToolCategory::Mutation => Err(format!(
+                    "Read-only session scope denied mutating tool `{tool_name}`."
+                )),
+                _ => Ok(()),
+            },
+            (None, false) => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -1380,13 +1383,23 @@ impl AgentRuntime {
             .unwrap_or_else(|| cfg.provider.lead_model.clone());
         let context_window = self.resolve_context_window(&active_model);
 
+        let scope = self.effective_session_scope(session_id);
         let activated = self.hydrate_activated_deferred(session_id, &branch);
-        let active_specs = self
+        let active_specs = self.tools.specs_for_session_filtered(
+            cfg.context.deferred_tool_loading,
+            &activated,
+            &scope.availability,
+            |spec| scope.permits_spec(spec),
+        );
+        let (eager_tools_count, deferred_available_count) = self
             .tools
-            .specs_for_session(cfg.context.deferred_tool_loading, &activated);
-        let (eager_tools_count, deferred_available_count) = self.tools.exposure_counts();
+            .exposure_counts_filtered(&scope.availability, |spec| scope.permits_spec(spec));
         let deferred_catalog = match cfg.context.deferred_tool_loading {
-            true => self.tools.deferred_catalog_text(),
+            true => self
+                .tools
+                .deferred_catalog_text_filtered(&scope.availability, |spec| {
+                    scope.permits_spec(spec)
+                }),
             false => None,
         };
         let effective_sys = snapshot.compose_system_prompt(deferred_catalog.as_deref());
@@ -1854,10 +1867,44 @@ impl AgentRuntime {
     }
 
     pub(crate) fn coerce_tool_call_args(&self, tool_name: &str, args: Value) -> Value {
-        match self.tools.get(tool_name) {
+        let mut coerced = match self.tools.get(tool_name) {
             Some(tool) => coerce_and_repair_args(args, &tool.spec().parameters),
             None => args,
+        };
+        // Also coerce inner `batch_tools` step payloads upfront so pre-mutation checkpoint
+        // detection and role/read-only classifiers inspect clean normalized arguments.
+        if tool_name == TOOL_BATCH_TOOLS
+            && let Some(calls) = coerced.get_mut("calls").and_then(Value::as_array_mut)
+        {
+            for item in calls.iter_mut() {
+                let inner_name = item
+                    .get("tool")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_string();
+                if inner_name.is_empty() || inner_name == TOOL_BATCH_TOOLS {
+                    continue;
+                }
+                if let Some(inner_tool) = self.tools.get(&inner_name) {
+                    let schema = inner_tool.spec().parameters;
+                    let arg_key = match item.get("args").is_some() {
+                        true => "args",
+                        false => "arguments",
+                    };
+                    if let Some(obj) = item.as_object_mut()
+                        && let Some(raw_inner) = obj.remove(arg_key)
+                    {
+                        obj.insert(
+                            "args".to_string(),
+                            coerce_and_repair_args(raw_inner, &schema),
+                        );
+                    }
+                }
+            }
         }
+        coerced
     }
 
     pub fn cancel_all_sessions(&self) {
@@ -1903,7 +1950,7 @@ impl AgentRuntime {
 fn extract_edited_rel_paths(tool_name: &str, args: &Value) -> Vec<String> {
     let mut out = Vec::new();
     match tool_name {
-        "write_file" | "hash_edit" | "apply_patch" => {
+        TOOL_WRITE_FILE | TOOL_HASH_EDIT | TOOL_APPLY_PATCH => {
             if let Some(p) = args
                 .get("path")
                 .and_then(Value::as_str)
@@ -1912,7 +1959,7 @@ fn extract_edited_rel_paths(tool_name: &str, args: &Value) -> Vec<String> {
             {
                 out.push(p.to_string());
             }
-            if tool_name == "apply_patch"
+            if tool_name == TOOL_APPLY_PATCH
                 && let Some(patch) = args.get("patch").and_then(Value::as_str)
             {
                 for line in patch.lines() {

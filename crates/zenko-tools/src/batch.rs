@@ -14,9 +14,9 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     BATCH_TOOLS_DEFAULT_STEP_CHARS, BATCH_TOOLS_MAX_CALLS, BATCH_TOOLS_MAX_STEP_CHARS,
-    BatchToolCallItem, BatchToolRequest, Result, RiskLevel, TOOL_BATCH_TOOLS, Tool,
-    ToolBatchBridge, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec,
-    ZenkoError,
+    BATCH_TOOLS_MIN_STEP_CHARS, BatchToolCallItem, BatchToolRequest, Result, RiskLevel,
+    TOOL_BATCH_TOOLS, Tool, ToolBatchBridge, ToolConcurrency, ToolContext, ToolExposure,
+    ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 pub struct BatchToolsTool {
@@ -135,7 +135,10 @@ impl Tool for BatchToolsTool {
             .get("max_chars_per_call")
             .and_then(Value::as_u64)
             .unwrap_or(BATCH_TOOLS_DEFAULT_STEP_CHARS as u64)
-            .clamp(256, BATCH_TOOLS_MAX_STEP_CHARS as u64) as usize;
+            .clamp(
+                BATCH_TOOLS_MIN_STEP_CHARS as u64,
+                BATCH_TOOLS_MAX_STEP_CHARS as u64,
+            ) as usize;
 
         let req = BatchToolRequest {
             calls,

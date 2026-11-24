@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     ARTIFACT_HEAD_RATIO_DEN, ARTIFACT_HEAD_RATIO_NUM, BackgroundJobRecord, BackgroundJobStatus,
     JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, Result, RiskLevel, SAFE_SHELL_ENV_KEYS,
-    SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, TaskKind, Tool, ToolContext,
-    ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, TOOL_SHELL_EXEC, TaskKind,
+    Tool, ToolContext, ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 pub struct ShellExecTool {
@@ -73,7 +73,7 @@ impl Tool for ShellExecTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "shell_exec".into(),
+            name: TOOL_SHELL_EXEC.into(),
             description: "Execute a shell command inside the workspace with sanitized environment variables (no secrets exposed), timeout, output bounds, live foreground-to-background demotion, and optional async background execution (`run_in_background` or `auto_background_after_secs`).".into(),
             parameters: json!({
                 "type": "object",

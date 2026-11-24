@@ -12,10 +12,11 @@ use tokio::process::Command;
 use zenko_core::{
     DANGEROUS_APPROVAL_BINS, HookConfig, HookEvent, MCP_TOOL_PREFIX, PIPE_TO_SHELL_BINS,
     PLAN_MODE_SCOPED_TOOLS, PLANNING_TOOLS, PROTECTED_DATA_SEGMENTS, PermissionMode, PolicyConfig,
-    READ_ONLY_TOOLS, RiskLevel, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_GOAL_LOOP,
-    TOOL_MEMORY, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, ToolSpec,
-    VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role, is_git_tool_args_mutating,
-    is_goal_loop_args_mutating, is_memory_mutating_action, is_skill_manage_args_mutating,
+    READ_ONLY_TOOLS, RiskLevel, SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS,
+    TOOL_GIT, TOOL_GOAL_LOOP, TOOL_MEMORY, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
+    ToolSpec, VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role,
+    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_memory_mutating_action,
+    is_skill_manage_args_mutating,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +48,7 @@ pub fn inspect_shell_policy(
     let parsed = tokenize_shell(command);
     let safe_prefix = matches_safe_prefix(&parsed, &policy.allowed_shell_prefixes);
     let spec = ToolSpec {
-        name: "shell_exec".into(),
+        name: TOOL_SHELL_EXEC.into(),
         description: String::new(),
         parameters: json!({}),
         risk: RiskLevel::Dangerous,
@@ -187,6 +188,52 @@ fn is_root_or_home_target(arg: &str) -> bool {
         || arg == "/*"
 }
 
+struct ShellWrapperSpec {
+    bins: &'static [&'static str],
+    arg_flags: &'static [&'static str],
+    skip_options: bool,
+    allow_env_assigns: bool,
+    skip_trailing_positional: bool,
+}
+
+const SHELL_WRAPPER_SPECS: &[ShellWrapperSpec] = &[
+    ShellWrapperSpec {
+        bins: &["env"],
+        arg_flags: &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+        skip_options: true,
+        allow_env_assigns: true,
+        skip_trailing_positional: false,
+    },
+    ShellWrapperSpec {
+        bins: &["command"],
+        arg_flags: &[],
+        skip_options: true,
+        allow_env_assigns: false,
+        skip_trailing_positional: false,
+    },
+    ShellWrapperSpec {
+        bins: &["nice"],
+        arg_flags: &["-n", "--adjustment"],
+        skip_options: true,
+        allow_env_assigns: false,
+        skip_trailing_positional: false,
+    },
+    ShellWrapperSpec {
+        bins: &["nohup", "time", "exec"],
+        arg_flags: &[],
+        skip_options: false,
+        allow_env_assigns: false,
+        skip_trailing_positional: false,
+    },
+    ShellWrapperSpec {
+        bins: &["timeout"],
+        arg_flags: &["-k", "--kill-after", "-s", "--signal"],
+        skip_options: true,
+        allow_env_assigns: false,
+        skip_trailing_positional: true,
+    },
+];
+
 fn strip_shell_wrappers(tokens: &[String]) -> &[String] {
     let mut i = 0usize;
     while i < tokens.len() {
@@ -197,82 +244,41 @@ fn strip_shell_wrappers(tokens: &[String]) -> &[String] {
             continue;
         }
         let bin = segment_bin_name(tok);
-        match bin.as_str() {
-            "env" => {
+        let Some(spec) = SHELL_WRAPPER_SPECS
+            .iter()
+            .find(|w| w.bins.contains(&bin.as_str()))
+        else {
+            break;
+        };
+        i += 1;
+        if !spec.skip_options {
+            if tokens.get(i).map(String::as_str) == Some("--") {
                 i += 1;
-                while i < tokens.len() {
-                    let arg = tokens[i].as_str();
-                    if arg == "--" {
-                        i += 1;
-                        break;
-                    }
-                    if matches!(arg, "-u" | "--unset" | "-C" | "--chdir" | "-S" | "--split-string") {
-                        i = (i + 2).min(tokens.len());
-                    } else if arg.starts_with('-') || (arg.contains('=') && !arg.starts_with('=')) {
-                        i += 1;
-                    } else {
-                        break;
-                    }
-                }
             }
-            "command" => {
-                i += 1;
-                while i < tokens.len() {
-                    let arg = tokens[i].as_str();
-                    if arg == "--" {
-                        i += 1;
-                        break;
-                    }
-                    if arg.starts_with('-') {
-                        i += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            "nice" => {
-                i += 1;
-                while i < tokens.len() {
-                    let arg = tokens[i].as_str();
-                    if arg == "--" {
-                        i += 1;
-                        break;
-                    }
-                    if matches!(arg, "-n" | "--adjustment") {
-                        i = (i + 2).min(tokens.len());
-                    } else if arg.starts_with('-') {
-                        i += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            "nohup" | "time" | "exec" => {
-                i += 1;
-                if tokens.get(i).map(String::as_str) == Some("--") {
+            continue;
+        }
+        while i < tokens.len() {
+            let arg = tokens[i].as_str();
+            let is_assign =
+                spec.allow_env_assigns && arg.contains('=') && !arg.starts_with('=');
+            match (
+                arg == "--",
+                spec.arg_flags.contains(&arg),
+                arg.starts_with('-') || is_assign,
+            ) {
+                (true, _, _) => {
                     i += 1;
+                    break;
+                }
+                (false, true, _) => i = (i + 2).min(tokens.len()),
+                (false, false, true) => i += 1,
+                (false, false, false) => {
+                    if spec.skip_trailing_positional {
+                        i += 1;
+                    }
+                    break;
                 }
             }
-            "timeout" => {
-                i += 1;
-                while i < tokens.len() {
-                    let arg = tokens[i].as_str();
-                    if arg == "--" {
-                        i += 1;
-                        break;
-                    }
-                    if matches!(arg, "-k" | "--kill-after" | "-s" | "--signal") {
-                        i = (i + 2).min(tokens.len());
-                    } else if arg.starts_with('-') {
-                        i += 1;
-                    } else {
-                        // Skip the duration argument itself
-                        i += 1;
-                        break;
-                    }
-                }
-            }
-            _ => break,
         }
     }
     &tokens[i..]
@@ -519,19 +525,24 @@ fn segment_bin_name(tok: &str) -> String {
 
 /// Skips `git` global options (`-C <dir>`, `-c <k=v>`, `--git-dir <d>`, `--work-tree <d>`, etc.)
 /// so `git -C . push --force` and `git -c x=y reset --hard` still resolve to `push`/`reset`.
+const GIT_GLOBAL_VALUE_FLAGS: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+];
+
 fn git_subcommand_slice(slice: &[String]) -> &[String] {
     let mut i = 1usize;
     while i < slice.len() {
         let arg = slice[i].as_str();
-        if matches!(
-            arg,
-            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
-        ) {
-            i = (i + 2).min(slice.len());
-        } else if arg.starts_with('-') {
-            i += 1;
-        } else {
-            break;
+        match (GIT_GLOBAL_VALUE_FLAGS.contains(&arg), arg.starts_with('-')) {
+            (true, _) => i = (i + 2).min(slice.len()),
+            (false, true) => i += 1,
+            (false, false) => break,
         }
     }
     &slice[i..]
@@ -798,7 +809,7 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
         }
         TOOL_SPAWN_AGENT => {
             let role_id = args.get("role").and_then(Value::as_str).unwrap_or("");
-            let custom_ro = role_id.eq_ignore_ascii_case("custom")
+            let custom_ro = role_id.eq_ignore_ascii_case(SUBAGENT_ROLE_CUSTOM)
                 && args.get("read_only").and_then(Value::as_bool) == Some(true);
             match custom_ro || find_subagent_role(role_id).is_some_and(|r| r.read_only) {
                 true => PolicyVerdict::Allow,

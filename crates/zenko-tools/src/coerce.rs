@@ -8,7 +8,9 @@
 use serde_json::{Map, Number, Value};
 use std::collections::HashSet;
 use zenko_core::{
-    TOOL_COERCE_MAX_DEPTH, TOOL_COERCE_MAX_JSON_REPAIR_BYTES, TOOL_SCHEMA_HINT_MAX_PROPS, ToolSpec,
+    COERCE_SAFE_INT_MAX_F64, TOOL_COERCE_MAX_DEPTH, TOOL_COERCE_MAX_JSON_REPAIR_BYTES,
+    TOOL_FUZZY_EDIT_WEIGHT, TOOL_FUZZY_MIN_SCORE, TOOL_FUZZY_SUBSTR_BONUS, TOOL_FUZZY_TOKEN_WEIGHT,
+    TOOL_SCHEMA_HINT_MAX_PROPS, ToolSpec,
 };
 
 /// Repairs provider `_raw` malformed JSON payloads (when present) and recursively coerces
@@ -282,13 +284,22 @@ fn coerce_array(val: Value, schema: &Value, depth: usize) -> Value {
     Value::Array(coerced)
 }
 
+fn float_to_exact_i64(f: f64) -> Option<i64> {
+    match f.is_finite()
+        && f.fract() == 0.0
+        && f >= -COERCE_SAFE_INT_MAX_F64
+        && f <= COERCE_SAFE_INT_MAX_F64
+    {
+        true => Some(f as i64),
+        false => None,
+    }
+}
+
 fn coerce_integer(val: Value) -> Value {
     match val {
-        Value::Number(ref n) => match (n.as_i64(), n.as_u64(), n.as_f64()) {
+        Value::Number(ref n) => match (n.as_i64(), n.as_u64(), n.as_f64().and_then(float_to_exact_i64)) {
             (Some(_), _, _) | (_, Some(_), _) => val,
-            (None, None, Some(f)) if f.is_finite() && f.fract() == 0.0 => {
-                Value::Number(Number::from(f as i64))
-            }
+            (None, None, Some(i)) => Value::Number(Number::from(i)),
             _ => val,
         },
         Value::String(ref s) => {
@@ -299,11 +310,8 @@ fn coerce_integer(val: Value) -> Value {
             if let Ok(u) = t.parse::<u64>() {
                 return Value::Number(Number::from(u));
             }
-            if let Ok(f) = t.parse::<f64>()
-                && f.is_finite()
-                && f.fract() == 0.0
-            {
-                return Value::Number(Number::from(f as i64));
+            if let Some(i) = t.parse::<f64>().ok().and_then(float_to_exact_i64) {
+                return Value::Number(Number::from(i));
             }
             val
         }
@@ -462,11 +470,12 @@ pub fn suggest_similar_tools(query: &str, candidates: &[&str], max_results: usiz
             let tok_sim = shared as f64 / union as f64;
 
             let substr_bonus = match c.contains(&q) || q.contains(&c) {
-                true => 0.35,
+                true => TOOL_FUZZY_SUBSTR_BONUS,
                 false => 0.0,
             };
-            let score = edit_sim * 0.55 + tok_sim * 0.45 + substr_bonus;
-            match score >= 0.30 {
+            let score =
+                edit_sim * TOOL_FUZZY_EDIT_WEIGHT + tok_sim * TOOL_FUZZY_TOKEN_WEIGHT + substr_bonus;
+            match score >= TOOL_FUZZY_MIN_SCORE {
                 true => Some((score, cand)),
                 false => None,
             }
@@ -572,6 +581,10 @@ mod tests {
         let fixed_unclosed = coerce_and_repair_args(unclosed, &schema);
         assert_eq!(fixed_unclosed["path"], json!("Cargo.toml"));
         assert_eq!(fixed_unclosed["start_line"], json!(10));
+
+        // Out-of-range huge float must NEVER silently saturate to i64::MAX
+        let huge = coerce_and_repair_args(json!({ "start_line": "1e30" }), &schema);
+        assert_eq!(huge["start_line"], json!("1e30"));
     }
 
     #[test]

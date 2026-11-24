@@ -9,8 +9,8 @@ use zenko_core::{
     CronJob, CronKind, MEMORY_DEFAULT_SEARCH_LIMIT, MEMORY_SCOPE_GLOBAL, MemoryKind,
     PROJECT_MEMORY_DOC_NAME, Result, RiskLevel, SESSION_CONTEXT_DEFAULT_WINDOW,
     SESSION_CONTEXT_MAX_WINDOW, SESSION_SEARCH_DEFAULT_LIMIT, SESSION_SEARCH_MAX_LIMIT,
-    SecretVault, SessionSearchFilter, TOOL_SESSION_SEARCH, Tool, ToolConcurrency, ToolContext,
-    ToolExposure, ToolOutput, ToolSpec, ZenkoError, new_id,
+    SecretVault, SessionSearchFilter, TOOL_CRON, TOOL_MEMORY, TOOL_SESSION_SEARCH, Tool,
+    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError, new_id,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, parse_since_window, project_scope_for_workspace, resolve_git_root,
@@ -97,7 +97,7 @@ impl Tool for MemoryTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "memory_tool".into(),
+            name: TOOL_MEMORY.into(),
             description: "Manage Zenko's scoped persistent memory: hybrid RRF search with staleness checks, deduplicated add/update/delete entries, surgical `patch_doc` / guarded `append_doc` over USER.md/MEMORY.md/ZENKO.md, and versioned `.history/` rollback.".into(),
             parameters: json!({
                 "type": "object",
@@ -627,7 +627,7 @@ impl Tool for CronTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "cron_tool".into(),
+            name: TOOL_CRON.into(),
             description: "Full CRUD for 24/7 recurring cron jobs, heartbeats, and zero-token No-Agent script jobs (scripts run from `~/zenko_hub/scripts/`).".into(),
             parameters: json!({
                 "type": "object",
@@ -783,11 +783,11 @@ impl Tool for CronTool {
                         false => Some(trimmed.to_string()),
                     };
                 }
-                if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
-                    job.enabled = en;
-                } else if action == "toggle" {
-                    job.enabled = !job.enabled;
-                }
+                job.enabled = match (args.get("enabled").and_then(Value::as_bool), action) {
+                    (Some(en), _) => en,
+                    (None, "toggle") => !job.enabled,
+                    (None, _) => job.enabled,
+                };
                 self.store.upsert_cron_job(&job)?;
                 self.cron_notify.notify_one();
                 Ok(ToolOutput::ok(format!(

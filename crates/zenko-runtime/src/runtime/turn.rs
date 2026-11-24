@@ -2047,18 +2047,6 @@ impl AgentRuntime {
         tc.arguments = coerce_and_repair_args(tc.arguments, &spec.parameters);
         let args_preview = truncate_preview(&tc.arguments.to_string(), 320);
 
-        if self.tools.is_deferred(&tc.name) {
-            let newly = self.activate_deferred_tools(session_id, std::slice::from_ref(&tc.name));
-            if !newly.is_empty() {
-                self.emit(AgentEvent::OrchestratorUpdated {
-                    session_id: session_id.to_string(),
-                    stage: ORCH_STAGE_TOOL_ACTIVATED.into(),
-                    tier: zenko_core::ExecutionTier::Standard,
-                    detail: format!("Auto-activated deferred tool `{}` on direct call", tc.name),
-                    model: None,
-                });
-            }
-        }
         let _active_tool_guard =
             ActiveToolGuard::enter(self.session_control(session_id), tc.name.clone());
         self.emit(AgentEvent::ToolCallStarted {
@@ -2088,6 +2076,22 @@ impl AgentRuntime {
                     }
                 }
                 _ => ToolOutput::err(base),
+            }
+        };
+
+        let activate_if_deferred = || {
+            if self.tools.is_deferred(&tc.name) {
+                let newly =
+                    self.activate_deferred_tools(session_id, std::slice::from_ref(&tc.name));
+                if !newly.is_empty() {
+                    self.emit(AgentEvent::OrchestratorUpdated {
+                        session_id: session_id.to_string(),
+                        stage: ORCH_STAGE_TOOL_ACTIVATED.into(),
+                        tier: zenko_core::ExecutionTier::Standard,
+                        detail: format!("Auto-activated deferred tool `{}` on direct call", tc.name),
+                        model: None,
+                    });
+                }
             }
         };
 
@@ -2136,6 +2140,7 @@ impl AgentRuntime {
                             .await?
                         {
                             ApprovalDecision::Approve | ApprovalDecision::AlwaysAllow => {
+                                activate_if_deferred();
                                 match tool
                                     .execute(tool_ctx, tc.arguments.clone(), cancel.clone())
                                     .await
@@ -2155,6 +2160,7 @@ impl AgentRuntime {
                         }
                     }
                     PolicyVerdict::Allow => {
+                        activate_if_deferred();
                         match tool
                             .execute(tool_ctx, tc.arguments.clone(), cancel.clone())
                             .await

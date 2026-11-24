@@ -1,7 +1,25 @@
 use std::path::{Component, Path, PathBuf};
 use zenko_core::{
-    ARTIFACT_PATH_PREFIX, ARTIFACTS_DIR_NAME, HUB_PATH_PREFIX, Result, ZenkoError, expand_tilde,
+    ARTIFACT_PATH_PREFIX, ARTIFACTS_DIR_NAME, HUB_PATH_PREFIX, JAIL_MAX_SYMLINK_HOPS, Result,
+    ZenkoError, expand_tilde,
 };
+
+/// Formats a resolved file path cleanly for tool output: workspace-relative when under `ws_root`,
+/// `hub:`-prefixed when under `hub_root`, else normalized fallback (zero duplicated `if/else`).
+pub fn format_display_rel_path(
+    path: &Path,
+    ws_root: &Path,
+    hub_root: &Path,
+    fallback: &str,
+) -> String {
+    match (path.strip_prefix(ws_root), path.strip_prefix(hub_root)) {
+        (Ok(rel), _) => rel.to_string_lossy().replace('\\', "/"),
+        (Err(_), Ok(rel)) => {
+            format!("{HUB_PATH_PREFIX}{}", rel.to_string_lossy().replace('\\', "/"))
+        }
+        (Err(_), Err(_)) => fallback.to_string(),
+    }
+}
 
 /// Resolves a read-only path across three jailed roots:
 /// - `artifact:<session>/<file>` strictly inside `<data_dir>/artifacts/` (read-only spilled outputs)
@@ -82,8 +100,6 @@ pub fn resolve_workspace_or_hub_path(
     resolve_jailed_path(workspace_root, target, must_exist)
 }
 
-const MAX_SYMLINK_HOPS: usize = 32;
-
 /// Ensures a requested path stays strictly inside the target root,
 /// blocking `..` traversal AND both live and dangling symlink escapes.
 pub fn resolve_jailed_path(workspace_root: &Path, requested: &str, must_exist: bool) -> Result<PathBuf> {
@@ -134,7 +150,7 @@ pub fn resolve_jailed_path(workspace_root: &Path, requested: &str, must_exist: b
         match std::fs::symlink_metadata(&next) {
             Ok(meta) if meta.file_type().is_symlink() => {
                 hops += 1;
-                if hops > MAX_SYMLINK_HOPS {
+                if hops > JAIL_MAX_SYMLINK_HOPS {
                     return Err(ZenkoError::PolicyDenied(format!(
                         "symlink loop while resolving '{}'",
                         requested

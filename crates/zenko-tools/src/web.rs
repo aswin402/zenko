@@ -9,8 +9,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     DEFAULT_WEB_FETCH_MAX_BYTES, DEFAULT_WEB_FETCH_MAX_REDIRECTS, DEFAULT_WEB_FETCH_TIMEOUT_SECS,
-    DEFAULT_WEB_FETCH_USER_AGENT, Result, RiskLevel, Tool, ToolContext, ToolExposure, ToolOutput,
-    ToolSpec, ZenkoError, sanitize_untrusted_markup,
+    DEFAULT_WEB_FETCH_USER_AGENT, Result, RiskLevel, TOOL_WEB_FETCH, Tool, ToolContext,
+    ToolExposure, ToolOutput, ToolSpec, ZenkoError, sanitize_untrusted_markup,
 };
 
 struct SsrfSafeResolver;
@@ -283,7 +283,7 @@ impl Tool for WebFetchTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "web_fetch".into(),
+            name: TOOL_WEB_FETCH.into(),
             description: "Fetch a public HTTP/HTTPS URL safely (SSRF-protected, streaming byte-bounded) and return clean readable text.".into(),
             parameters: json!({
                 "type": "object",

@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     JOB_DEFAULT_LIST_LIMIT, JOB_DEFAULT_READ_BYTES, JOB_DEFAULT_WAIT_SECS, JOB_MAX_HISTORY,
     JOB_MAX_READ_BYTES, JOB_MAX_WAIT_SECS, JOB_MIN_READ_BYTES, JobSupervisor, ResourceLockKey,
-    Result, RiskLevel, TaskKind, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput,
+    Result, RiskLevel, TOOL_JOB_INPUT, TOOL_JOB_LIST, TOOL_JOB_READ, TOOL_JOB_STOP, TOOL_JOB_WAIT,
+    TOOL_TASK_MANAGE, TaskKind, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput,
     ToolSpec, ZenkoError,
 };
 
@@ -45,7 +46,7 @@ impl Tool for JobListTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "job_list".into(),
+            name: TOOL_JOB_LIST.into(),
             description: "List running and recent asynchronous ZenkoTasks (filterable by category `kind` or `all_sessions`).".into(),
             parameters: json!({
                 "type": "object",
@@ -148,7 +149,7 @@ impl Tool for JobReadTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "job_read".into(),
+            name: TOOL_JOB_READ.into(),
             description: "Read streamed stdout/stderr output from a background job log file by byte offset (defaults to latest tail).".into(),
             parameters: json!({
                 "type": "object",
@@ -232,7 +233,7 @@ impl Tool for JobWaitTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "job_wait".into(),
+            name: TOOL_JOB_WAIT.into(),
             description: "Zero-CPU event-driven wait for a background job to finish (or return its latest status & output tail after `timeout_secs`). Never poll with `sleep`.".into(),
             parameters: json!({
                 "type": "object",
@@ -330,7 +331,7 @@ impl Tool for JobInputTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "job_input".into(),
+            name: TOOL_JOB_INPUT.into(),
             description: "Send stdin text to a running background job (e.g. answering prompts or interactive commands).".into(),
             parameters: json!({
                 "type": "object",
@@ -393,7 +394,7 @@ impl Tool for JobStopTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "job_stop".into(),
+            name: TOOL_JOB_STOP.into(),
             description: "Gracefully stop a running background job and its entire child process group.".into(),
             parameters: json!({
                 "type": "object",
@@ -463,7 +464,7 @@ impl Tool for TaskManageTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "task_manage".into(),
+            name: TOOL_TASK_MANAGE.into(),
             description: "Full CRUD management for ZenkoTasks: update task label/kind, restart a previous task, delete a task + its log file, or prune finished tasks by category.".into(),
             parameters: json!({
                 "type": "object",

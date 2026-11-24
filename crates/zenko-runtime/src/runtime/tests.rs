@@ -566,5 +566,90 @@
             vec!["src/app.rs".to_string()]
         );
 
+        // 8. Denied deferred tool in Plan Mode must NOT prematurely auto-activate into session state.
+        let denied_cron = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t7".into(),
+                    name: zenko_core::TOOL_CRON.into(),
+                    arguments: json!({ "action": "create", "name": "nope" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("denied cron");
+        assert!(denied_cron.output.is_error);
+        assert!(
+            !rt.activated_deferred_for(&sess.id)
+                .contains(zenko_core::TOOL_CRON),
+            "denied deferred tool must never auto-activate"
+        );
+
+        // 9. `coerce_tool_call_args` recursively coerces inner `batch_tools` args before checkpoint detection.
+        let coerced_batch = rt.coerce_tool_call_args(
+            TOOL_BATCH_TOOLS,
+            json!({
+                "calls": [
+                    { "tool": "git_tool", "args": { "_raw": "{\"action\": \"COMMIT\"}" } }
+                ]
+            }),
+        );
+        let batch_tc = ToolCall {
+            id: "t8".into(),
+            name: TOOL_BATCH_TOOLS.into(),
+            arguments: coerced_batch,
+        };
+        assert_eq!(is_workspace_mutating_call(&batch_tc), Some(TOOL_BATCH_TOOLS));
+
+        // 10. `inspect_session_context` respects active session scope (Plan Mode reduces counts vs root).
+        let plan_ctx_info = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("inspect plan");
+        drop(_plan_guard);
+        let root_ctx_info = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("inspect root");
+        assert!(
+            plan_ctx_info.eager_tools_count < root_ctx_info.eager_tools_count,
+            "Plan Mode scoped eager count ({}) should be lower than root ({})",
+            plan_ctx_info.eager_tools_count,
+            root_ctx_info.eager_tools_count
+        );
+
+        // 11. Mixed `[hash_edit, shell_exec("cargo test")]` inside `batch_tools` credits trailing verification.
+        let mut guard = orchestrator::guard::ExecutionGuard::new(
+            zenko_core::ExecutionTier::Standard,
+            zenko_core::IntentKind::Implement,
+            zenko_core::DeliberationDepth::default(),
+        );
+        guard.record_tool_outcome(
+            TOOL_BATCH_TOOLS,
+            &json!({
+                "calls": [
+                    { "tool": "hash_edit", "args": { "path": "src/app.rs" } },
+                    { "tool": "shell_exec", "args": { "command": "cargo test" } }
+                ]
+            }),
+            false,
+            "Batch completed (2/2 ok)",
+            Some(&json!({
+                "steps": [
+                    { "index": 0, "tool": "hash_edit", "status": "ok" },
+                    { "index": 1, "tool": "shell_exec", "status": "ok" }
+                ]
+            })),
+        );
+        assert!(
+            guard.check_completion_gate(true).is_none(),
+            "trailing passing verification inside batch_tools must satisfy completion guard"
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }

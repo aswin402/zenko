@@ -8,10 +8,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     APPLY_PATCH_AMBIGUITY_MAX_LOCS, APPLY_PATCH_MAX_EDITS, DEFAULT_READ_FILE_LINE_WINDOW,
-    DEFAULT_READ_FILE_MAX_BYTES, HASH_EDIT_MAX_HUNKS, HASH_EDIT_RECOVERY_RADIUS,
-    OUTLINE_MAX_ENTRIES, OUTLINE_MAX_FILE_BYTES, READ_FILE_MAX_RANGES, ResourceLockKey, Result,
-    RiskLevel, TOOL_APPLY_PATCH, TOOL_HASH_EDIT, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE,
-    Tool, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    DEFAULT_READ_FILE_MAX_BYTES, FS_MAX_EDIT_FILE_BYTES, FS_MAX_SINGLE_READ_LINE_BYTES,
+    HASH_EDIT_MAX_HUNKS, HASH_EDIT_RECOVERY_RADIUS, OUTLINE_MAX_ENTRIES, OUTLINE_MAX_FILE_BYTES,
+    READ_FILE_MAX_RANGES, ResourceLockKey, Result, RiskLevel, TOOL_APPLY_PATCH, TOOL_HASH_EDIT,
+    TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, Tool, ToolConcurrency, ToolContext, ToolOutput,
+    ToolSet, ToolSpec, ZenkoError,
 };
 
 /// Deterministic 3-hex-char content hash for Oh My Pi / Oh My OpenCode hash-anchored edits.
@@ -29,9 +30,6 @@ pub fn unified_diff(path: &str, old: &str, new: &str) -> String {
         .header(&format!("a/{path}"), &format!("b/{path}"))
         .to_string()
 }
-
-const MAX_EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_SINGLE_READ_LINE_BYTES: usize = 128 * 1024;
 
 fn detect_line_ending(text: &str) -> &'static str {
     match text.contains("\r\n") {
@@ -263,6 +261,7 @@ impl Tool for ReadFileTool {
         let mut line_no = 0usize;
         let mut captured_per_range: Vec<Vec<String>> = vec![Vec::new(); ranges.len()];
         let mut out_bytes = 0usize;
+        let mut hit_byte_budget = false;
         let byte_budget = ctx
             .max_output_bytes
             .saturating_mul(16)
@@ -275,13 +274,13 @@ impl Tool for ReadFileTool {
             let mut truncated_line = false;
             let n = {
                 use tokio::io::AsyncReadExt;
-                let mut limited = (&mut reader).take(MAX_SINGLE_READ_LINE_BYTES as u64);
+                let mut limited = (&mut reader).take(FS_MAX_SINGLE_READ_LINE_BYTES as u64);
                 limited.read_until(b'\n', &mut raw_line).await?
             };
             if n == 0 {
                 break;
             }
-            if !raw_line.ends_with(b"\n") && n == MAX_SINGLE_READ_LINE_BYTES {
+            if !raw_line.ends_with(b"\n") && n == FS_MAX_SINGLE_READ_LINE_BYTES {
                 truncated_line = true;
                 let mut discard = [0u8; 4096];
                 loop {
@@ -306,18 +305,24 @@ impl Tool for ReadFileTool {
             if let Some(cur) = ranges.get(active_range_idx)
                 && line_no >= cur.start
                 && line_no <= cur.end
-                && out_bytes < byte_budget
             {
-                let line_str = String::from_utf8_lossy(&raw_line);
-                let clean = line_str.trim_end_matches(['\r', '\n']);
-                let h = line_hash(clean);
-                let suffix = match truncated_line {
-                    true => " ...[line truncated]",
-                    false => "",
-                };
-                let formatted = format!("{line_no}:{h}| {clean}{suffix}\n");
-                out_bytes += formatted.len();
-                captured_per_range[active_range_idx].push(formatted);
+                match out_bytes < byte_budget {
+                    true => {
+                        let line_str = String::from_utf8_lossy(&raw_line);
+                        let clean = line_str.trim_end_matches(['\r', '\n']);
+                        let h = line_hash(clean);
+                        let suffix = match truncated_line {
+                            true => " ...[line truncated]",
+                            false => "",
+                        };
+                        let formatted = format!("{line_no}:{h}| {clean}{suffix}\n");
+                        out_bytes += formatted.len();
+                        captured_per_range[active_range_idx].push(formatted);
+                    }
+                    false => {
+                        hit_byte_budget = true;
+                    }
+                }
             }
             if stop_early && line_no >= max_requested_end {
                 break;
@@ -345,8 +350,12 @@ impl Tool for ReadFileTool {
                 .start
                 .saturating_add(rows.len().saturating_sub(1))
                 .min(line_no);
+            let budget_note = match hit_byte_budget {
+                true => " [byte budget reached; narrow range to read further]",
+                false => "",
+            };
             let mut out = format!(
-                "File: {req_path} (lines {}..={end_shown} of {total_label})\n",
+                "File: {req_path} (lines {}..={end_shown} of {total_label}){budget_note}\n",
                 r.start
             );
             for row in rows {
@@ -361,10 +370,12 @@ impl Tool for ReadFileTool {
         );
         for (r, rows) in ranges.iter().zip(captured_per_range.iter()) {
             if rows.is_empty() {
-                out.push_str(&format!(
-                    "\n--- lines {}..={} (past EOF; file has {line_no} lines) ---\n",
-                    r.start, r.end
-                ));
+                let reason = match (r.start > line_no, hit_byte_budget) {
+                    (true, _) => format!("past EOF; file has {line_no} lines"),
+                    (false, true) => "omitted: read byte budget reached; request this range separately".to_string(),
+                    (false, false) => "empty".to_string(),
+                };
+                out.push_str(&format!("\n--- lines {}..={} ({reason}) ---\n", r.start, r.end));
                 continue;
             }
             let end_shown = r
@@ -522,9 +533,9 @@ impl Tool for HashEditTool {
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
         let file_len = tokio::fs::metadata(&path).await?.len();
-        if file_len > MAX_EDIT_FILE_BYTES {
+        if file_len > FS_MAX_EDIT_FILE_BYTES {
             return Ok(ToolOutput::err(format!(
-                "Refused to hash_edit '{}': file size ({file_len} bytes) exceeds edit safety limit ({MAX_EDIT_FILE_BYTES} bytes).",
+                "Refused to hash_edit '{}': file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes).",
                 req_path
             )));
         }
@@ -856,9 +867,9 @@ impl Tool for ApplyPatchTool {
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
         let file_len = tokio::fs::metadata(&path).await?.len();
-        if file_len > MAX_EDIT_FILE_BYTES {
+        if file_len > FS_MAX_EDIT_FILE_BYTES {
             return Ok(ToolOutput::err(format!(
-                "Refused to apply_patch '{}': file size ({file_len} bytes) exceeds edit safety limit ({MAX_EDIT_FILE_BYTES} bytes).",
+                "Refused to apply_patch '{}': file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes).",
                 req_path
             )));
         }

@@ -733,17 +733,24 @@ pub fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<WebSearchResultIte
             match (is_closing, tag_name.as_str(), mode) {
                 (false, "a", _) => {
                     let class_val = extract_html_attr(attrs, "class").unwrap_or_default();
-                    if class_contains_token(&class_val, "result__a") {
-                        if results.len() >= limit {
-                            break;
+                    match (
+                        class_contains_token(&class_val, "result__a"),
+                        class_contains_token(&class_val, "result__snippet"),
+                    ) {
+                        (true, _) => {
+                            if results.len() >= limit {
+                                break;
+                            }
+                            let href = extract_html_attr(attrs, "href").unwrap_or_default();
+                            cur_url = unwrap_ddg_redirect(&decode_basic_entities(&href));
+                            cur_buf.clear();
+                            mode = DdgCapture::Title;
                         }
-                        let href = extract_html_attr(attrs, "href").unwrap_or_default();
-                        cur_url = unwrap_ddg_redirect(&decode_basic_entities(&href));
-                        cur_buf.clear();
-                        mode = DdgCapture::Title;
-                    } else if class_contains_token(&class_val, "result__snippet") {
-                        cur_buf.clear();
-                        mode = DdgCapture::Snippet;
+                        (false, true) => {
+                            cur_buf.clear();
+                            mode = DdgCapture::Snippet;
+                        }
+                        (false, false) => {}
                     }
                 }
                 (false, "div" | "span" | "p", _) => {

@@ -1,13 +1,12 @@
 //! Zero-Dependency, Zero-Regex Pure-Rust Structural Code Outline Extractor.
 //!
-//! Powered by deterministic byte/token/brace/indentation state machines across declarative
-//! language tables — instant even when LSP servers are cold or uninstalled, returning
-//! hash-anchored symbol spans (`line:hash| [kind] signature (Lstart..Lend)`) directly
-//! actionable by `read_file(ranges=...)` and `hash_edit`.
+//! Powered by UTF-8-safe deterministic byte/token/brace/indentation state machines and
+//! declarative keyword tables (zero regex, zero `if/else` ladders, zero hardcoded magic caps)
+//! returning hash-anchored symbol spans (`line:hash| [kind] signature (Lstart..Lend)`).
 
 use crate::fs_tools::line_hash;
 use std::path::Path;
-use zenko_core::OUTLINE_MAX_ENTRIES;
+use zenko_core::{OUTLINE_MAX_BRACE_DEPTH, OUTLINE_MAX_ENTRIES, OUTLINE_MAX_SIGNATURE_CHARS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutlineSyntax {
@@ -28,12 +27,78 @@ const OUTLINE_EXT_TABLE: &[(&[&str], OutlineSyntax)] = &[
     ),
     (&["go"], OutlineSyntax::BraceGo),
     (
-        &["c", "h", "cc", "cpp", "cxx", "hpp", "hh", "java", "cs", "kt", "kts", "swift"],
+        &[
+            "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "java", "cs", "kt", "kts", "swift",
+        ],
         OutlineSyntax::BraceCLike,
     ),
     (&["py", "pyi"], OutlineSyntax::IndentPython),
     (&["md", "mdx", "markdown"], OutlineSyntax::MarkupMarkdown),
     (&["toml"], OutlineSyntax::ConfigToml),
+];
+
+const RUST_MODIFIER_PREFIXES: &[&str] = &[
+    "default ",
+    "async ",
+    "unsafe ",
+    "extern \"C\" ",
+    "extern ",
+];
+
+const RUST_DECL_PREFIXES: &[(&str, &str)] = &[
+    ("fn ", "fn"),
+    ("const fn ", "fn"),
+    ("struct ", "struct"),
+    ("enum ", "enum"),
+    ("trait ", "trait"),
+    ("impl ", "impl"),
+    ("impl<", "impl"),
+    ("mod ", "mod"),
+    ("macro_rules!", "macro"),
+];
+
+const JS_MODIFIER_PREFIXES: &[&str] = &[
+    "export ",
+    "default ",
+    "declare ",
+    "abstract ",
+    "async ",
+    "public ",
+    "private ",
+    "protected ",
+    "static ",
+    "readonly ",
+];
+
+const JS_DECL_PREFIXES: &[(&str, &str)] = &[
+    ("function ", "fn"),
+    ("function*", "fn"),
+    ("class ", "class"),
+    ("interface ", "interface"),
+    ("enum ", "enum"),
+    ("namespace ", "namespace"),
+];
+
+const PYTHON_DECL_PREFIXES: &[(&str, &str)] = &[
+    ("class ", "class"),
+    ("def ", "fn"),
+    ("async def ", "fn"),
+];
+
+const CLIKE_KEYWORD_KINDS: &[(&str, &str)] = &[
+    ("class", "class"),
+    ("struct", "struct"),
+    ("enum", "enum"),
+    ("interface", "interface"),
+    ("protocol", "interface"),
+    ("namespace", "namespace"),
+    ("fun", "fn"),
+    ("func", "fn"),
+    ("trait", "type"),
+];
+
+const CONTROL_FLOW_HEADS: &[&str] = &[
+    "if", "for", "while", "switch", "catch", "else", "return", "throw", "new",
 ];
 
 pub fn detect_outline_syntax(path: &Path) -> Option<OutlineSyntax> {
@@ -69,10 +134,12 @@ pub fn extract_outline(path: &Path, content: &str, max_entries: usize) -> Outlin
     let cap = max_entries.clamp(1, OUTLINE_MAX_ENTRIES);
 
     let all_entries = match syntax {
-        Some(OutlineSyntax::BraceRust) => extract_brace_outline(&lines, OutlineSyntax::BraceRust),
-        Some(OutlineSyntax::BraceJsTs) => extract_brace_outline(&lines, OutlineSyntax::BraceJsTs),
-        Some(OutlineSyntax::BraceGo) => extract_brace_outline(&lines, OutlineSyntax::BraceGo),
-        Some(OutlineSyntax::BraceCLike) => extract_brace_outline(&lines, OutlineSyntax::BraceCLike),
+        Some(
+            s @ (OutlineSyntax::BraceRust
+            | OutlineSyntax::BraceJsTs
+            | OutlineSyntax::BraceGo
+            | OutlineSyntax::BraceCLike),
+        ) => extract_brace_outline(&lines, s),
         Some(OutlineSyntax::IndentPython) => extract_python_outline(&lines),
         Some(OutlineSyntax::MarkupMarkdown) => extract_markdown_outline(&lines),
         Some(OutlineSyntax::ConfigToml) => extract_toml_outline(&lines),
@@ -146,27 +213,27 @@ fn extract_brace_outline(lines: &[&str], syntax: OutlineSyntax) -> Vec<OutlineEn
         let (opens, closes, code_prefix) = scan_brace_line(raw_line, syntax, &mut lex);
         let trimmed = code_prefix.trim();
 
-        if !was_in_comment && !trimmed.is_empty() {
-            if let Some((kind, sig)) = classify_brace_declaration(trimmed, syntax, brace_depth) {
-                let entry_idx = entries.len();
-                let nesting = open_stack.len();
-                entries.push(OutlineEntry {
-                    line: line_no,
-                    end_line: line_no,
-                    hash: line_hash(raw_line),
-                    kind,
-                    depth: nesting,
-                    signature: compact_signature(&sig),
-                });
+        if !was_in_comment && !trimmed.is_empty()
+            && let Some((kind, sig)) = classify_brace_declaration(trimmed, syntax, brace_depth)
+        {
+            let entry_idx = entries.len();
+            let nesting = open_stack.len();
+            entries.push(OutlineEntry {
+                line: line_no,
+                end_line: line_no,
+                hash: line_hash(raw_line),
+                kind,
+                depth: nesting,
+                signature: compact_signature(&sig),
+            });
 
-                let has_semicolon_only = opens == 0 && trimmed.ends_with(';');
-                if !has_semicolon_only {
-                    open_stack.push(OpenBraceSymbol {
-                        entry_idx,
-                        target_depth: brace_depth,
-                        pending_open: opens == 0,
-                    });
-                }
+            let has_semicolon_only = opens == 0 && trimmed.ends_with(';');
+            if !has_semicolon_only {
+                open_stack.push(OpenBraceSymbol {
+                    entry_idx,
+                    target_depth: brace_depth,
+                    pending_open: opens == 0,
+                });
             }
         }
 
@@ -180,19 +247,18 @@ fn extract_brace_outline(lines: &[&str], syntax: OutlineSyntax) -> Vec<OutlineEn
 
         brace_depth = (brace_depth + opens - closes).max(0);
 
-        // Close any symbol whose opening block depth has now returned.
         while let Some(top) = open_stack.last() {
             let ready_to_close = match top.pending_open {
                 true => trimmed.ends_with(';'),
                 false => brace_depth <= top.target_depth,
             };
-            if ready_to_close {
-                let sym = open_stack.pop();
-                if let Some(s) = sym {
-                    entries[s.entry_idx].end_line = line_no;
+            match ready_to_close {
+                true => {
+                    if let Some(s) = open_stack.pop() {
+                        entries[s.entry_idx].end_line = line_no;
+                    }
                 }
-            } else {
-                break;
+                false => break,
             }
         }
     }
@@ -204,7 +270,30 @@ fn extract_brace_outline(lines: &[&str], syntax: OutlineSyntax) -> Vec<OutlineEn
     entries
 }
 
-/// Scans one source line updating multi-line comment/raw-string state, returning
+/// Detects Rust raw string starts (`r#"..."#`, `br#"..."#`, `cr#"..."#`) at byte index `i`,
+/// returning `Some((hash_count, first_body_byte_idx))` when a valid prefix begins at `i`.
+fn match_rust_raw_string_start(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    let len = bytes.len();
+    let prev_ident = i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+    if prev_ident {
+        return None;
+    }
+    let r_pos = match bytes.get(i) {
+        Some(b'r') => i,
+        Some(b'b' | b'c') if bytes.get(i + 1) == Some(&b'r') => i + 1,
+        _ => return None,
+    };
+    let mut j = r_pos + 1;
+    while j < len && bytes[j] == b'#' {
+        j += 1;
+    }
+    match bytes.get(j) {
+        Some(b'"') => Some((j - (r_pos + 1), j + 1)),
+        _ => None,
+    }
+}
+
+/// UTF-8-safe single-line lexer updating multi-line comment/raw-string state, returning
 /// `(open_braces, close_braces, comment_stripped_code_text)`.
 fn scan_brace_line(
     line: &str,
@@ -216,29 +305,31 @@ fn scan_brace_line(
     let mut i = 0usize;
     let mut opens = 0i32;
     let mut closes = 0i32;
-    let mut code = String::with_capacity(len);
+    let mut code_bytes: Vec<u8> = Vec::with_capacity(len);
     let mut in_double = false;
     let mut in_single = false;
 
     while i < len {
         if let Some(hashes) = state.rust_raw_hashes {
-            if bytes[i] == b'"'
+            let is_end = bytes[i] == b'"'
                 && i + hashes < len
-                && bytes[i + 1..=i + hashes].iter().all(|&b| b == b'#')
-            {
-                state.rust_raw_hashes = None;
-                i += 1 + hashes;
-            } else {
-                i += 1;
+                && bytes[i + 1..=i + hashes].iter().all(|&b| b == b'#');
+            match is_end {
+                true => {
+                    state.rust_raw_hashes = None;
+                    i += 1 + hashes;
+                }
+                false => i += 1,
             }
             continue;
         }
         if state.in_block_comment {
-            if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
-                state.in_block_comment = false;
-                i += 2;
-            } else {
-                i += 1;
+            match (bytes[i], bytes.get(i + 1)) {
+                (b'*', Some(b'/')) => {
+                    state.in_block_comment = false;
+                    i += 2;
+                }
+                _ => i += 1,
             }
             continue;
         }
@@ -276,83 +367,70 @@ fn scan_brace_line(
             continue;
         }
 
-        // Line comment `//`
-        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
-            break;
-        }
-        // Block comment `/*`
-        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
-            state.in_block_comment = true;
-            i += 2;
-            continue;
-        }
-        // Rust raw string literal `r#"..."#`
-        if syntax == OutlineSyntax::BraceRust
-            && bytes[i] == b'r'
-            && i + 1 < len
-            && matches!(bytes[i + 1], b'#' | b'"')
-            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_')
-        {
-            let mut j = i + 1;
-            while j < len && bytes[j] == b'#' {
-                j += 1;
-            }
-            if j < len && bytes[j] == b'"' {
-                state.rust_raw_hashes = Some(j - (i + 1));
-                i = j + 1;
+        // Line comment `//` or block comment `/*`
+        match (bytes[i], bytes.get(i + 1)) {
+            (b'/', Some(b'/')) => break,
+            (b'/', Some(b'*')) => {
+                state.in_block_comment = true;
+                i += 2;
                 continue;
             }
+            _ => {}
+        }
+
+        // Rust raw string / raw byte string / raw C string (`r#"..."#`, `br#"..."#`, `cr#"..."#`)
+        if syntax == OutlineSyntax::BraceRust
+            && let Some((hashes, next_i)) = match_rust_raw_string_start(bytes, i)
+        {
+            state.rust_raw_hashes = Some(hashes);
+            i = next_i;
+            continue;
         }
 
         match bytes[i] {
             b'"' => {
                 in_double = true;
-                code.push('"');
+                code_bytes.push(b'"');
                 i += 1;
             }
             b'\'' if syntax != OutlineSyntax::BraceRust => {
                 in_single = true;
-                code.push('\'');
+                code_bytes.push(b'\'');
                 i += 1;
             }
             b'\'' if syntax == OutlineSyntax::BraceRust => {
                 // Distinguish Rust char literal `'x'` / `'\n'` from lifetime `'a`
                 let is_char_lit = (i + 2 < len && bytes[i + 2] == b'\'')
                     || (i + 3 < len && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'');
-                match is_char_lit {
-                    true => {
-                        in_single = true;
-                        code.push('\'');
-                        i += 1;
-                    }
-                    false => {
-                        code.push('\'');
-                        i += 1;
-                    }
+                if is_char_lit {
+                    in_single = true;
                 }
+                code_bytes.push(b'\'');
+                i += 1;
             }
             b'`' if matches!(syntax, OutlineSyntax::BraceJsTs | OutlineSyntax::BraceGo) => {
                 state.in_backtick_string = true;
-                code.push('`');
+                code_bytes.push(b'`');
                 i += 1;
             }
             b'{' => {
                 opens += 1;
-                code.push('{');
+                code_bytes.push(b'{');
                 i += 1;
             }
             b'}' => {
                 closes += 1;
-                code.push('}');
+                code_bytes.push(b'}');
                 i += 1;
             }
             b => {
-                code.push(b as char);
+                code_bytes.push(b);
                 i += 1;
             }
         }
     }
 
+    let code = String::from_utf8_lossy(&code_bytes).into_owned();
     (opens, closes, code)
 }
 
@@ -370,107 +448,71 @@ fn classify_brace_declaration(
     }
 }
 
-fn strip_rust_visibility(s: &str) -> &str {
-    let mut cur = s.trim_start();
-    if let Some(rest) = cur.strip_prefix("pub") {
-        if let Some(after_paren) = rest.strip_prefix('(')
-            && let Some(close) = after_paren.find(')')
-        {
-            cur = after_paren[close + 1..].trim_start();
-        } else if rest.starts_with(char::is_whitespace) {
-            cur = rest.trim_start();
-        }
-    }
-    loop {
-        let next = cur
-            .strip_prefix("default ")
-            .or_else(|| cur.strip_prefix("async "))
-            .or_else(|| cur.strip_prefix("unsafe "))
-            .or_else(|| cur.strip_prefix("const "))
-            .or_else(|| cur.strip_prefix("extern \"C\" "))
-            .or_else(|| cur.strip_prefix("extern "));
-        match next {
-            Some(r) => cur = r.trim_start(),
-            None => break,
-        }
+fn strip_prefix_table<'a>(mut cur: &'a str, prefixes: &[&str]) -> &'a str {
+    while let Some(rest) = prefixes.iter().find_map(|p| cur.strip_prefix(p)) {
+        cur = rest.trim_start();
     }
     cur
+}
+
+fn strip_rust_visibility(s: &str) -> &str {
+    let cur = s.trim_start();
+    let after_pub = match cur.strip_prefix("pub") {
+        Some(rest) => match rest.strip_prefix('(') {
+            Some(inside) => match inside.find(')') {
+                Some(close) => inside[close + 1..].trim_start(),
+                None => cur,
+            },
+            None => match rest.starts_with(char::is_whitespace) {
+                true => rest.trim_start(),
+                false => cur,
+            },
+        },
+        None => cur,
+    };
+    strip_prefix_table(after_pub, RUST_MODIFIER_PREFIXES)
 }
 
 fn classify_rust_decl(trimmed: &str, depth: i32) -> Option<(&'static str, String)> {
-    if depth > 2 || trimmed.starts_with('#') || trimmed.starts_with("use ") {
+    if depth > OUTLINE_MAX_BRACE_DEPTH || trimmed.starts_with('#') || trimmed.starts_with("use ") {
         return None;
     }
     let core = strip_rust_visibility(trimmed);
-    let kind = match () {
-        _ if core.starts_with("fn ") => "fn",
-        _ if core.starts_with("struct ") => "struct",
-        _ if core.starts_with("enum ") => "enum",
-        _ if core.starts_with("trait ") => "trait",
-        _ if core.starts_with("impl ") || core.starts_with("impl<") => "impl",
-        _ if core.starts_with("mod ") => "mod",
-        _ if core.starts_with("type ") && depth == 0 => "type",
-        _ if core.starts_with("macro_rules!") => "macro",
-        _ if depth == 0
-            && (trimmed.starts_with("pub const ")
-                || trimmed.starts_with("pub(crate) const ")
-                || trimmed.starts_with("const "))
-            && trimmed.contains(':') =>
-        {
-            "const"
-        }
-        _ => return None,
-    };
-    Some((kind, trimmed.to_string()))
-}
-
-fn strip_js_modifiers(s: &str) -> &str {
-    let mut cur = s.trim_start();
-    loop {
-        let next = cur
-            .strip_prefix("export ")
-            .or_else(|| cur.strip_prefix("default "))
-            .or_else(|| cur.strip_prefix("declare "))
-            .or_else(|| cur.strip_prefix("abstract "))
-            .or_else(|| cur.strip_prefix("async "))
-            .or_else(|| cur.strip_prefix("public "))
-            .or_else(|| cur.strip_prefix("private "))
-            .or_else(|| cur.strip_prefix("protected "))
-            .or_else(|| cur.strip_prefix("static "))
-            .or_else(|| cur.strip_prefix("readonly "));
-        match next {
-            Some(r) => cur = r.trim_start(),
-            None => break,
-        }
+    if let Some(&(_, kind)) = RUST_DECL_PREFIXES.iter().find(|&&(p, _)| core.starts_with(p)) {
+        return Some((kind, trimmed.to_string()));
     }
-    cur
+    match (depth, core.starts_with("type "), core.starts_with("const ") && core.contains(':')) {
+        (0, true, _) => Some(("type", trimmed.to_string())),
+        (0, false, true) => Some(("const", trimmed.to_string())),
+        _ => None,
+    }
 }
 
 fn classify_js_ts_decl(trimmed: &str, depth: i32) -> Option<(&'static str, String)> {
-    if depth > 2 || trimmed.starts_with("import ") || trimmed.starts_with("return ") {
+    if depth > OUTLINE_MAX_BRACE_DEPTH
+        || trimmed.starts_with("import ")
+        || trimmed.starts_with("return ")
+    {
         return None;
     }
-    let core = strip_js_modifiers(trimmed);
-    let kind = match () {
-        _ if core.starts_with("function ") || core.starts_with("function*") => "fn",
-        _ if core.starts_with("class ") => "class",
-        _ if core.starts_with("interface ") => "interface",
-        _ if core.starts_with("type ") && core.contains('=') => "type",
-        _ if core.starts_with("enum ") => "enum",
-        _ if core.starts_with("namespace ") => "namespace",
-        _ if depth == 0
-            && (core.starts_with("const ") || core.starts_with("let "))
-            && (trimmed.contains("=>") || trimmed.starts_with("export ")) =>
-        {
-            match trimmed.contains("=>") {
-                true => "fn",
-                false => "const",
-            }
-        }
-        _ if depth == 1 && looks_like_method_signature(core) => "method",
-        _ => return None,
-    };
-    Some((kind, trimmed.to_string()))
+    let core = strip_prefix_table(trimmed, JS_MODIFIER_PREFIXES);
+    if let Some(&(_, kind)) = JS_DECL_PREFIXES.iter().find(|&&(p, _)| core.starts_with(p)) {
+        return Some((kind, trimmed.to_string()));
+    }
+    if core.starts_with("type ") && core.contains('=') {
+        return Some(("type", trimmed.to_string()));
+    }
+    match (
+        depth,
+        core.starts_with("const ") || core.starts_with("let "),
+        trimmed.contains("=>"),
+        trimmed.starts_with("export "),
+    ) {
+        (0, true, true, _) => Some(("fn", trimmed.to_string())),
+        (0, true, false, true) => Some(("const", trimmed.to_string())),
+        (1, _, _, _) if looks_like_method_signature(core) => Some(("method", trimmed.to_string())),
+        _ => None,
+    }
 }
 
 fn looks_like_method_signature(core: &str) -> bool {
@@ -478,13 +520,7 @@ fn looks_like_method_signature(core: &str) -> bool {
         return false;
     };
     let head = core[..paren].trim();
-    if head.is_empty()
-        || head.contains(' ')
-        || matches!(
-            head,
-            "if" | "for" | "while" | "switch" | "catch" | "return" | "throw" | "new"
-        )
-    {
+    if head.is_empty() || head.contains(' ') || CONTROL_FLOW_HEADS.contains(&head) {
         return false;
     }
     head.bytes()
@@ -496,59 +532,56 @@ fn classify_go_decl(trimmed: &str, depth: i32) -> Option<(&'static str, String)>
     if depth > 0 {
         return None;
     }
-    let kind = match () {
-        _ if trimmed.starts_with("func ") => "fn",
-        _ if trimmed.starts_with("type ") && trimmed.contains(" struct") => "struct",
-        _ if trimmed.starts_with("type ") && trimmed.contains(" interface") => "interface",
-        _ if trimmed.starts_with("type ") => "type",
-        _ => return None,
-    };
-    Some((kind, trimmed.to_string()))
+    match (
+        trimmed.starts_with("func "),
+        trimmed.starts_with("type "),
+        trimmed.contains(" struct"),
+        trimmed.contains(" interface"),
+    ) {
+        (true, _, _, _) => Some(("fn", trimmed.to_string())),
+        (false, true, true, _) => Some(("struct", trimmed.to_string())),
+        (false, true, false, true) => Some(("interface", trimmed.to_string())),
+        (false, true, false, false) => Some(("type", trimmed.to_string())),
+        _ => None,
+    }
 }
 
 fn classify_c_like_decl(trimmed: &str, depth: i32) -> Option<(&'static str, String)> {
-    if depth > 2 || trimmed.starts_with('#') || trimmed.starts_with("import ") || trimmed.starts_with("using ") {
+    if depth > OUTLINE_MAX_BRACE_DEPTH
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("import ")
+        || trimmed.starts_with("using ")
+    {
         return None;
     }
     let words: Vec<&str> = trimmed.split_whitespace().collect();
-    let first_kw = words.iter().copied().find(|w| {
-        matches!(
-            *w,
-            "class" | "struct" | "enum" | "interface" | "namespace" | "trait" | "protocol" | "fun" | "func"
-        )
-    });
-    if let Some(kw) = first_kw {
-        let kind = match kw {
-            "class" => "class",
-            "struct" => "struct",
-            "enum" => "enum",
-            "interface" | "protocol" => "interface",
-            "namespace" => "namespace",
-            "fun" | "func" => "fn",
-            _ => "type",
-        };
+    if let Some(kind) = words.iter().find_map(|w| {
+        CLIKE_KEYWORD_KINDS
+            .iter()
+            .find(|&&(kw, _)| kw == *w)
+            .map(|&(_, k)| k)
+    }) {
         return Some((kind, trimmed.to_string()));
     }
-    // Top-level or class-level C/C++/Java method/function signature ending with `{`
-    if depth <= 1
+    let is_control = words
+        .first()
+        .is_some_and(|w| CONTROL_FLOW_HEADS.contains(w));
+    match depth <= 1
+        && !is_control
         && trimmed.contains('(')
         && trimmed.contains(')')
         && trimmed.ends_with('{')
-        && !matches!(
-            words.first().copied(),
-            Some("if" | "for" | "while" | "switch" | "catch" | "else" | "return")
-        )
     {
-        return Some(("fn", trimmed.to_string()));
+        true => Some(("fn", trimmed.to_string())),
+        false => None,
     }
-    None
 }
 
 // ─── Indentation-Scoped Python Scanner ───────────────────────────────────────
 
 fn extract_python_outline(lines: &[&str]) -> Vec<OutlineEntry> {
     let mut entries: Vec<OutlineEntry> = Vec::new();
-    let mut stack: Vec<(usize, usize)> = Vec::new(); // (entry_idx, indent_cols)
+    let mut stack: Vec<(usize, usize)> = Vec::new();
     let mut last_code_line = 1usize;
 
     for (idx, &raw_line) in lines.iter().enumerate() {
@@ -560,27 +593,26 @@ fn extract_python_outline(lines: &[&str]) -> Vec<OutlineEntry> {
         let indent = raw_line.len().saturating_sub(trimmed.len());
 
         while let Some(&(entry_idx, sym_indent)) = stack.last() {
-            if indent <= sym_indent {
-                stack.pop();
-                entries[entry_idx].end_line = last_code_line.max(entries[entry_idx].line);
-            } else {
-                break;
+            match indent <= sym_indent {
+                true => {
+                    stack.pop();
+                    entries[entry_idx].end_line = last_code_line.max(entries[entry_idx].line);
+                }
+                false => break,
             }
         }
 
-        let kind = match () {
-            _ if trimmed.starts_with("class ") => Some("class"),
-            _ if trimmed.starts_with("def ") || trimmed.starts_with("async def ") => Some("fn"),
-            _ => None,
-        };
-        if let Some(k) = kind {
+        if let Some(&(_, kind)) = PYTHON_DECL_PREFIXES
+            .iter()
+            .find(|&&(prefix, _)| trimmed.starts_with(prefix))
+        {
             let entry_idx = entries.len();
             let depth = stack.len();
             entries.push(OutlineEntry {
                 line: line_no,
                 end_line: line_no,
                 hash: line_hash(raw_line),
-                kind: k,
+                kind,
                 depth,
                 signature: compact_signature(trimmed),
             });
@@ -600,7 +632,7 @@ fn extract_python_outline(lines: &[&str]) -> Vec<OutlineEntry> {
 
 fn extract_markdown_outline(lines: &[&str]) -> Vec<OutlineEntry> {
     let mut entries: Vec<OutlineEntry> = Vec::new();
-    let mut open_headings: Vec<(usize, usize)> = Vec::new(); // (entry_idx, level)
+    let mut open_headings: Vec<(usize, usize)> = Vec::new();
     let mut in_fence = false;
 
     for (idx, &raw_line) in lines.iter().enumerate() {
@@ -616,11 +648,13 @@ fn extract_markdown_outline(lines: &[&str]) -> Vec<OutlineEntry> {
         let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
         if (1..=6).contains(&hashes) && trimmed.as_bytes().get(hashes) == Some(&b' ') {
             while let Some(&(entry_idx, lvl)) = open_headings.last() {
-                if lvl >= hashes {
-                    open_headings.pop();
-                    entries[entry_idx].end_line = line_no.saturating_sub(1).max(entries[entry_idx].line);
-                } else {
-                    break;
+                match lvl >= hashes {
+                    true => {
+                        open_headings.pop();
+                        entries[entry_idx].end_line =
+                            line_no.saturating_sub(1).max(entries[entry_idx].line);
+                    }
+                    false => break,
                 }
             }
             let entry_idx = entries.len();
@@ -675,10 +709,9 @@ fn extract_toml_outline(lines: &[&str]) -> Vec<OutlineEntry> {
 
 fn compact_signature(sig: &str) -> String {
     let cleaned = sig.trim().trim_end_matches('{').trim();
-    let max_chars = 120usize;
-    match cleaned.chars().count() > max_chars {
+    match cleaned.chars().count() > OUTLINE_MAX_SIGNATURE_CHARS {
         true => {
-            let cut: String = cleaned.chars().take(max_chars).collect();
+            let cut: String = cleaned.chars().take(OUTLINE_MAX_SIGNATURE_CHARS).collect();
             format!("{cut}...")
         }
         false => cleaned.to_string(),
@@ -690,7 +723,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_rust_symbols_ignoring_comments_and_strings() {
+    fn extracts_rust_symbols_preserving_utf8_and_handling_raw_byte_strings() {
         let src = r##"
 // fn fake_comment() {}
 /*
@@ -698,6 +731,8 @@ struct FakeBlock {
     x: i32,
 }
 */
+pub(in crate::core) const LIMIT: usize = 99;
+
 pub struct Engine {
     raw: &'static str,
 }
@@ -706,8 +741,14 @@ impl Engine {
     pub async fn run(&self) -> usize {
         let tricky = "{ fn fake_in_str() {} }";
         let raw_s = r#"struct FakeRaw { }"#;
-        tricky.len() + raw_s.len()
+        let byte_raw = br#"quote " { fn fake_byte_raw() {} }"#;
+        let arrow = "→ UTF-8 🦊 café";
+        tricky.len() + raw_s.len() + byte_raw.len() + arrow.len()
     }
+}
+
+pub fn after_raw_bytes_café() -> usize {
+    1
 }
 "##;
         let report = extract_outline(Path::new("src/engine.rs"), src, 50);
@@ -716,13 +757,21 @@ impl Engine {
             .iter()
             .map(|e| (e.kind, e.signature.as_str(), e.line, e.end_line))
             .collect();
-        assert_eq!(names.len(), 3, "entries={names:?}");
-        assert_eq!(names[0].0, "struct");
-        assert!(names[0].1.contains("pub struct Engine"));
-        assert_eq!(names[1].0, "impl");
-        assert_eq!(names[2].0, "fn");
-        assert!(names[2].1.contains("pub async fn run"));
-        assert!(names[2].3 > names[2].2, "expected multi-line fn span");
+        assert_eq!(names.len(), 5, "entries={names:?}");
+        assert_eq!(names[0].0, "const");
+        assert!(names[0].1.contains("LIMIT"));
+        assert_eq!(names[1].0, "struct");
+        assert!(names[1].1.contains("pub struct Engine"));
+        assert_eq!(names[2].0, "impl");
+        assert_eq!(names[3].0, "fn");
+        assert!(names[3].1.contains("pub async fn run"));
+        assert!(names[3].3 > names[3].2, "expected multi-line fn span");
+        assert_eq!(names[4].0, "fn");
+        assert!(
+            names[4].1.contains("after_raw_bytes_café"),
+            "UTF-8 signature corrupted: {}",
+            names[4].1
+        );
     }
 
     #[test]
@@ -766,10 +815,10 @@ async def run_all():
 
     #[test]
     fn extracts_markdown_headings_ignoring_fenced_blocks() {
-        let md = "# Top\ntext\n```bash\n# not a heading\n```\n## Sub\nmore\n";
+        let md = "# Top — Overview\ntext\n```bash\n# not a heading\n```\n## Sub\nmore\n";
         let rep = extract_outline(Path::new("README.md"), md, 50);
         assert_eq!(rep.entries.len(), 2, "md={:?}", rep.entries);
-        assert_eq!(rep.entries[0].signature, "# Top");
+        assert_eq!(rep.entries[0].signature, "# Top — Overview");
         assert_eq!(rep.entries[1].signature, "## Sub");
     }
 }

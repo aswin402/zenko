@@ -735,7 +735,7 @@ impl McpClientManager {
                 .collect();
             let names: Vec<String> = filtered.iter().map(|t| t.full_name.clone()).collect();
             for tool in filtered {
-                registry.register(Arc::new(McpProxyTool::new(
+                registry.register_if_absent(Arc::new(McpProxyTool::new(
                     self.clone(),
                     cfg.clone(),
                     tool,
@@ -888,7 +888,7 @@ impl McpClientManager {
         registry.unregister_prefix(&prefix);
         let tool_names: Vec<String> = discovered.iter().map(|t| t.full_name.clone()).collect();
         for dt in discovered {
-            registry.register(Arc::new(McpProxyTool::new(self.clone(), cfg.clone(), dt)));
+            registry.register_if_absent(Arc::new(McpProxyTool::new(self.clone(), cfg.clone(), dt)));
         }
 
         let status = McpServerStatus {

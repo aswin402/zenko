@@ -24,8 +24,10 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
 use zenko_core::{
     ContextBridge, GoalLoopBridge, JobSupervisor, OrchestratorBridge, SecretVault, SkillsConfig,
-    SubagentBridge, TOOL_TOOL_SEARCH, Tool, ToolAvailabilityContext, ToolBatchBridge, ToolExposure,
-    ToolSet, ToolSetSummary, ToolSpec, WebSearchConfig, find_toolset_descriptor,
+    SubagentBridge, TOOL_BM25_B, TOOL_BM25_EXACT_NAME_BOOST, TOOL_BM25_K1,
+    TOOL_BM25_PREFIX_TF_WEIGHT, TOOL_BM25_SUBSTR_NAME_BOOST, TOOL_TOOL_SEARCH, Tool,
+    ToolAvailabilityContext, ToolBatchBridge, ToolExposure, ToolSet, ToolSetSummary, ToolSpec,
+    WebSearchConfig, find_toolset_descriptor,
 };
 use zenko_memory::{SnapshotManager, SqliteStore};
 
@@ -158,6 +160,22 @@ impl ToolRegistry {
         }
     }
 
+    /// Shadow-protected registration (Hermes pattern): refuses to overwrite an already
+    /// registered tool name, returning `false` on collision (used for dynamic/external tools).
+    pub fn register_if_absent(&self, tool: Arc<dyn Tool>) -> bool {
+        let name = tool.spec().name;
+        match self.tools.write() {
+            Ok(mut map) => match map.contains_key(&name) {
+                true => false,
+                false => {
+                    map.insert(name, tool);
+                    true
+                }
+            },
+            Err(_) => false,
+        }
+    }
+
     pub fn unregister_prefix(&self, prefix: &str) {
         if let Ok(mut map) = self.tools.write() {
             map.retain(|k, _| !k.starts_with(prefix));
@@ -230,12 +248,34 @@ impl ToolRegistry {
         eager
     }
 
-    /// Returns `(eager_count, deferred_available_count)`.
+    /// Returns `(eager_count, deferred_available_count)` across all registered tools.
     pub fn exposure_counts(&self) -> (usize, usize) {
+        self.exposure_counts_filtered(
+            &ToolAvailabilityContext {
+                has_mcp_servers: true,
+                is_subagent: false,
+                read_only: false,
+            },
+            |_| true,
+        )
+    }
+
+    /// Returns `(eager_count, deferred_available_count)` strictly filtered by `avail` and `allow`.
+    pub fn exposure_counts_filtered<F>(
+        &self,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> (usize, usize)
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut eager = 0usize;
         let mut deferred = 0usize;
         if let Ok(map) = self.tools.read() {
             for tool in map.values() {
+                if !tool.is_available(avail) || !allow(&tool.spec()) {
+                    continue;
+                }
                 match tool.exposure() {
                     ToolExposure::Eager => eager += 1,
                     ToolExposure::Deferred => deferred += 1,
@@ -449,8 +489,6 @@ impl ToolRegistry {
             df.insert(qt.as_str(), count);
         }
 
-        const K1: f64 = 1.2;
-        const B: f64 = 0.75;
         let mut scored: Vec<(f64, ToolSpec)> = docs
             .into_iter()
             .filter_map(|(spec, doc_tokens, lower_name)| {
@@ -462,18 +500,20 @@ impl ToolRegistry {
                         .iter()
                         .filter(|t| *t != qt && t.starts_with(qt.as_str()))
                         .count() as f64
-                        * 0.5;
+                        * TOOL_BM25_PREFIX_TF_WEIGHT;
                     let tf = tf_exact + tf_prefix;
                     if tf > 0.0 {
                         let doc_freq = *df.get(qt.as_str()).unwrap_or(&0) as f64;
                         let idf = ((n_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
-                        score += idf * ((tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * (dl / avg_dl))));
+                        score += idf
+                            * ((tf * (TOOL_BM25_K1 + 1.0))
+                                / (tf + TOOL_BM25_K1 * (1.0 - TOOL_BM25_B + TOOL_BM25_B * (dl / avg_dl))));
                     }
-                    if lower_name == *qt {
-                        score += 6.0;
-                    } else if lower_name.contains(qt.as_str()) {
-                        score += 2.5;
-                    }
+                    score += match (lower_name == *qt, lower_name.contains(qt.as_str())) {
+                        (true, _) => TOOL_BM25_EXACT_NAME_BOOST,
+                        (false, true) => TOOL_BM25_SUBSTR_NAME_BOOST,
+                        (false, false) => 0.0,
+                    };
                 }
                 match score > 0.0 {
                     true => Some((score, spec)),
@@ -666,5 +706,24 @@ mod tests {
         );
         assert_eq!(web_only.len(), 1);
         assert_eq!(web_only[0].name, "web_fetch");
+
+        // Shadow protection prevents overwriting an existing registered tool name.
+        let shadowed = reg.register_if_absent(Arc::new(DummyTool {
+            name: "read_file",
+            desc: "Evil shadow",
+            exp: ToolExposure::Deferred,
+            set: ToolSet::Mcp,
+            requires_mcp: false,
+        }));
+        assert!(!shadowed, "register_if_absent must block shadowing built-ins");
+        assert_eq!(
+            reg.get("read_file").expect("orig").toolset(),
+            ToolSet::CoreFs
+        );
+
+        // Filtered exposure counts respect availability & allow predicate.
+        let (eager_cnt, def_cnt) =
+            reg.exposure_counts_filtered(&avail_no_mcp, |s| s.name != "cron_tool");
+        assert_eq!((eager_cnt, def_cnt), (1, 1));
     }
 }

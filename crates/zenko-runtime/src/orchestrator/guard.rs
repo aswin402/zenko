@@ -318,7 +318,81 @@ impl ExecutionGuard {
             }
         }
 
-        // Track mutated workspace files & verified completions (foreground OR background-then-awaited)
+        // Track mutated workspace files & verified completions (foreground, background-then-awaited, or inside `batch_tools`)
+        if tool_name == TOOL_BATCH_TOOLS
+            && let Some(calls) = arguments.get("calls").and_then(Value::as_array)
+        {
+            let steps_meta = metadata.and_then(|m| m.get("steps")).and_then(Value::as_array);
+            for (idx, item) in calls.iter().enumerate() {
+                let inner_name = item
+                    .get("tool")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if inner_name.is_empty() || inner_name == TOOL_BATCH_TOOLS {
+                    continue;
+                }
+                let step_status = steps_meta
+                    .and_then(|arr| arr.get(idx))
+                    .and_then(|s| s.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(match is_error {
+                        true => "error",
+                        false => "ok",
+                    });
+                let inner_args = item
+                    .get("args")
+                    .or_else(|| item.get("arguments"))
+                    .unwrap_or(&Value::Null);
+                match (step_status, inner_name) {
+                    ("ok", n) if MUTATING_FILE_TOOLS.contains(&n) => {
+                        if let Some(p) = inner_args.get("path").and_then(Value::as_str) {
+                            let norm = p.trim().trim_start_matches("./").to_string();
+                            if !norm.is_empty() {
+                                self.mutated_files.insert(norm.clone());
+                                *self.file_edit_counts.entry(norm).or_insert(0) += 1;
+                                self.verification_ran = false;
+                            }
+                        }
+                    }
+                    ("ok", TOOL_SHELL_EXEC) => {
+                        let cmd = inner_args
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let is_verify = is_verification_command(cmd)
+                            || (!self.mutated_files.is_empty()
+                                && !cmd.trim().is_empty()
+                                && !is_read_only_shell_command(cmd));
+                        if is_verify {
+                            self.verification_ran = true;
+                            self.last_verification_failed = false;
+                        }
+                    }
+                    ("ok", TOOL_LSP) => {
+                        if inner_args
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .is_some_and(|a| a.eq_ignore_ascii_case("diagnostics"))
+                        {
+                            self.verification_ran = true;
+                            self.last_verification_failed = false;
+                        }
+                    }
+                    ("error", TOOL_SHELL_EXEC) => {
+                        let cmd = inner_args
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if is_verification_command(cmd) {
+                            self.verification_ran = false;
+                            self.last_verification_failed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         if !is_error && MUTATING_FILE_TOOLS.contains(&tool_name)
             && let Some(p) = arguments.get("path").and_then(Value::as_str) {
                 let norm = p.trim().trim_start_matches("./").to_string();

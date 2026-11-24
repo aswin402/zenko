@@ -594,20 +594,39 @@ pub const TOOL_BATCH_TOOLS: &str = "batch_tools";
 
 // Minicode Tool System v2 constants (zero hardcoding)
 pub const BATCH_TOOLS_MAX_CALLS: usize = 12;
+pub const BATCH_TOOLS_MIN_STEP_CHARS: usize = 256;
 pub const BATCH_TOOLS_DEFAULT_STEP_CHARS: usize = 4_000;
 pub const BATCH_TOOLS_MAX_STEP_CHARS: usize = 16_000;
 pub const READ_FILE_MAX_RANGES: usize = 8;
+pub const FS_MAX_EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+pub const FS_MAX_SINGLE_READ_LINE_BYTES: usize = 128 * 1024;
+pub const JAIL_MAX_SYMLINK_HOPS: usize = 32;
+pub const LSP_LOCATION_SNIPPET_MAX_BYTES: u64 = 256 * 1024;
 pub const HASH_EDIT_MAX_HUNKS: usize = 32;
 pub const HASH_EDIT_RECOVERY_RADIUS: usize = 4;
 pub const APPLY_PATCH_MAX_EDITS: usize = 32;
 pub const APPLY_PATCH_AMBIGUITY_MAX_LOCS: usize = 12;
 pub const OUTLINE_MAX_ENTRIES: usize = 250;
 pub const OUTLINE_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+pub const OUTLINE_MAX_SIGNATURE_CHARS: usize = 120;
+pub const OUTLINE_MAX_BRACE_DEPTH: i32 = 2;
+pub const CODE_SEARCH_DEFAULT_MAX_RESULTS: usize = 60;
+pub const CODE_SEARCH_MAX_RESULTS_CAP: usize = 200;
 pub const CODE_SEARCH_MAX_CONTEXT_LINES: usize = 5;
 pub const TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS: usize = 3;
 pub const TOOL_SCHEMA_HINT_MAX_PROPS: usize = 10;
 pub const TOOL_COERCE_MAX_DEPTH: usize = 8;
 pub const TOOL_COERCE_MAX_JSON_REPAIR_BYTES: usize = 256 * 1024;
+pub const COERCE_SAFE_INT_MAX_F64: f64 = 9_007_199_254_740_992.0;
+pub const TOOL_BM25_K1: f64 = 1.2;
+pub const TOOL_BM25_B: f64 = 0.75;
+pub const TOOL_BM25_PREFIX_TF_WEIGHT: f64 = 0.5;
+pub const TOOL_BM25_EXACT_NAME_BOOST: f64 = 6.0;
+pub const TOOL_BM25_SUBSTR_NAME_BOOST: f64 = 2.5;
+pub const TOOL_FUZZY_EDIT_WEIGHT: f64 = 0.55;
+pub const TOOL_FUZZY_TOKEN_WEIGHT: f64 = 0.45;
+pub const TOOL_FUZZY_SUBSTR_BONUS: f64 = 0.35;
+pub const TOOL_FUZZY_MIN_SCORE: f64 = 0.30;
 
 /// Declarative table of tools representing background-task or subagent orchestration/monitoring.
 /// When a running session has active jobs, active subagents, or any of these tools in flight,
@@ -733,16 +752,16 @@ pub const CLARIFICATION_RESOLVER_STEERED: &str = "orchestrator:steered";
 pub const CLARIFICATION_RESOLVER_ESCALATED: &str = "orchestrator:escalated_auto";
 
 pub const READ_ONLY_TOOLS: &[&str] = &[
-    "read_file",
-    "list_dir",
-    "code_search",
+    TOOL_READ_FILE,
+    TOOL_LIST_DIR,
+    TOOL_CODE_SEARCH,
     TOOL_GLOB_FIND,
-    "web_fetch",
+    TOOL_WEB_FETCH,
     TOOL_WEB_SEARCH,
     TOOL_LSP,
     TOOL_MCP_RESOURCE,
-    "job_list",
-    "job_read",
+    TOOL_JOB_LIST,
+    TOOL_JOB_READ,
     TOOL_SKILL_VIEW,
     TOOL_TOOL_SEARCH,
     TOOL_CONTEXT_INSPECT,
@@ -759,7 +778,8 @@ pub const PLANNING_TOOLS: &[&str] = &[
 ];
 /// Tools that are conditionally permitted in Read-Only Plan Mode (enforced per-argument by ExecPolicy):
 /// read-only shell commands, read-only memory actions, read-only subagent roles, worktree diff,
-/// read-only git actions, read-only `skill_manage` queries, and read-only `goal_loop` queries.
+/// read-only git actions, read-only `skill_manage` queries, read-only `goal_loop` queries,
+/// and `batch_tools` (each inner call individually policy-enforced).
 pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
     TOOL_MEMORY,
@@ -770,21 +790,21 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_GOAL_LOOP,
     TOOL_BATCH_TOOLS,
 ];
-pub const MUTATING_FILE_TOOLS: &[&str] = &["write_file", "hash_edit", "apply_patch"];
+pub const MUTATING_FILE_TOOLS: &[&str] = &[TOOL_WRITE_FILE, TOOL_HASH_EDIT, TOOL_APPLY_PATCH];
 pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];
 
 /// Bulky ephemeral tools eligible for Stage-A lossless microcompaction once outside the recent tail.
 pub const MICROCOMPACTABLE_TOOLS: &[&str] = &[
-    "read_file",
-    "code_search",
+    TOOL_READ_FILE,
+    TOOL_CODE_SEARCH,
     TOOL_GLOB_FIND,
-    "list_dir",
+    TOOL_LIST_DIR,
     TOOL_GIT,
     TOOL_SHELL_EXEC,
-    "web_fetch",
+    TOOL_WEB_FETCH,
     TOOL_WEB_SEARCH,
     TOOL_MCP_RESOURCE,
-    "job_read",
+    TOOL_JOB_READ,
 ];
 /// High-signal state/planning tools strictly exempt from microcompaction (prevents working-memory amnesia).
 pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
@@ -793,7 +813,7 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_SESSION_TASK,
     TOOL_ASK_CLARIFICATION,
     TOOL_ORCHESTRATE_CONTROL,
-    "memory_tool",
+    TOOL_MEMORY,
     TOOL_SKILL_VIEW,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,

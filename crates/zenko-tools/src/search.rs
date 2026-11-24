@@ -1,6 +1,6 @@
 use crate::fs_tools::line_hash;
 use crate::glob::CompiledGlob;
-use crate::jail::resolve_readable_path;
+use crate::jail::{format_display_rel_path, resolve_readable_path};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::UTF8;
@@ -9,9 +9,9 @@ use ignore::WalkBuilder;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    CODE_SEARCH_MAX_CONTEXT_LINES, DEFAULT_SEARCH_MAX_FILE_BYTES, DEFAULT_SEARCH_SKIP_DIRS,
-    HUB_PATH_PREFIX, Result, RiskLevel, TOOL_CODE_SEARCH, Tool, ToolConcurrency, ToolContext,
-    ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    CODE_SEARCH_DEFAULT_MAX_RESULTS, CODE_SEARCH_MAX_CONTEXT_LINES, CODE_SEARCH_MAX_RESULTS_CAP,
+    DEFAULT_SEARCH_MAX_FILE_BYTES, DEFAULT_SEARCH_SKIP_DIRS, Result, RiskLevel, TOOL_CODE_SEARCH,
+    Tool, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,15 +119,19 @@ impl Tool for CodeSearchTool {
         let max_results = args
             .get("max_results")
             .and_then(Value::as_u64)
-            .unwrap_or(60)
-            .clamp(1, 200) as usize;
+            .unwrap_or(CODE_SEARCH_DEFAULT_MAX_RESULTS as u64)
+            .clamp(1, CODE_SEARCH_MAX_RESULTS_CAP as u64) as usize;
 
         let output = tokio::task::spawn_blocking(move || -> Result<String> {
             let matcher = RegexMatcherBuilder::new()
                 .case_smart(true)
                 .fixed_strings(fixed_strings)
                 .build(&pattern)
-                .map_err(|e| ZenkoError::Tool(format!("invalid search pattern: {e}")))?;
+                .map_err(|e| {
+                    ZenkoError::Tool(format!(
+                        "invalid search pattern: {e} (hint: pass `fixed_strings: true` for exact literal text)"
+                    ))
+                })?;
 
             let mut searcher = SearcherBuilder::new()
                 .binary_detection(BinaryDetection::quit(b'\x00'))
@@ -171,13 +175,8 @@ impl Tool for CodeSearchTool {
                     continue;
                 }
 
-                let display_rel = if let Ok(r) = file_path.strip_prefix(&ws_root) {
-                    r.to_string_lossy().replace('\\', "/")
-                } else if let Ok(r) = file_path.strip_prefix(&hub_root) {
-                    format!("{HUB_PATH_PREFIX}{}", r.to_string_lossy().replace('\\', "/"))
-                } else {
-                    rel_for_glob
-                };
+                let display_rel =
+                    format_display_rel_path(file_path, &ws_root, &hub_root, &rel_for_glob);
 
                 match output_mode {
                     SearchOutputMode::FilesOnly => {

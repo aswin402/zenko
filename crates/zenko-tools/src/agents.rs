@@ -246,13 +246,13 @@ impl Tool for SpawnAgentTool {
                 if let Some(ref stat) = rec.diff_stat {
                     lines.push(format!("Diff stat:\n{stat}"));
                 }
-                if let Some(ref structured) = rec.structured_output {
-                    lines.push(format!(
+                match (&rec.structured_output, &rec.summary) {
+                    (Some(structured), _) => lines.push(format!(
                         "Structured JSON:\n{}",
                         serde_json::to_string_pretty(structured).unwrap_or_default()
-                    ));
-                } else if let Some(ref sum) = rec.summary {
-                    lines.push(format!("Summary:\n{sum}"));
+                    )),
+                    (None, Some(sum)) => lines.push(format!("Summary:\n{sum}")),
+                    (None, None) => {}
                 }
                 lines.join("\n")
             }
