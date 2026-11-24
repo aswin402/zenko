@@ -55,6 +55,10 @@ impl Tool for RecordBrainstormTool {
         ToolConcurrency::Global
     }
 
+    fn exposure(&self) -> zenko_core::ToolExposure {
+        zenko_core::ToolExposure::Deferred
+    }
+
     fn spec(&self) -> ToolSpec {
         let stage_enum: Vec<Value> = BRAINSTORM_STAGES
             .iter()
@@ -286,6 +290,10 @@ impl Tool for PlanUpdateTool {
         ToolConcurrency::Global
     }
 
+    fn exposure(&self) -> zenko_core::ToolExposure {
+        zenko_core::ToolExposure::Deferred
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_PLAN_UPDATE.into(),
@@ -444,6 +452,10 @@ impl Tool for OrchestrateControlTool {
 
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Global
+    }
+
+    fn exposure(&self) -> zenko_core::ToolExposure {
+        zenko_core::ToolExposure::Deferred
     }
 
     fn spec(&self) -> ToolSpec {

@@ -110,7 +110,7 @@ use zenko_core::{
     SessionTask, AutoDispatchDecision, resolve_auto_send_mode,
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT,
+    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_INVOKE_TOOL,
     TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE,
     TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
     TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
@@ -133,6 +133,8 @@ use zenko_tools::{
     lsp::LspPoolManager,
     mcp_client::McpClientManager,
     memory_cron::MemoryTool,
+    pty::PtySessionManager,
+    shell::ShellExecTool,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -272,13 +274,13 @@ pub(crate) struct SessionControl {
 }
 
 /// RAII guard binding the live `SessionToolScope` while a turn executes (restores previous scope on drop).
-struct ActiveSessionScopeGuard {
+pub(crate) struct ActiveSessionScopeGuard {
     ctrl: Arc<SessionControl>,
     prev: Option<SessionToolScope>,
 }
 
 impl ActiveSessionScopeGuard {
-    fn enter(ctrl: Arc<SessionControl>, scope: SessionToolScope) -> Self {
+    pub(crate) fn enter(ctrl: Arc<SessionControl>, scope: SessionToolScope) -> Self {
         let prev = ctrl
             .active_scope
             .lock()
@@ -375,6 +377,8 @@ pub struct AgentRuntime {
     pub lsp: Arc<LspPoolManager>,
     pub mcp_clients: Arc<McpClientManager>,
     pub file_state: Arc<SessionFileTracker>,
+    pub pty: Arc<PtySessionManager>,
+    os_sandbox: Arc<AtomicBool>,
     pub trigger_limiter: Arc<TriggerRateLimiter>,
     started_at: Instant,
     turn_seq: AtomicU64,
@@ -456,8 +460,12 @@ impl AgentRuntime {
         let (wake_tx, wake_rx) = mpsc::unbounded_channel();
         let notice_controls = session_controls.clone();
         let notice_wake_tx = wake_tx.clone();
-        let jobs = LocalJobSupervisor::new(
+        let os_sandbox = Arc::new(AtomicBool::new(config.policy.os_sandbox));
+        let pty = PtySessionManager::new();
+        let jobs = LocalJobSupervisor::new_with_sandbox(
             &data_dir,
+            &hub_dir,
+            os_sandbox.clone(),
             store.clone(),
             events.clone(),
             Some(Arc::new(move |rec| {
@@ -527,6 +535,11 @@ impl AgentRuntime {
         tool_reg.register_context_tools(ctx_bridge.clone() as Arc<dyn ContextBridge>);
         tool_reg.register_batch_tool(batch_bridge.clone() as Arc<dyn ToolBatchBridge>);
         tool_reg.register_subagent_tools(subagent_bridge.clone() as Arc<dyn SubagentBridge>);
+        tool_reg.register(Arc::new(ShellExecTool::new_with_runtime(
+            Some(jobs.clone() as Arc<dyn JobSupervisor>),
+            pty.clone(),
+            os_sandbox.clone(),
+        )));
         tool_reg.register(Arc::new(MemoryTool::new_with_vault(
             store.clone(),
             snapshots.clone(),
@@ -558,6 +571,8 @@ impl AgentRuntime {
             lsp,
             mcp_clients,
             file_state: Arc::new(SessionFileTracker::new()),
+            pty,
+            os_sandbox,
             trigger_limiter: Arc::new(TriggerRateLimiter::new()),
             started_at: Instant::now(),
             turn_seq: AtomicU64::new(1),
@@ -643,6 +658,8 @@ impl AgentRuntime {
         self.snapshots.set_workspace_dir(updated.resolved_workspace_dir());
         let _ = updated.ensure_hub_layout();
         self.snapshots.set_hub_dir(updated.resolved_hub_dir());
+        self.os_sandbox
+            .store(updated.policy.os_sandbox, Ordering::Relaxed);
         let provider_desc = find_provider(&updated.provider.kind);
         let api_key = self.vault.get(provider_desc.vault_secret_key)?;
         self.provider.update_provider(
@@ -753,6 +770,7 @@ impl AgentRuntime {
                     }
                     let _ = self.lsp.evict_idle().await;
                     let _ = self.mcp_clients.evict_idle().await;
+                    let _ = self.pty.reap_idle().await;
                     if ticks.is_multiple_of(IDLE_DB_COMPACT_EVERY_TICKS) {
                         self.provider.evict_expired_metadata_cache();
                         if let Ok(mut guard) = self.cached_models.lock()
@@ -779,10 +797,11 @@ impl AgentRuntime {
         }
     }
 
-    /// Cleanly terminates all pooled LSP servers and external MCP client sessions on shutdown.
+    /// Cleanly terminates all pooled LSP servers, external MCP client sessions, and persistent PTYs.
     pub async fn shutdown_external_tools(&self) {
         self.lsp.stop_all().await;
         self.mcp_clients.stop_all().await;
+        let _ = self.pty.close_all().await;
     }
 
     pub fn refresh_provider_credentials(&self) -> Result<()> {
@@ -1871,10 +1890,18 @@ impl AgentRuntime {
             custom_tool_subset: HashSet::new(),
             availability: ToolAvailabilityContext {
                 has_mcp_servers: self.has_configured_mcp_servers(),
+                has_skills: self.has_installed_skills(),
                 is_subagent: role_id.is_some(),
                 read_only: permission == PermissionMode::Plan || role_ro,
             },
         }
+    }
+
+    pub(crate) fn has_installed_skills(&self) -> bool {
+        self.snapshots
+            .list_skills()
+            .map(|list| !list.is_empty())
+            .unwrap_or(false)
     }
 
     pub(crate) fn coerce_tool_call_args(&self, tool_name: &str, args: Value) -> Value {
@@ -1882,6 +1909,27 @@ impl AgentRuntime {
             Some(tool) => coerce_and_repair_args(args, &tool.spec().parameters),
             None => args,
         };
+        if tool_name == TOOL_INVOKE_TOOL
+            && let Some(inner_name) = coerced
+                .get("tool")
+                .or_else(|| coerced.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != TOOL_INVOKE_TOOL && *s != TOOL_BATCH_TOOLS)
+                .map(String::from)
+            && let Some(inner_tool) = self.tools.get(&inner_name)
+        {
+            let schema = inner_tool.spec().parameters;
+            let arg_key = match coerced.get("args").is_some() {
+                true => "args",
+                false => "arguments",
+            };
+            if let Some(obj) = coerced.as_object_mut()
+                && let Some(raw_inner) = obj.remove(arg_key)
+            {
+                obj.insert("args".into(), coerce_and_repair_args(raw_inner, &schema));
+            }
+        }
         // Also coerce inner `batch_tools` step payloads upfront so pre-mutation checkpoint
         // detection and role/read-only classifiers inspect clean normalized arguments.
         if tool_name == TOOL_BATCH_TOOLS
@@ -1960,6 +2008,32 @@ fn is_workspace_mutating_call(tc: &ToolCall) -> Option<&str> {
     let name = tc.name.as_str();
     match name {
         n if MUTATING_FILE_TOOLS.contains(&n) => Some(n),
+        TOOL_INVOKE_TOOL => {
+            let inner_name = tc
+                .arguments
+                .get("tool")
+                .or_else(|| tc.arguments.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if inner_name.is_empty()
+                || inner_name == TOOL_INVOKE_TOOL
+                || inner_name == TOOL_BATCH_TOOLS
+            {
+                return None;
+            }
+            let inner_tc = ToolCall {
+                id: String::new(),
+                name: inner_name.to_string(),
+                arguments: tc
+                    .arguments
+                    .get("args")
+                    .or_else(|| tc.arguments.get("arguments"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            };
+            is_workspace_mutating_call(&inner_tc).map(|_| TOOL_INVOKE_TOOL)
+        }
         TOOL_BATCH_TOOLS => {
             let calls = tc.arguments.get("calls").and_then(Value::as_array)?;
             for item in calls {

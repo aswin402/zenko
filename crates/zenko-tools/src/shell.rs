@@ -1,25 +1,47 @@
 use crate::jail::resolve_workspace_or_hub_path;
+use crate::pty::PtySessionManager;
+use crate::sandbox::{ShellSandboxPolicy, install_sandbox_on_command};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     ARTIFACT_HEAD_RATIO_DEN, ARTIFACT_HEAD_RATIO_NUM, BackgroundJobRecord, BackgroundJobStatus,
-    JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, Result, RiskLevel, SAFE_SHELL_ENV_KEYS,
-    SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, TOOL_SHELL_EXEC, TaskKind,
-    Tool, ToolContext, ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, PTY_ACTIONS, PTY_SEND_DEFAULT_WAIT_MS,
+    PTY_SEND_MAX_WAIT_MS, PtyAction, Result, RiskLevel, SAFE_SHELL_ENV_KEYS, SHELL_BIN_UNIX,
+    SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, TOOL_SHELL_EXEC, TaskKind, Tool, ToolContext,
+    ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 pub struct ShellExecTool {
     jobs: Option<Arc<dyn JobSupervisor>>,
+    pty: Arc<PtySessionManager>,
+    os_sandbox: Arc<AtomicBool>,
 }
 
 impl ShellExecTool {
     pub fn new(jobs: Option<Arc<dyn JobSupervisor>>) -> Self {
-        Self { jobs }
+        Self {
+            jobs,
+            pty: PtySessionManager::new(),
+            os_sandbox: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn new_with_runtime(
+        jobs: Option<Arc<dyn JobSupervisor>>,
+        pty: Arc<PtySessionManager>,
+        os_sandbox: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            jobs,
+            pty,
+            os_sandbox,
+        }
     }
 }
 
@@ -75,19 +97,22 @@ impl Tool for ShellExecTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_SHELL_EXEC.into(),
-            description: "Execute a shell command inside the workspace (or an explicit workspace/hub-jailed `cwd` subdirectory) with sanitized environment variables (no secrets exposed), timeout, output bounds, live foreground-to-background demotion, and optional async background execution (`run_in_background` or `auto_background_after_secs`).".into(),
+            description: "Execute a shell command inside the workspace (or jailed `cwd`) with OS-native Landlock write sandboxing, sanitized env vars (zero secrets), timeout, output bounds, live background demotion, and optional persistent Unix PTY terminal sessions (`session` + `pty_action` preserving `cd`, `export`, virtualenvs, and TTY REPLs across turns).".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "Shell command to run via bash/sh" },
+                    "command": { "type": "string", "description": "Shell command to run (required for stateless exec and `pty_action=\"exec\"`)" },
                     "cwd": { "type": "string", "description": "Optional working directory relative to workspace (or `hub:...`), strictly jailed inside workspace/hub" },
+                    "session": { "type": "string", "description": "Optional persistent PTY session name (e.g. `dev`, `py`) to preserve `cd`, `export`, virtualenvs, and TTY state across turns" },
+                    "pty_action": { "type": "string", "enum": PTY_ACTIONS, "description": "Persistent PTY operation when `session` is used: `exec` (default), `send` (raw interactive stdin), `close`, or `list`" },
+                    "input": { "type": "string", "description": "Raw stdin text for `pty_action=\"send\"` (include `\\n` if pressing Enter)" },
+                    "wait_ms": { "type": "integer", "description": "Milliseconds to collect PTY output after `pty_action=\"send\"` (default 350, max 10000)" },
                     "kind": { "type": "string", "enum": ["shell", "build", "dev", "debug", "script", "cron", "browser", "subagent"], "description": "Optional ZenkoTasks category (auto-inferred from command if omitted)" },
                     "label": { "type": "string", "description": "Optional human-readable task label" },
                     "timeout_secs": { "type": "integer", "description": "Optional foreground timeout override in seconds" },
                     "run_in_background": { "type": "boolean", "description": "Run asynchronously as a managed ZenkoTask; streams output to ~/.zenko/tasks/<kind>/ and returns task_id immediately" },
                     "auto_background_after_secs": { "type": "integer", "description": "Optional seconds to wait before seamlessly handing off a long-running command to ZenkoTasks instead of killing it" }
-                },
-                "required": ["command"]
+                }
             }),
             risk: RiskLevel::Dangerous,
         }
@@ -99,10 +124,6 @@ impl Tool for ShellExecTool {
         args: Value,
         cancel: CancellationToken,
     ) -> Result<ToolOutput> {
-        let cmd_str = args
-            .get("command")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ZenkoError::Tool("missing `command`".into()))?;
         let exec_dir = match args
             .get("cwd")
             .and_then(Value::as_str)
@@ -130,6 +151,140 @@ impl Tool for ShellExecTool {
             }
             None => ctx.workspace_dir.clone(),
         };
+        let timeout_secs = args
+            .get("timeout_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(ctx.shell_timeout_secs)
+            .clamp(1, SHELL_MAX_TIMEOUT_SECS);
+        let os_sandbox_enabled = self.os_sandbox.load(Ordering::Relaxed);
+
+        // Persistent PTY terminal routing when `session` or `pty_action` is specified.
+        let pty_session = args
+            .get("session")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let pty_action = match args.get("pty_action").and_then(Value::as_str) {
+            Some(raw) => Some(PtyAction::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Invalid `pty_action` `{raw}`. Valid actions: {}.",
+                    PTY_ACTIONS.join(", ")
+                ))
+            })?),
+            None => pty_session.map(|_| PtyAction::Exec),
+        };
+
+        if let Some(action) = pty_action {
+            match action {
+                PtyAction::List => {
+                    let active = self.pty.list_for_chat(&ctx.session_id).await;
+                    let text = match active.is_empty() {
+                        true => "No active persistent PTY sessions for this conversation.".into(),
+                        false => active
+                            .iter()
+                            .map(|s| {
+                                format!(
+                                    "- `{}` (pid={}, cwd={}, idle={}s)",
+                                    s.name, s.pid, s.initial_cwd, s.idle_secs
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    };
+                    return Ok(ToolOutput::ok(text));
+                }
+                PtyAction::Close => {
+                    let name = pty_session.ok_or_else(|| {
+                        ZenkoError::Tool("`session` name is required for `pty_action=\"close\"`".into())
+                    })?;
+                    let closed = self.pty.close_session(&ctx.session_id, name).await;
+                    return Ok(match closed {
+                        true => ToolOutput::ok(format!("Closed persistent PTY session `{name}`.")),
+                        false => ToolOutput::ok(format!("PTY session `{name}` was not active.")),
+                    });
+                }
+                PtyAction::Send => {
+                    let name = pty_session.ok_or_else(|| {
+                        ZenkoError::Tool("`session` name is required for `pty_action=\"send\"`".into())
+                    })?;
+                    let input = args
+                        .get("input")
+                        .and_then(Value::as_str)
+                        .or_else(|| args.get("command").and_then(Value::as_str))
+                        .ok_or_else(|| {
+                            ZenkoError::Tool("`input` is required for `pty_action=\"send\"`".into())
+                        })?;
+                    let wait_ms = args
+                        .get("wait_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(PTY_SEND_DEFAULT_WAIT_MS)
+                        .clamp(20, PTY_SEND_MAX_WAIT_MS);
+                    let output = self
+                        .pty
+                        .send_input(
+                            &ctx.session_id,
+                            name,
+                            input,
+                            Duration::from_millis(wait_ms),
+                            &cancel,
+                        )
+                        .await?;
+                    return Ok(ToolOutput::ok(format!(
+                        "[pty:{name}]\n{output}"
+                    )));
+                }
+                PtyAction::Exec => {
+                    let name = pty_session.ok_or_else(|| {
+                        ZenkoError::Tool("`session` name is required for `pty_action=\"exec\"`".into())
+                    })?;
+                    let cmd_str = args
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| ZenkoError::Tool("missing `command`".into()))?;
+                    let outcome = self
+                        .pty
+                        .exec(
+                            &ctx.session_id,
+                            name,
+                            cmd_str,
+                            &exec_dir,
+                            &ctx.hub_dir,
+                            os_sandbox_enabled,
+                            Duration::from_secs(timeout_secs),
+                            &cancel,
+                        )
+                        .await?;
+                    let limit = ctx.max_output_bytes.max(SHELL_MIN_OUTPUT_BYTES);
+                    let mut body = match outcome.timed_out {
+                        true => format!(
+                            "exit_code: {} [pty:{name} timed out after {timeout_secs}s; sent Ctrl-C]\n{}",
+                            outcome.exit_code, outcome.output
+                        ),
+                        false => format!(
+                            "exit_code: {} [pty:{name}]\n{}",
+                            outcome.exit_code, outcome.output
+                        ),
+                    };
+                    if body.len() > limit {
+                        let cut = body.floor_char_boundary(limit);
+                        body = format!(
+                            "{}\n\n[pty output truncated at {limit} bytes; full length {} bytes]",
+                            &body[..cut],
+                            body.len()
+                        );
+                    }
+                    return Ok(match outcome.exit_code == 0 && !outcome.timed_out {
+                        true => ToolOutput::ok(body),
+                        false => ToolOutput::err(body),
+                    });
+                }
+            }
+        }
+
+        let cmd_str = args
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ZenkoError::Tool("missing `command`".into()))?;
         let run_in_background = args
             .get("run_in_background")
             .and_then(Value::as_bool)
@@ -145,11 +300,6 @@ impl Tool for ShellExecTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(String::from);
-        let timeout_secs = args
-            .get("timeout_secs")
-            .and_then(Value::as_u64)
-            .unwrap_or(ctx.shell_timeout_secs)
-            .clamp(1, SHELL_MAX_TIMEOUT_SECS);
         let effective_auto_bg = args
             .get("auto_background_after_secs")
             .and_then(Value::as_u64)
@@ -275,6 +425,13 @@ impl Tool for ShellExecTool {
                 cmd.env(key, val);
             }
         }
+        let sandbox_policy = ShellSandboxPolicy::for_workspace(
+            os_sandbox_enabled,
+            &ctx.workspace_dir,
+            Some(&ctx.hub_dir),
+            &[],
+        );
+        install_sandbox_on_command(&mut cmd, &sandbox_policy);
 
         let child = cmd
             .spawn()

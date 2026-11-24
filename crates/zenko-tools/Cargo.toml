@@ -21,3 +21,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 zenko-core.workspace = true
 zenko-memory.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

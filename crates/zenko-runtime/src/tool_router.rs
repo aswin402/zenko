@@ -5,7 +5,7 @@
 
 use crate::artifacts;
 use crate::policy::{PolicyVerdict, evaluate_policy, run_hooks};
-use crate::runtime::{ActiveToolGuard, AgentRuntime, ExecutedToolCall};
+use crate::runtime::{ActiveSessionScopeGuard, ActiveToolGuard, AgentRuntime, ExecutedToolCall};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,9 +13,10 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     AgentEvent, ApprovalDecision, HookEvent, MUTATING_FILE_TOOLS, ORCH_STAGE_TOOL_ACTIVATED,
     PermissionMode, Result, SkillManageAction, TOOL_APPLY_PATCH, TOOL_GIT, TOOL_HASH_EDIT,
-    TOOL_LSP, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput,
-    ToolSpec, ZenkoConfig, ZenkoError, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
+    TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC,
+    TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency,
+    ToolContext, ToolOutput, ToolSpec, ZenkoConfig, ZenkoError, is_git_tool_args_mutating,
+    is_lsp_tool_args_mutating,
 };
 use zenko_tools::coerce::{coerce_and_repair_args, format_compact_schema_hint};
 
@@ -27,6 +28,28 @@ pub(crate) fn classify_tool_call(
     effective_permission: PermissionMode,
     tc: &ToolCall,
 ) -> ToolConcurrency {
+    // Unwrap `invoke_tool` so parallel `Shared` / disjoint `Keyed` deferred calls run concurrently!
+    if tc.name == TOOL_INVOKE_TOOL
+        && let Some(target_name) = tc
+            .arguments
+            .get("tool")
+            .or_else(|| tc.arguments.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != TOOL_INVOKE_TOOL)
+    {
+        let inner = ToolCall {
+            id: tc.id.clone(),
+            name: target_name.to_string(),
+            arguments: tc
+                .arguments
+                .get("args")
+                .or_else(|| tc.arguments.get("arguments"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        };
+        return classify_tool_call(rt, cfg, effective_permission, &inner);
+    }
     let Some(tool) = rt.tools.get(&tc.name) else {
         return ToolConcurrency::Global;
     };
@@ -316,6 +339,24 @@ pub(crate) async fn dispatch_tool_call(
 
     let _active_tool_guard =
         ActiveToolGuard::enter(rt.session_control(session_id), tc.name.clone());
+    // Ensure composite proxies (`invoke_tool`, `batch_tools`) inherit the strictest effective
+    // permission even when `dispatch_tool_call` is invoked directly outside a full turn wrapper.
+    let current_scope = rt.effective_session_scope(session_id);
+    let strictest_perm = PermissionMode::strictest(current_scope.permission, effective_permission);
+    let _tightened_scope = match strictest_perm != current_scope.permission {
+        true => {
+            let mut next_scope = current_scope;
+            next_scope.permission = strictest_perm;
+            if strictest_perm == PermissionMode::Plan {
+                next_scope.availability.read_only = true;
+            }
+            Some(ActiveSessionScopeGuard::enter(
+                rt.session_control(session_id),
+                next_scope,
+            ))
+        }
+        false => None,
+    };
     rt.emit(AgentEvent::ToolCallStarted {
         session_id: session_id.to_string(),
         call_id: tc.id.clone(),

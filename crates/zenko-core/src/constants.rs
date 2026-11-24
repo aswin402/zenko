@@ -591,6 +591,7 @@ pub const TOOL_AGENT_WAIT: &str = "agent_wait";
 pub const TOOL_AGENT_KILL: &str = "agent_kill";
 pub const TOOL_AGENT_WORKTREE: &str = "agent_worktree";
 pub const TOOL_BATCH_TOOLS: &str = "batch_tools";
+pub const TOOL_INVOKE_TOOL: &str = "invoke_tool";
 
 // Minicode Tool System v2 constants (zero hardcoding)
 pub const BATCH_TOOLS_MAX_CALLS: usize = 12;
@@ -643,6 +644,28 @@ pub const LSP_RENAME_MAX_EDITS: usize = 512;
 pub const HASH_EDIT_OPS: &[&str] = &["replace", "insert_after", "insert_before", "delete"];
 pub const PATCH_FILE_ACTIONS: &[&str] = &["update", "create", "delete", "move"];
 pub const WEB_FETCH_FORMATS: &[&str] = &["markdown", "text", "raw"];
+
+// Minicode Tool System v4 constants (KV-cache frozen tools, Landlock sandbox, PTY sessions, dataflow batching)
+pub const PTY_MAX_SESSIONS_PER_CHAT: usize = 4;
+pub const PTY_MAX_TOTAL_SESSIONS: usize = 32;
+pub const PTY_IDLE_TIMEOUT_SECS: u64 = 900;
+pub const PTY_DEFAULT_COLS: u16 = 120;
+pub const PTY_DEFAULT_ROWS: u16 = 36;
+pub const PTY_READ_BUF_BYTES: usize = 4_096;
+pub const PTY_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+pub const PTY_SEND_DEFAULT_WAIT_MS: u64 = 350;
+pub const PTY_SEND_MAX_WAIT_MS: u64 = 10_000;
+pub const PTY_ACTIONS: &[&str] = &["exec", "send", "close", "list"];
+pub const BATCH_EXTRACTS: &[&str] = &[
+    "raw",
+    "lines",
+    "first_line",
+    "paths",
+    "contains:<text>",
+    "head:<n>",
+    "tail:<n>",
+];
+pub const BATCH_MAX_VAR_BYTES: usize = 64 * 1024;
 
 /// Declarative table of tools representing background-task or subagent orchestration/monitoring.
 /// When a running session has active jobs, active subagents, or any of these tools in flight,
@@ -806,6 +829,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,
     TOOL_BATCH_TOOLS,
+    TOOL_INVOKE_TOOL,
 ];
 pub const MUTATING_FILE_TOOLS: &[&str] = &[TOOL_WRITE_FILE, TOOL_HASH_EDIT, TOOL_APPLY_PATCH];
 pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];

@@ -1816,6 +1816,10 @@ impl Tool for ListDirTool {
         ToolConcurrency::Shared
     }
 
+    fn exposure(&self) -> zenko_core::ToolExposure {
+        zenko_core::ToolExposure::Deferred
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LIST_DIR.into(),

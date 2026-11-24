@@ -283,6 +283,7 @@ impl ToolSet {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ToolAvailabilityContext {
     pub has_mcp_servers: bool,
+    pub has_skills: bool,
     pub is_subagent: bool,
     pub read_only: bool,
 }
@@ -297,12 +298,21 @@ pub struct ToolSetSummary {
     pub deferred_tools: Vec<String>,
 }
 
-/// Declarative single step inside a `batch_tools` composite invocation.
+/// Declarative single step inside a `batch_tools` composite/dataflow invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchToolCallItem {
     pub tool: String,
     #[serde(default)]
     pub args: serde_json::Value,
+    /// Optional variable name capturing this step's (optionally extracted) output for downstream `${var}` templates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_as: Option<String>,
+    /// When true, suppresses returning raw step output to LLM context (keeps intermediate data off-context like RLM/PTC).
+    #[serde(default)]
+    pub quiet: bool,
+    /// Optional deterministic pure-Rust output projection (`raw`, `lines`, `first_line`, `paths`, `contains:<text>`, `head:<n>`, `tail:<n>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract: Option<String>,
 }
 
 /// Request payload forwarded from `batch_tools` into `ToolBatchBridge`.
@@ -321,10 +331,46 @@ pub struct BatchToolStepOutcome {
     pub tool: String,
     pub is_error: bool,
     pub skipped: bool,
+    #[serde(default)]
+    pub quiet: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_var: Option<String>,
     pub duration_ms: u64,
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+}
+
+/// Declarative PTY terminal action for persistent `shell_exec(session=...)` sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PtyAction {
+    #[default]
+    Exec,
+    Send,
+    Close,
+    List,
+}
+
+impl PtyAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "exec" | "run" => Some(Self::Exec),
+            "send" | "stdin" | "input" | "write" => Some(Self::Send),
+            "close" | "stop" | "kill" => Some(Self::Close),
+            "list" | "status" => Some(Self::List),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exec => "exec",
+            Self::Send => "send",
+            Self::Close => "close",
+            Self::List => "list",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

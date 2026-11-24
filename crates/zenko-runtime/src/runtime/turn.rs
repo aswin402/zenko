@@ -553,6 +553,7 @@ impl AgentRuntime {
             custom_tool_subset: custom_tool_subset.clone(),
             availability: ToolAvailabilityContext {
                 has_mcp_servers: self.has_configured_mcp_servers(),
+                has_skills: !snapshot.skills.is_empty(),
                 is_subagent: active_role.is_some(),
                 read_only: effective_permission == PermissionMode::Plan
                     || effective_custom_read_only
@@ -685,7 +686,10 @@ impl AgentRuntime {
                 }
             }
 
-            let active_deferred = self.activated_deferred_for(&session_id);
+            let active_deferred = match cfg.context.freeze_tool_schemas {
+                true => BTreeSet::new(),
+                false => self.activated_deferred_for(&session_id),
+            };
             let active_tool_specs = self.tools.specs_for_session_filtered(
                 cfg.context.deferred_tool_loading,
                 &active_deferred,
@@ -1517,9 +1521,33 @@ impl AgentRuntime {
                         wave_had_plan_or_mutation = true;
                     }
                 }
-                if !was_phase_redirect && done.tool_name == TOOL_MEMORY && !done.output.is_error {
-                    let act = done
-                        .arguments
+                // Unwrap KV-cache-safe `invoke_tool` proxy so memory deltas, plan updates,
+                // and structured branch notes persist identically for deferred tools.
+                let (eff_tool_name, eff_tool_args) = match done.tool_name.as_str() {
+                    TOOL_INVOKE_TOOL => {
+                        let inner_n = done
+                            .arguments
+                            .get("tool")
+                            .or_else(|| done.arguments.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty());
+                        match inner_n {
+                            Some(n) => (
+                                n,
+                                done.arguments
+                                    .get("args")
+                                    .or_else(|| done.arguments.get("arguments"))
+                                    .unwrap_or(&Value::Null),
+                            ),
+                            None => (done.tool_name.as_str(), &done.arguments),
+                        }
+                    }
+                    other => (other, &done.arguments),
+                };
+
+                if !was_phase_redirect && eff_tool_name == TOOL_MEMORY && !done.output.is_error {
+                    let act = eff_tool_args
                         .get("action")
                         .and_then(Value::as_str)
                         .unwrap_or("");
@@ -1530,7 +1558,7 @@ impl AgentRuntime {
                         );
                     }
                 }
-                if !was_phase_redirect && done.tool_name == TOOL_PLAN_UPDATE && !done.output.is_error
+                if !was_phase_redirect && eff_tool_name == TOOL_PLAN_UPDATE && !done.output.is_error
                     && let Some(plan) = done
                         .output
                         .metadata
@@ -1540,7 +1568,7 @@ impl AgentRuntime {
                         orch.guard.update_active_plan(plan);
                     }
                 if !was_phase_redirect
-                    && done.tool_name == TOOL_SESSION_TASK
+                    && eff_tool_name == TOOL_SESSION_TASK
                     && !done.output.is_error
                     && let Ok(live_tasks) = self.clarifications.list_session_tasks(&session_id)
                         && let Some(plan) =
@@ -1619,7 +1647,7 @@ impl AgentRuntime {
                 // Persist structured orchestrator artifacts strictly onto the active branch
                 let note_payload = match (
                     was_phase_redirect,
-                    done.tool_name.as_str(),
+                    eff_tool_name,
                     done.output.is_error,
                 ) {
                     (false, TOOL_RECORD_BRAINSTORM, false) => {

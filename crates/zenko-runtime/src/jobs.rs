@@ -25,6 +25,7 @@ use zenko_core::{
     new_id,
 };
 use zenko_memory::SqliteStore;
+use zenko_tools::sandbox::{ShellSandboxPolicy, install_sandbox_on_command};
 
 type FinishCallback = Arc<dyn Fn(&BackgroundJobRecord) + Send + Sync>;
 
@@ -195,6 +196,8 @@ pub fn read_job_log_slice_sync(
 
 pub struct LocalJobSupervisor {
     jobs_dir: PathBuf,
+    hub_dir: PathBuf,
+    os_sandbox: Arc<AtomicBool>,
     store: SqliteStore,
     events: broadcast::Sender<AgentEvent>,
     active: Arc<Mutex<HashMap<String, ActiveJobHandle>>>,
@@ -208,10 +211,30 @@ impl LocalJobSupervisor {
         events: broadcast::Sender<AgentEvent>,
         on_finish: Option<FinishCallback>,
     ) -> Arc<Self> {
+        Self::new_with_sandbox(
+            data_dir,
+            data_dir,
+            Arc::new(AtomicBool::new(true)),
+            store,
+            events,
+            on_finish,
+        )
+    }
+
+    pub fn new_with_sandbox(
+        data_dir: &Path,
+        hub_dir: &Path,
+        os_sandbox: Arc<AtomicBool>,
+        store: SqliteStore,
+        events: broadcast::Sender<AgentEvent>,
+        on_finish: Option<FinishCallback>,
+    ) -> Arc<Self> {
         let jobs_dir = data_dir.join(TASKS_DIR_NAME);
         let _ = std::fs::create_dir_all(&jobs_dir);
         Arc::new(Self {
             jobs_dir,
+            hub_dir: hub_dir.to_path_buf(),
+            os_sandbox,
             store,
             events,
             active: Arc::new(Mutex::new(HashMap::new())),
@@ -472,6 +495,13 @@ impl JobSupervisor for LocalJobSupervisor {
                 cmd.env(key, val);
             }
         }
+        let sandbox_policy = ShellSandboxPolicy::for_workspace(
+            self.os_sandbox.load(Ordering::Relaxed),
+            workspace_dir,
+            Some(&self.hub_dir),
+            &[],
+        );
+        install_sandbox_on_command(&mut cmd, &sandbox_policy);
 
         let mut child = cmd
             .spawn()

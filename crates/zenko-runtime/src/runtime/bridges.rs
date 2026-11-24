@@ -113,6 +113,38 @@ impl RuntimeBatchBridge {
 
 #[async_trait]
 impl ToolBatchBridge for RuntimeBatchBridge {
+    async fn invoke_single(
+        &self,
+        ctx: &ToolContext,
+        tool: String,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> Result<ToolOutput> {
+        let rt = self.upgrade()?;
+        let cfg = rt.config();
+        let scope = rt.effective_session_scope(&ctx.session_id);
+        let coerced_args = rt.coerce_tool_call_args(&tool, args);
+        if let Err(denied) = scope.permits_invocation(&tool, &coerced_args) {
+            return Ok(ToolOutput::err(denied));
+        }
+        let exec = rt
+            .execute_single_tool_call(
+                &cfg,
+                &ctx.session_id,
+                scope.permission,
+                ctx,
+                ctx.headless_no_wait,
+                ToolCall {
+                    id: format!("invoke_{}", new_id()),
+                    name: tool,
+                    arguments: coerced_args,
+                },
+                &cancel,
+            )
+            .await?;
+        Ok(exec.output)
+    }
+
     async fn execute_batch(
         &self,
         ctx: &ToolContext,
@@ -123,50 +155,48 @@ impl ToolBatchBridge for RuntimeBatchBridge {
         let cfg = rt.config();
         let scope = rt.effective_session_scope(&ctx.session_id);
         let total = req.calls.len();
+        let sequential = req.stop_on_error || zenko_tools::batch::batch_uses_dataflow(&req.calls);
 
-        let mut prepared: Vec<(usize, ToolCall)> = Vec::with_capacity(total);
-        for (idx, item) in req.calls.into_iter().enumerate() {
-            let coerced_args = rt.coerce_tool_call_args(&item.tool, item.args);
-            prepared.push((
-                idx,
-                ToolCall {
-                    id: format!("batch_{}_{}", idx, new_id()),
-                    name: item.tool,
-                    arguments: coerced_args,
-                },
-            ));
-        }
-
-        if req.stop_on_error {
+        if sequential {
             let mut outcomes = Vec::with_capacity(total);
+            let mut bound_vars: HashMap<String, String> = HashMap::new();
             let mut halted = false;
-            for (idx, tc) in prepared {
+            for (idx, item) in req.calls.into_iter().enumerate() {
                 if cancel.is_cancelled() {
                     return Err(ZenkoError::Cancelled);
                 }
                 if halted {
                     outcomes.push(BatchToolStepOutcome {
                         index: idx,
-                        tool: tc.name,
+                        tool: item.tool,
                         is_error: false,
                         skipped: true,
+                        quiet: item.quiet,
+                        bound_var: item.bind_as,
                         duration_ms: 0,
                         content: "Skipped because an earlier batch step failed (`stop_on_error: true`).".into(),
                         diff: None,
                     });
                     continue;
                 }
-                if let Err(denied) = scope.permits_invocation(&tc.name, &tc.arguments) {
+                let interpolated =
+                    zenko_tools::batch::interpolate_args_templates(item.args, &bound_vars);
+                let coerced_args = rt.coerce_tool_call_args(&item.tool, interpolated);
+                if let Err(denied) = scope.permits_invocation(&item.tool, &coerced_args) {
                     outcomes.push(BatchToolStepOutcome {
                         index: idx,
-                        tool: tc.name,
+                        tool: item.tool,
                         is_error: true,
                         skipped: false,
+                        quiet: false,
+                        bound_var: None,
                         duration_ms: 0,
                         content: denied,
                         diff: None,
                     });
-                    halted = true;
+                    if req.stop_on_error {
+                        halted = true;
+                    }
                     continue;
                 }
                 let exec = rt
@@ -176,47 +206,75 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         scope.permission,
                         ctx,
                         ctx.headless_no_wait,
-                        tc,
+                        ToolCall {
+                            id: format!("batch_{}_{}", idx, new_id()),
+                            name: item.tool,
+                            arguments: coerced_args,
+                        },
                         &cancel,
                     )
                     .await?;
-                if exec.output.is_error {
+                if exec.output.is_error && req.stop_on_error {
                     halted = true;
+                }
+                let projected = match exec.output.is_error {
+                    true => exec.output.content,
+                    false => zenko_tools::batch::extract_step_output(
+                        &exec.output.content,
+                        item.extract.as_deref(),
+                    ),
+                };
+                if !exec.output.is_error
+                    && let Some(ref var_name) = item.bind_as
+                {
+                    bound_vars.insert(var_name.clone(), projected.clone());
                 }
                 outcomes.push(BatchToolStepOutcome {
                     index: idx,
                     tool: exec.tool_name,
                     is_error: exec.output.is_error,
                     skipped: false,
+                    quiet: item.quiet,
+                    bound_var: item.bind_as,
                     duration_ms: exec.duration_ms,
-                    content: exec.output.content,
+                    content: projected,
                     diff: exec.output.diff,
                 });
             }
             return Ok(outcomes);
         }
 
-        // Wave-parallel mode: split scope-denied items immediately, run permitted calls via 3-state wave scheduler.
-        let mut allowed: Vec<(usize, ToolCall)> = Vec::with_capacity(total);
+        // Wave-parallel mode (zero dataflow dependencies): split scope-denied items immediately,
+        // run permitted calls through the deterministic 3-state wave scheduler.
+        let mut allowed: Vec<(usize, ToolCall, Option<String>, bool)> = Vec::with_capacity(total);
         let mut slots: Vec<Option<BatchToolStepOutcome>> = vec![None; total];
-        for (idx, tc) in prepared {
+        for (idx, item) in req.calls.into_iter().enumerate() {
+            let coerced_args = rt.coerce_tool_call_args(&item.tool, item.args);
+            let tc = ToolCall {
+                id: format!("batch_{}_{}", idx, new_id()),
+                name: item.tool,
+                arguments: coerced_args,
+            };
             if let Err(denied) = scope.permits_invocation(&tc.name, &tc.arguments) {
                 slots[idx] = Some(BatchToolStepOutcome {
                     index: idx,
                     tool: tc.name,
                     is_error: true,
                     skipped: false,
+                    quiet: false,
+                    bound_var: None,
                     duration_ms: 0,
                     content: denied,
                     diff: None,
                 });
             } else {
-                allowed.push((idx, tc));
+                allowed.push((idx, tc, item.extract, item.quiet));
             }
         }
 
         if !allowed.is_empty() {
-            let calls_only: Vec<ToolCall> = allowed.iter().map(|(_, tc)| tc.clone()).collect();
+            let calls_only: Vec<ToolCall> =
+                allowed.iter().map(|(_, tc, _, _)| tc.clone()).collect();
             let executed = execute_tool_waves(
                 calls_only,
                 MAX_PARALLEL_TOOLS,
@@ -243,14 +301,23 @@ impl ToolBatchBridge for RuntimeBatchBridge {
             )
             .await?;
 
-            for ((idx, _), exec) in allowed.into_iter().zip(executed) {
+            for ((idx, _, extract_opt, quiet), exec) in allowed.into_iter().zip(executed) {
+                let projected = match exec.output.is_error {
+                    true => exec.output.content,
+                    false => zenko_tools::batch::extract_step_output(
+                        &exec.output.content,
+                        extract_opt.as_deref(),
+                    ),
+                };
                 slots[idx] = Some(BatchToolStepOutcome {
                     index: idx,
                     tool: exec.tool_name,
                     is_error: exec.output.is_error,
                     skipped: false,
+                    quiet,
+                    bound_var: None,
                     duration_ms: exec.duration_ms,
-                    content: exec.output.content,
+                    content: projected,
                     diff: exec.output.diff,
                 });
             }

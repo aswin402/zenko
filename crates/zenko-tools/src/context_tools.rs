@@ -3,6 +3,7 @@
 //! - `tool_search`: Zero-regex deterministic BM25 deferred tool schema loader
 //! - `context_inspect`: Live per-tier token budget, cache hit %, checkpoint & artifact report
 
+use crate::coerce::format_compact_schema_hint;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
@@ -10,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     ContextBridge, ResourceLockKey, Result, RiskLevel, SKILL_HISTORY_LIST_DEFAULT_LIMIT,
     SecretVault, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig, TOOL_CONTEXT_INSPECT,
-    TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_MAX_LIMIT, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW,
-    TOOL_TOOL_SEARCH, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
-    ToolSpec, ZenkoError,
+    TOOL_INVOKE_TOOL, TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_MAX_LIMIT, TOOL_SKILL_MANAGE,
+    TOOL_SKILL_VIEW, TOOL_TOOL_SEARCH, Tool, ToolAvailabilityContext, ToolConcurrency, ToolContext,
+    ToolExposure, ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 use zenko_memory::SnapshotManager;
 
@@ -30,6 +31,10 @@ impl SkillViewTool {
 impl Tool for SkillViewTool {
     fn toolset(&self) -> ToolSet {
         ToolSet::Memory
+    }
+
+    fn is_available(&self, ctx: &ToolAvailabilityContext) -> bool {
+        ctx.has_skills
     }
 
     fn concurrency(&self) -> ToolConcurrency {
@@ -300,13 +305,24 @@ impl Tool for ToolSearchTool {
         let activated_names: Vec<String> = matched.iter().map(|t| t.name.clone()).collect();
         let details = matched
             .iter()
-            .map(|t| format!("- `{}` [{}]: {}", t.name, t.risk.as_str(), t.description))
+            .map(|t| {
+                let hint = format_compact_schema_hint(t);
+                match hint.is_empty() {
+                    true => format!("- `{}` [{}]: {}", t.name, t.risk.as_str(), t.description),
+                    false => format!(
+                        "- `{}` [{}]: {}\n  {hint}",
+                        t.name,
+                        t.risk.as_str(),
+                        t.description
+                    ),
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
         Ok(ToolOutput {
             content: format!(
-                "Activated {} deferred tool(s) for this session (schemas are now live in `tools[]`):\n{details}",
+                "Discovered {} deferred tool(s) (call via `{TOOL_INVOKE_TOOL}(tool, args)` or `batch_tools` to keep the KV prompt cache 100% frozen):\n{details}",
                 matched.len()
             ),
             is_error: false,

@@ -484,6 +484,10 @@ pub struct PolicyConfig {
     pub auto_background_after_secs: u64,
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: usize,
+    /// Enforce OS-native Linux Landlock filesystem write sandboxing on spawned shell commands
+    /// (confines writes strictly to workspace, hub, `/tmp`, and `$CARGO_HOME`; gracefully degrades on non-Landlock hosts).
+    #[serde(default = "default_true")]
+    pub os_sandbox: bool,
     #[serde(default = "default_allowed_shell_prefixes")]
     pub allowed_shell_prefixes: Vec<String>,
     #[serde(default = "default_denied_shell_patterns")]
@@ -497,6 +501,7 @@ impl Default for PolicyConfig {
             shell_timeout_secs: default_shell_timeout(),
             auto_background_after_secs: default_auto_background_secs(),
             max_output_bytes: default_max_output_bytes(),
+            os_sandbox: true,
             allowed_shell_prefixes: default_allowed_shell_prefixes(),
             denied_shell_patterns: default_denied_shell_patterns(),
         }
@@ -572,6 +577,10 @@ pub struct ContextConfig {
     pub artifact_spilling: bool,
     #[serde(default = "default_true")]
     pub deferred_tool_loading: bool,
+    /// Freeze the top-level `tools[]` JSON array across turns so activating deferred/MCP tools
+    /// via `tool_search` + `invoke_tool` never invalidates provider KV prompt caches.
+    #[serde(default = "default_true")]
+    pub freeze_tool_schemas: bool,
     #[serde(default = "default_true")]
     pub auto_repo_rules: bool,
 }
@@ -584,6 +593,7 @@ impl Default for ContextConfig {
             compaction_trigger_ratio: default_compaction_ratio(),
             artifact_spilling: true,
             deferred_tool_loading: true,
+            freeze_tool_schemas: true,
             auto_repo_rules: true,
         }
     }

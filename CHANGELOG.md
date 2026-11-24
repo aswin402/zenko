@@ -4,6 +4,30 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.19] - 2026-11-25
+
+Upgraded Zenko's tool system and execution runtime into **Minicode Tool Architecture v4**, closing the four highest-impact gaps identified against Claude Code, OpenAI Codex CLI, Oh My Pi, and Prime Agent — in 100% pure Rust with zero hardcoding, zero `if/else` ladders, zero ad-hoc regex, zero `.unwrap()`/`.expect()` in production paths, and zero `/commands`.
+
+### Added
+- **KV-Cache-Safe Frozen Tool Surface & `invoke_tool` Proxy (`zenko-core`, `zenko-tools`, `zenko-runtime`):**
+  - Added `ContextConfig.freeze_tool_schemas` (default `true`) so top-level `body["tools"]` stays byte-identical across turns and activating deferred or MCP tools never invalidates provider KV prompt caches.
+  - Added ultra-lean eager `invoke_tool` (`InvokeToolProxy` in `crates/zenko-tools/src/batch.rs`) for direct policy-checked invocation of any discovered deferred or MCP tool while preserving full Plan Mode, read-only subagent, `PreToolUse`/`PostToolUse` hook, parallel `Shared` wave routing, and `OrchestratorGuard` accounting.
+  - Upgraded `tool_search` (`crates/zenko-tools/src/context_tools.rs`) to return compact inline parameter schemas alongside `invoke_tool` usage hints so the model can invoke deferred tools immediately without schema-array mutation.
+- **OS-Native Linux Landlock Kernel Write Sandbox (`crates/zenko-tools/src/sandbox.rs`, `shell.rs`, `jobs.rs`):**
+  - Added a zero-dependency, pure-Rust + `libc` Linux Landlock ABI v1–v3 write sandbox (`ShellSandboxPolicy`, configurable via `PolicyConfig.os_sandbox = true`) using async-signal-safe pre-allocated `CString` paths in `pre_exec`.
+  - Confines writes of all `shell_exec`, persistent PTY, and `LocalJobSupervisor` child processes strictly to `workspace_dir`, `hub_dir`, `/tmp`/`$TMPDIR`, `$CARGO_HOME`, and standard device sinks (`/dev/null`, `/dev/tty`, slave PTY), with graceful degradation on kernels without Landlock.
+- **Pure-Rust Persistent Unix PTY Sessions (`crates/zenko-tools/src/pty.rs`, `shell.rs`, `runtime/mod.rs`):**
+  - Added `PtySessionManager` using POSIX `libc` PTY primitives (`posix_openpt`, `grantpt`, `unlockpt`, `ptsname_r`) and Tokio `AsyncFd::register` epoll-backed I/O — zero extra crates, zero busy-polling, non-echo sentinel framing, zero-regex ANSI escape stripping (`strip_ansi_escapes`), bounded session count, idle reaping, and clean shutdown cleanup.
+  - Extended `shell_exec` with `session`, `pty_action` (`exec` | `send` | `close` | `list`), `input`, and `wait_ms` so `cd`, `export`, virtualenvs, and `isatty()` state persist seamlessly across turns.
+- **Zero-Python Dataflow Variable-Piped `batch_tools` (`crates/zenko-tools/src/batch.rs`, `runtime/bridges.rs`):**
+  - Added per-step `as` variable binding, `quiet: true` output suppression (keeping noisy intermediate results off the LLM context window), zero-regex `extract` projections (`raw`, `lines`, `first_line`, `paths`, `contains:<text>`, `head:<n>`, `tail:<n>`), and `${var}` / `${var.first_line}` / `${var.last_line}` / `${var.line[i]}` / `${var.count}` template interpolation in downstream step arguments.
+
+### Changed
+- **Trimmed Orthogonal Eager Tool Set (`fs_tools.rs`, `orchestrator_tools.rs`, `context_tools.rs`, `runtime/mod.rs`):**
+  - Moved `list_dir`, `record_brainstorm`, `plan_update`, and `orchestrate_control` to `ToolExposure::Deferred` and gated `skill_view` dynamically on `ToolAvailabilityContext.has_skills`, shrinking the default eager tool surface to `<= 13` orthogonal tools.
+- **Tightened Scoped Policy Guard on Direct & Nested Dispatch (`tool_router.rs`):**
+  - Hardened `tool_router::dispatch_tool_call` to enter a tightened `ActiveSessionScopeGuard` whenever `effective_permission` is stricter than the active scope so `invoke_tool` and `batch_tools` can never bypass Plan Mode or stricter caller overrides.
+
 ## [0.0.18] - 2026-11-24
 
 Upgraded Zenko's minicode tool system and runtime dispatch pipeline into **Minicode Tool Architecture v3**, synthesizing patterns from Claude Code, OpenAI Codex CLI, and Oh My Pi in 100% pure Rust with zero hardcoding, zero `if/else` ladders, zero ad-hoc regex, and zero `/commands`.

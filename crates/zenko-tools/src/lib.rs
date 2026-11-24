@@ -15,6 +15,8 @@ pub mod mcp_client;
 pub mod memory_cron;
 pub mod orchestrator_tools;
 pub mod outline;
+pub mod pty;
+pub mod sandbox;
 pub mod search;
 pub mod shell;
 pub mod web;
@@ -27,8 +29,8 @@ use tokio::sync::Notify;
 use zenko_core::{
     ContextBridge, GoalLoopBridge, JobSupervisor, OrchestratorBridge, SecretVault, SkillsConfig,
     SubagentBridge, TOOL_BM25_B, TOOL_BM25_EXACT_NAME_BOOST, TOOL_BM25_K1,
-    TOOL_BM25_PREFIX_TF_WEIGHT, TOOL_BM25_SUBSTR_NAME_BOOST, TOOL_TOOL_SEARCH, Tool,
-    ToolAvailabilityContext, ToolBatchBridge, ToolExposure, ToolSet, ToolSetSummary, ToolSpec,
+    TOOL_BM25_PREFIX_TF_WEIGHT, TOOL_BM25_SUBSTR_NAME_BOOST, TOOL_INVOKE_TOOL, TOOL_TOOL_SEARCH,
+    Tool, ToolAvailabilityContext, ToolBatchBridge, ToolExposure, ToolSet, ToolSetSummary, ToolSpec,
     WebSearchConfig, find_toolset_descriptor,
 };
 use zenko_memory::{SnapshotManager, SqliteStore};
@@ -139,9 +141,10 @@ impl ToolRegistry {
         self.register(Arc::new(context_tools::ContextInspectTool::new(bridge)));
     }
 
-    /// Registers wave-aware `batch_tools` backed by `ToolBatchBridge`.
+    /// Registers wave-aware `batch_tools` and KV-cache-safe `invoke_tool` backed by `ToolBatchBridge`.
     pub fn register_batch_tool(&self, bridge: Arc<dyn ToolBatchBridge>) {
-        self.register(Arc::new(batch::BatchToolsTool::new(bridge)));
+        self.register(Arc::new(batch::BatchToolsTool::new(bridge.clone())));
+        self.register(Arc::new(batch::InvokeToolProxy::new(bridge)));
     }
 
     /// Registers Phase 5/5.5 async subagent orchestration tools (`spawn_agent`, `agent_list`,
@@ -255,6 +258,7 @@ impl ToolRegistry {
         self.exposure_counts_filtered(
             &ToolAvailabilityContext {
                 has_mcp_servers: true,
+                has_skills: true,
                 is_subagent: false,
                 read_only: false,
             },
@@ -289,11 +293,15 @@ impl ToolRegistry {
 
     /// Formats a compact `<deferred_tools>` Tier-2 catalog listing all registered deferred tools.
     pub fn deferred_catalog_text(&self) -> Option<String> {
-        self.deferred_catalog_text_filtered(&ToolAvailabilityContext {
-            has_mcp_servers: true,
-            is_subagent: false,
-            read_only: false,
-        }, |_| true)
+        self.deferred_catalog_text_filtered(
+            &ToolAvailabilityContext {
+                has_mcp_servers: true,
+                has_skills: true,
+                is_subagent: false,
+                read_only: false,
+            },
+            |_| true,
+        )
     }
 
     /// Formats a compact ToolSet-grouped `<deferred_tools>` Tier-2 catalog strictly filtered by
@@ -338,7 +346,7 @@ impl ToolRegistry {
         }
         Some(format!(
             "<deferred_tools>\n\
-             Additional specialized tools grouped by ToolSet (invoke `{TOOL_TOOL_SEARCH}` with `query`, `toolset`, `names`, or call any listed tool directly):\n\
+             Additional specialized tools grouped by ToolSet (inspect schemas via `{TOOL_TOOL_SEARCH}` with `query`, `toolset`, or `names`; execute any listed tool via `{TOOL_INVOKE_TOOL}(tool, args)` or `batch_tools` to keep KV prompt cache 100% frozen):\n\
              {}\n\
              </deferred_tools>",
             sections.join("\n")
@@ -421,6 +429,7 @@ impl ToolRegistry {
             limit,
             &ToolAvailabilityContext {
                 has_mcp_servers: true,
+                has_skills: true,
                 is_subagent: false,
                 read_only: false,
             },
@@ -685,6 +694,7 @@ mod tests {
         // Availability & role filtering hides unavailable MCP and disallowed automation tools.
         let avail_no_mcp = ToolAvailabilityContext {
             has_mcp_servers: false,
+            has_skills: false,
             is_subagent: true,
             read_only: true,
         };

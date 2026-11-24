@@ -270,8 +270,8 @@ pub trait ContextBridge: Send + Sync {
     async fn inspect_session_context(&self, session_id: &str) -> Result<ContextBreakdown>;
 }
 
-/// Bridge connecting wave-aware `batch_tools` in `zenko-tools` to `AgentRuntime`'s policy-enforced
-/// parallel wave executor without circular dependencies or policy bypasses.
+/// Bridge connecting wave-aware `batch_tools` and KV-cache-safe `invoke_tool` in `zenko-tools`
+/// to `AgentRuntime`'s policy-enforced parallel wave executor without circular dependencies.
 #[async_trait]
 pub trait ToolBatchBridge: Send + Sync {
     async fn execute_batch(
@@ -280,6 +280,43 @@ pub trait ToolBatchBridge: Send + Sync {
         req: BatchToolRequest,
         cancel: CancellationToken,
     ) -> Result<Vec<BatchToolStepOutcome>>;
+
+    /// Invokes a single permitted tool (typically deferred or external MCP) through the full
+    /// `ToolRouter` pipeline while keeping top-level provider `tools[]` byte-frozen for KV caching.
+    async fn invoke_single(
+        &self,
+        ctx: &ToolContext,
+        tool: String,
+        args: serde_json::Value,
+        cancel: CancellationToken,
+    ) -> Result<ToolOutput> {
+        let outcomes = self
+            .execute_batch(
+                ctx,
+                BatchToolRequest {
+                    calls: vec![crate::types::BatchToolCallItem {
+                        tool,
+                        args,
+                        bind_as: None,
+                        quiet: false,
+                        extract: None,
+                    }],
+                    stop_on_error: true,
+                    max_chars_per_call: ctx.max_output_bytes,
+                },
+                cancel,
+            )
+            .await?;
+        Ok(match outcomes.into_iter().next() {
+            Some(step) => ToolOutput {
+                content: step.content,
+                is_error: step.is_error,
+                diff: step.diff,
+                metadata: None,
+            },
+            None => ToolOutput::err("Tool invocation produced no output."),
+        })
+    }
 }
 
 /// Bridge connecting Phase 5 subagent tools (`spawn_agent`, `agent_list`, `agent_message`,

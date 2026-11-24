@@ -1658,12 +1658,41 @@ for line in sys.stdin:
                 let Ok((mut sock, _)) = listener.accept().await else {
                     break;
                 };
-                let mut buf = vec![0u8; 8192];
-                let n = sock.read(&mut buf).await.unwrap_or(0);
-                let req_str = String::from_utf8_lossy(&buf[..n]);
+                let mut buf = Vec::with_capacity(4096);
+                let mut tmp = [0u8; 4096];
+                let mut expected_total: Option<usize> = None;
+                loop {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if expected_total.is_none()
+                        && let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                    {
+                        let hdr = String::from_utf8_lossy(&buf[..pos]);
+                        let content_len = hdr
+                            .lines()
+                            .find_map(|line| {
+                                let (k, v) = line.split_once(':')?;
+                                k.trim()
+                                    .eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        expected_total = Some(pos + 4 + content_len);
+                    }
+                    if let Some(total) = expected_total
+                        && buf.len() >= total
+                    {
+                        break;
+                    }
+                }
+                let req_str = String::from_utf8_lossy(&buf);
                 if req_str.starts_with("DELETE ") {
                     let _ = sock
-                        .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                        .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
                         .await;
                     break;
                 }
@@ -1683,12 +1712,12 @@ for line in sys.stdin:
                         let sid = format!("sess-{}", 41 + init_count);
                         let j = json!({"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}}}}).to_string();
                         format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMcp-Session-Id: {sid}\r\nContent-Length: {}\r\n\r\n{j}",
+                            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nMcp-Session-Id: {sid}\r\nContent-Length: {}\r\n\r\n{j}",
                             j.len()
                         )
                     }
                     "notifications/initialized" => {
-                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n".to_string()
+                        "HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string()
                     }
                     "tools/list" => {
                         assert!(req_str.to_ascii_lowercase().contains("mcp-session-id: sess-42"));
@@ -1697,7 +1726,7 @@ for line in sys.stdin:
                             json!({"jsonrpc":"2.0","id":rid,"result":{"tools":[{"name":"ping","description":"SSE ping tool","inputSchema":{"type":"object","properties":{}}}]}})
                         );
                         format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{sse}",
+                            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{sse}",
                             sse.len()
                         )
                     }
@@ -1705,7 +1734,7 @@ for line in sys.stdin:
                         // Simulate MCP 2025-03-26 HTTP 404 session expiry once -> client MUST re-init!
                         if !expired_once {
                             expired_once = true;
-                            "HTTP/1.1 404 Not Found\r\nContent-Length: 15\r\n\r\nsession expired".to_string()
+                            "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 15\r\n\r\nsession expired".to_string()
                         } else {
                             assert!(req_str.to_ascii_lowercase().contains("mcp-session-id: sess-43"));
                             let sse = format!(
@@ -1713,14 +1742,15 @@ for line in sys.stdin:
                                 json!({"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text","text":"PONG_SSE_OK"}]}})
                             );
                             format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{sse}",
+                                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{sse}",
                                 sse.len()
                             )
                         }
                     }
-                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_string(),
+                    _ => "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
                 };
                 let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
             }
         });
 

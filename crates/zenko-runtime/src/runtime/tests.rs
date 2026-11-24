@@ -436,6 +436,7 @@
             custom_tool_subset: HashSet::new(),
             availability: ToolAvailabilityContext {
                 has_mcp_servers: false,
+                has_skills: false,
                 is_subagent: true,
                 read_only: true,
             },
@@ -518,6 +519,7 @@
             custom_tool_subset: HashSet::new(),
             availability: ToolAvailabilityContext {
                 has_mcp_servers: false,
+                has_skills: false,
                 is_subagent: false,
                 read_only: true,
             },
@@ -779,5 +781,148 @@
             "read-only explorer subagent may preview dry_run lsp_tool rename"
         );
 
+        // 13. Tool Architecture v4: KV-cache frozen tool surface, `invoke_tool`, dataflow `batch_tools`, and persistent PTY!
+        assert!(cfg_now.context.freeze_tool_schemas);
+        assert!(cfg_now.policy.os_sandbox);
+
+        // Trimmed Eager surface hides `skill_view` when 0 skills exist & defers `list_dir`/`record_brainstorm`/`plan_update`/`orchestrate_control`.
+        let root_scope_no_skills = SessionToolScope {
+            role_id: None,
+            permission: PermissionMode::Autonomous,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext {
+                has_mcp_servers: false,
+                has_skills: false,
+                is_subagent: false,
+                read_only: false,
+            },
+        };
+        let frozen_before = rt.tools.specs_for_session_filtered(
+            true,
+            &BTreeSet::new(),
+            &root_scope_no_skills.availability,
+            |s| root_scope_no_skills.permits_spec(s),
+        );
+        let eager_names: Vec<&str> = frozen_before.iter().map(|s| s.name.as_str()).collect();
+        assert!(eager_names.contains(&TOOL_INVOKE_TOOL));
+        assert!(!eager_names.contains(&"skill_view"));
+        assert!(!eager_names.contains(&"list_dir"));
+        assert!(!eager_names.contains(&TOOL_RECORD_BRAINSTORM));
+        assert!(!eager_names.contains(&TOOL_PLAN_UPDATE));
+        assert!(
+            eager_names.len() <= 13,
+            "expected trimmed <=13 eager tools, got {}: {eager_names:?}",
+            eager_names.len()
+        );
+
+        // `invoke_tool` executes deferred `list_dir` cleanly while keeping Plan Mode & concurrency exact!
+        let invoked = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t13a".into(),
+                    name: TOOL_INVOKE_TOOL.into(),
+                    arguments: json!({ "tool": "list_dir", "args": { "path": "src" } }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("invoke_tool");
+        assert!(!invoked.output.is_error, "invoke err={}", invoked.output.content);
+        assert!(invoked.output.content.contains("app.rs"));
+
+        // `invoke_tool` in Plan Mode still denies mutating `lsp_tool(rename)`!
+        let invoked_plan_deny = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t13b".into(),
+                    name: TOOL_INVOKE_TOOL.into(),
+                    arguments: json!({
+                        "tool": TOOL_LSP,
+                        "args": { "action": "rename", "path": "tracked.rs", "line": 1, "column": 5, "new_name": "z" }
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("invoke_plan_deny");
+        assert!(invoked_plan_deny.output.is_error);
+        assert!(invoked_plan_deny.output.content.contains("Denied by execpolicy"));
+
+        // Dataflow `batch_tools`: Step 1 quietly finds `*.rs` paths -> Step 2 reads `${found.first_line}` in 1 turn!
+        let dataflow = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t13c".into(),
+                    name: TOOL_BATCH_TOOLS.into(),
+                    arguments: json!({
+                        "calls": [
+                            { "tool": "glob_find", "args": { "pattern": "src/*.rs" }, "as": "found", "extract": "paths", "quiet": true },
+                            { "tool": "read_file", "args": { "path": "${found.first_line}", "start_line": 1, "end_line": 3 } }
+                        ]
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("dataflow");
+        assert!(!dataflow.output.is_error, "df err={}", dataflow.output.content);
+        assert!(dataflow.output.content.contains("bound `$found`"));
+        assert!(dataflow.output.content.contains("pub fn boot()"));
+
+        // Persistent PTY through `shell_exec` preserves state across turns and closes cleanly!
+        let pty1 = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t13d".into(),
+                    name: TOOL_SHELL_EXEC.into(),
+                    arguments: json!({ "session": "rt_pty", "command": "export Z_V4=hello_pty && cd src" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("pty1");
+        assert!(!pty1.output.is_error, "pty1 err={}", pty1.output.content);
+
+        let pty2 = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t13e".into(),
+                    name: TOOL_SHELL_EXEC.into(),
+                    arguments: json!({ "session": "rt_pty", "command": "printf '%s|%s' \"$Z_V4\" \"$(basename $(pwd))\"" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("pty2");
+        assert!(!pty2.output.is_error, "pty2 err={}", pty2.output.content);
+        assert!(pty2.output.content.contains("hello_pty|src"), "pty2={}", pty2.output.content);
+
+        rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);
     }
