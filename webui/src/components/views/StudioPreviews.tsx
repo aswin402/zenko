@@ -1063,12 +1063,18 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
 
     code_blocks: () => (
       <div className="w-full max-w-[600px]">
-        <MarkdownCodeBlock
-          className="language-rust"
-          style={chatSlot.code_block_style || 'aui_code_runner'}
-        >
-          {'pub fn resolve_auto_send_mode(bg_active: bool) -> SendMode {\n    if bg_active { SendMode::Steer } else { SendMode::Queue }\n}'}
-        </MarkdownCodeBlock>
+        {chatSlot.code_block_style === 'aimran_copy_cmd' ? (
+          <MarkdownCodeBlock className="language-bash" style="aimran_copy_cmd">
+            {'cargo test --workspace --offline'}
+          </MarkdownCodeBlock>
+        ) : (
+          <MarkdownCodeBlock
+            className="language-rust"
+            style={chatSlot.code_block_style || 'aui_code_runner'}
+          >
+            {'pub fn resolve_auto_send_mode(bg_active: bool) -> SendMode {\n    if bg_active { SendMode::Steer } else { SendMode::Queue }\n}'}
+          </MarkdownCodeBlock>
+        )}
       </div>
     ),
 

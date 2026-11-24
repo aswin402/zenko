@@ -31,6 +31,7 @@ export interface KokonutContextMeterProps {
   /** Border & background chrome visibility matching Zenko Context Meter customization. */
   chrome?: ContextMeterChrome
   defaultOpen?: boolean
+  onOpenChange?: (open: boolean) => void
   className?: string
 }
 
@@ -149,12 +150,20 @@ export default function KokonutContextMeter({
   compact = true,
   chrome = 'bordered_filled',
   defaultOpen = false,
+  onOpenChange,
   className,
 }: KokonutContextMeterProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelId = useId()
-  const [open, setOpen] = useState(defaultOpen)
+  const [open, setOpenState] = useState(defaultOpen)
+  const setOpen = (next: boolean | ((v: boolean) => boolean)) => {
+    setOpenState((prev) => {
+      const resolved = typeof next === 'function' ? next(prev) : next
+      if (resolved !== prev) onOpenChange?.(resolved)
+      return resolved
+    })
+  }
   const [activeSeg, setActiveSeg] = useState<string | null>(null)
 
   const safeLimit = Math.max(1, limit)

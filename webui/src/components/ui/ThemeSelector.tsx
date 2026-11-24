@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { Check, Moon, Sun } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { LayoutGroup, motion, useReducedMotion } from 'motion/react'
 import { SPRING_LAYOUT, SPRING_PRESS } from '@/lib/ease'
 import type { ThemePresetMeta } from '@/lib/types'
@@ -150,7 +150,7 @@ export function ThemeSelector({
                 )}
               </motion.button>
 
-              {/* Theme Name + Inline Dark / Light Switch */}
+              {/* Theme Name */}
               {labels && (
                 <div className="flex items-center justify-between gap-2 px-0.5">
                   <button
@@ -163,46 +163,6 @@ export function ThemeSelector({
                   >
                     {t.label}
                   </button>
-
-                  <div
-                    className={cn(
-                      'flex shrink-0 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] p-0.5 transition-opacity',
-                      selected ? 'opacity-100' : 'opacity-65 group-hover:opacity-100',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      aria-label={`${t.label} Dark mode`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onChange(t.id, 'dark')
-                      }}
-                      className={cn(
-                        'flex h-5 w-5 cursor-pointer items-center justify-center rounded-[4px] transition-colors',
-                        selected && mode === 'dark'
-                          ? 'bg-[var(--accent)] text-[var(--primary-fg)]'
-                          : 'text-[var(--muted)] hover:text-[var(--fg)]',
-                      )}
-                    >
-                      <Moon size={10.5} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`${t.label} Light mode`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onChange(t.id, 'light')
-                      }}
-                      className={cn(
-                        'flex h-5 w-5 cursor-pointer items-center justify-center rounded-[4px] transition-colors',
-                        selected && mode === 'light'
-                          ? 'bg-[var(--accent)] text-[var(--primary-fg)]'
-                          : 'text-[var(--muted)] hover:text-[var(--fg)]',
-                      )}
-                    >
-                      <Sun size={10.5} />
-                    </button>
-                  </div>
                 </div>
               )}
             </div>

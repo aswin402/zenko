@@ -589,9 +589,11 @@ function resolveToolLeadingIcon(toolName: string): LucideIcon {
 function CollapsibleAuiToolCall({
   tool,
   showIcon = false,
+  renderRichBody,
 }: {
   tool: NormalizedToolStep
   showIcon?: boolean
+  renderRichBody?: () => ReactNode
 }) {
   // Never auto-open tool cards — only expand when explicitly clicked by the user.
   const [open, setOpen] = useState(false)
@@ -610,6 +612,7 @@ function CollapsibleAuiToolCall({
         0,
         2400,
       )}
+      richBody={open && renderRichBody ? renderRichBody() : undefined}
       running={tool.status === 'running'}
       failed={tool.status === 'error'}
       open={open}
@@ -674,6 +677,177 @@ export function SmartToolElement({
     </div>
   )
 
+  const smartKind = classifySmartTool(tool.name, Boolean(tool.diff), tool.status === 'error')
+
+  const renderSpecializedBody = (): ReactNode => {
+    switch (smartKind) {
+      case 'error': {
+        const target =
+          extractJsonField(tool.args_preview, ['path', 'command', 'cmd', 'query', 'url']) ||
+          tool.args_preview?.slice(0, 64) ||
+          'execution failed'
+        return (
+          <ToolError
+            name={tool.name}
+            target={target}
+            message={(tool.content || 'Tool returned an error').slice(0, 800)}
+            attempt={1}
+            maxAttempts={3}
+            retrying={retrying}
+            onRetry={
+              onRetryTool
+                ? () => {
+                    setRetrying(true)
+                    onRetryTool(tool.name, tool.args_preview)
+                    window.setTimeout(() => setRetrying(false), 1200)
+                  }
+                : undefined
+            }
+          />
+        )
+      }
+      case 'web_search': {
+        const ws = parseWebSearchFromTool(tool.args_preview, tool.content)
+        if (webSearchStyle === 'rareui_web_search') {
+          return (
+            <RareWebSearch
+              query={ws.query}
+              status={tool.status === 'running' ? 'searching' : 'done'}
+              defaultOpen={true}
+              sources={ws.results.map((r, idx) => ({
+                id: `${tool.id}-${idx}`,
+                title: r.title,
+                url: r.url || `https://${r.domain}`,
+                snippet: r.domain,
+              }))}
+            />
+          )
+        }
+        return (
+          <WebSearch
+            query={ws.query}
+            results={ws.results}
+            visibleResults={ws.results.length}
+            searching={tool.status === 'running'}
+            cycle={1}
+          />
+        )
+      }
+      case 'file_tree': {
+        const tree = parseFileTreeFromTool(tool.name, tool.args_preview, tool.content)
+        if (tree.nodes.length === 0) return null
+        return (
+          <FileTree
+            title={tree.title}
+            nodes={tree.nodes}
+            visibleCount={tree.nodes.length}
+            totalAdditions={tree.totalAdditions}
+            totalDeletions={tree.totalDeletions}
+          />
+        )
+      }
+      case 'diff': {
+        const diffText = tool.diff || ''
+        const fallbackName =
+          extractJsonField(tool.args_preview, ['path', 'file', 'target']) || tool.name
+        if (diffStyle === 'kokonut_diff') {
+          return <KokonutAIDiffReview files={unifiedDiffToKokonutFiles(diffText, fallbackName)} />
+        }
+        if (diffStyle === 'aui_reviewable_diff') {
+          return <InteractiveReviewableDiff diff={diffText} fallbackName={fallbackName} />
+        }
+        if (diffStyle === 'minimal_inline') {
+          return (
+            <pre className="overflow-x-auto border-l-2 border-[var(--border)] pl-3 font-mono text-[11.5px] leading-relaxed text-[var(--muted)]">
+              {diffText.slice(0, 2000)}
+            </pre>
+          )
+        }
+        const parsed = parseUnifiedDiff(diffText, fallbackName)
+        return (
+          <CodeDiff
+            filename={parsed.filename}
+            additions={parsed.additions}
+            deletions={parsed.deletions}
+            lines={parsed.lines}
+            cycle={1}
+          />
+        )
+      }
+      case 'code_runner': {
+        const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, false)
+        const out = [...sh.stdoutLines, ...sh.stderrLines]
+        return (
+          <CodeRunner
+            language={sh.language}
+            code={sh.command}
+            state={tool.status === 'running' ? 'running' : 'ok'}
+            output={out.length > 0 ? out : [tool.status === 'running' ? 'Running...' : '(ok)']}
+            durationMs={tool.duration_ms}
+            onRun={onRetryTool ? () => onRetryTool(tool.name, tool.args_preview) : undefined}
+          />
+        )
+      }
+      case 'shell': {
+        const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, false)
+        if (shellStyle === 'aimran_copy_cmd') {
+          return (
+            <div className="flex flex-col gap-2">
+              <AimranCopyCommand command={sh.command} accent="var(--accent)" fullWidth />
+              {sh.stdoutLines.length > 0 && (
+                <pre className="zenko-thin-scroll max-h-40 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--muted)]">
+                  {sh.stdoutLines.slice(0, 20).join('\n')}
+                </pre>
+              )}
+            </div>
+          )
+        }
+        if (shellStyle === 'aui_code_runner') {
+          const out = [...sh.stdoutLines, ...sh.stderrLines]
+          return (
+            <CodeRunner
+              language={sh.language}
+              code={sh.command}
+              state={tool.status === 'running' ? 'running' : 'ok'}
+              output={out.length > 0 ? out : [tool.status === 'running' ? 'Running...' : '(ok)']}
+              durationMs={tool.duration_ms}
+              onRun={onRetryTool ? () => onRetryTool(tool.name, tool.args_preview) : undefined}
+            />
+          )
+        }
+        if (shellStyle === 'minimal_mono') {
+          return (
+            <div className="border-l-2 border-[var(--border)] pl-3 font-mono text-[11.5px]">
+              <div className="text-[var(--fg)]/85">$ {sh.command}</div>
+              {sh.stdoutLines.length > 0 && (
+                <pre className="mt-1 whitespace-pre-wrap text-[var(--muted)]">
+                  {sh.stdoutLines.slice(0, 20).join('\n')}
+                </pre>
+              )}
+            </div>
+          )
+        }
+        return (
+          <TerminalBlock
+            command={sh.command}
+            cwd={sh.cwd}
+            lines={sh.stdoutLines}
+            stderr={sh.stderrLines}
+            visibleCount={sh.stdoutLines.length + sh.stderrLines.length}
+            done={tool.status !== 'running'}
+            exitCode={sh.exitCode}
+            durationMs={tool.duration_ms}
+            maxCollapsedLines={12}
+          />
+        )
+      }
+      default:
+        return null
+    }
+  }
+
+  const richBodyFactory = smartKind !== 'generic' ? renderSpecializedBody : undefined
+
   const STYLE_RENDERERS: Partial<
     Record<ComponentSlots['chat_page']['tool_card_style'], () => ReactNode>
   > = {
@@ -707,8 +881,10 @@ export function SmartToolElement({
         </ToolResultOutput>
       </ToolResult>
     ),
-    aui_tool_call: () => <CollapsibleAuiToolCall tool={tool} />,
-    aui_tool_call_icon: () => <CollapsibleAuiToolCall tool={tool} showIcon />,
+    aui_tool_call: () => <CollapsibleAuiToolCall tool={tool} renderRichBody={richBodyFactory} />,
+    aui_tool_call_icon: () => (
+      <CollapsibleAuiToolCall tool={tool} showIcon renderRichBody={richBodyFactory} />
+    ),
     aui_terminal_block: () => {
       const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, tool.status === 'error')
       return (
@@ -746,174 +922,9 @@ export function SmartToolElement({
   const styledRenderer = STYLE_RENDERERS[toolCardStyle]
   if (styledRenderer) return <>{styledRenderer()}</>
 
-  // Default: `aui_smart` — declarative dispatch across specialized Assistant-UI Elements
-  const smartKind = classifySmartTool(tool.name, Boolean(tool.diff), tool.status === 'error')
-
-  const SMART_DISPATCH: Record<typeof smartKind, () => ReactNode> = {
-    error: () => {
-      const target =
-        extractJsonField(tool.args_preview, ['path', 'command', 'cmd', 'query', 'url']) ||
-        tool.args_preview?.slice(0, 64) ||
-        'execution failed'
-      return (
-        <ToolError
-          name={tool.name}
-          target={target}
-          message={(tool.content || 'Tool returned an error').slice(0, 800)}
-          attempt={1}
-          maxAttempts={3}
-          retrying={retrying}
-          onRetry={
-            onRetryTool
-              ? () => {
-                  setRetrying(true)
-                  onRetryTool(tool.name, tool.args_preview)
-                  window.setTimeout(() => setRetrying(false), 1200)
-                }
-              : undefined
-          }
-        />
-      )
-    },
-    web_search: () => {
-      const ws = parseWebSearchFromTool(tool.args_preview, tool.content)
-      if (webSearchStyle === 'rareui_web_search') {
-        return (
-          <RareWebSearch
-            query={ws.query}
-            status={tool.status === 'running' ? 'searching' : 'done'}
-            defaultOpen={true}
-            sources={ws.results.map((r, idx) => ({
-              id: `${tool.id}-${idx}`,
-              title: r.title,
-              url: r.url || `https://${r.domain}`,
-              snippet: r.domain,
-            }))}
-          />
-        )
-      }
-      return (
-        <WebSearch
-          query={ws.query}
-          results={ws.results}
-          visibleResults={ws.results.length}
-          searching={tool.status === 'running'}
-          cycle={1}
-        />
-      )
-    },
-    file_tree: () => {
-      const tree = parseFileTreeFromTool(tool.name, tool.args_preview, tool.content)
-      if (tree.nodes.length === 0) return <CollapsibleAuiToolCall tool={tool} />
-      return (
-        <FileTree
-          title={tree.title}
-          nodes={tree.nodes}
-          visibleCount={tree.nodes.length}
-          totalAdditions={tree.totalAdditions}
-          totalDeletions={tree.totalDeletions}
-        />
-      )
-    },
-    diff: () => {
-      const diffText = tool.diff || ''
-      const fallbackName =
-        extractJsonField(tool.args_preview, ['path', 'file', 'target']) || tool.name
-      if (diffStyle === 'kokonut_diff') {
-        return <KokonutAIDiffReview files={unifiedDiffToKokonutFiles(diffText, fallbackName)} />
-      }
-      if (diffStyle === 'aui_reviewable_diff') {
-        return <InteractiveReviewableDiff diff={diffText} fallbackName={fallbackName} />
-      }
-      if (diffStyle === 'minimal_inline') {
-        return (
-          <pre className="overflow-x-auto border-l-2 border-[var(--border)] pl-3 font-mono text-[11.5px] leading-relaxed text-[var(--muted)]">
-            {diffText.slice(0, 2000)}
-          </pre>
-        )
-      }
-      const parsed = parseUnifiedDiff(diffText, fallbackName)
-      return (
-        <CodeDiff
-          filename={parsed.filename}
-          additions={parsed.additions}
-          deletions={parsed.deletions}
-          lines={parsed.lines}
-          cycle={1}
-        />
-      )
-    },
-    code_runner: () => {
-      const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, false)
-      const out = [...sh.stdoutLines, ...sh.stderrLines]
-      return (
-        <CodeRunner
-          language={sh.language}
-          code={sh.command}
-          state={tool.status === 'running' ? 'running' : 'ok'}
-          output={out.length > 0 ? out : [tool.status === 'running' ? 'Running...' : '(ok)']}
-          durationMs={tool.duration_ms}
-          onRun={onRetryTool ? () => onRetryTool(tool.name, tool.args_preview) : undefined}
-        />
-      )
-    },
-    shell: () => {
-      const sh = parseShellOrCodeTool(tool.name, tool.args_preview, tool.content, false)
-      if (shellStyle === 'aimran_copy_cmd') {
-        return (
-          <div className="flex flex-col gap-2">
-            <AimranCopyCommand command={sh.command} accent="var(--accent)" fullWidth />
-            {sh.stdoutLines.length > 0 && (
-              <pre className="zenko-thin-scroll max-h-40 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--muted)]">
-                {sh.stdoutLines.slice(0, 20).join('\n')}
-              </pre>
-            )}
-          </div>
-        )
-      }
-      if (shellStyle === 'aui_code_runner') {
-        const out = [...sh.stdoutLines, ...sh.stderrLines]
-        return (
-          <CodeRunner
-            language={sh.language}
-            code={sh.command}
-            state={tool.status === 'running' ? 'running' : 'ok'}
-            output={out.length > 0 ? out : [tool.status === 'running' ? 'Running...' : '(ok)']}
-            durationMs={tool.duration_ms}
-            onRun={onRetryTool ? () => onRetryTool(tool.name, tool.args_preview) : undefined}
-          />
-        )
-      }
-      if (shellStyle === 'minimal_mono') {
-        return (
-          <div className="border-l-2 border-[var(--border)] pl-3 font-mono text-[11.5px]">
-            <div className="text-[var(--fg)]/85">$ {sh.command}</div>
-            {sh.stdoutLines.length > 0 && (
-              <pre className="mt-1 whitespace-pre-wrap text-[var(--muted)]">
-                {sh.stdoutLines.slice(0, 20).join('\n')}
-              </pre>
-            )}
-          </div>
-        )
-      }
-      return (
-        <TerminalBlock
-          command={sh.command}
-          cwd={sh.cwd}
-          lines={sh.stdoutLines}
-          stderr={sh.stderrLines}
-          visibleCount={sh.stdoutLines.length + sh.stderrLines.length}
-          done={tool.status !== 'running'}
-          exitCode={sh.exitCode}
-          durationMs={tool.duration_ms}
-          maxCollapsedLines={12}
-        />
-      )
-    },
-    generic: () => <CollapsibleAuiToolCall tool={tool} />,
-  }
-
-  return <>{SMART_DISPATCH[smartKind]()}</>
+  // Default: `aui_smart` — declarative dispatch across specialized Assistant-UI / KokonutUI / AIMRAN / RareUI Elements
+  const specialized = renderSpecializedBody()
+  return <>{specialized ?? <CollapsibleAuiToolCall tool={tool} />}</>
 }
 
 const SKILL_PILL_CLASS: Record<
@@ -1298,6 +1309,7 @@ export function MarkdownCodeBlock({
       <div className="my-3 flex flex-col gap-2">
         <AimranCopyCommand
           command={isMultiLine ? firstLine : raw}
+          copyValue={raw}
           prefix={lang === 'bash' || lang === 'sh' || lang === 'shell' ? '$' : '>'}
           accent="var(--accent)"
           fullWidth

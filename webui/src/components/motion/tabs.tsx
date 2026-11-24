@@ -2,7 +2,7 @@
 // beui.dev/components/motion/tabs
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { cancelFrame, frame, motion, MotionConfig, useReducedMotion, useSpring, type MotionValue, type Transition } from "motion/react";
+import { AnimatePresence, cancelFrame, frame, motion, MotionConfig, useReducedMotion, useSpring, type MotionValue, type Transition } from "motion/react";
 import {
   createContext,
   useCallback,
@@ -547,7 +547,12 @@ export function TabsTrigger({
   // React owns the initial mask only; TabsList synchronizes subsequent masks.
   const [initialClip] = useState(() => active ? "inset(0)" : "inset(0 100% 0 0)");
 
+  const reduce = useReducedMotion();
+
   if (variant === "skiper96") {
+    const skiperSpring = reduce
+      ? { duration: 0 }
+      : ({ type: "spring", bounce: 0.14, duration: 0.34 } as const);
     return (
       <motion.button
         {...a11y}
@@ -556,12 +561,14 @@ export function TabsTrigger({
         role="tab"
         aria-selected={active}
         data-tabs-value={value}
+        layout={reduce ? false : "position"}
+        transition={skiperSpring}
         onClick={(event) => {
           onClick?.(event);
           if (!event.defaultPrevented) setValue(value);
         }}
         className={cn(
-          "relative isolate inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--radius)] px-3 py-1.5 text-sm font-medium outline-none transition-colors",
+          "relative isolate inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--radius)] px-2.5 py-1.5 text-sm font-medium outline-none transition-colors",
           active
             ? "text-[var(--accent)]"
             : "text-[var(--muted)] hover:bg-[var(--card)]/60 hover:text-[var(--fg)]",
@@ -572,13 +579,32 @@ export function TabsTrigger({
           <motion.span
             layoutId={layoutId}
             layout
+            transition={skiperSpring}
             className={cn(
               "pointer-events-none absolute inset-0 -z-10 rounded-[var(--radius)] border border-[color-mix(in_srgb,var(--accent)_42%,var(--border))] bg-[var(--card)]",
               indicatorClassName,
             )}
           />
         )}
-        {content}
+        {icon && (
+          <span aria-hidden="true" className="inline-flex shrink-0 items-center">
+            {icon}
+          </span>
+        )}
+        <AnimatePresence initial={false} mode="popLayout">
+          {(active || !icon) && (
+            <motion.span
+              key="skiper-label"
+              initial={reduce ? { opacity: 1 } : { opacity: 0, width: 0 }}
+              animate={{ opacity: 1, width: "auto" }}
+              exit={reduce ? { opacity: 0 } : { opacity: 0, width: 0 }}
+              transition={skiperSpring}
+              className="inline-flex items-center overflow-hidden whitespace-nowrap"
+            >
+              {children}
+            </motion.span>
+          )}
+        </AnimatePresence>
       </motion.button>
     );
   }

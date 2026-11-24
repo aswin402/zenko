@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.11] - 2026-11-24
+
+Cleaned up the Theme page cards by removing redundant per-card dark/light switches and fixed end-to-end theme & live WebUI integration gaps across SkecherUI, KokonutUI, Skiper96, AIMRAN, EaseUI, RareUI, Motion-Brew, and Assistant-UI Elements.
+
+### Fixed
+- **Color Themes Page (`ui/ThemeSelector.tsx`):**
+  - Removed the redundant per-card Dark/Light moon/sun toggle pills under every theme preset card so only the single global mode toggle governs Dark/Light mode.
+- **SkecherUI Gooey Tooltip Portal Rendering (`skecherui/gooey-tooltip.tsx`, `ui/Tooltip.tsx`):**
+  - Portal-rendered `SkecherGooeyTooltip` onto `document.body` at fixed viewport coordinates (`z-[9999]`) so liquid metaball tooltips never clip inside `overflow-hidden` sidebars, floating docks, scroll containers, or Studio preview panels, and added a distinct droplet stem preview in `ZenkoTooltipBadge`.
+- **Live Chat Tool Calls, Citations & AIMRAN Copy Command (`chat/ChatElements.tsx`, `chat/ChatStream.tsx`, `assistant-ui/elements/tool-call.tsx`, `aimran/copy-command.tsx`, `StudioPreviews.tsx`):**
+  - Wired `diff_style` (`kokonut_diff`, `aui_code_diff`, `aui_reviewable_diff`), `shell_style` (`aimran_copy_cmd`, `aui_terminal_block`, `aui_code_runner`), `web_search_style` (`rareui_web_search`, `aui_web_search`), `FileTree`, and `ToolError` directly into expanded `Collapsible+` / `Collapsible` tool rows so user selections apply live in default chat.
+  - Added full multi-line `copyValue` support to `CopyCommand` and a clean CLI command preview in Studio `code_blocks`, and respected `citations_style` (`kokonut_citations`, `minimal_pills`) under `beui_inline` message actions.
+- **Authentic Skiper96 Expandable Tabs Everywhere (`motion/tabs.tsx`, `SetupView.tsx`, `GatewaysView.tsx`, `FloatingActivityMonitor.tsx`, `MemoryView.tsx`):**
+  - Upgraded `<Tabs variant="skiper96">` with spring-expanding icon + label transitions (`AnimatePresence` collapse/expand) and added semantic icons across Setup, Gateways, Memory, and Floating Activity Monitor tabs.
+- **KokonutUI Context Meter & Dashboard Live Integration (`kokonutui/ai-context-meter.tsx`, `PromptComposer.tsx`, `DashboardView.tsx`, `AppearanceStudio.tsx`):**
+  - Wired live `/api/sessions/:id/context` breakdown fetching on `KokonutContextMeter` open and ensured all context meters remain visible across compact viewports.
+  - Wired `tableStyle={ui.surface.table_style}` (including `easeui_table`) into all 3 Dashboard tables, rendered `RecapCard`, `UsageRing`, `MixChart`, and `RareFaq` live inside `DashboardMiniPreview`, and auto-enabled Recap/Quota visibility when picking Motion-Brew or AIMRAN styles in Appearance Studio.
+- **Strict 60/30/10 Theme Parity (`motion-brew/{prompt-input,sidebar-nav}.tsx`, `rareui/web-search.tsx`, `assistant-ui/elements/{file-tree,reviewable-diff}.tsx`, `App.tsx`):**
+  - Replaced all remaining hardcoded `zinc-*`, `#242423`, `bg-white`, `text-black`, and `emerald`/`red` classes with Zenko CSS variables and aligned top/bottom-centered toast stacks cleanly.
+
 ## [0.0.10] - 2026-11-24
 
 Expanded Theme Studio customization with configurable Toast styles & 6-position placement (defaulting to Top Center), assistant model badge, composer model trigger pill, and user message bubble chrome controls, plus AIMRAN Library microinteractions, KokonutUI AI components, SkecherUI Gooey Tooltips, VengeanceUI Line Hover Links, EaseUI Message Bubbles, Responsive Glass Sidebar, and Skiper96 tabs across every tabbed panel.

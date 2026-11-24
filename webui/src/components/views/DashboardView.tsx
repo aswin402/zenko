@@ -595,54 +595,120 @@ export function DashboardMiniPreview({ ui }: { ui: UiCustomization }) {
           </div>
         ))}
 
-      {showRecap && recapStyle === 'aimran_marker_highlight' && (
-        <div className="z-surface-card !p-3.5">
-          <MarkerHighlight
-            size={13}
-            mainColor="var(--accent)"
-            secondaryColor="color-mix(in srgb, var(--accent) 65%, var(--fg))"
-            segments={[
-              { text: '28.4 MB VmRSS', mark: 1 },
-              { text: ' with ' },
-              { text: '82.1% KV cache reuse', mark: 2 },
-              { text: ' across local SQLite WAL — ' },
-              { text: 'zero Node.js runtime', mark: 3 },
-              { text: '.' },
+      {showRecap &&
+        (recapStyle === 'aimran_marker_highlight' ? (
+          <div className="z-surface-card !p-3.5">
+            <MarkerHighlight
+              size={13}
+              mainColor="var(--accent)"
+              secondaryColor="color-mix(in srgb, var(--accent) 65%, var(--fg))"
+              segments={[
+                { text: '28.4 MB VmRSS', mark: 1 },
+                { text: ' with ' },
+                { text: '82.1% KV cache reuse', mark: 2 },
+                { text: ' across local SQLite WAL — ' },
+                { text: 'zero Node.js runtime', mark: 3 },
+                { text: '.' },
+              ]}
+            />
+          </div>
+        ) : recapStyle === 'aimran_stretchtext' ? (
+          <div className="z-surface-card !p-3.5">
+            <Stretchtext
+              size={13}
+              kicker="Interactive Telemetry"
+              mainColor="var(--accent)"
+              secondaryColor="color-mix(in srgb, var(--accent) 30%, var(--surface))"
+              segments={[
+                { kind: 'text', text: 'Zenko runs ' },
+                { kind: 'expand', id: 'rss', trigger: 'at 28.4 MB', detail: ' (native Rust + mimalloc)' },
+                { kind: 'text', text: ' with ' },
+                { kind: 'expand', id: 'kv', trigger: '82% KV cache', detail: ' (prompt-prefix caching active)' },
+                { kind: 'text', text: '.' },
+              ]}
+            />
+          </div>
+        ) : (
+          <RecapCard
+            title="Zenko runtime recap"
+            period="Live"
+            parts={[
+              'Zenko processed ',
+              { value: 142, suffix: 'k tokens', icon: 'words' as const },
+              ' at ',
+              { value: 28.4, decimals: 1, suffix: ' MB VmRSS', icon: 'sun' as const },
+              ' with ',
+              { value: 82.1, decimals: 1, suffix: '% KV cache reuse', icon: 'trend' as const },
+              '.',
             ]}
-          />
-        </div>
-      )}
-
-      {showRecap && recapStyle === 'aimran_stretchtext' && (
-        <div className="z-surface-card !p-3.5">
-          <Stretchtext
-            size={13}
-            kicker="Interactive Telemetry"
-            mainColor="var(--accent)"
-            secondaryColor="color-mix(in srgb, var(--accent) 30%, var(--surface))"
-            segments={[
-              { kind: 'text', text: 'Zenko runs ' },
-              { kind: 'expand', id: 'rss', trigger: 'at 28.4 MB', detail: ' (native Rust + mimalloc)' },
-              { kind: 'text', text: ' with ' },
-              { kind: 'expand', id: 'kv', trigger: '82% KV cache', detail: ' (prompt-prefix caching active)' },
-              { kind: 'text', text: '.' },
+            badges={[
+              {
+                label: 'Native Rust',
+                icon: 'spark' as const,
+                note: 'Zero Node.js runtime under 30 MB VmRSS.',
+                progress: 1,
+              },
+              {
+                label: 'KV Cache Saver',
+                icon: 'trend' as const,
+                note: '82.1% prompt cache reuse across turns.',
+                progress: 0.82,
+              },
             ]}
+            className="zenko-mb-card w-full"
           />
-        </div>
-      )}
+        ))}
 
       {showQuota && (
-        <QuotaGauge
-          value={82}
-          goal={100}
-          unit="% KV cache"
-          color={palette.accent}
-          captionTitle="82% prompt cache efficiency"
-          captionSubtitle="Target 100% KV reuse"
-          hoverTitle="18% uncached headroom"
-          hoverSubtitle="Healthy prompt caching"
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          <QuotaGauge
+            value={82}
+            goal={100}
+            unit="% KV cache"
+            color={palette.accent}
+            captionTitle="82% prompt cache efficiency"
+            captionSubtitle="Target 100% KV reuse"
+            hoverTitle="18% uncached headroom"
+            hoverSubtitle="Healthy prompt caching"
+            className="zenko-mb-card w-full"
+          />
+          <UsageRing
+            title="Runtime Budgets"
+            accentColor={palette.accent}
+            metrics={[
+              { label: 'VmRSS', value: 28, goal: 64, unit: 'MB' },
+              { label: 'KV Cache', value: 82, goal: 100, unit: '%' },
+              { label: 'Skills', value: 6, goal: 8, unit: 'on' },
+            ]}
+            className="zenko-mb-card w-full"
+          />
+        </div>
+      )}
+
+      {(widgetKit === 'motion_brew' || widgetKit === 'hybrid') && dash.show_token_trends && (
+        <MixChart
+          title="Token Volume & KV-Cache Mix"
+          series={[
+            { key: 'cached', label: 'KV Cached', color: palette.accent },
+            { key: 'uncached', label: 'Uncached', color: hexWithAlpha(palette.fg, 0.52) },
+            { key: 'tools', label: 'Tool Load', color: hexWithAlpha(palette.accent, 0.45) },
+          ]}
+          ranges={buildMixChartRanges(PREVIEW_ACTIVITY_POINTS)}
+          unit="k"
+          decimals={1}
           className="zenko-mb-card w-full"
         />
+      )}
+
+      {showFaq && (
+        <div className="z-surface-card !p-3">
+          <RareFaq
+            items={ZENKO_DASHBOARD_FAQ.slice(0, 2)}
+            defaultValue={ZENKO_DASHBOARD_FAQ[0].id}
+            accent="var(--accent)"
+            avatar={<ZenkoFoxLogo size={16} variant="fox" />}
+          />
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-[var(--muted)]">
@@ -1250,6 +1316,7 @@ export function DashboardView({
                     { key: 'share', label: 'Share', align: 'end' },
                   ]}
                   rows={storageRows}
+                  tableStyle={ui.surface.table_style}
                 />
               </div>
             </div>
@@ -1416,6 +1483,7 @@ export function DashboardView({
                     { key: 'latency', label: 'Avg', align: 'end' },
                   ]}
                   rows={toolRows}
+                  tableStyle={ui.surface.table_style}
                 />
               </div>
             )}
@@ -1433,6 +1501,7 @@ export function DashboardView({
                     { key: 'cost', label: 'Cost', align: 'end' },
                   ]}
                   rows={modelRows}
+                  tableStyle={ui.surface.table_style}
                 />
               </div>
             )}

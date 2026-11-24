@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CornerDownLeft,
   GripHorizontal,
+  Layers,
   Minus,
   RefreshCw,
   Square,
@@ -748,13 +749,13 @@ export function FloatingActivityMonitor({
                         variant={tabsVariant}
                       >
                         <TabsList>
-                          <TabsTrigger value="all" className="px-2.5 py-1 text-[11px]">
+                          <TabsTrigger value="all" icon={<Layers size={12} />} className="px-2.5 py-1 text-[11px]">
                             All
                           </TabsTrigger>
-                          <TabsTrigger value="jobs" className="px-2.5 py-1 text-[11px]">
+                          <TabsTrigger value="jobs" icon={<Terminal size={12} />} className="px-2.5 py-1 text-[11px]">
                             Tasks ({recentJobs.length})
                           </TabsTrigger>
-                          <TabsTrigger value="agents" className="px-2.5 py-1 text-[11px]">
+                          <TabsTrigger value="agents" icon={<Bot size={12} />} className="px-2.5 py-1 text-[11px]">
                             Agents ({recentAgents.length})
                           </TabsTrigger>
                         </TabsList>

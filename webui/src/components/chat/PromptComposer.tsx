@@ -440,13 +440,16 @@ export const PromptComposer = memo(function PromptComposer({
   const contextMeterControl =
     composerStyle.context_meter === 'hidden' ? null : composerStyle.context_meter ===
       'kokonut_meter' ? (
-      <div className="hidden sm:inline-flex">
+      <div className="inline-flex">
         <KokonutContextMeter
           compact
           chrome={meterChrome}
           segments={kokonutSegments}
           limit={contextLimit ?? 128000}
           model={activeModel}
+          onOpenChange={(next) => {
+            if (next && activeSessionId) refreshContextBreakdown(activeSessionId)
+          }}
         />
       </div>
     ) : (
@@ -473,7 +476,7 @@ export const PromptComposer = memo(function PromptComposer({
       >
         <PopoverTrigger>
           {composerStyle.context_meter === 'smoothui_meter' ? (
-            <div className="hidden sm:inline-flex">
+            <div className="inline-flex">
               <AIContextMeter
                 used={totalTokens}
                 limit={contextLimit ?? 128000}
@@ -486,7 +489,7 @@ export const PromptComposer = memo(function PromptComposer({
               type="button"
               aria-label="Inspect live context & KV-cache breakdown"
               className={cn(
-                'hidden cursor-pointer items-center gap-1.5 font-mono text-[11px] text-[var(--muted)] transition-colors hover:text-[var(--fg)] sm:inline-flex',
+                'inline-flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-[var(--muted)] transition-colors hover:text-[var(--fg)]',
                 meterChromeClass,
               )}
             >

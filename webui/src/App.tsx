@@ -1865,11 +1865,17 @@ export default function App() {
           const toastStyle = ui.surface.toast_style || 'default'
           const isTop = toastPos.startsWith('top_')
           const posClass = TOAST_POSITION_STACK_CLASS[toastPos] || TOAST_POSITION_STACK_CLASS.top_center
+          const alignClass = toastPos.endsWith('_center')
+            ? 'items-center'
+            : toastPos.endsWith('_right')
+              ? 'items-end'
+              : 'items-start'
           const yOffset = isTop ? -10 : 10
           return (
             <div
               className={cn(
                 'pointer-events-none fixed z-[400] flex w-80 max-w-[92vw] flex-col gap-2',
+                alignClass,
                 posClass,
               )}
             >

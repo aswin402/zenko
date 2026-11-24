@@ -143,13 +143,20 @@ export function ZenkoTooltipBadge({
     <div
       role="tooltip"
       className={cn(
-        'inline-flex items-center gap-2 whitespace-nowrap text-[11.5px] font-medium tracking-[-0.01em]',
+        'relative inline-flex items-center gap-2 whitespace-nowrap text-[11.5px] font-medium tracking-[-0.01em]',
         shapeClass,
         styleSpec.className,
         className,
       )}
       style={styleSpec.inlineStyle}
     >
+      {styleKey === 'skecher_gooey' && (
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ backgroundColor: 'var(--accent)' }}
+        />
+      )}
       <span>{label}</span>
       {shortcut && (
         <kbd
@@ -160,6 +167,12 @@ export function ZenkoTooltipBadge({
         >
           {shortcut}
         </kbd>
+      )}
+      {styleKey === 'skecher_gooey' && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 rounded-[2px] bg-[var(--fg)]"
+        />
       )}
     </div>
   )

@@ -100,7 +100,7 @@ export function ReviewableDiff({
                       mono,
                       "fade-in animate-in duration-300",
                       hunk.decision === "kept"
-                        ? "text-emerald-600 dark:text-emerald-400"
+                        ? "text-[var(--success)]"
                         : "text-muted-foreground",
                     )}
                   >

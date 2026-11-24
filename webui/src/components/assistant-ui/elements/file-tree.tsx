@@ -85,12 +85,12 @@ export function FileTree({
                 </span>
                 <span className={cn(mono, "shrink-0 tabular-nums")}>
                   {node.additions ? (
-                    <span className="text-emerald-600 dark:text-emerald-400">
+                    <span className="text-[var(--success)]">
                       +{node.additions}
                     </span>
                   ) : null}{" "}
                   {node.deletions ? (
-                    <span className="text-red-600 dark:text-red-400">
+                    <span className="text-[var(--destructive)]">
                       −{node.deletions}
                     </span>
                   ) : null}

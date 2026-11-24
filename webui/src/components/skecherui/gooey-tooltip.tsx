@@ -2,7 +2,8 @@
 
 /**
  * SkecherUI — Gooey Tooltip (SVG metaball goo filter + spring-detaching droplet)
- * Adapted cleanly to Zenko 60/30/10 CSS tokens and non-nested trigger wrapping.
+ * Portal-rendered to document.body at fixed viewport coordinates so it never clips
+ * inside overflow-hidden docks, sidebars, scroll containers, or Studio previews.
  */
 
 import { motion, type Transition, useReducedMotion } from 'motion/react'
@@ -15,6 +16,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 
 type Side = 'top' | 'bottom' | 'left' | 'right'
@@ -99,23 +101,52 @@ export function SkecherGooeyTooltip({
   const tipRef = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [open, setOpen] = useState(false)
-  const [trigger, setTrigger] = useState({ w: 0, h: 0 })
+  const [mounted, setMounted] = useState(false)
+  const [anchor, setAnchor] = useState<{ left: number; top: number; w: number; h: number } | null>(
+    null,
+  )
   const [tip, setTip] = useState({ w: 0, h: 0 })
 
+  const syncAnchor = useCallback(() => {
+    const node = triggerRef.current
+    if (!node) return
+    const rect = node.getBoundingClientRect()
+    setAnchor({ left: rect.left, top: rect.top, w: rect.width, h: rect.height })
+  }, [])
+
   useLayoutEffect(() => {
-    const triggerNode = triggerRef.current
+    if (!mounted) return
     const tipNode = tipRef.current
-    if (!triggerNode || !tipNode) return
+    if (!tipNode) return
     const measure = () => {
-      setTrigger({ w: triggerNode.offsetWidth, h: triggerNode.offsetHeight })
       setTip({ w: tipNode.offsetWidth, h: tipNode.offsetHeight })
     }
     measure()
     const observer = new ResizeObserver(measure)
-    observer.observe(triggerNode)
     observer.observe(tipNode)
     return () => observer.disconnect()
-  }, [])
+  }, [mounted, content])
+
+  useEffect(() => {
+    if (!open) return
+    const dismiss = () => setOpen(false)
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      return
+    }
+    if (!mounted) return
+    const cleanup = setTimeout(() => setMounted(false), 220)
+    return () => clearTimeout(cleanup)
+  }, [open, mounted])
 
   useEffect(() => () => clearTimeout(timer.current), [])
 
@@ -123,28 +154,35 @@ export function SkecherGooeyTooltip({
     (wait: number) => {
       if (disabled) return
       clearTimeout(timer.current)
-      timer.current = setTimeout(() => setOpen(true), wait)
+      timer.current = setTimeout(() => {
+        syncAnchor()
+        setMounted(true)
+        setOpen(true)
+      }, wait)
     },
-    [disabled],
+    [disabled, syncAnchor],
   )
+
   const hide = useCallback(() => {
     clearTimeout(timer.current)
     setOpen(false)
   }, [])
 
+  const triggerW = anchor?.w ?? 0
+  const triggerH = anchor?.h ?? 0
   const dir = DIRECTIONS[side]
   const vertical = dir.y !== 0
-  const triggerHalf = vertical ? trigger.h / 2 : trigger.w / 2
+  const triggerHalf = vertical ? triggerH / 2 : triggerW / 2
   const tipHalf = vertical ? tip.h / 2 : tip.w / 2
   const tipDistance = triggerHalf + offset + tipHalf
   const nubDistance = triggerHalf + offset
-  const drop = Math.max(8, Math.min(trigger.w, trigger.h) * 0.45)
+  const drop = Math.max(8, Math.min(triggerW, triggerH) * 0.45)
   const restDistance = Math.max(0, triggerHalf - drop / 2 - 2)
-  const ready = trigger.w > 0 && tip.w > 0
+  const ready = Boolean(anchor && triggerW > 0 && tip.w > 0)
 
   const pad = Math.max(tip.w, tip.h) + offset + 24
-  const cx = pad + trigger.w / 2
-  const cy = pad + trigger.h / 2
+  const cx = pad + triggerW / 2
+  const cy = pad + triggerH / 2
   const at = (distance: number) => ({ x: dir.x * distance, y: dir.y * distance })
 
   const rest = at(restDistance)
@@ -165,12 +203,111 @@ export function SkecherGooeyTooltip({
 
   const end = open ? final : rest
   const blobShape = open
-    ? { width: tip.w, height: tip.h, borderRadius: Math.min(tip.h / 2, 14) }
+    ? { width: tip.w, height: tip.h, borderRadius: Math.min(tip.h / 2, radius) }
     : { width: drop, height: drop, borderRadius: drop / 2 }
+
+  const portalNode =
+    mounted && anchor && !disabled && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            className="pointer-events-none fixed z-[9999]"
+            style={{
+              left: anchor.left,
+              top: anchor.top,
+              width: triggerW,
+              height: triggerH,
+            }}
+          >
+            <GooFilter id={filterId} />
+
+            {ready && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute"
+                style={{
+                  left: -pad,
+                  top: -pad,
+                  width: triggerW + pad * 2,
+                  height: triggerH + pad * 2,
+                  filter: `url(#${filterId})`,
+                  opacity: open ? 1 : 0,
+                  transition: 'opacity 140ms ease',
+                }}
+              >
+                <motion.span
+                  animate={{
+                    x: open ? nubFinal.x : nubRest.x,
+                    y: open ? nubFinal.y : nubRest.y,
+                    scale: open ? 1 : 0.4,
+                  }}
+                  className="absolute rounded-full"
+                  initial={false}
+                  style={{
+                    left: cx - NUB / 2,
+                    top: cy - NUB / 2,
+                    width: NUB,
+                    height: NUB,
+                    backgroundColor: color,
+                  }}
+                  transition={tailTransition}
+                />
+                <motion.span
+                  animate={{ x: end.x, y: end.y }}
+                  className="absolute size-0"
+                  initial={{ x: rest.x, y: rest.y }}
+                  style={{ left: cx, top: cy }}
+                  transition={travelTransition}
+                >
+                  <motion.span
+                    animate={blobShape}
+                    className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2"
+                    initial={{ width: drop, height: drop, borderRadius: drop / 2 }}
+                    style={{ backgroundColor: color }}
+                    transition={shapeTransition}
+                  />
+                </motion.span>
+              </span>
+            )}
+
+            <div
+              className="pointer-events-none absolute top-1/2 left-1/2 z-10"
+              style={{
+                transform: `translate(calc(-50% + ${final.x}px), calc(-50% + ${final.y}px))`,
+              }}
+            >
+              <motion.div
+                animate={
+                  open
+                    ? { opacity: 1, scale: 1, filter: 'blur(0px)' }
+                    : { opacity: 0, scale: 0.94, filter: 'blur(3px)' }
+                }
+                className="flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-[11.5px] font-medium leading-tight"
+                id={tooltipId}
+                initial={{ opacity: 0, scale: 0.94, filter: 'blur(3px)' }}
+                ref={tipRef}
+                role="tooltip"
+                style={{ color: foreground }}
+                transition={
+                  reduceMotion
+                    ? { duration: 0.1 }
+                    : open
+                      ? { duration: 0.18, delay: 0.06, ease: [0.23, 1, 0.32, 1] }
+                      : { duration: 0.06 }
+                }
+              >
+                {content}
+              </motion.div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null
 
   return (
     <span
-      className={cn('relative inline-flex', open && 'z-[80]', className)}
+      ref={triggerRef}
+      aria-describedby={open ? tooltipId : undefined}
+      className={cn('relative inline-flex', className)}
       onPointerEnter={(e) => {
         if (e.pointerType !== 'touch') show(delay)
       }}
@@ -179,95 +316,8 @@ export function SkecherGooeyTooltip({
       onBlur={hide}
       onMouseDown={hide}
     >
-      <GooFilter id={filterId} />
-
-      {ready && !disabled && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute"
-          style={{
-            left: -pad,
-            top: -pad,
-            width: trigger.w + pad * 2,
-            height: trigger.h + pad * 2,
-            filter: `url(#${filterId})`,
-            opacity: open ? 1 : 0,
-            transition: 'opacity 140ms ease',
-          }}
-        >
-          <span
-            className="absolute"
-            style={{
-              left: cx - trigger.w / 2,
-              top: cy - trigger.h / 2,
-              width: trigger.w,
-              height: trigger.h,
-              borderRadius: Math.min(radius, trigger.w / 2, trigger.h / 2),
-              backgroundColor: color,
-            }}
-          />
-          <motion.span
-            animate={{ x: open ? nubFinal.x : nubRest.x, y: open ? nubFinal.y : nubRest.y }}
-            className="absolute rounded-full"
-            initial={false}
-            style={{
-              left: cx - NUB / 2,
-              top: cy - NUB / 2,
-              width: NUB,
-              height: NUB,
-              backgroundColor: color,
-            }}
-            transition={tailTransition}
-          />
-          <motion.span
-            animate={{ x: end.x, y: end.y }}
-            className="absolute size-0"
-            initial={{ x: rest.x, y: rest.y }}
-            style={{ left: cx, top: cy }}
-            transition={travelTransition}
-          >
-            <motion.span
-              animate={blobShape}
-              className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2"
-              initial={{ width: drop, height: drop, borderRadius: drop / 2 }}
-              style={{ backgroundColor: color }}
-              transition={shapeTransition}
-            />
-          </motion.span>
-        </span>
-      )}
-
-      <span ref={triggerRef} aria-describedby={open ? tooltipId : undefined} className="relative inline-flex">
-        {children}
-      </span>
-
-      <div
-        className="pointer-events-none absolute top-1/2 left-1/2 z-10"
-        style={{ transform: `translate(calc(-50% + ${final.x}px), calc(-50% + ${final.y}px))` }}
-      >
-        <motion.div
-          animate={
-            open
-              ? { opacity: 1, scale: 1, filter: 'blur(0px)' }
-              : { opacity: 0, scale: 0.94, filter: 'blur(3px)' }
-          }
-          className="flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-[11.5px] font-medium leading-tight"
-          id={tooltipId}
-          initial={false}
-          ref={tipRef}
-          role="tooltip"
-          style={{ color: foreground }}
-          transition={
-            reduceMotion
-              ? { duration: 0.12 }
-              : open
-                ? { duration: 0.18, delay: 0.07, ease: [0.23, 1, 0.32, 1] }
-                : { duration: 0.06 }
-          }
-        >
-          {content}
-        </motion.div>
-      </div>
+      {children}
+      {portalNode}
     </span>
   )
 }

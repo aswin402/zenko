@@ -22,6 +22,8 @@ export interface ToolCallProps {
   query: string;
   request: string;
   result: string;
+  /** Optional specialized rich element (e.g. CodeDiff, KokonutAIDiffReview, AimranCopyCommand, RareWebSearch). */
+  richBody?: ReactNode;
   running: boolean;
   failed?: boolean;
   open: boolean;
@@ -36,6 +38,7 @@ export function ToolCall({
   query,
   request,
   result,
+  richBody,
   running,
   failed = false,
   open,
@@ -98,23 +101,27 @@ export function ToolCall({
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
-        <div className={cn(field, "mt-2 overflow-hidden rounded-2xl text-xs")}>
-          {request ? (
-            <>
-              <div className="px-3.5 pt-2.5 pb-2">
-                <p className={cn(mono, "text-muted-foreground mb-1")}>Request</p>
-                <p className="text-muted-foreground font-mono break-words whitespace-pre-wrap">
-                  {request}
-                </p>
-              </div>
-              <div className="bg-foreground/[0.06] mx-3.5 h-px" />
-            </>
-          ) : null}
-          <div className="px-3.5 pt-2 pb-2.5">
-            <p className={cn(mono, "text-muted-foreground mb-1")}>Result</p>
-            <p className="text-foreground/90 font-mono break-words whitespace-pre-wrap">{result}</p>
+        {richBody ? (
+          <div className="mt-2">{richBody}</div>
+        ) : (
+          <div className={cn(field, "mt-2 overflow-hidden rounded-2xl text-xs")}>
+            {request ? (
+              <>
+                <div className="px-3.5 pt-2.5 pb-2">
+                  <p className={cn(mono, "text-muted-foreground mb-1")}>Request</p>
+                  <p className="text-muted-foreground font-mono break-words whitespace-pre-wrap">
+                    {request}
+                  </p>
+                </div>
+                <div className="bg-foreground/[0.06] mx-3.5 h-px" />
+              </>
+            ) : null}
+            <div className="px-3.5 pt-2 pb-2.5">
+              <p className={cn(mono, "text-muted-foreground mb-1")}>Result</p>
+              <p className="text-foreground/90 font-mono break-words whitespace-pre-wrap">{result}</p>
+            </div>
           </div>
-        </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );

@@ -4,6 +4,7 @@ import {
   BrainIcon,
   Check,
   Download,
+  FileText,
   History,
   Pencil,
   Plus,
@@ -278,7 +279,12 @@ export function MemoryView({
             >
               <TabsList>
                 {MEMORY_DOC_NAMES.map((doc) => (
-                  <TabsTrigger key={doc} value={doc} className="font-mono text-[11.5px]">
+                  <TabsTrigger
+                    key={doc}
+                    value={doc}
+                    icon={<FileText size={12} />}
+                    className="font-mono text-[11.5px]"
+                  >
                     {doc}
                   </TabsTrigger>
                 ))}

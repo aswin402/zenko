@@ -1612,10 +1612,10 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                           still ? { opacity: 0 } : { opacity: 0, scale: 0.6 }
                         }
                         transition={POP}
-                        className="flex h-9 items-center gap-2 rounded-xl bg-zinc-100 pl-2.5 pr-1.5 text-sm dark:bg-white/8"
+                        className="flex h-9 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] pl-2.5 pr-1.5 text-sm text-[var(--fg)]"
                       >
                         <FileTextIcon
-                          className="size-4 text-zinc-500"
+                          className="size-4 text-[var(--muted)]"
                           strokeWidth={2}
                           aria-hidden
                         />
@@ -1626,7 +1626,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                           onClick={() =>
                             setFiles((all) => all.filter((x) => x !== f))
                           }
-                          className="grid size-6 cursor-pointer place-items-center rounded-full text-zinc-500 outline-none transition-colors hover:bg-zinc-200 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-400 dark:hover:bg-white/10"
+                          className="grid size-6 cursor-pointer place-items-center rounded-full text-[var(--muted)] outline-none transition-colors hover:bg-[var(--surface)] hover:text-[var(--fg)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
                         >
                           <XIcon className="size-3.5" strokeWidth={2.25} />
                         </button>
@@ -1673,7 +1673,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
               >
                 {listening ? (
                   <motion.span
-                    className="flex items-center gap-3 text-zinc-700 dark:text-zinc-200"
+                    className="flex items-center gap-3 text-[var(--fg)]"
                     initial={
                       still ? false : { opacity: 0, y: 6, filter: "blur(4px)" }
                     }
@@ -1683,7 +1683,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                     <VoiceRing still={still} />
                     <span className="flex flex-col leading-5">
                       <span className="font-medium">Listening</span>
-                      <span className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
+                      <span className="text-sm tabular-nums text-[var(--muted)]">
                         {fmt(seconds)}
                       </span>
                     </span>

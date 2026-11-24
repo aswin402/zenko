@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils'
 export interface CopyCommandProps {
   /** Shell or CLI command text to display and copy. */
   command?: string
+  /** Optional full text written to clipboard (defaults to `command`). */
+  copyValue?: string
   /** Highlight sweep & checkmark stroke accent color. */
   accent?: string
   /** Optional prefix glyph shown before the command (default "$"). */
@@ -24,6 +26,7 @@ export interface CopyCommandProps {
  */
 export default function CopyCommand({
   command = 'npm i @aimran/ui',
+  copyValue,
   accent = '#22c55e',
   prefix = '$',
   fullWidth = false,
@@ -38,7 +41,7 @@ export default function CopyCommand({
 
   const copy = () => {
     try {
-      navigator.clipboard?.writeText(command).catch(() => {})
+      navigator.clipboard?.writeText(copyValue ?? command).catch(() => {})
     } catch {
       // Clipboard unavailable: animation still runs cleanly.
     }

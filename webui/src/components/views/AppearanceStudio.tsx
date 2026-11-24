@@ -489,6 +489,17 @@ export function AppearanceStudio({
                       setByPath(draft, ctrl.path, opt.value)
                       if (isUiFontOption) draft.typography.custom_ui_font = ''
                       if (isMonoFontOption) draft.typography.custom_mono_font = ''
+                      if (ctrl.path === 'components.dashboard.recap_style' && draft.components.dashboard) {
+                        draft.components.dashboard.show_recap_card = true
+                      }
+                      if (
+                        ctrl.path === 'components.dashboard.widget_kit' &&
+                        (opt.value === 'motion_brew' || opt.value === 'hybrid') &&
+                        draft.components.dashboard
+                      ) {
+                        draft.components.dashboard.show_recap_card = true
+                        draft.components.dashboard.show_quota_gauges = true
+                      }
                     })
                   }
                   className={cn(

@@ -828,22 +828,35 @@ const AssistantTurnView = memo(function AssistantTurnView({
               )}
             </>
           ) : useBeuiInlineActions ? (
-            <StreamingResponse
-              status="complete"
-              copyText={group.text}
-              onRetry={handleRegenerate}
-              sources={citations}
-              announce={false}
-              contentClassName="text-[0.94rem]"
-              footerMeta={tokenMetaNode}
-            >
-              <MarkdownProse
-                text={group.text}
-                codeBlockStyle={codeBlockStyle}
-                tableStyle={ui.surface.table_style}
-                linkHoverStyle={ui.surface.link_hover_style}
-              />
-            </StreamingResponse>
+            <>
+              <StreamingResponse
+                status="complete"
+                copyText={group.text}
+                onRetry={handleRegenerate}
+                sources={
+                  !chatSlot.citations_style || chatSlot.citations_style === 'beui_citations'
+                    ? citations
+                    : []
+                }
+                announce={false}
+                contentClassName="text-[0.94rem]"
+                footerMeta={tokenMetaNode}
+              >
+                <MarkdownProse
+                  text={group.text}
+                  codeBlockStyle={codeBlockStyle}
+                  tableStyle={ui.surface.table_style}
+                  linkHoverStyle={ui.surface.link_hover_style}
+                />
+              </StreamingResponse>
+              {citations.length > 0 &&
+                chatSlot.citations_style &&
+                chatSlot.citations_style !== 'beui_citations' && (
+                  <div className="mt-1.5">
+                    <CitationsDisplay citations={citations} style={chatSlot.citations_style} />
+                  </div>
+                )}
+            </>
           ) : (
             <>
               <MarkdownProse

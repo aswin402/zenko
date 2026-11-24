@@ -2604,7 +2604,7 @@ function PinwheelMark({ turn }: { turn: boolean }) {
           key={deg}
           d="M14 14V2a6 6 0 0 1 0 12Z"
           transform={`rotate(${deg} 14 14)`}
-          fill="#242423"
+          fill="currentColor"
           fillOpacity={i % 2 ? 0.35 : 1}
         />
       ))}
@@ -2679,7 +2679,7 @@ function PhoneBar({
       initial={still ? false : { opacity: 0, y: 16 }}
       animate={shown ? { opacity: 1, y: 0 } : undefined}
       transition={{ duration: 0.5, ease: GLIDE }}
-      className={cn("w-full max-w-full rounded-[28px] bg-white p-1.5 text-[#242423] dark:bg-zinc-900 dark:text-zinc-100", className)}
+      className={cn("w-full max-w-full rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)] p-1.5 text-[var(--fg)]", className)}
     >
       <div
         ref={row}
@@ -2707,21 +2707,21 @@ function PhoneBar({
               transition={{ duration: 0.4, ease: GLIDE, delay: still ? 0 : 0.1 + i * 0.035 }}
               whileTap={still ? undefined : { scale: 0.94 }}
               className={cn(
-                "relative flex min-w-[68px] max-w-[112px] shrink-0 snap-start cursor-pointer flex-col items-center gap-1 rounded-[22px] px-3 pb-2 pt-2.5 text-[12px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-zinc-400",
-                on ? "text-[#242423] dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400",
+                "relative flex min-w-[68px] max-w-[112px] shrink-0 snap-start cursor-pointer flex-col items-center gap-1 rounded-[var(--radius)] px-3 pb-2 pt-2.5 text-[12px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40",
+                on ? "text-[var(--fg)]" : "text-[var(--muted)] hover:text-[var(--fg)]",
               )}
             >
               {on && (
                 <motion.span
                   layoutId={`${id}-bar`}
-                  className="absolute inset-0 rounded-[22px] bg-[#242423]/[0.07] dark:bg-white/[0.1]"
+                  className="absolute inset-0 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)]"
                   transition={still ? { duration: 0 } : PILL}
                 />
               )}
               <span className="relative grid size-6 place-items-center">
                 <item.Icon className="size-[22px]" active={played === item.id} />
                 {item.badge ? (
-                  <span className="absolute -right-2.5 -top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-[#242423] px-1 text-[12px] leading-none tabular-nums text-white ring-2 ring-white dark:bg-white dark:text-zinc-900 dark:ring-zinc-900">
+                  <span className="absolute -right-2.5 -top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-[var(--accent)] px-1 text-[11px] leading-none tabular-nums text-[var(--primary-fg)] ring-2 ring-[var(--surface)]">
                     {item.badge}
                   </span>
                 ) : null}

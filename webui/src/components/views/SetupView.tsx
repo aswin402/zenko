@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Check,
+  Globe,
+  Layers,
   Plus,
   RefreshCw,
   Search,
+  Sliders,
   Trash2,
   X,
 } from 'lucide-react'
@@ -207,9 +210,9 @@ export function SetupView({
             variant={tabsVariant}
           >
             <TabsList>
-              <TabsTrigger value="all">All</TabsTrigger>
-              <TabsTrigger value="core">Providers &amp; Policy</TabsTrigger>
-              <TabsTrigger value="extensions">Search &amp; MCP</TabsTrigger>
+              <TabsTrigger value="all" icon={<Layers size={13} />}>All</TabsTrigger>
+              <TabsTrigger value="core" icon={<Sliders size={13} />}>Providers &amp; Policy</TabsTrigger>
+              <TabsTrigger value="extensions" icon={<Globe size={13} />}>Search &amp; MCP</TabsTrigger>
             </TabsList>
           </Tabs>
         </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Layers, Send, User } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { GatewayPeer, PairingCode } from '@/lib/types'
 import { ZenkoSelect } from '@/components/ui/ZenkoSelect'
@@ -66,9 +67,9 @@ export function GatewaysView({
           variant={tabsVariant}
         >
           <TabsList>
-            <TabsTrigger value="all">Overview</TabsTrigger>
-            <TabsTrigger value="setup">Connection &amp; Pairing</TabsTrigger>
-            <TabsTrigger value="peers">Paired Accounts ({data?.peers.length || 0})</TabsTrigger>
+            <TabsTrigger value="all" icon={<Layers size={13} />}>Overview</TabsTrigger>
+            <TabsTrigger value="setup" icon={<Send size={13} />}>Connection &amp; Pairing</TabsTrigger>
+            <TabsTrigger value="peers" icon={<User size={13} />}>Paired Accounts ({data?.peers.length || 0})</TabsTrigger>
           </TabsList>
         </Tabs>
 

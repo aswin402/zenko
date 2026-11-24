@@ -901,8 +901,8 @@ function WebSearchAnswer({
       data-writing={writing || undefined}
       aria-busy={writing}
       className={cn(
-        "font-runde text-[15px] font-medium leading-7 text-black/80 dark:text-white/80",
-        "[&_li]:pl-1 [&_li+li]:mt-1.5 [&_li::marker]:text-[#868593] [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_strong]:text-black [&_ul]:list-disc [&_ul]:pl-5 [&>*+*]:mt-3 dark:[&_strong]:text-white",
+        "text-[14.5px] font-medium leading-7 text-[var(--fg)]/85",
+        "[&_li]:pl-1 [&_li+li]:mt-1.5 [&_li::marker]:text-[var(--muted)] [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_strong]:text-[var(--fg)] [&_ul]:list-disc [&_ul]:pl-5 [&>*+*]:mt-3",
         className,
       )}
       {...props}
