@@ -4,6 +4,32 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.16] - 2026-11-24
+
+Upgraded Zenko's minicode tool system and runtime execution architecture into **Minicode Tool Architecture v2**, synthesizing patterns from Hermes Agent, Oh My OpenCode, and Prime Agent in 100% pure Rust with zero hardcoding, zero `if/else` ladders, zero ad-hoc regex, and zero `/commands`.
+
+### Added
+- **Declarative ToolSets & Dynamic Availability (`ToolSet`, `TOOLSET_REGISTRY`, `ToolAvailabilityContext` across `zenko-core`, `zenko-tools`, `zenko-runtime`):**
+  - Added 10 declarative `ToolSet` domains (`core_fs`, `code_intel`, `execution`, `git`, `web`, `memory`, `orchestration`, `subagents`, `automation`, `mcp`) and per-tool `toolset()` / `is_available(&ToolAvailabilityContext)` trait predicates across all built-in and MCP tools.
+  - Upgraded `tool_search` (`context_tools.rs`, `ContextBridge`) to support BM25 `query`, whole-domain `toolset` activation (including `all`), exact `names` batch activation, and `action="list_toolsets"`, strictly filtered by active role, Plan Mode, `tool_subset`, and environment availability.
+- **Pure-Rust Self-Healing Dispatch Membrane (`crates/zenko-tools/src/coerce.rs`, `turn.rs`):**
+  - Added deterministic finite-state JSON repair for malformed/fenced/truncated `{"_raw": ...}` SSE payloads, recursive schema-guided argument coercion (stringified ints/floats/booleans/JSON arrays, `camelCase` → schema `snake_case` key normalization, case-insensitive `enum` snapping), Damerau-Levenshtein + token fuzzy suggestions on unknown tools, and compact schema-hint error enrichment on parameter validation failures.
+- **Zero-Dependency Structural Code Outline Engine (`crates/zenko-tools/src/outline.rs`, `read_file`):**
+  - Added deterministic byte/token/brace/indentation structural outline extraction across Rust, TypeScript/JavaScript, Python, Go, C/C++/Java/C#/Kotlin/Swift, Markdown, and TOML — ignoring comments, strings, raw strings, and code fences, returning hash-anchored symbol spans via `read_file(mode="outline")`.
+- **Wave-Aware Composable Batch Tool (`crates/zenko-tools/src/batch.rs`, `ToolBatchBridge`, `RuntimeBatchBridge`):**
+  - Added eager `batch_tools` allowing up to 12 heterogeneous tool invocations per turn in wave-parallel mode (`stop_on_error: false`) or sequential short-circuit pipeline mode (`stop_on_error: true`), routing every inner call through full role scope, Plan Mode, `ExecPolicy`, argument coercion, hooks, LSP diagnostics-on-edit, and Zenko's 3-state parallel wave scheduler (with strict anti-recursion protection).
+
+### Changed
+- **Next-Gen Minicode File & Search Tools (`fs_tools.rs`, `search.rs`):**
+  - Upgraded `hash_edit` to support atomic multi-hunk bottom-up `edits[]` with overlap rejection and **inline fresh hash-anchored recovery windows** on hash mismatch (eliminating wasted `read_file` retry turns).
+  - Upgraded `apply_patch` with strict multi-occurrence ambiguity protection (reporting exact line numbers + hash previews instead of silently editing match #1), `replace_all`, `expected_occurrences`, and transactional multi-edit `edits[]`.
+  - Upgraded `read_file` with multi-slice `ranges[]` streaming and `mode="outline"`.
+  - Upgraded `code_search` with zero-regex `file_glob` (powered by `CompiledGlob`), `fixed_strings`, `output_mode` (`matches` / `files_only` / `count`), `context_lines`, optional `with_hashes`, and `hub:` path display parity.
+- **Role-Scoped `<deferred_tools>` Catalog, Worker Hygiene & LSP Diagnostics Fix (`lib.rs`, `registry.rs`, `runtime/mod.rs`, `turn.rs`, `policy.rs`, `snapshot.rs`):**
+  - Filtered Tier-2 `<deferred_tools>` catalogs strictly by active `SessionToolScope` (grouping by `ToolSet` and hiding denied or unavailable tools such as unconfigured MCP servers or root-only automation tools from subagents and Plan Mode).
+  - Tightened `coder`, `verifier`, and `custom` worker `denied_tools` to exclude root-only `orchestrate_control`, `goal_loop`, and `skill_manage`, and enabled `batch_tools` across read-only specialist roles (`explorer`, `architect`, `critic`, `researcher`).
+  - Fixed `extract_edited_rel_paths` for `apply_patch` so warm LSP Diagnostics-on-Edit fires on `apply_patch` edits as well as `hash_edit` and `write_file`.
+
 ## [0.0.15] - 2026-11-24
 
 Rebuilt Zenko's core Orchestrator & Brainstorming engine into **Orchestrator v2 ("LLM-Sovereign Membrane")**, synthesizing ideas from Hermes Agent, Oh My OpenCode, and Prime Agent to hand full control and freedom to the LLM with zero hardcoded keyword dictionaries, zero `if/else` ladders, zero regex, and zero `/commands`.

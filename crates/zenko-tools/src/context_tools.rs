@@ -11,8 +11,8 @@ use zenko_core::{
     ContextBridge, ResourceLockKey, Result, RiskLevel, SKILL_HISTORY_LIST_DEFAULT_LIMIT,
     SecretVault, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig, TOOL_CONTEXT_INSPECT,
     TOOL_SEARCH_DEFAULT_LIMIT, TOOL_SEARCH_MAX_LIMIT, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW,
-    TOOL_TOOL_SEARCH, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec,
-    ZenkoError,
+    TOOL_TOOL_SEARCH, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
+    ToolSpec, ZenkoError,
 };
 use zenko_memory::SnapshotManager;
 
@@ -28,6 +28,10 @@ impl SkillViewTool {
 
 #[async_trait]
 impl Tool for SkillViewTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Memory
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }
@@ -149,6 +153,10 @@ impl ToolSearchTool {
 
 #[async_trait]
 impl Tool for ToolSearchTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Memory
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }
@@ -160,14 +168,20 @@ impl Tool for ToolSearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_TOOL_SEARCH.into(),
-            description: "Search and activate deferred tools (e.g. web_fetch, memory_tool, cron_tool, job_*, task_manage, context_inspect) by keyword so their full JSON schemas load cleanly into the active session without bloating initial prompts.".into(),
+            description: "Discover and activate deferred tools on demand (respecting active role & permission scope). Search by `query` (BM25), activate an entire `toolset` domain (e.g. `git`, `subagents`, `web`, `memory`, `code_intel`, `execution`, `automation`, `mcp`, or `all`), activate exact `names`, or pass `action=\"list_toolsets\"` to inspect all permitted domains.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Keywords describing the capability or tool name needed (e.g. 'fetch url http', 'cron schedule', 'background job wait', 'memory')" },
-                    "limit": { "type": "integer", "description": "Max tools to activate (default 5, max 12)" }
-                },
-                "required": ["query"]
+                    "action": { "type": "string", "enum": ["search", "list_toolsets"], "description": "`search` (default) to find/activate deferred tools, or `list_toolsets` to inspect all permitted ToolSets" },
+                    "query": { "type": "string", "description": "Keywords describing the capability or tool name needed (e.g. 'git diff', 'lsp definition', 'web search')" },
+                    "toolset": { "type": "string", "description": "Declarative ToolSet domain to activate (`core_fs`, `code_intel`, `execution`, `git`, `web`, `memory`, `orchestration`, `subagents`, `automation`, `mcp`, or `all`)" },
+                    "names": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Exact deferred tool name(s) to activate in one call"
+                    },
+                    "limit": { "type": "integer", "description": "Max tools to activate for keyword search (default 5, max 12)" }
+                }
             }),
             risk: RiskLevel::Safe,
         }
@@ -179,28 +193,111 @@ impl Tool for ToolSearchTool {
         args: Value,
         _cancel: CancellationToken,
     ) -> Result<ToolOutput> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("search")
+            .trim()
+            .to_ascii_lowercase();
+
+        if action == "list_toolsets" {
+            let sets = self.bridge.list_permitted_toolsets(&ctx.session_id);
+            if sets.is_empty() {
+                return Ok(ToolOutput::ok("No permitted toolsets available in this scope."));
+            }
+            let lines: Vec<String> = sets
+                .iter()
+                .map(|s| {
+                    let eager = match s.eager_tools.is_empty() {
+                        true => "none".to_string(),
+                        false => s.eager_tools.join(", "),
+                    };
+                    let deferred = match s.deferred_tools.is_empty() {
+                        true => "none".to_string(),
+                        false => s.deferred_tools.join(", "),
+                    };
+                    format!(
+                        "- `{}` ({}): {}\n  eager: {eager} | deferred: {deferred}",
+                        s.id, s.label, s.description
+                    )
+                })
+                .collect();
+            return Ok(ToolOutput {
+                content: format!(
+                    "Permitted ToolSets ({}):\n{}",
+                    sets.len(),
+                    lines.join("\n")
+                ),
+                is_error: false,
+                diff: None,
+                metadata: Some(json!({ "toolsets": sets })),
+            });
+        }
+
         let query = args
             .get("query")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| ZenkoError::Tool("missing `query`".into()))?;
+            .filter(|s| !s.is_empty());
+        let raw_toolset = args
+            .get("toolset")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let activate_all = raw_toolset.is_some_and(|s| s.eq_ignore_ascii_case("all"));
+        let parsed_toolset = match (raw_toolset, activate_all) {
+            (Some(_), true) | (None, _) => None,
+            (Some(raw), false) => match ToolSet::parse(raw) {
+                Some(ts) => Some(ts),
+                None => {
+                    let valid: Vec<&str> = ToolSet::ALL.iter().map(|t| t.as_str()).collect();
+                    return Ok(ToolOutput::err(format!(
+                        "Unknown toolset `{raw}`. Valid toolsets: {}, or `all`.",
+                        valid.join(", ")
+                    )));
+                }
+            },
+        };
+        let names: Vec<String> = args
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if query.is_none() && parsed_toolset.is_none() && !activate_all && names.is_empty() {
+            return Err(ZenkoError::Tool(
+                "provide `query`, `toolset`, `names`, or `action=\"list_toolsets\"`".into(),
+            ));
+        }
+
         let limit = args
             .get("limit")
             .and_then(Value::as_u64)
             .unwrap_or(TOOL_SEARCH_DEFAULT_LIMIT as u64)
             .clamp(1, TOOL_SEARCH_MAX_LIMIT as u64) as usize;
 
-        let matched = self
-            .bridge
-            .search_and_activate_deferred_tools(&ctx.session_id, query, limit);
+        let matched = self.bridge.activate_deferred_by_scope(
+            &ctx.session_id,
+            parsed_toolset,
+            activate_all,
+            &names,
+            query,
+            limit,
+        );
         if matched.is_empty() {
-            return Ok(ToolOutput::ok(format!(
-                "No deferred tools matched `{query}`. Try broader keywords (e.g. 'web', 'memory', 'cron', 'job', 'task', 'context')."
-            )));
+            return Ok(ToolOutput::ok(
+                "No permitted deferred tools matched that request. Use `tool_search(action=\"list_toolsets\")` to inspect available domains in your current scope.",
+            ));
         }
 
-        let names: Vec<String> = matched.iter().map(|t| t.name.clone()).collect();
+        let activated_names: Vec<String> = matched.iter().map(|t| t.name.clone()).collect();
         let details = matched
             .iter()
             .map(|t| format!("- `{}` [{}]: {}", t.name, t.risk.as_str(), t.description))
@@ -214,7 +311,7 @@ impl Tool for ToolSearchTool {
             ),
             is_error: false,
             diff: None,
-            metadata: Some(json!({ "activated_tools": names })),
+            metadata: Some(json!({ "activated_tools": activated_names })),
         })
     }
 }
@@ -231,6 +328,10 @@ impl ContextInspectTool {
 
 #[async_trait]
 impl Tool for ContextInspectTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Memory
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }
@@ -326,6 +427,14 @@ impl SkillManageTool {
 
 #[async_trait]
 impl Tool for SkillManageTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Memory
+    }
+
+    fn is_available(&self, ctx: &zenko_core::ToolAvailabilityContext) -> bool {
+        !ctx.is_subagent
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }

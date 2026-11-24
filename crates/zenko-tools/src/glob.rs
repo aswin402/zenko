@@ -11,14 +11,18 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     DEFAULT_SEARCH_SKIP_DIRS, GLOB_DEFAULT_MAX_RESULTS, GLOB_MAX_BRACE_EXPANSIONS,
     GLOB_MAX_RESULTS_CAP, GlobFileType, GlobSort, HUB_PATH_PREFIX, Result, RiskLevel,
-    TOOL_GLOB_FIND, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec,
-    ZenkoError,
+    TOOL_GLOB_FIND, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
+    ToolSpec, ZenkoError,
 };
 
 pub struct GlobFindTool;
 
 #[async_trait]
 impl Tool for GlobFindTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::CodeIntel
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }

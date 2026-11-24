@@ -322,3 +322,249 @@
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[tokio::test]
+    async fn minicode_tool_v2_self_healing_scoped_catalog_and_policy_safe_batch() {
+        let dir = std::env::temp_dir().join(format!("zenko_toolv2_{}", new_id()));
+        std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+        std::fs::write(
+            dir.join("src/app.rs"),
+            "pub struct App {}\nimpl App {\n    pub fn boot() -> usize { 42 }\n}\n",
+        )
+        .expect("write");
+
+        let mut cfg = ZenkoConfig::default();
+        cfg.general.data_dir = dir.join("data").display().to_string();
+        cfg.general.hub_dir = dir.join("hub").display().to_string();
+        cfg.general.workspace_dir = dir.display().to_string();
+        let (rt, _logs) = AgentRuntime::build(dir.join("zenko.toml"), cfg).expect("runtime");
+        let cfg_now = rt.config();
+
+        let sess = rt
+            .store
+            .create_session("ToolV2", "cli", None, None, PermissionMode::Autonomous)
+            .expect("session");
+        let tool_ctx = ToolContext {
+            session_id: sess.id.clone(),
+            workspace_dir: dir.clone(),
+            data_dir: dir.join("data"),
+            hub_dir: dir.join("hub"),
+            shell_timeout_secs: 10,
+            auto_background_after_secs: 0,
+            max_output_bytes: 16_384,
+            headless_no_wait: true,
+            demote_bg: Arc::new(Notify::new()),
+        };
+        let cancel = CancellationToken::new();
+
+        // 1. Unknown tool returns fuzzy permitted suggestions.
+        let typo = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t1".into(),
+                    name: "readfile".into(),
+                    arguments: json!({}),
+                },
+                &cancel,
+            )
+            .await
+            .expect("typo");
+        assert!(typo.output.is_error);
+        assert!(
+            typo.output.content.contains("`read_file`"),
+            "missing fuzzy suggestion: {}",
+            typo.output.content
+        );
+
+        // 2. Malformed `_raw` JSON + camelCase + stringified integer coerces cleanly & executes.
+        let coerced = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t2".into(),
+                    name: "read_file".into(),
+                    arguments: json!({
+                        "_raw": "```json\n{\"path\": \"src/app.rs\", \"startLine\": \"1\", \"endLine\": \"2\",}\n```"
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("coerced");
+        assert!(!coerced.output.is_error, "err={}", coerced.output.content);
+        assert!(coerced.output.content.contains("pub struct App"));
+
+        // 3. Missing required arg appends compact schema hint automatically.
+        let missing = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t3".into(),
+                    name: "read_file".into(),
+                    arguments: json!({}),
+                },
+                &cancel,
+            )
+            .await
+            .expect("missing");
+        assert!(missing.output.is_error);
+        assert!(
+            missing.output.content.contains("Expected params for `read_file`"),
+            "missing schema hint: {}",
+            missing.output.content
+        );
+
+        // 4. Scoped subagent catalog hides denied & unavailable tools (cron, goal_loop, mcp_resource).
+        let explorer_scope = SessionToolScope {
+            role_id: Some("explorer".into()),
+            permission: PermissionMode::Autonomous,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext {
+                has_mcp_servers: false,
+                is_subagent: true,
+                read_only: true,
+            },
+        };
+        let explorer_cat = rt
+            .tools
+            .deferred_catalog_text_filtered(&explorer_scope.availability, |s| {
+                explorer_scope.permits_spec(s)
+            })
+            .expect("explorer catalog");
+        assert!(explorer_cat.contains("git_tool"));
+        assert!(!explorer_cat.contains("cron_tool"));
+        assert!(!explorer_cat.contains("goal_loop"));
+        assert!(!explorer_cat.contains("mcp_resource"));
+        assert!(!explorer_cat.contains("agent_worktree"));
+
+        // Worker role hygiene: `coder` denies root-only `orchestrate_control`, `goal_loop`, `skill_manage`.
+        let coder = find_subagent_role("coder").expect("coder role");
+        assert!(!coder.permits_tool(TOOL_ORCHESTRATE_CONTROL));
+        assert!(!coder.permits_tool(zenko_core::TOOL_GOAL_LOOP));
+        assert!(!coder.permits_tool(TOOL_SKILL_MANAGE));
+
+        // 5. `tool_search` supports `list_toolsets` & hides unconfigured `mcp`.
+        let list_ts = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t4".into(),
+                    name: TOOL_TOOL_SEARCH.into(),
+                    arguments: json!({ "action": "list_toolsets" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("list_toolsets");
+        assert!(!list_ts.output.is_error);
+        assert!(list_ts.output.content.contains("`git`"));
+        assert!(
+            !list_ts.output.content.contains("`mcp`"),
+            "unconfigured MCP must be hidden"
+        );
+
+        // 6. `batch_tools` executes wave-parallel reads/outlines AND enforces Plan Mode per inner call.
+        let batch_ok = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t5".into(),
+                    name: TOOL_BATCH_TOOLS.into(),
+                    arguments: json!({
+                        "calls": [
+                            { "tool": "read_file", "args": { "path": "src/app.rs", "mode": "outline" } },
+                            { "tool": "code_search", "args": { "pattern": "boot()", "fixed_strings": true, "output_mode": "files_only" } }
+                        ]
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("batch_ok");
+        assert!(!batch_ok.output.is_error, "batch err={}", batch_ok.output.content);
+        assert!(batch_ok.output.content.contains("2/2 ok"));
+        assert!(batch_ok.output.content.contains("[fn] pub fn boot"));
+        assert!(batch_ok.output.content.contains("src/app.rs"));
+
+        // Plan Mode inside `batch_tools` blocks `write_file` while permitting `read_file`,
+        // and `stop_on_error: true` short-circuits subsequent calls.
+        let plan_scope = SessionToolScope {
+            role_id: None,
+            permission: PermissionMode::Plan,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext {
+                has_mcp_servers: false,
+                is_subagent: false,
+                read_only: true,
+            },
+        };
+        let _plan_guard = ActiveSessionScopeGuard::enter(rt.session_control(&sess.id), plan_scope);
+        let plan_batch = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t6".into(),
+                    name: TOOL_BATCH_TOOLS.into(),
+                    arguments: json!({
+                        "stop_on_error": true,
+                        "calls": [
+                            { "tool": "read_file", "args": { "path": "src/app.rs", "start_line": 1, "end_line": 1 } },
+                            { "tool": "write_file", "args": { "path": "src/pwn.rs", "content": "nope" } },
+                            { "tool": "list_dir", "args": { "path": "src" } }
+                        ]
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_batch");
+        assert!(
+            plan_batch
+                .output
+                .content
+                .contains("1/3 ok, 1 error(s), 1 skipped"),
+            "plan_batch={}",
+            plan_batch.output.content
+        );
+        assert!(plan_batch.output.content.contains("Denied by execpolicy"));
+        assert!(plan_batch.output.content.contains("SKIPPED"));
+        assert!(
+            !dir.join("src/pwn.rs").exists(),
+            "Plan Mode must never write via batch_tools"
+        );
+
+        // 7. LSP diagnostics-on-edit path extraction covers `apply_patch` `path` arg.
+        assert_eq!(
+            extract_edited_rel_paths("apply_patch", &json!({ "path": "src/app.rs" })),
+            vec!["src/app.rs".to_string()]
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }

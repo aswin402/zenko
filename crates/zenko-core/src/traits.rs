@@ -1,11 +1,12 @@
 use crate::error::Result;
 use crate::types::{
-    AgentMailMessage, AgentMessageOptions, BackgroundJobRecord, BrainstormSpec, ChatRequest,
-    ClarificationAnswer, ClarificationOption, ClarificationRecord, ContextBreakdown, ExecutionPlan,
-    GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta,
-    ModelInfo, OrchestrateControlReceipt, OrchestrateControlRequest, SessionTask, SessionTaskPatch,
-    SubagentRecord, SubagentSpawnRequest, TaskKind, ToolConcurrency, ToolExposure, ToolOutput,
-    ToolSpec, WorktreeDiffReport, WorktreePruneReport,
+    AgentMailMessage, AgentMessageOptions, BackgroundJobRecord, BatchToolRequest,
+    BatchToolStepOutcome, BrainstormSpec, ChatRequest, ClarificationAnswer, ClarificationOption,
+    ClarificationRecord, ContextBreakdown, ExecutionPlan, GoalLoopCreateRequest, GoalLoopPatch,
+    GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta, ModelInfo, OrchestrateControlReceipt,
+    OrchestrateControlRequest, SessionTask, SessionTaskPatch, SubagentRecord, SubagentSpawnRequest,
+    TaskKind, ToolAvailabilityContext, ToolConcurrency, ToolExposure, ToolOutput, ToolSet,
+    ToolSetSummary, ToolSpec, WorktreeDiffReport, WorktreePruneReport,
 };
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -52,6 +53,17 @@ pub struct ToolContext {
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
+
+    /// Declarative `ToolSet` domain grouping (zero hardcoded name-to-category tables).
+    fn toolset(&self) -> ToolSet {
+        ToolSet::CoreFs
+    }
+
+    /// Declarative dynamic readiness check (Hermes `check_fn` pattern): returning `false`
+    /// keeps unconfigured or context-inapplicable tools out of schemas and catalogs.
+    fn is_available(&self, _ctx: &ToolAvailabilityContext) -> bool {
+        true
+    }
 
     /// Declarative default concurrency lock scope used by the parallel wave scheduler.
     fn concurrency(&self) -> ToolConcurrency {
@@ -204,12 +216,12 @@ pub trait OrchestratorBridge: Send + Sync {
     ) -> Result<OrchestrateControlReceipt>;
 }
 
-/// Bridge connecting Phase 3 context tools (`tool_search`, `context_inspect`) in `zenko-tools`
+/// Bridge connecting Phase 3 / Tool v2 context tools (`tool_search`, `context_inspect`) in `zenko-tools`
 /// to `AgentRuntime` without circular dependencies.
 #[async_trait]
 pub trait ContextBridge: Send + Sync {
-    /// Searches deferred tool schemas via BM25/token scoring, activates matching tools for
-    /// `session_id`, and returns their specifications.
+    /// Searches deferred tool schemas via BM25/token scoring (scoped to the session's active
+    /// role/permission/availability bounds), activates matching tools, and returns their specs.
     fn search_and_activate_deferred_tools(
         &self,
         session_id: &str,
@@ -217,9 +229,36 @@ pub trait ContextBridge: Send + Sync {
         limit: usize,
     ) -> Vec<ToolSpec>;
 
+    /// Activates permitted deferred tools by `ToolSet` domain (or `None` + `activate_all` for all
+    /// permitted deferred tools) and/or explicit tool `names`, enforcing active role & policy scope.
+    fn activate_deferred_by_scope(
+        &self,
+        session_id: &str,
+        toolset: Option<ToolSet>,
+        activate_all: bool,
+        names: &[String],
+        query: Option<&str>,
+        limit: usize,
+    ) -> Vec<ToolSpec>;
+
+    /// Lists all `ToolSet` domains containing at least one tool permitted for `session_id`.
+    fn list_permitted_toolsets(&self, session_id: &str) -> Vec<ToolSetSummary>;
+
     /// Computes live per-tier token usage, cache hit %, microcompaction savings, active checkpoint,
     /// and spilled artifacts count for `session_id`.
     async fn inspect_session_context(&self, session_id: &str) -> Result<ContextBreakdown>;
+}
+
+/// Bridge connecting wave-aware `batch_tools` in `zenko-tools` to `AgentRuntime`'s policy-enforced
+/// parallel wave executor without circular dependencies or policy bypasses.
+#[async_trait]
+pub trait ToolBatchBridge: Send + Sync {
+    async fn execute_batch(
+        &self,
+        ctx: &ToolContext,
+        req: BatchToolRequest,
+        cancel: CancellationToken,
+    ) -> Result<Vec<BatchToolStepOutcome>>;
 }
 
 /// Bridge connecting Phase 5 subagent tools (`spawn_agent`, `agent_list`, `agent_message`,

@@ -12,10 +12,10 @@ use tokio::process::Command;
 use zenko_core::{
     DANGEROUS_APPROVAL_BINS, HookConfig, HookEvent, MCP_TOOL_PREFIX, PIPE_TO_SHELL_BINS,
     PLAN_MODE_SCOPED_TOOLS, PLANNING_TOOLS, PROTECTED_DATA_SEGMENTS, PermissionMode, PolicyConfig,
-    READ_ONLY_TOOLS, RiskLevel, TOOL_AGENT_WORKTREE, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_MEMORY,
-    TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, ToolSpec, VERIFY_SHELL_INTERPRETERS,
-    WorktreeAction, find_subagent_role, is_git_tool_args_mutating, is_goal_loop_args_mutating,
-    is_memory_mutating_action, is_skill_manage_args_mutating,
+    READ_ONLY_TOOLS, RiskLevel, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_GOAL_LOOP,
+    TOOL_MEMORY, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, ToolSpec,
+    VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role, is_git_tool_args_mutating,
+    is_goal_loop_args_mutating, is_memory_mutating_action, is_skill_manage_args_mutating,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -798,13 +798,16 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
         }
         TOOL_SPAWN_AGENT => {
             let role_id = args.get("role").and_then(Value::as_str).unwrap_or("");
-            match find_subagent_role(role_id).map(|r| r.read_only) {
-                Some(true) => PolicyVerdict::Allow,
-                _ => PolicyVerdict::Deny(format!(
-                    "Read-only Plan Mode only permits read-only subagent roles (`explorer`, `architect`), not `{role_id}`."
+            let custom_ro = role_id.eq_ignore_ascii_case("custom")
+                && args.get("read_only").and_then(Value::as_bool) == Some(true);
+            match custom_ro || find_subagent_role(role_id).is_some_and(|r| r.read_only) {
+                true => PolicyVerdict::Allow,
+                false => PolicyVerdict::Deny(format!(
+                    "Read-only Plan Mode only permits read-only subagent roles (`explorer`, `architect`, `critic`, `researcher`, or `custom` with `read_only: true`), not `{role_id}`."
                 )),
             }
         }
+        TOOL_BATCH_TOOLS => PolicyVerdict::Allow,
         TOOL_AGENT_WORKTREE => {
             let action = args
                 .get("action")

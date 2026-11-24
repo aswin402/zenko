@@ -215,6 +215,118 @@ pub enum ToolExposure {
     Deferred,
 }
 
+/// Declarative domain grouping for all Zenko tools (Hermes-inspired ToolSets, pure Rust zero hardcoding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSet {
+    #[default]
+    CoreFs,
+    CodeIntel,
+    Execution,
+    Git,
+    Web,
+    Memory,
+    Orchestration,
+    Subagents,
+    Automation,
+    Mcp,
+}
+
+impl ToolSet {
+    pub const ALL: &'static [Self] = &[
+        Self::CoreFs,
+        Self::CodeIntel,
+        Self::Execution,
+        Self::Git,
+        Self::Web,
+        Self::Memory,
+        Self::Orchestration,
+        Self::Subagents,
+        Self::Automation,
+        Self::Mcp,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CoreFs => "core_fs",
+            Self::CodeIntel => "code_intel",
+            Self::Execution => "execution",
+            Self::Git => "git",
+            Self::Web => "web",
+            Self::Memory => "memory",
+            Self::Orchestration => "orchestration",
+            Self::Subagents => "subagents",
+            Self::Automation => "automation",
+            Self::Mcp => "mcp",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "core_fs" | "fs" | "files" | "file" | "core" => Some(Self::CoreFs),
+            "code_intel" | "code" | "lsp" | "search" | "intel" => Some(Self::CodeIntel),
+            "execution" | "exec" | "shell" | "jobs" | "tasks" => Some(Self::Execution),
+            "git" | "vcs" => Some(Self::Git),
+            "web" | "http" | "browser" | "internet" => Some(Self::Web),
+            "memory" | "mem" | "skills" | "context" | "sessions" => Some(Self::Memory),
+            "orchestration" | "orch" | "plan" | "brainstorm" => Some(Self::Orchestration),
+            "subagents" | "subagent" | "agents" | "agent" => Some(Self::Subagents),
+            "automation" | "cron" | "goals" | "goal" | "schedule" => Some(Self::Automation),
+            "mcp" | "external" => Some(Self::Mcp),
+            _ => None,
+        }
+    }
+}
+
+/// Live environmental context evaluated by each tool's `is_available()` predicate
+/// so unavailable tools never pollute prompts or catalogs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ToolAvailabilityContext {
+    pub has_mcp_servers: bool,
+    pub is_subagent: bool,
+    pub read_only: bool,
+}
+
+/// Compact summary of one permitted `ToolSet` returned by `tool_search(action="list_toolsets")`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSetSummary {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub eager_tools: Vec<String>,
+    pub deferred_tools: Vec<String>,
+}
+
+/// Declarative single step inside a `batch_tools` composite invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchToolCallItem {
+    pub tool: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+}
+
+/// Request payload forwarded from `batch_tools` into `ToolBatchBridge`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchToolRequest {
+    pub calls: Vec<BatchToolCallItem>,
+    #[serde(default)]
+    pub stop_on_error: bool,
+    pub max_chars_per_call: usize,
+}
+
+/// Per-step result emitted by `ToolBatchBridge::execute_batch`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchToolStepOutcome {
+    pub index: usize,
+    pub tool: String,
+    pub is_error: bool,
+    pub skipped: bool,
+    pub duration_ms: u64,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,

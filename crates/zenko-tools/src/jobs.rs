@@ -31,6 +31,10 @@ impl JobListTool {
 
 #[async_trait]
 impl Tool for JobListTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Execution
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -130,6 +134,10 @@ impl JobReadTool {
 
 #[async_trait]
 impl Tool for JobReadTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Execution
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -210,6 +218,10 @@ impl JobWaitTool {
 
 #[async_trait]
 impl Tool for JobWaitTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Execution
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -304,6 +316,10 @@ impl JobInputTool {
 
 #[async_trait]
 impl Tool for JobInputTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Execution
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -363,6 +379,10 @@ impl JobStopTool {
 
 #[async_trait]
 impl Tool for JobStopTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Execution
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -426,6 +446,10 @@ impl TaskManageTool {
 
 #[async_trait]
 impl Tool for TaskManageTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Execution
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }

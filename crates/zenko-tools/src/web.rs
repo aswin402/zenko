@@ -269,6 +269,10 @@ fn resolve_redirect_url(base: &ParsedHttpUrl, location: &str) -> String {
 
 #[async_trait]
 impl Tool for WebFetchTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Web
+    }
+
     fn concurrency(&self) -> zenko_core::ToolConcurrency {
         zenko_core::ToolConcurrency::Shared
     }

@@ -776,6 +776,10 @@ impl LspTool {
 
 #[async_trait]
 impl Tool for LspTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::CodeIntel
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }

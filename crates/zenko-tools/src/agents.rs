@@ -27,6 +27,10 @@ impl SpawnAgentTool {
 
 #[async_trait]
 impl Tool for SpawnAgentTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Subagents
+    }
+
     fn spec(&self) -> ToolSpec {
         let role_enum: Vec<Value> = SUBAGENT_ROLE_REGISTRY
             .iter()
@@ -272,6 +276,10 @@ impl AgentListTool {
 
 #[async_trait]
 impl Tool for AgentListTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Subagents
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_AGENT_LIST.into(),
@@ -348,6 +356,10 @@ impl AgentMessageTool {
 
 #[async_trait]
 impl Tool for AgentMessageTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Subagents
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_AGENT_MESSAGE.into(),
@@ -428,6 +440,10 @@ impl AgentWaitTool {
 
 #[async_trait]
 impl Tool for AgentWaitTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Subagents
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_AGENT_WAIT.into(),
@@ -542,6 +558,10 @@ impl AgentKillTool {
 
 #[async_trait]
 impl Tool for AgentKillTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Subagents
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_AGENT_KILL.into(),
@@ -615,6 +635,10 @@ impl AgentWorktreeTool {
 
 #[async_trait]
 impl Tool for AgentWorktreeTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Subagents
+    }
+
     fn spec(&self) -> ToolSpec {
         let action_enum: Vec<Value> = WORKTREE_ACTIONS
             .iter()

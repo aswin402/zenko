@@ -28,12 +28,33 @@ impl ContextBridge for RuntimeContextBridge {
         query: &str,
         limit: usize,
     ) -> Vec<ToolSpec> {
+        self.activate_deferred_by_scope(session_id, None, false, &[], Some(query), limit)
+    }
+
+    fn activate_deferred_by_scope(
+        &self,
+        session_id: &str,
+        toolset: Option<ToolSet>,
+        activate_all: bool,
+        names: &[String],
+        query: Option<&str>,
+        limit: usize,
+    ) -> Vec<ToolSpec> {
         let Some(rt) = self.upgrade() else {
             return Vec::new();
         };
-        let matched = rt.tools.search_deferred_bm25(query, limit);
-        let names: Vec<String> = matched.iter().map(|s| s.name.clone()).collect();
-        let newly = rt.activate_deferred_tools(session_id, &names);
+        let scope = rt.effective_session_scope(session_id);
+        let matched = rt.tools.select_deferred_by_scope(
+            toolset,
+            activate_all,
+            names,
+            query,
+            limit,
+            &scope.availability,
+            |spec| scope.permits_spec(spec),
+        );
+        let selected_names: Vec<String> = matched.iter().map(|s| s.name.clone()).collect();
+        let newly = rt.activate_deferred_tools(session_id, &selected_names);
         if !newly.is_empty() {
             rt.emit(AgentEvent::OrchestratorUpdated {
                 session_id: session_id.to_string(),
@@ -46,6 +67,15 @@ impl ContextBridge for RuntimeContextBridge {
         matched
     }
 
+    fn list_permitted_toolsets(&self, session_id: &str) -> Vec<ToolSetSummary> {
+        let Some(rt) = self.upgrade() else {
+            return Vec::new();
+        };
+        let scope = rt.effective_session_scope(session_id);
+        rt.tools
+            .list_toolsets_filtered(&scope.availability, |spec| scope.permits_spec(spec))
+    }
+
     async fn inspect_session_context(&self, session_id: &str) -> Result<ContextBreakdown> {
         let Some(rt) = self.upgrade() else {
             return Err(ZenkoError::Config(
@@ -53,6 +83,180 @@ impl ContextBridge for RuntimeContextBridge {
             ));
         };
         rt.inspect_session_context(session_id).await
+    }
+}
+
+/// Leak-free `Weak<AgentRuntime>` bridge executing `batch_tools` through the runtime's
+/// full role scope, schema coercion, hooks, ExecPolicy, LSP diagnostics, and 3-state wave scheduler.
+pub(super) struct RuntimeBatchBridge {
+    runtime: OnceLock<Weak<AgentRuntime>>,
+}
+
+impl RuntimeBatchBridge {
+    pub(super) fn new() -> Self {
+        Self {
+            runtime: OnceLock::new(),
+        }
+    }
+
+    pub(super) fn bind(&self, weak: Weak<AgentRuntime>) {
+        let _ = self.runtime.set(weak);
+    }
+
+    fn upgrade(&self) -> Result<Arc<AgentRuntime>> {
+        self.runtime
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| ZenkoError::Config("runtime batch bridge unavailable".into()))
+    }
+}
+
+#[async_trait]
+impl ToolBatchBridge for RuntimeBatchBridge {
+    async fn execute_batch(
+        &self,
+        ctx: &ToolContext,
+        req: BatchToolRequest,
+        cancel: CancellationToken,
+    ) -> Result<Vec<BatchToolStepOutcome>> {
+        let rt = self.upgrade()?;
+        let cfg = rt.config();
+        let scope = rt.effective_session_scope(&ctx.session_id);
+        let total = req.calls.len();
+
+        let mut prepared: Vec<(usize, ToolCall)> = Vec::with_capacity(total);
+        for (idx, item) in req.calls.into_iter().enumerate() {
+            let coerced_args = rt.coerce_tool_call_args(&item.tool, item.args);
+            prepared.push((
+                idx,
+                ToolCall {
+                    id: format!("batch_{}_{}", idx, new_id()),
+                    name: item.tool,
+                    arguments: coerced_args,
+                },
+            ));
+        }
+
+        if req.stop_on_error {
+            let mut outcomes = Vec::with_capacity(total);
+            let mut halted = false;
+            for (idx, tc) in prepared {
+                if cancel.is_cancelled() {
+                    return Err(ZenkoError::Cancelled);
+                }
+                if halted {
+                    outcomes.push(BatchToolStepOutcome {
+                        index: idx,
+                        tool: tc.name,
+                        is_error: false,
+                        skipped: true,
+                        duration_ms: 0,
+                        content: "Skipped because an earlier batch step failed (`stop_on_error: true`).".into(),
+                        diff: None,
+                    });
+                    continue;
+                }
+                if let Err(denied) = scope.permits_invocation(&tc.name, &tc.arguments) {
+                    outcomes.push(BatchToolStepOutcome {
+                        index: idx,
+                        tool: tc.name,
+                        is_error: true,
+                        skipped: false,
+                        duration_ms: 0,
+                        content: denied,
+                        diff: None,
+                    });
+                    halted = true;
+                    continue;
+                }
+                let exec = rt
+                    .execute_single_tool_call(
+                        &cfg,
+                        &ctx.session_id,
+                        scope.permission,
+                        ctx,
+                        ctx.headless_no_wait,
+                        tc,
+                        &cancel,
+                    )
+                    .await?;
+                if exec.output.is_error {
+                    halted = true;
+                }
+                outcomes.push(BatchToolStepOutcome {
+                    index: idx,
+                    tool: exec.tool_name,
+                    is_error: exec.output.is_error,
+                    skipped: false,
+                    duration_ms: exec.duration_ms,
+                    content: exec.output.content,
+                    diff: exec.output.diff,
+                });
+            }
+            return Ok(outcomes);
+        }
+
+        // Wave-parallel mode: split scope-denied items immediately, run permitted calls via 3-state wave scheduler.
+        let mut allowed: Vec<(usize, ToolCall)> = Vec::with_capacity(total);
+        let mut slots: Vec<Option<BatchToolStepOutcome>> = vec![None; total];
+        for (idx, tc) in prepared {
+            if let Err(denied) = scope.permits_invocation(&tc.name, &tc.arguments) {
+                slots[idx] = Some(BatchToolStepOutcome {
+                    index: idx,
+                    tool: tc.name,
+                    is_error: true,
+                    skipped: false,
+                    duration_ms: 0,
+                    content: denied,
+                    diff: None,
+                });
+            } else {
+                allowed.push((idx, tc));
+            }
+        }
+
+        if !allowed.is_empty() {
+            let calls_only: Vec<ToolCall> = allowed.iter().map(|(_, tc)| tc.clone()).collect();
+            let executed = execute_tool_waves(
+                calls_only,
+                MAX_PARALLEL_TOOLS,
+                |tc| rt.classify_tool_call(&cfg, scope.permission, tc),
+                |tc| {
+                    let rt_c = rt.clone();
+                    let cfg_c = cfg.clone();
+                    let ctx_c = ctx.clone();
+                    let cancel_c = cancel.clone();
+                    let perm = scope.permission;
+                    async move {
+                        rt_c.execute_single_tool_call(
+                            &cfg_c,
+                            &ctx_c.session_id,
+                            perm,
+                            &ctx_c,
+                            ctx_c.headless_no_wait,
+                            tc,
+                            &cancel_c,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
+            for ((idx, _), exec) in allowed.into_iter().zip(executed) {
+                slots[idx] = Some(BatchToolStepOutcome {
+                    index: idx,
+                    tool: exec.tool_name,
+                    is_error: exec.output.is_error,
+                    skipped: false,
+                    duration_ms: exec.duration_ms,
+                    content: exec.output.content,
+                    diff: exec.output.diff,
+                });
+            }
+        }
+
+        Ok(slots.into_iter().flatten().collect())
     }
 }
 

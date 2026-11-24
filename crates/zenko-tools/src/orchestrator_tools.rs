@@ -47,6 +47,10 @@ fn parse_string_vec(val: Option<&Value>) -> Vec<String> {
 
 #[async_trait]
 impl Tool for RecordBrainstormTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Orchestration
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Global
     }
@@ -274,6 +278,10 @@ impl PlanUpdateTool {
 
 #[async_trait]
 impl Tool for PlanUpdateTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Orchestration
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Global
     }
@@ -426,6 +434,14 @@ impl OrchestrateControlTool {
 
 #[async_trait]
 impl Tool for OrchestrateControlTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Orchestration
+    }
+
+    fn is_available(&self, ctx: &zenko_core::ToolAvailabilityContext) -> bool {
+        !ctx.is_subagent
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Global
     }
@@ -588,6 +604,14 @@ impl AskClarificationTool {
 
 #[async_trait]
 impl Tool for AskClarificationTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Orchestration
+    }
+
+    fn is_available(&self, ctx: &zenko_core::ToolAvailabilityContext) -> bool {
+        !ctx.is_subagent
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Global
     }
@@ -732,6 +756,10 @@ impl SessionTaskTool {
 
 #[async_trait]
 impl Tool for SessionTaskTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Orchestration
+    }
+
     fn concurrency_for_args(&self, args: &Value) -> ToolConcurrency {
         let parsed = args
             .get("action")

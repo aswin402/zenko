@@ -4,13 +4,14 @@
 
 use crate::{
     SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_KILL, TOOL_AGENT_LIST, TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT,
-    TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION, TOOL_CODE_SEARCH,
-    TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND, TOOL_HASH_EDIT, TOOL_LIST_DIR,
-    TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_READ_FILE,
-    TOOL_RECORD_BRAINSTORM, TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
-    TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH,
-    TOOL_WRITE_FILE, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER, VAULT_KEY_DEEPSEEK,
-    VAULT_KEY_GEMINI, VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI, VAULT_KEY_OPENROUTER,
+    TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS,
+    TOOL_CODE_SEARCH, TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND, TOOL_GOAL_LOOP,
+    TOOL_HASH_EDIT, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL,
+    TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_SEARCH,
+    TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT,
+    TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_WRITE_FILE, ToolSet,
+    VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER, VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI,
+    VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI, VAULT_KEY_OPENROUTER,
     VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
 };
 use serde::Serialize;
@@ -87,6 +88,85 @@ pub enum SubagentWorkspaceDefault {
     Worktree,
 }
 
+/// Declarative metadata descriptor for each `ToolSet` domain (zero hardcoding across CLI/WebUI/Tools/Runtime).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ToolSetDescriptor {
+    pub id: ToolSet,
+    pub slug: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+}
+
+pub const TOOLSET_REGISTRY: &[ToolSetDescriptor] = &[
+    ToolSetDescriptor {
+        id: ToolSet::CoreFs,
+        slug: "core_fs",
+        label: "Core Filesystem & Batch",
+        description: "Hash-anchored reading, structural outlines, multi-hunk edits, patches, directory listing, and composable batches",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::CodeIntel,
+        slug: "code_intel",
+        label: "Code Search & Intelligence",
+        description: "Fast `.gitignore`-aware code search, glob file discovery, and IDE-grade Language Server Protocol navigation/diagnostics",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Execution,
+        slug: "execution",
+        label: "Shell & Background Jobs",
+        description: "Policy-guarded shell execution, background process streaming, interactive stdin, wait/stop, and task supervision",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Git,
+        slug: "git",
+        label: "Git & Version Control",
+        description: "Structured status, diff, log, blame, branching, staging, and guarded commits",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Web,
+        slug: "web",
+        label: "Web Search & Fetch",
+        description: "Pluggable web search providers and SSRF-hardened web page fetching",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Memory,
+        slug: "memory",
+        label: "Memory, Skills & Context",
+        description: "Persistent hybrid memory, cross-session search, progressive skill loading/management, tool discovery, and context inspection",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Orchestration,
+        slug: "orchestration",
+        label: "Orchestration & Planning",
+        description: "Iterative brainstorming, execution plans, SQLite task DAGs, live posture/tier control, and structured user clarifications",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Subagents,
+        slug: "subagents",
+        label: "Multi-Agent Delegation",
+        description: "Async subagent spawning, worktree isolation, inter-agent mailbox messaging, event-driven waiting, and lifecycle management",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Automation,
+        slug: "automation",
+        label: "Cron & Autonomous Goals",
+        description: "Recurring scheduled tasks and persistent budget-bounded autonomous goal loops",
+    },
+    ToolSetDescriptor {
+        id: ToolSet::Mcp,
+        slug: "mcp",
+        label: "External MCP Integrations",
+        description: "Dynamic Model Context Protocol remote tools and resources",
+    },
+];
+
+pub fn find_toolset_descriptor(set: ToolSet) -> &'static ToolSetDescriptor {
+    TOOLSET_REGISTRY
+        .iter()
+        .find(|d| d.id == set)
+        .unwrap_or(&TOOLSET_REGISTRY[0])
+}
+
 /// Single-source-of-truth declarative subagent role profile shared by Runtime, Tools, CLI, API & WebUI.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct SubagentRoleDescriptor {
@@ -136,6 +216,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_LIST_DIR,
             TOOL_CODE_SEARCH,
             TOOL_GLOB_FIND,
+            TOOL_BATCH_TOOLS,
             TOOL_GIT,
             TOOL_LSP,
             TOOL_WEB_FETCH,
@@ -176,6 +257,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_LIST_DIR,
             TOOL_CODE_SEARCH,
             TOOL_GLOB_FIND,
+            TOOL_BATCH_TOOLS,
             TOOL_GIT,
             TOOL_LSP,
             TOOL_WEB_FETCH,
@@ -217,6 +299,9 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
         allowed_tools: &[],
         denied_tools: &[
             TOOL_CRON,
+            TOOL_GOAL_LOOP,
+            TOOL_SKILL_MANAGE,
+            TOOL_ORCHESTRATE_CONTROL,
             TOOL_ASK_CLARIFICATION,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_WORKTREE,
@@ -238,6 +323,9 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_HASH_EDIT,
             TOOL_APPLY_PATCH,
             TOOL_CRON,
+            TOOL_GOAL_LOOP,
+            TOOL_SKILL_MANAGE,
+            TOOL_ORCHESTRATE_CONTROL,
             TOOL_ASK_CLARIFICATION,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_KILL,
@@ -259,6 +347,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_LIST_DIR,
             TOOL_CODE_SEARCH,
             TOOL_GLOB_FIND,
+            TOOL_BATCH_TOOLS,
             TOOL_GIT,
             TOOL_LSP,
             TOOL_MEMORY,
@@ -303,6 +392,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_LIST_DIR,
             TOOL_CODE_SEARCH,
             TOOL_GLOB_FIND,
+            TOOL_BATCH_TOOLS,
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
             TOOL_AGENT_LIST,
@@ -333,6 +423,8 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
         allowed_tools: &[],
         denied_tools: &[
             TOOL_CRON,
+            TOOL_GOAL_LOOP,
+            TOOL_SKILL_MANAGE,
             TOOL_ASK_CLARIFICATION,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_WORKTREE,

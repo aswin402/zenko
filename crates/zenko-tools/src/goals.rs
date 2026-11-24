@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     GOAL_LOOP_LIST_DEFAULT_LIMIT, GoalLoopAction, GoalLoopBridge, GoalLoopCreateRequest,
     GoalLoopPatch, GoalLoopStatus, ResourceLockKey, Result, RiskLevel, TOOL_GOAL_LOOP, Tool,
-    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError,
+    ToolAvailabilityContext, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
+    ToolSpec, ZenkoError,
 };
 
 pub struct GoalLoopTool {
@@ -23,6 +24,14 @@ impl GoalLoopTool {
 
 #[async_trait]
 impl Tool for GoalLoopTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Automation
+    }
+
+    fn is_available(&self, ctx: &ToolAvailabilityContext) -> bool {
+        !ctx.is_subagent
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }

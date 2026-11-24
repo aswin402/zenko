@@ -9,7 +9,7 @@ use zenko_core::{
     ARTIFACT_HEAD_RATIO_DEN, ARTIFACT_HEAD_RATIO_NUM, BackgroundJobRecord, BackgroundJobStatus,
     JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, Result, RiskLevel, SAFE_SHELL_ENV_KEYS,
     SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, TaskKind, Tool, ToolContext,
-    ToolOutput, ToolSpec, ZenkoError,
+    ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 pub struct ShellExecTool {
@@ -67,6 +67,10 @@ async fn format_completed_job(
 
 #[async_trait]
 impl Tool for ShellExecTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Execution
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "shell_exec".into(),

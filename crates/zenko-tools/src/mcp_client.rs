@@ -1200,6 +1200,14 @@ impl McpProxyTool {
 
 #[async_trait]
 impl Tool for McpProxyTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Mcp
+    }
+
+    fn is_available(&self, ctx: &zenko_core::ToolAvailabilityContext) -> bool {
+        ctx.has_mcp_servers
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         let annotated_read_only = self.meta.annotations.read_only_hint == Some(true)
             && self.meta.annotations.destructive_hint != Some(true);
@@ -1249,6 +1257,14 @@ impl McpResourceTool {
 
 #[async_trait]
 impl Tool for McpResourceTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Mcp
+    }
+
+    fn is_available(&self, ctx: &zenko_core::ToolAvailabilityContext) -> bool {
+        ctx.has_mcp_servers
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }

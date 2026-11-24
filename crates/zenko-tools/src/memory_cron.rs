@@ -80,6 +80,10 @@ fn resolve_target_doc(action: &str, args: &Value) -> Result<&'static str> {
 
 #[async_trait]
 impl Tool for MemoryTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Memory
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -412,6 +416,10 @@ impl SessionSearchTool {
 
 #[async_trait]
 impl Tool for SessionSearchTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Memory
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }
@@ -598,6 +606,14 @@ impl CronTool {
 
 #[async_trait]
 impl Tool for CronTool {
+    fn toolset(&self) -> zenko_core::ToolSet {
+        zenko_core::ToolSet::Automation
+    }
+
+    fn is_available(&self, ctx: &zenko_core::ToolAvailabilityContext) -> bool {
+        !ctx.is_subagent
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }

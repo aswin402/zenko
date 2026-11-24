@@ -1,4 +1,6 @@
 pub mod agents;
+pub mod batch;
+pub mod coerce;
 pub mod context_tools;
 pub mod fs_tools;
 pub mod git;
@@ -10,6 +12,7 @@ pub mod lsp;
 pub mod mcp_client;
 pub mod memory_cron;
 pub mod orchestrator_tools;
+pub mod outline;
 pub mod search;
 pub mod shell;
 pub mod web;
@@ -21,7 +24,8 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
 use zenko_core::{
     ContextBridge, GoalLoopBridge, JobSupervisor, OrchestratorBridge, SecretVault, SkillsConfig,
-    SubagentBridge, TOOL_TOOL_SEARCH, Tool, ToolExposure, ToolSpec, WebSearchConfig,
+    SubagentBridge, TOOL_TOOL_SEARCH, Tool, ToolAvailabilityContext, ToolBatchBridge, ToolExposure,
+    ToolSet, ToolSetSummary, ToolSpec, WebSearchConfig, find_toolset_descriptor,
 };
 use zenko_memory::{SnapshotManager, SqliteStore};
 
@@ -131,6 +135,11 @@ impl ToolRegistry {
         self.register(Arc::new(context_tools::ContextInspectTool::new(bridge)));
     }
 
+    /// Registers wave-aware `batch_tools` backed by `ToolBatchBridge`.
+    pub fn register_batch_tool(&self, bridge: Arc<dyn ToolBatchBridge>) {
+        self.register(Arc::new(batch::BatchToolsTool::new(bridge)));
+    }
+
     /// Registers Phase 5/5.5 async subagent orchestration tools (`spawn_agent`, `agent_list`,
     /// `agent_message`, `agent_wait`, `agent_kill`, `agent_worktree`) backed by `SubagentBridge`.
     pub fn register_subagent_tools(&self, bridge: Arc<dyn SubagentBridge>) {
@@ -174,26 +183,46 @@ impl ToolRegistry {
             .unwrap_or_default()
     }
 
-    /// Returns deterministic, cache-friendly `tools[]` for a session:
-    /// - When `deferred_enabled == false`, returns every registered tool.
-    /// - When `deferred_enabled == true`, returns all `Eager` tools in canonical order followed by
-    ///   any session-activated `Deferred` tools in canonical order.
+    /// Returns deterministic, cache-friendly `tools[]` for a session (unfiltered convenience).
     pub fn specs_for_session(
         &self,
         deferred_enabled: bool,
         activated_deferred: &BTreeSet<String>,
     ) -> Vec<ToolSpec> {
-        if !deferred_enabled {
-            return self.specs();
-        }
+        self.specs_for_session_filtered(
+            deferred_enabled,
+            activated_deferred,
+            &ToolAvailabilityContext::default(),
+            |_| true,
+        )
+    }
+
+    /// Returns deterministic, cache-friendly `tools[]` filtered by `is_available(&avail)` and `allow(spec)`.
+    pub fn specs_for_session_filtered<F>(
+        &self,
+        deferred_enabled: bool,
+        activated_deferred: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSpec>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut eager = Vec::new();
         let mut active_def = Vec::new();
         if let Ok(map) = self.tools.read() {
             for (name, tool) in map.iter() {
-                match (tool.exposure(), activated_deferred.contains(name)) {
-                    (ToolExposure::Eager, _) => eager.push(tool.spec()),
-                    (ToolExposure::Deferred, true) => active_def.push(tool.spec()),
-                    (ToolExposure::Deferred, false) => {}
+                if !tool.is_available(avail) {
+                    continue;
+                }
+                let spec = tool.spec();
+                if !allow(&spec) {
+                    continue;
+                }
+                match (deferred_enabled, tool.exposure(), activated_deferred.contains(name)) {
+                    (false, _, _) | (true, ToolExposure::Eager, _) => eager.push(spec),
+                    (true, ToolExposure::Deferred, true) => active_def.push(spec),
+                    (true, ToolExposure::Deferred, false) => {}
                 }
             }
         }
@@ -216,39 +245,158 @@ impl ToolRegistry {
         (eager, deferred)
     }
 
-    /// Formats a compact 1-line `<deferred_tools>` Tier-2 catalog listing all deferred tools
-    /// (keeping initial prompts lean while letting the agent discover capabilities via `tool_search`).
+    /// Formats a compact `<deferred_tools>` Tier-2 catalog listing all registered deferred tools.
     pub fn deferred_catalog_text(&self) -> Option<String> {
-        let mut lines = Vec::new();
+        self.deferred_catalog_text_filtered(&ToolAvailabilityContext {
+            has_mcp_servers: true,
+            is_subagent: false,
+            read_only: false,
+        }, |_| true)
+    }
+
+    /// Formats a compact ToolSet-grouped `<deferred_tools>` Tier-2 catalog strictly filtered by
+    /// `is_available(&avail)` and `allow(&spec)` so subagents and Plan Mode never see denied tools.
+    pub fn deferred_catalog_text_filtered<F>(
+        &self,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Option<String>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
+        let mut grouped: BTreeMap<ToolSet, Vec<String>> = BTreeMap::new();
         if let Ok(map) = self.tools.read() {
             for (name, tool) in map.iter() {
-                if tool.exposure() != ToolExposure::Deferred {
+                if tool.exposure() != ToolExposure::Deferred || !tool.is_available(avail) {
                     continue;
                 }
                 let spec = tool.spec();
+                if !allow(&spec) {
+                    continue;
+                }
                 let brief = spec
                     .description
                     .split('.')
                     .next()
                     .unwrap_or(&spec.description)
                     .trim();
-                lines.push(format!("- `{name}`: {brief}"));
+                grouped
+                    .entry(tool.toolset())
+                    .or_default()
+                    .push(format!("  - `{name}`: {brief}"));
             }
         }
-        match lines.is_empty() {
-            true => None,
-            false => Some(format!(
-                "<deferred_tools>\n\
-                 Additional specialized tools (invoke `{TOOL_TOOL_SEARCH}(query)` to load full schemas on demand):\n\
-                 {}\n\
-                 </deferred_tools>",
-                lines.join("\n")
-            )),
+        if grouped.is_empty() {
+            return None;
         }
+        let mut sections = Vec::with_capacity(grouped.len());
+        for (set, items) in grouped {
+            let desc = find_toolset_descriptor(set);
+            sections.push(format!("[{}] {}\n{}", desc.slug, desc.label, items.join("\n")));
+        }
+        Some(format!(
+            "<deferred_tools>\n\
+             Additional specialized tools grouped by ToolSet (invoke `{TOOL_TOOL_SEARCH}` with `query`, `toolset`, `names`, or call any listed tool directly):\n\
+             {}\n\
+             </deferred_tools>",
+            sections.join("\n")
+        ))
     }
 
-    /// Deterministic zero-regex BM25 + exact/prefix scorer ranking deferred tools against `query`.
+    /// Lists all `ToolSet` domains containing at least one tool permitted by `avail` + `allow`.
+    pub fn list_toolsets_filtered<F>(
+        &self,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSetSummary>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
+        let mut by_set: BTreeMap<ToolSet, (Vec<String>, Vec<String>)> = BTreeMap::new();
+        if let Ok(map) = self.tools.read() {
+            for (name, tool) in map.iter() {
+                if !tool.is_available(avail) {
+                    continue;
+                }
+                let spec = tool.spec();
+                if !allow(&spec) {
+                    continue;
+                }
+                let entry = by_set.entry(tool.toolset()).or_default();
+                match tool.exposure() {
+                    ToolExposure::Eager => entry.0.push(name.clone()),
+                    ToolExposure::Deferred => entry.1.push(name.clone()),
+                }
+            }
+        }
+        by_set
+            .into_iter()
+            .map(|(set, (eager_tools, deferred_tools))| {
+                let desc = find_toolset_descriptor(set);
+                ToolSetSummary {
+                    id: desc.slug.to_string(),
+                    label: desc.label.to_string(),
+                    description: desc.description.to_string(),
+                    eager_tools,
+                    deferred_tools,
+                }
+            })
+            .collect()
+    }
+
+    /// Returns closest permitted tool names when an unknown/misspelled tool name is called.
+    pub fn suggest_permitted_tools<F>(
+        &self,
+        unknown_name: &str,
+        max_results: usize,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<String>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
+        let names: Vec<String> = self
+            .tools
+            .read()
+            .map(|map| {
+                map.iter()
+                    .filter(|(_, t)| t.is_available(avail))
+                    .filter_map(|(name, t)| match allow(&t.spec()) {
+                        true => Some(name.clone()),
+                        false => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        coerce::suggest_similar_tools(unknown_name, &refs, max_results)
+    }
+
+    /// Deterministic zero-regex BM25 + exact/prefix scorer ranking all deferred tools against `query`.
     pub fn search_deferred_bm25(&self, query: &str, limit: usize) -> Vec<ToolSpec> {
+        self.search_deferred_bm25_filtered(
+            query,
+            limit,
+            &ToolAvailabilityContext {
+                has_mcp_servers: true,
+                is_subagent: false,
+                read_only: false,
+            },
+            |_| true,
+        )
+    }
+
+    /// Scope-aware BM25 search over permitted deferred tools (also indexing `ToolSet` slug & label).
+    pub fn search_deferred_bm25_filtered<F>(
+        &self,
+        query: &str,
+        limit: usize,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSpec>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let query_tokens = tokenize_ascii_terms(query);
         if query_tokens.is_empty() || limit == 0 {
             return Vec::new();
@@ -259,10 +407,17 @@ impl ToolRegistry {
             .read()
             .map(|map| {
                 map.values()
-                    .filter(|t| t.exposure() == ToolExposure::Deferred)
-                    .map(|t| {
+                    .filter(|t| t.exposure() == ToolExposure::Deferred && t.is_available(avail))
+                    .filter_map(|t| {
                         let spec = t.spec();
-                        let mut text = format!("{} {} ", spec.name, spec.description);
+                        if !allow(&spec) {
+                            return None;
+                        }
+                        let ts = find_toolset_descriptor(t.toolset());
+                        let mut text = format!(
+                            "{} {} {} {} ",
+                            spec.name, ts.slug, ts.label, spec.description
+                        );
                         if let Some(props) =
                             spec.parameters.get("properties").and_then(|p| p.as_object())
                         {
@@ -273,7 +428,7 @@ impl ToolRegistry {
                         }
                         let tokens = tokenize_ascii_terms(&text);
                         let lower_name = spec.name.to_ascii_lowercase();
-                        (spec, tokens, lower_name)
+                        Some((spec, tokens, lower_name))
                     })
                     .collect()
             })
@@ -334,6 +489,45 @@ impl ToolRegistry {
         });
         scored.into_iter().take(limit).map(|(_, s)| s).collect()
     }
+
+    /// Unified scope-aware selector combining `toolset`, `activate_all`, explicit `names`, and BM25 `query`.
+    pub fn select_deferred_by_scope<F>(
+        &self,
+        toolset: Option<ToolSet>,
+        activate_all: bool,
+        names: &[String],
+        query: Option<&str>,
+        limit: usize,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSpec>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
+        let mut selected: BTreeMap<String, ToolSpec> = BTreeMap::new();
+        if let Ok(map) = self.tools.read() {
+            for (name, tool) in map.iter() {
+                if tool.exposure() != ToolExposure::Deferred || !tool.is_available(avail) {
+                    continue;
+                }
+                let matches_set = activate_all || toolset.is_some_and(|ts| tool.toolset() == ts);
+                let matches_name = names.iter().any(|n| n.eq_ignore_ascii_case(name));
+                if !matches_set && !matches_name {
+                    continue;
+                }
+                let spec = tool.spec();
+                if allow(&spec) {
+                    selected.insert(spec.name.clone(), spec);
+                }
+            }
+        }
+        if let Some(q) = query {
+            for spec in self.search_deferred_bm25_filtered(q, limit, avail, &allow) {
+                selected.entry(spec.name.clone()).or_insert(spec);
+            }
+        }
+        selected.into_values().collect()
+    }
 }
 
 fn tokenize_ascii_terms(input: &str) -> Vec<String> {
@@ -369,10 +563,21 @@ mod tests {
         name: &'static str,
         desc: &'static str,
         exp: ToolExposure,
+        set: ToolSet,
+        requires_mcp: bool,
     }
 
     #[async_trait]
     impl Tool for DummyTool {
+        fn toolset(&self) -> ToolSet {
+            self.set
+        }
+        fn is_available(&self, ctx: &ToolAvailabilityContext) -> bool {
+            match self.requires_mcp {
+                true => ctx.has_mcp_servers,
+                false => true,
+            }
+        }
         fn exposure(&self) -> ToolExposure {
             self.exp
         }
@@ -390,22 +595,35 @@ mod tests {
     }
 
     #[test]
-    fn deferred_tool_loading_and_bm25_search_activate_only_relevant_schemas() {
+    fn deferred_tool_loading_toolsets_and_availability_filtering() {
         let reg = ToolRegistry::empty();
         reg.register(Arc::new(DummyTool {
             name: "read_file",
             desc: "Read workspace file lines",
             exp: ToolExposure::Eager,
+            set: ToolSet::CoreFs,
+            requires_mcp: false,
         }));
         reg.register(Arc::new(DummyTool {
             name: "cron_tool",
             desc: "Schedule recurring 24/7 cron jobs and scripts",
             exp: ToolExposure::Deferred,
+            set: ToolSet::Automation,
+            requires_mcp: false,
         }));
         reg.register(Arc::new(DummyTool {
             name: "web_fetch",
             desc: "Fetch HTTP and HTTPS web pages safely",
             exp: ToolExposure::Deferred,
+            set: ToolSet::Web,
+            requires_mcp: false,
+        }));
+        reg.register(Arc::new(DummyTool {
+            name: "mcp_resource",
+            desc: "Read MCP resources",
+            exp: ToolExposure::Deferred,
+            set: ToolSet::Mcp,
+            requires_mcp: true,
         }));
 
         let mut active = BTreeSet::new();
@@ -421,6 +639,32 @@ mod tests {
         let after = reg.specs_for_session(true, &active);
         assert_eq!(after.len(), 2);
         assert_eq!(after[1].name, "cron_tool");
-        assert!(reg.deferred_catalog_text().expect("catalog").contains("web_fetch"));
+
+        // Availability & role filtering hides unavailable MCP and disallowed automation tools.
+        let avail_no_mcp = ToolAvailabilityContext {
+            has_mcp_servers: false,
+            is_subagent: true,
+            read_only: true,
+        };
+        let cat = reg
+            .deferred_catalog_text_filtered(&avail_no_mcp, |s| s.name != "cron_tool")
+            .expect("catalog");
+        assert!(cat.contains("[web]"));
+        assert!(cat.contains("web_fetch"));
+        assert!(!cat.contains("cron_tool"));
+        assert!(!cat.contains("mcp_resource"));
+
+        // Selecting by ToolSet activates all permitted tools in that domain.
+        let web_only = reg.select_deferred_by_scope(
+            Some(ToolSet::Web),
+            false,
+            &[],
+            None,
+            5,
+            &avail_no_mcp,
+            |_| true,
+        );
+        assert_eq!(web_only.len(), 1);
+        assert_eq!(web_only[0].name, "web_fetch");
     }
 }

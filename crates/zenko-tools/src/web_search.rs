@@ -15,10 +15,11 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     DEFAULT_WEB_FETCH_USER_AGENT, Result, RiskLevel, SecretVault, TOOL_WEB_SEARCH, Tool,
-    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, VAULT_KEY_BRAVE_SEARCH,
-    VAULT_KEY_TAVILY_SEARCH, WEB_SEARCH_BRAVE_URL, WEB_SEARCH_DDG_URL, WEB_SEARCH_DEFAULT_LIMIT,
-    WEB_SEARCH_MAX_BYTES, WEB_SEARCH_MAX_LIMIT, WEB_SEARCH_TAVILY_URL, WebSearchConfig,
-    WebSearchResponse, WebSearchResultItem, ZenkoError, sanitize_untrusted_markup, scrub_secrets,
+    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec,
+    VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_TAVILY_SEARCH, WEB_SEARCH_BRAVE_URL, WEB_SEARCH_DDG_URL,
+    WEB_SEARCH_DEFAULT_LIMIT, WEB_SEARCH_MAX_BYTES, WEB_SEARCH_MAX_LIMIT, WEB_SEARCH_TAVILY_URL,
+    WebSearchConfig, WebSearchResponse, WebSearchResultItem, ZenkoError, sanitize_untrusted_markup,
+    scrub_secrets,
 };
 
 pub struct WebSearchTool {
@@ -56,6 +57,10 @@ impl WebSearchTool {
 
 #[async_trait]
 impl Tool for WebSearchTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Web
+    }
+
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Shared
     }

@@ -590,6 +590,24 @@ pub const TOOL_AGENT_MESSAGE: &str = "agent_message";
 pub const TOOL_AGENT_WAIT: &str = "agent_wait";
 pub const TOOL_AGENT_KILL: &str = "agent_kill";
 pub const TOOL_AGENT_WORKTREE: &str = "agent_worktree";
+pub const TOOL_BATCH_TOOLS: &str = "batch_tools";
+
+// Minicode Tool System v2 constants (zero hardcoding)
+pub const BATCH_TOOLS_MAX_CALLS: usize = 12;
+pub const BATCH_TOOLS_DEFAULT_STEP_CHARS: usize = 4_000;
+pub const BATCH_TOOLS_MAX_STEP_CHARS: usize = 16_000;
+pub const READ_FILE_MAX_RANGES: usize = 8;
+pub const HASH_EDIT_MAX_HUNKS: usize = 32;
+pub const HASH_EDIT_RECOVERY_RADIUS: usize = 4;
+pub const APPLY_PATCH_MAX_EDITS: usize = 32;
+pub const APPLY_PATCH_AMBIGUITY_MAX_LOCS: usize = 12;
+pub const OUTLINE_MAX_ENTRIES: usize = 250;
+pub const OUTLINE_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+pub const CODE_SEARCH_MAX_CONTEXT_LINES: usize = 5;
+pub const TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS: usize = 3;
+pub const TOOL_SCHEMA_HINT_MAX_PROPS: usize = 10;
+pub const TOOL_COERCE_MAX_DEPTH: usize = 8;
+pub const TOOL_COERCE_MAX_JSON_REPAIR_BYTES: usize = 256 * 1024;
 
 /// Declarative table of tools representing background-task or subagent orchestration/monitoring.
 /// When a running session has active jobs, active subagents, or any of these tools in flight,
@@ -750,6 +768,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_GIT,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,
+    TOOL_BATCH_TOOLS,
 ];
 pub const MUTATING_FILE_TOOLS: &[&str] = &["write_file", "hash_edit", "apply_patch"];
 pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];

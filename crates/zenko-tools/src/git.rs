@@ -12,7 +12,7 @@ use zenko_core::{
     GIT_ACTIONS, GIT_SENSITIVE_FILE_PATTERNS, GIT_TOOL_DEFAULT_BLAME_LINES,
     GIT_TOOL_DEFAULT_LOG_LIMIT, GIT_TOOL_MAX_LOG_LIMIT, GIT_TOOL_MAX_OUTPUT_CHARS,
     GIT_TOOL_TIMEOUT_SECS, GitAction, ResourceLockKey, Result, RiskLevel, TOOL_GIT, Tool,
-    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError,
+    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec, ZenkoError,
     is_git_tool_args_mutating,
 };
 
@@ -20,6 +20,10 @@ pub struct GitTool;
 
 #[async_trait]
 impl Tool for GitTool {
+    fn toolset(&self) -> ToolSet {
+        ToolSet::Git
+    }
+
     fn concurrency_for_args(&self, args: &Value) -> ToolConcurrency {
         match is_git_tool_args_mutating(args) {
             false => ToolConcurrency::Shared,

@@ -44,8 +44,8 @@ use tracing::{error, info, warn};
 use zenko_core::{
     APPROVAL_RESOLVER_CANCELLED, APPROVAL_RESOLVER_STEERED, APPROVAL_RESOLVER_TIMEOUT,
     ATTACH_DEFAULT_REPLAY_EVENTS, AgentEvent, ApprovalDecision, ApprovalRecord, ApprovalStatus,
-    BackgroundJobRecord, BackgroundJobStatus, CHECKPOINT_LABEL_MAX_CHARS,
-    CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS, ChatMessage, ChatRequest,
+    BackgroundJobRecord, BackgroundJobStatus, BatchToolRequest, BatchToolStepOutcome,
+    CHECKPOINT_LABEL_MAX_CHARS, CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS, ChatMessage, ChatRequest,
     ClarificationOption, CompactionCheckpointPayload, ContextBreakdown, ContextBridge, CronJob,
     CronKind, DEFAULT_APPROVAL_TIMEOUT_SECS, DEFAULT_CONTEXT_WINDOW_FALLBACK,
     DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_PAIRING_TTL_MINS,
@@ -109,10 +109,12 @@ use zenko_core::{
     SessionTask, AutoDispatchDecision, resolve_auto_send_mode,
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_GIT, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL,
-    TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
-    TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH,
-    TaskKind, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec, TriageReport,
+    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_MEMORY,
+    TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM,
+    TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
+    TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
+    ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
+    TriageReport,
     TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
     WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError,
     compact_preview, find_provider, find_subagent_role, is_git_tool_args_mutating,
@@ -124,7 +126,11 @@ use zenko_memory::{
 };
 use zenko_providers::{CompactModelRegistry, UnifiedLlmProvider};
 use zenko_tools::{
-    ToolRegistry, lsp::LspPoolManager, mcp_client::McpClientManager, memory_cron::MemoryTool,
+    ToolRegistry,
+    coerce::{coerce_and_repair_args, format_compact_schema_hint},
+    lsp::LspPoolManager,
+    mcp_client::McpClientManager,
+    memory_cron::MemoryTool,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -180,6 +186,76 @@ impl WakeupNotice {
     }
 }
 
+/// Single-source-of-truth session tool visibility & invocation scope shared across
+/// schema generation, `<deferred_tools>` catalogs, `tool_search`, unknown-tool fuzzy hints,
+/// and `batch_tools` inner execution (zero duplicated role/Plan policy logic).
+#[derive(Debug, Clone)]
+pub(crate) struct SessionToolScope {
+    pub role_id: Option<String>,
+    pub permission: PermissionMode,
+    pub custom_read_only: bool,
+    pub custom_tool_subset: HashSet<String>,
+    pub availability: ToolAvailabilityContext,
+}
+
+impl SessionToolScope {
+    pub(crate) fn permits_spec(&self, spec: &ToolSpec) -> bool {
+        if let Some(role_desc) = self.role_id.as_deref().and_then(find_subagent_role)
+            && !role_desc.permits_tool(&spec.name)
+        {
+            return false;
+        }
+        if (self.permission == PermissionMode::Plan || self.custom_read_only)
+            && !is_tool_allowed_in_plan_schema(spec)
+        {
+            return false;
+        }
+        if !self.custom_tool_subset.is_empty() && !self.custom_tool_subset.contains(&spec.name) {
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn permits_invocation(
+        &self,
+        tool_name: &str,
+        args: &Value,
+    ) -> std::result::Result<(), String> {
+        if !self.custom_tool_subset.is_empty() && !self.custom_tool_subset.contains(tool_name) {
+            return Err(format!(
+                "Tool `{tool_name}` is outside this session's scoped `tool_subset`."
+            ));
+        }
+        if let Some(role_desc) = self.role_id.as_deref().and_then(find_subagent_role) {
+            let mutating_mem = tool_name == TOOL_MEMORY
+                && is_memory_mutating_action(
+                    args.get("action").and_then(Value::as_str).unwrap_or(""),
+                );
+            let blocked_by_custom_ro = self.custom_read_only
+                && matches!(
+                    orchestrator::classify_tool_category(tool_name, args),
+                    orchestrator::ToolCategory::Mutation
+                );
+            if !role_desc.permits_tool(tool_name) || mutating_mem || blocked_by_custom_ro {
+                return Err(format!(
+                    "Subagent role `{}` policy denied tool `{}`.",
+                    role_desc.id, tool_name
+                ));
+            }
+        } else if self.custom_read_only
+            && matches!(
+                orchestrator::classify_tool_category(tool_name, args),
+                orchestrator::ToolCategory::Mutation
+            )
+        {
+            return Err(format!(
+                "Read-only session scope denied mutating tool `{tool_name}`."
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct SessionControl {
     steer_queue: Mutex<VecDeque<String>>,
@@ -187,6 +263,32 @@ struct SessionControl {
     active_tools: Mutex<HashMap<String, usize>>,
     pending_control: Mutex<Option<PendingControlShift>>,
     explicit_model_locked: AtomicBool,
+    active_scope: Mutex<Option<SessionToolScope>>,
+}
+
+/// RAII guard binding the live `SessionToolScope` while a turn executes (restores previous scope on drop).
+struct ActiveSessionScopeGuard {
+    ctrl: Arc<SessionControl>,
+    prev: Option<SessionToolScope>,
+}
+
+impl ActiveSessionScopeGuard {
+    fn enter(ctrl: Arc<SessionControl>, scope: SessionToolScope) -> Self {
+        let prev = ctrl
+            .active_scope
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.replace(scope));
+        Self { ctrl, prev }
+    }
+}
+
+impl Drop for ActiveSessionScopeGuard {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.ctrl.active_scope.lock() {
+            *slot = self.prev.take();
+        }
+    }
 }
 
 /// RAII multiset counter tracking in-flight tool names on a session (cleanup guaranteed on cancel/error).
@@ -380,6 +482,7 @@ impl AgentRuntime {
         let checkpoints = CheckpointManager::new(data_dir.clone(), store.clone(), events.clone());
         let subagents = Arc::new(SubagentSupervisor::new());
         let ctx_bridge = Arc::new(RuntimeContextBridge::new());
+        let batch_bridge = Arc::new(RuntimeBatchBridge::new());
         let subagent_bridge = Arc::new(RuntimeSubagentBridge::new());
         let goal_bridge = Arc::new(RuntimeGoalLoopBridge::new());
         let web_search_cfg = Arc::new(RwLock::new(config.web_search.clone()));
@@ -416,6 +519,7 @@ impl AgentRuntime {
             goal_bridge.clone() as Arc<dyn GoalLoopBridge>,
         );
         tool_reg.register_context_tools(ctx_bridge.clone() as Arc<dyn ContextBridge>);
+        tool_reg.register_batch_tool(batch_bridge.clone() as Arc<dyn ToolBatchBridge>);
         tool_reg.register_subagent_tools(subagent_bridge.clone() as Arc<dyn SubagentBridge>);
         tool_reg.register(Arc::new(MemoryTool::new_with_vault(
             store.clone(),
@@ -471,6 +575,7 @@ impl AgentRuntime {
             cached_models: Mutex::new(None),
         });
         ctx_bridge.bind(Arc::downgrade(&rt));
+        batch_bridge.bind(Arc::downgrade(&rt));
         subagent_bridge.bind(Arc::downgrade(&rt));
         goal_bridge.bind(Arc::downgrade(&rt));
         rt.clarifications.bind_runtime(Arc::downgrade(&rt));
@@ -1711,6 +1816,50 @@ impl AgentRuntime {
         let _ = self.wake_tx.send(parent_session_id.to_string());
     }
 
+    pub(crate) fn has_configured_mcp_servers(&self) -> bool {
+        self.mcp_servers_cfg
+            .read()
+            .map(|list| list.iter().any(|s| s.enabled))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn effective_session_scope(&self, session_id: &str) -> SessionToolScope {
+        let ctrl = self.session_control(session_id);
+        if let Ok(slot) = ctrl.active_scope.lock()
+            && let Some(scope) = slot.as_ref()
+        {
+            return scope.clone();
+        }
+        let sess = self.store.get_session(session_id).ok().flatten();
+        let role_id = sess.as_ref().and_then(|s| s.agent_role.clone());
+        let permission = sess
+            .as_ref()
+            .map(|s| s.permission_mode)
+            .unwrap_or_else(|| self.config().policy.mode);
+        let role_ro = role_id
+            .as_deref()
+            .and_then(find_subagent_role)
+            .is_some_and(|r| r.read_only);
+        SessionToolScope {
+            role_id: role_id.clone(),
+            permission,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext {
+                has_mcp_servers: self.has_configured_mcp_servers(),
+                is_subagent: role_id.is_some(),
+                read_only: permission == PermissionMode::Plan || role_ro,
+            },
+        }
+    }
+
+    pub(crate) fn coerce_tool_call_args(&self, tool_name: &str, args: Value) -> Value {
+        match self.tools.get(tool_name) {
+            Some(tool) => coerce_and_repair_args(args, &tool.spec().parameters),
+            None => args,
+        }
+    }
+
     pub fn cancel_all_sessions(&self) {
         if let Ok(map) = self.active_cancels.lock() {
             for (_, tok) in map.values() {
@@ -1754,7 +1903,7 @@ impl AgentRuntime {
 fn extract_edited_rel_paths(tool_name: &str, args: &Value) -> Vec<String> {
     let mut out = Vec::new();
     match tool_name {
-        "write_file" | "hash_edit" => {
+        "write_file" | "hash_edit" | "apply_patch" => {
             if let Some(p) = args
                 .get("path")
                 .and_then(Value::as_str)
@@ -1763,9 +1912,9 @@ fn extract_edited_rel_paths(tool_name: &str, args: &Value) -> Vec<String> {
             {
                 out.push(p.to_string());
             }
-        }
-        "apply_patch" => {
-            if let Some(patch) = args.get("patch").and_then(Value::as_str) {
+            if tool_name == "apply_patch"
+                && let Some(patch) = args.get("patch").and_then(Value::as_str)
+            {
                 for line in patch.lines() {
                     let trimmed = line.trim();
                     let rel = trimmed
@@ -1774,9 +1923,10 @@ fn extract_edited_rel_paths(tool_name: &str, args: &Value) -> Vec<String> {
                         .map(str::trim)
                         .filter(|s| !s.is_empty() && !s.starts_with("hub:"));
                     if let Some(p) = rel
-                        && !out.iter().any(|existing| existing == p) {
-                            out.push(p.to_string());
-                        }
+                        && !out.iter().any(|existing| existing == p)
+                    {
+                        out.push(p.to_string());
+                    }
                 }
             }
         }
@@ -1789,6 +1939,32 @@ fn is_workspace_mutating_call(tc: &ToolCall) -> Option<&str> {
     let name = tc.name.as_str();
     match name {
         n if MUTATING_FILE_TOOLS.contains(&n) => Some(n),
+        TOOL_BATCH_TOOLS => {
+            let calls = tc.arguments.get("calls").and_then(Value::as_array)?;
+            for item in calls {
+                let inner_name = item
+                    .get("tool")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if inner_name.is_empty() || inner_name == TOOL_BATCH_TOOLS {
+                    continue;
+                }
+                let inner_tc = ToolCall {
+                    id: String::new(),
+                    name: inner_name.to_string(),
+                    arguments: item
+                        .get("args")
+                        .or_else(|| item.get("arguments"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                };
+                if is_workspace_mutating_call(&inner_tc).is_some() {
+                    return Some(TOOL_BATCH_TOOLS);
+                }
+            }
+            None
+        }
         TOOL_SHELL_EXEC => {
             let cmd = tc
                 .arguments

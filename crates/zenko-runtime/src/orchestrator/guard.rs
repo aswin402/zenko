@@ -15,9 +15,9 @@ use zenko_core::{
     ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD, ORCH_TEXT_DOOM_MIN_LINE_CHARS,
     ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD, OrchestratorPhase, PLANNING_TOOLS,
     READ_ONLY_FIND_MUTATING_FLAGS, READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, TOOL_AGENT_KILL,
-    TOOL_AGENT_WORKTREE, TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY,
-    TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
-    VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
+    TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_JOB_WAIT,
+    TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC,
+    TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
     VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
     is_git_tool_args_mutating, is_goal_loop_args_mutating, is_memory_mutating_action,
     is_skill_manage_args_mutating,
@@ -93,6 +93,38 @@ fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
 
 /// Deterministic tool classifier driving the `OrchestratorPhase` state machine.
 pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategory {
+    if tool_name == TOOL_BATCH_TOOLS {
+        let Some(calls) = arguments.get("calls").and_then(Value::as_array) else {
+            return ToolCategory::ReadOnly;
+        };
+        let mut saw_verify = false;
+        let mut saw_plan = false;
+        for item in calls {
+            let inner_name = item
+                .get("tool")
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if inner_name == TOOL_BATCH_TOOLS || inner_name.is_empty() {
+                continue;
+            }
+            let inner_args = item
+                .get("args")
+                .or_else(|| item.get("arguments"))
+                .unwrap_or(&Value::Null);
+            match classify_tool_category(inner_name, inner_args) {
+                ToolCategory::Mutation => return ToolCategory::Mutation,
+                ToolCategory::Verification => saw_verify = true,
+                ToolCategory::Planning => saw_plan = true,
+                _ => {}
+            }
+        }
+        return match (saw_verify, saw_plan) {
+            (true, _) => ToolCategory::Verification,
+            (false, true) => ToolCategory::Planning,
+            (false, false) => ToolCategory::ReadOnly,
+        };
+    }
     match (
         MUTATING_FILE_TOOLS.contains(&tool_name) || is_mutating_scoped_tool_call(tool_name, arguments),
         PLANNING_TOOLS.contains(&tool_name),

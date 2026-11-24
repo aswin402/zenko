@@ -539,11 +539,6 @@ impl AgentRuntime {
             .as_deref()
             .or(session.agent_role.as_deref())
             .and_then(find_subagent_role);
-        let deferred_catalog = match cfg.context.deferred_tool_loading {
-            true => self.tools.deferred_catalog_text(),
-            false => None,
-        };
-        let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
         let effective_custom_read_only = opts.custom_read_only.unwrap_or(false);
         let custom_tool_subset: HashSet<String> = opts
             .custom_tool_subset
@@ -551,6 +546,28 @@ impl AgentRuntime {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        let session_scope = SessionToolScope {
+            role_id: active_role.map(|r| r.id.to_string()),
+            permission: effective_permission,
+            custom_read_only: effective_custom_read_only,
+            custom_tool_subset: custom_tool_subset.clone(),
+            availability: ToolAvailabilityContext {
+                has_mcp_servers: self.has_configured_mcp_servers(),
+                is_subagent: active_role.is_some(),
+                read_only: effective_permission == PermissionMode::Plan
+                    || effective_custom_read_only
+                    || active_role.is_some_and(|r| r.read_only),
+            },
+        };
+        let deferred_catalog = match cfg.context.deferred_tool_loading {
+            true => self
+                .tools
+                .deferred_catalog_text_filtered(&session_scope.availability, |spec| {
+                    session_scope.permits_spec(spec)
+                }),
+            false => None,
+        };
+        let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
         if let Some(role_desc) = active_role {
             let is_ro = role_desc.read_only || effective_custom_read_only;
             let custom_block = opts
@@ -575,6 +592,8 @@ impl AgentRuntime {
             effective_system_prompt.push_str(&format_output_schema_instruction(schema));
         }
         let session_ctrl = self.session_control(&session_id);
+        let _active_scope_guard =
+            ActiveSessionScopeGuard::enter(session_ctrl.clone(), session_scope.clone());
         session_ctrl
             .explicit_model_locked
             .store(orch.has_explicit_model_override, Ordering::Relaxed);
@@ -666,18 +685,12 @@ impl AgentRuntime {
             }
 
             let active_deferred = self.activated_deferred_for(&session_id);
-            let mut active_tool_specs = self
-                .tools
-                .specs_for_session(cfg.context.deferred_tool_loading, &active_deferred);
-            if let Some(role_desc) = active_role {
-                active_tool_specs.retain(|spec| role_desc.permits_tool(&spec.name));
-            }
-            if effective_permission == PermissionMode::Plan || effective_custom_read_only {
-                active_tool_specs.retain(is_tool_allowed_in_plan_schema);
-            }
-            if !custom_tool_subset.is_empty() {
-                active_tool_specs.retain(|spec| custom_tool_subset.contains(&spec.name));
-            }
+            let active_tool_specs = self.tools.specs_for_session_filtered(
+                cfg.context.deferred_tool_loading,
+                &active_deferred,
+                &session_scope.availability,
+                |spec| session_scope.permits_spec(spec),
+            );
             let prefix_tokens =
                 effective_sys_tokens + estimate_tool_specs_tokens(&active_tool_specs);
 
@@ -1275,41 +1288,23 @@ impl AgentRuntime {
             let mut phase_gate_event: Option<(&'static str, String, String)> = None;
             let mut saw_phase_gate_redirect = false;
 
-            for (idx, tc) in tool_calls.into_iter().enumerate() {
-                if let Some(role_desc) = active_role {
-                    // Hermes hygiene: ALL subagent roles may search/read memory, but NEVER mutate
-                    // durable global/project memory docs or entries (parent decides what is durable).
-                    let mutating_mem = tc.name == TOOL_MEMORY
-                        && is_memory_mutating_action(
-                            tc.arguments.get("action").and_then(Value::as_str).unwrap_or(""),
-                        );
-                    let outside_subset = !custom_tool_subset.is_empty()
-                        && !custom_tool_subset.contains(&tc.name);
-                    let blocked_by_custom_ro = effective_custom_read_only
-                        && matches!(
-                            orchestrator::classify_tool_category(&tc.name, &tc.arguments),
-                            orchestrator::ToolCategory::Mutation
-                        );
-                    if !role_desc.permits_tool(&tc.name)
-                        || mutating_mem
-                        || outside_subset
-                        || blocked_by_custom_ro
-                    {
-                        redirected_indexed.push((
-                            idx,
-                            ExecutedToolCall {
-                                tool_call_id: tc.id,
-                                tool_name: tc.name.clone(),
-                                arguments: tc.arguments,
-                                output: ToolOutput::err(format!(
-                                    "Subagent role `{}` policy denied tool `{}`.",
-                                    role_desc.id, tc.name
-                                )),
-                                duration_ms: 0,
-                            },
-                        ));
-                        continue;
-                    }
+            for (idx, mut tc) in tool_calls.into_iter().enumerate() {
+                // Schema-guided argument coercion & `_raw` JSON repair runs BEFORE role/policy
+                // inspection and wave lock classification so every downstream check sees clean args.
+                tc.arguments = self.coerce_tool_call_args(&tc.name, tc.arguments);
+
+                if let Err(denied) = session_scope.permits_invocation(&tc.name, &tc.arguments) {
+                    redirected_indexed.push((
+                        idx,
+                        ExecutedToolCall {
+                            tool_call_id: tc.id,
+                            tool_name: tc.name.clone(),
+                            arguments: tc.arguments,
+                            output: ToolOutput::err(denied),
+                            duration_ms: 0,
+                        },
+                    ));
+                    continue;
                 }
                 match active_role.is_none() && cfg.orchestrator.enabled && cfg.orchestrator.phase_gating {
                     true => match orch
@@ -1987,14 +1982,14 @@ impl AgentRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn execute_single_tool_call(
+    pub(super) async fn execute_single_tool_call(
         &self,
         cfg: &ZenkoConfig,
         session_id: &str,
         effective_permission: PermissionMode,
         tool_ctx: &ToolContext,
         headless_no_wait: bool,
-        tc: ToolCall,
+        mut tc: ToolCall,
         cancel: &CancellationToken,
     ) -> Result<ExecutedToolCall> {
         if cancel.is_cancelled() {
@@ -2002,20 +1997,56 @@ impl AgentRuntime {
         }
 
         let start_ts = Instant::now();
-        let args_preview = truncate_preview(&tc.arguments.to_string(), 320);
+        let scope = self.effective_session_scope(session_id);
 
         let Some(tool) = self.tools.get(&tc.name) else {
-            let err_out = ToolOutput::err(format!("Unknown tool: {}", tc.name));
+            let suggestions = self.tools.suggest_permitted_tools(
+                &tc.name,
+                TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS,
+                &scope.availability,
+                |spec| scope.permits_spec(spec),
+            );
+            let hint = match suggestions.is_empty() {
+                true => format!(
+                    "Unknown tool: `{}`. Use `{TOOL_TOOL_SEARCH}(action=\"list_toolsets\")` to inspect available tools.",
+                    tc.name
+                ),
+                false => format!(
+                    "Unknown tool: `{}`. Closest available tools: {}.",
+                    tc.name,
+                    suggestions
+                        .iter()
+                        .map(|s| format!("`{s}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
             return Ok(ExecutedToolCall {
                 tool_call_id: tc.id,
                 tool_name: tc.name,
                 arguments: tc.arguments,
-                output: err_out,
+                output: ToolOutput::err(hint),
                 duration_ms: 0,
             });
         };
 
+        if !tool.is_available(&scope.availability) {
+            return Ok(ExecutedToolCall {
+                tool_call_id: tc.id,
+                tool_name: tc.name.clone(),
+                arguments: tc.arguments,
+                output: ToolOutput::err(format!(
+                    "Tool `{}` is not available in the current session environment or scope.",
+                    tc.name
+                )),
+                duration_ms: 0,
+            });
+        }
+
         let spec = tool.spec();
+        tc.arguments = coerce_and_repair_args(tc.arguments, &spec.parameters);
+        let args_preview = truncate_preview(&tc.arguments.to_string(), 320);
+
         if self.tools.is_deferred(&tc.name) {
             let newly = self.activate_deferred_tools(session_id, std::slice::from_ref(&tc.name));
             if !newly.is_empty() {
@@ -2045,6 +2076,20 @@ impl AgentRuntime {
             json!({ "session_id": session_id, "args": tc.arguments }),
         )
         .await;
+
+        let format_tool_err = |err: ZenkoError| -> ToolOutput {
+            let base = format!("Tool error: {err}");
+            match err {
+                ZenkoError::Tool(_) => {
+                    let schema_hint = format_compact_schema_hint(&spec);
+                    match schema_hint.is_empty() {
+                        true => ToolOutput::err(base),
+                        false => ToolOutput::err(format!("{base}\n{schema_hint}")),
+                    }
+                }
+                _ => ToolOutput::err(base),
+            }
+        };
 
         let mut tool_output = match hook_res {
             Err(blocked) => ToolOutput::err(format!("Blocked by PreToolUse hook: {blocked}")),
@@ -2099,7 +2144,7 @@ impl AgentRuntime {
                                     Err(ZenkoError::Cancelled) => {
                                         return Err(ZenkoError::Cancelled);
                                     }
-                                    Err(e) => ToolOutput::err(format!("Tool error: {e}")),
+                                    Err(e) => format_tool_err(e),
                                 }
                             }
                             ApprovalDecision::Deny => {
@@ -2116,7 +2161,7 @@ impl AgentRuntime {
                         {
                             Ok(out) => out,
                             Err(ZenkoError::Cancelled) => return Err(ZenkoError::Cancelled),
-                            Err(e) => ToolOutput::err(format!("Tool error: {e}")),
+                            Err(e) => format_tool_err(e),
                         }
                     }
                 }
