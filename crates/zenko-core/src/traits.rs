@@ -2,11 +2,12 @@ use crate::error::Result;
 use crate::types::{
     AgentMailMessage, AgentMessageOptions, BackgroundJobRecord, BatchToolRequest,
     BatchToolStepOutcome, BrainstormSpec, ChatRequest, ClarificationAnswer, ClarificationOption,
-    ClarificationRecord, ContextBreakdown, ExecutionPlan, GoalLoopCreateRequest, GoalLoopPatch,
-    GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta, ModelInfo, OrchestrateControlReceipt,
-    OrchestrateControlRequest, SessionTask, SessionTaskPatch, SubagentRecord, SubagentSpawnRequest,
-    TaskKind, ToolAvailabilityContext, ToolConcurrency, ToolExposure, ToolOutput, ToolSet,
-    ToolSetSummary, ToolSpec, WorktreeDiffReport, WorktreePruneReport,
+    ClarificationRecord, ContextBreakdown, ExecutionPlan, FileFreshnessCheck,
+    GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta,
+    ModelInfo, OrchestrateControlReceipt, OrchestrateControlRequest, SessionTask, SessionTaskPatch,
+    SubagentRecord, SubagentSpawnRequest, TaskKind, ToolAvailabilityContext, ToolConcurrency,
+    ToolExposure, ToolOutput, ToolSet, ToolSetSummary, ToolSpec, WorktreeDiffReport,
+    WorktreePruneReport,
 };
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -33,6 +34,24 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<DeltaStream>;
 }
 
+/// Session-scoped file-freshness tracker bridging `zenko-runtime` and `zenko-tools`
+/// (Claude Code stale-read guard pattern with bounded RAM footprint).
+pub trait FileStateBridge: Send + Sync + std::fmt::Debug {
+    /// Records a known-good SHA-256 content fingerprint for a canonical path after read or write.
+    fn record_file_state(&self, session_id: &str, canonical_path: &Path, sha256: String, bytes: u64);
+
+    /// Removes tracking for a deleted file path.
+    fn forget_file_state(&self, session_id: &str, canonical_path: &Path);
+
+    /// Checks whether `current_sha256` matches the last observed state in `session_id`.
+    fn check_file_freshness(
+        &self,
+        session_id: &str,
+        canonical_path: &Path,
+        current_sha256: &str,
+    ) -> FileFreshnessCheck;
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub session_id: String,
@@ -48,6 +67,8 @@ pub struct ToolContext {
     /// Live signal triggered when a user/API requests demoting the active foreground
     /// command to an async background job without killing it.
     pub demote_bg: Arc<Notify>,
+    /// Optional session file-freshness tracker enforcing stale-read & blind-overwrite protection.
+    pub file_state: Option<Arc<dyn FileStateBridge>>,
 }
 
 #[async_trait]

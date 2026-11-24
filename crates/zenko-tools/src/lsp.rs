@@ -6,12 +6,16 @@
 //! - Automatic `didOpen`/`didChange` sync via SHA-256 content hashes + exact UTF-8 <-> UTF-16 columns.
 //! - Push (`textDocument/publishDiagnostics`) + pull (`textDocument/diagnostic`) freshness support.
 
+use crate::fs_tools::{
+    atomic_write, check_existing_file_freshness, forget_fresh_file_state, record_fresh_file_state,
+    unified_diff,
+};
 use crate::jail::resolve_readable_path;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,11 +26,12 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    LSP_ACTIONS, LSP_AUTO_DIAG_MAX_ITEMS, LSP_AUTO_DIAG_WAIT_MS, LSP_LOCATION_SNIPPET_MAX_BYTES,
-    LSP_MAX_FRAME_BYTES, LSP_MAX_RESULTS, LSP_SERVER_REGISTRY, LSP_STARTUP_TIMEOUT_SECS,
-    LSP_STDERR_RING_BYTES, LspAction, LspConfig, LspServerRuntimeStatus, Result, RiskLevel,
-    TOOL_LSP, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError,
-    find_lsp_server_by_extension, find_lsp_server_by_id,
+    FS_MAX_EDIT_FILE_BYTES, LSP_ACTIONS, LSP_AUTO_DIAG_MAX_ITEMS, LSP_AUTO_DIAG_WAIT_MS,
+    LSP_LOCATION_SNIPPET_MAX_BYTES, LSP_MAX_FRAME_BYTES, LSP_MAX_RESULTS, LSP_RENAME_MAX_EDITS,
+    LSP_RENAME_MAX_FILES, LSP_SERVER_REGISTRY, LSP_STARTUP_TIMEOUT_SECS, LSP_STDERR_RING_BYTES,
+    LspAction, LspConfig, LspServerRuntimeStatus, Result, RiskLevel, TOOL_LSP, Tool,
+    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError,
+    find_lsp_server_by_extension, find_lsp_server_by_id, is_lsp_tool_args_mutating,
 };
 
 #[derive(Debug, Clone)]
@@ -784,6 +789,13 @@ impl Tool for LspTool {
         ToolConcurrency::Shared
     }
 
+    fn concurrency_for_args(&self, args: &Value) -> ToolConcurrency {
+        match is_lsp_tool_args_mutating(args) {
+            true => ToolConcurrency::Global,
+            false => ToolConcurrency::Shared,
+        }
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Deferred
     }
@@ -795,18 +807,20 @@ impl Tool for LspTool {
             .collect();
         ToolSpec {
             name: TOOL_LSP.into(),
-            description: "IDE-grade semantic code intelligence via pooled local Language Servers (`rust-analyzer`, `typescript-language-server`, `pyright-langserver`, `gopls`, `clangd`): instant `diagnostics`, `definition`, `references`, `hover`, `document_symbols`, `workspace_symbols`, `incoming_calls`, `outgoing_calls`, and `status`.".into(),
+            description: "IDE-grade semantic code intelligence & workspace refactoring via pooled local Language Servers (`rust-analyzer`, `typescript-language-server`, `pyright-langserver`, `gopls`, `clangd`): `diagnostics`, `definition`, `type_definition`, `implementation`, `references`, `hover`, `document_symbols`, `workspace_symbols`, `incoming_calls`, `outgoing_calls`, `rename` (compiler-accurate multi-file WorkspaceEdit with optional `dry_run`), and `status`.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": action_enum,
-                        "description": "LSP code intelligence action."
+                        "description": "LSP code intelligence or refactoring action."
                     },
                     "path": { "type": "string", "description": "Workspace file path (required for file-scoped actions)." },
-                    "line": { "type": "integer", "description": "1-based line number (for definition, references, hover, calls)." },
-                    "column": { "type": "integer", "description": "1-based UTF-8 character column (for definition, references, hover, calls)." },
+                    "line": { "type": "integer", "description": "1-based line number (for definition, references, hover, calls, rename)." },
+                    "column": { "type": "integer", "description": "1-based UTF-8 character column (for definition, references, hover, calls, rename)." },
+                    "new_name": { "type": "string", "description": "New identifier name (required for `action=\"rename\"`)." },
+                    "dry_run": { "type": "boolean", "description": "For `action=\"rename\"`, preview the exact multi-file unified diff without writing to disk (default false)." },
                     "query": { "type": "string", "description": "Symbol query string (for `workspace_symbols`)." },
                     "server": { "type": "string", "description": "Optional explicit LSP server ID override (e.g. `rust-analyzer`)." }
                 },
@@ -973,7 +987,8 @@ impl Tool for LspTool {
             | LspAction::References
             | LspAction::Hover
             | LspAction::IncomingCalls
-            | LspAction::OutgoingCalls => {
+            | LspAction::OutgoingCalls
+            | LspAction::Rename => {
                 let line_1 = args
                     .get("line")
                     .and_then(Value::as_u64)
@@ -987,6 +1002,50 @@ impl Tool for LspTool {
                 let pos = to_lsp_position(&file_text, line_1, col_1);
 
                 match action {
+                    LspAction::Rename => {
+                        let new_name = args
+                            .get("new_name")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty() && !s.contains(['\n', '\r', '\0']))
+                            .ok_or_else(|| {
+                                ZenkoError::Tool(
+                                    "`new_name` (non-empty single-line identifier) is required for `lsp_tool(action=\"rename\")`".into(),
+                                )
+                            })?;
+                        let dry_run = args
+                            .get("dry_run")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        // Optional prepareRename probe: tolerates servers without prepareRename support.
+                        let _ = sess
+                            .request(
+                                "textDocument/prepareRename",
+                                json!({ "textDocument": { "uri": uri }, "position": pos }),
+                                timeout,
+                                cancel.clone(),
+                            )
+                            .await;
+                        let edit = sess
+                            .request(
+                                "textDocument/rename",
+                                json!({
+                                    "textDocument": { "uri": uri },
+                                    "position": pos,
+                                    "newName": new_name
+                                }),
+                                timeout,
+                                cancel,
+                            )
+                            .await?;
+                        if edit.is_null() {
+                            return Ok(ToolOutput::ok(
+                                "LSP server returned no edits for rename (symbol may not be renameable at this position).",
+                            ));
+                        }
+                        apply_lsp_workspace_edit(ctx, &ws_canon, &sess, &edit, new_name, dry_run)
+                            .await
+                    }
                     LspAction::Definition => {
                         let res = sess
                             .request(
@@ -1297,6 +1356,395 @@ fn hex_nibble(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone)]
+struct LspTextEditSpan {
+    start_line: usize,
+    start_utf16: usize,
+    end_line: usize,
+    end_utf16: usize,
+    new_text: String,
+}
+
+#[derive(Debug, Clone)]
+enum LspResourceOp {
+    Create { path: PathBuf, overwrite: bool },
+    Rename { old_path: PathBuf, new_path: PathBuf, overwrite: bool },
+    Delete { path: PathBuf },
+}
+
+fn file_uri_to_jailed_path(ws_canon: &Path, uri: &str) -> Result<PathBuf> {
+    let Some(stripped) = uri.strip_prefix("file://") else {
+        return Err(ZenkoError::PolicyDenied(format!(
+            "Refused non-file LSP WorkspaceEdit URI `{uri}`"
+        )));
+    };
+    let decoded = decode_uri_path(stripped);
+    let raw_path = PathBuf::from(&decoded);
+    let resolved = match raw_path.exists() {
+        true => raw_path.canonicalize()?,
+        false => {
+            let mut ancestor = raw_path.as_path();
+            let mut tail: Vec<std::ffi::OsString> = Vec::new();
+            while !ancestor.exists() {
+                let Some(name) = ancestor.file_name() else {
+                    return Err(ZenkoError::PolicyDenied(format!(
+                        "LSP WorkspaceEdit target `{decoded}` has no valid workspace ancestor"
+                    )));
+                };
+                tail.push(name.to_os_string());
+                let Some(parent) = ancestor.parent() else {
+                    break;
+                };
+                ancestor = parent;
+            }
+            let mut base = ancestor.canonicalize()?;
+            for seg in tail.into_iter().rev() {
+                base.push(seg);
+            }
+            base
+        }
+    };
+    match resolved.starts_with(ws_canon) {
+        true => Ok(resolved),
+        false => Err(ZenkoError::PolicyDenied(format!(
+            "LSP WorkspaceEdit attempted to modify path outside workspace jail: `{}`",
+            resolved.display()
+        ))),
+    }
+}
+
+fn parse_lsp_text_edit(val: &Value) -> Result<LspTextEditSpan> {
+    let range = val
+        .get("range")
+        .ok_or_else(|| ZenkoError::Tool("LSP TextEdit missing `range`".into()))?;
+    let start = range
+        .get("start")
+        .ok_or_else(|| ZenkoError::Tool("LSP TextEdit missing `range.start`".into()))?;
+    let end = range
+        .get("end")
+        .ok_or_else(|| ZenkoError::Tool("LSP TextEdit missing `range.end`".into()))?;
+    let start_line = start.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let start_utf16 = start.get("character").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let end_line = end.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let end_utf16 = end.get("character").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let new_text = val
+        .get("newText")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ZenkoError::Tool("LSP TextEdit missing `newText`".into()))?
+        .to_string();
+    Ok(LspTextEditSpan {
+        start_line,
+        start_utf16,
+        end_line,
+        end_utf16,
+        new_text,
+    })
+}
+
+/// Converts a 0-based LSP `(line, utf16_col)` position deterministically into a UTF-8 byte offset.
+pub fn lsp_position_to_byte_offset(text: &str, line_0: usize, utf16_col: usize) -> usize {
+    let mut line_starts: Vec<usize> = vec![0];
+    for (idx, b) in text.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(idx + 1);
+        }
+    }
+    let Some(&start_byte) = line_starts.get(line_0) else {
+        return text.len();
+    };
+    let next_start = line_starts.get(line_0 + 1).copied().unwrap_or(text.len());
+    let raw_slice = &text[start_byte..next_start];
+    let clean_slice = raw_slice.trim_end_matches(['\r', '\n']);
+
+    let mut units = 0usize;
+    let mut byte_in_line = 0usize;
+    for (b_idx, ch) in clean_slice.char_indices() {
+        if units >= utf16_col {
+            return start_byte + b_idx;
+        }
+        let len16 = ch.len_utf16();
+        if units + len16 > utf16_col {
+            return start_byte + b_idx;
+        }
+        units += len16;
+        byte_in_line = b_idx + ch.len_utf8();
+    }
+    start_byte + byte_in_line
+}
+
+fn apply_lsp_edits_to_text(
+    rel_display: &str,
+    original: &str,
+    edits: &[LspTextEditSpan],
+) -> Result<String> {
+    let mut resolved: Vec<(usize, usize, &str)> = Vec::with_capacity(edits.len());
+    for e in edits {
+        let start = lsp_position_to_byte_offset(original, e.start_line, e.start_utf16);
+        let end = lsp_position_to_byte_offset(original, e.end_line, e.end_utf16);
+        if start > end || end > original.len() {
+            return Err(ZenkoError::Tool(format!(
+                "LSP returned out-of-order range in `{rel_display}` ({start}..{end})"
+            )));
+        }
+        resolved.push((start, end, e.new_text.as_str()));
+    }
+    resolved.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for win in resolved.windows(2) {
+        let (later_start, _, _) = win[0];
+        let (_, earlier_end, _) = win[1];
+        if earlier_end > later_start {
+            return Err(ZenkoError::Tool(format!(
+                "LSP returned overlapping text edits in `{rel_display}`"
+            )));
+        }
+    }
+    let mut out = original.to_string();
+    for (start, end, replacement) in resolved {
+        out.replace_range(start..end, replacement);
+    }
+    Ok(out)
+}
+
+async fn apply_lsp_workspace_edit(
+    ctx: &ToolContext,
+    ws_canon: &Path,
+    sess: &LspClientSession,
+    workspace_edit: &Value,
+    new_name: &str,
+    dry_run: bool,
+) -> Result<ToolOutput> {
+    let mut text_edits_by_path: BTreeMap<PathBuf, Vec<LspTextEditSpan>> = BTreeMap::new();
+    let mut resource_ops: Vec<LspResourceOp> = Vec::new();
+    let mut total_edits = 0usize;
+
+    match (
+        workspace_edit.get("documentChanges").and_then(Value::as_array),
+        workspace_edit.get("changes").and_then(Value::as_object),
+    ) {
+        (Some(doc_changes), _) => {
+            for item in doc_changes {
+                match item.get("kind").and_then(Value::as_str) {
+                    Some("create") => {
+                        let uri = item.get("uri").and_then(Value::as_str).unwrap_or("");
+                        let path = file_uri_to_jailed_path(ws_canon, uri)?;
+                        let overwrite = item
+                            .get("options")
+                            .and_then(|o| o.get("overwrite"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        resource_ops.push(LspResourceOp::Create { path, overwrite });
+                    }
+                    Some("rename") => {
+                        let old_uri = item.get("oldUri").and_then(Value::as_str).unwrap_or("");
+                        let new_uri = item.get("newUri").and_then(Value::as_str).unwrap_or("");
+                        let old_path = file_uri_to_jailed_path(ws_canon, old_uri)?;
+                        let new_path = file_uri_to_jailed_path(ws_canon, new_uri)?;
+                        let overwrite = item
+                            .get("options")
+                            .and_then(|o| o.get("overwrite"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        resource_ops.push(LspResourceOp::Rename {
+                            old_path,
+                            new_path,
+                            overwrite,
+                        });
+                    }
+                    Some("delete") => {
+                        let uri = item.get("uri").and_then(Value::as_str).unwrap_or("");
+                        let path = file_uri_to_jailed_path(ws_canon, uri)?;
+                        resource_ops.push(LspResourceOp::Delete { path });
+                    }
+                    _ => {
+                        if let Some(uri) = item
+                            .get("textDocument")
+                            .and_then(|td| td.get("uri"))
+                            .and_then(Value::as_str)
+                            && let Some(edits_arr) = item.get("edits").and_then(Value::as_array)
+                        {
+                            let path = file_uri_to_jailed_path(ws_canon, uri)?;
+                            let entry = text_edits_by_path.entry(path).or_default();
+                            for e in edits_arr {
+                                entry.push(parse_lsp_text_edit(e)?);
+                                total_edits += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (None, Some(changes_map)) => {
+            for (uri, edits_val) in changes_map {
+                let Some(edits_arr) = edits_val.as_array() else {
+                    continue;
+                };
+                let path = file_uri_to_jailed_path(ws_canon, uri)?;
+                let entry = text_edits_by_path.entry(path).or_default();
+                for e in edits_arr {
+                    entry.push(parse_lsp_text_edit(e)?);
+                    total_edits += 1;
+                }
+            }
+        }
+        (None, None) => {}
+    }
+
+    if text_edits_by_path.is_empty() && resource_ops.is_empty() {
+        return Ok(ToolOutput::ok(
+            "LSP rename produced zero edits across the workspace.",
+        ));
+    }
+    if text_edits_by_path.len() + resource_ops.len() > LSP_RENAME_MAX_FILES {
+        return Ok(ToolOutput::err(format!(
+            "Refused LSP rename: touches {} files (exceeds safety limit {LSP_RENAME_MAX_FILES}).",
+            text_edits_by_path.len() + resource_ops.len()
+        )));
+    }
+    if total_edits > LSP_RENAME_MAX_EDITS {
+        return Ok(ToolOutput::err(format!(
+            "Refused LSP rename: {total_edits} text edits exceed safety limit {LSP_RENAME_MAX_EDITS}."
+        )));
+    }
+
+    // Phase 1: Pre-validate all file edits in memory before mutating a single byte on disk.
+    let mut prepared_writes: Vec<(PathBuf, String, String, String, usize)> = Vec::new();
+    for (abs_path, edits) in text_edits_by_path {
+        let rel = abs_path
+            .strip_prefix(ws_canon)
+            .unwrap_or(&abs_path)
+            .display()
+            .to_string();
+        let meta = tokio::fs::metadata(&abs_path).await?;
+        if meta.len() > FS_MAX_EDIT_FILE_BYTES {
+            return Ok(ToolOutput::err(format!(
+                "Refused LSP rename on `{rel}`: file size ({} bytes) exceeds edit safety limit.",
+                meta.len()
+            )));
+        }
+        let old = tokio::fs::read_to_string(&abs_path).await?;
+        if let Err(stale) = check_existing_file_freshness(ctx, &rel, &abs_path, &old, true) {
+            return Ok(ToolOutput::err(stale));
+        }
+        let next = apply_lsp_edits_to_text(&rel, &old, &edits)?;
+        prepared_writes.push((abs_path, rel, old, next, edits.len()));
+    }
+
+    // Build unified diffs for both dry_run and live commit.
+    let mut diffs: Vec<String> = Vec::with_capacity(prepared_writes.len() + resource_ops.len());
+    let mut edited_files: Vec<String> = Vec::new();
+    let mut deleted_files: Vec<String> = Vec::new();
+
+    for (_, rel, old, next, _) in &prepared_writes {
+        diffs.push(unified_diff(rel, old, next));
+        edited_files.push(rel.clone());
+    }
+
+    if dry_run {
+        let summary_rows: Vec<String> = prepared_writes
+            .iter()
+            .map(|(_, rel, _, _, count)| format!("- `{rel}` ({count} edit(s))"))
+            .collect();
+        let mut out = ToolOutput::ok_with_diff(
+            format!(
+                "Dry-run LSP rename to `{new_name}`: would apply {total_edits} edit(s) across {} file(s) and {} file op(s) (no files modified):\n{}",
+                prepared_writes.len(),
+                resource_ops.len(),
+                summary_rows.join("\n")
+            ),
+            diffs.join("\n"),
+        );
+        out.metadata = Some(json!({
+            "dry_run": true,
+            "new_name": new_name,
+            "edited_files": edited_files,
+            "total_edits": total_edits,
+        }));
+        return Ok(out);
+    }
+
+    // Phase 2: Atomic commit + FileStateBridge sync + LSP didChange sync.
+    for (abs_path, _, _, next, _) in &prepared_writes {
+        atomic_write(abs_path, next).await?;
+        record_fresh_file_state(ctx, abs_path, next);
+        let _ = sess.ensure_document_synced(abs_path).await;
+    }
+
+    for op in resource_ops {
+        match op {
+            LspResourceOp::Create { path, overwrite } => {
+                if !path.exists() || overwrite {
+                    atomic_write(&path, "").await?;
+                    record_fresh_file_state(ctx, &path, "");
+                    let rel = path
+                        .strip_prefix(ws_canon)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string();
+                    edited_files.push(rel);
+                }
+            }
+            LspResourceOp::Rename {
+                old_path,
+                new_path,
+                overwrite,
+            } => {
+                if old_path.is_file() && (!new_path.exists() || overwrite) {
+                    let body = tokio::fs::read_to_string(&old_path).await.unwrap_or_default();
+                    atomic_write(&new_path, &body).await?;
+                    tokio::fs::remove_file(&old_path).await?;
+                    forget_fresh_file_state(ctx, &old_path);
+                    record_fresh_file_state(ctx, &new_path, &body);
+                    let old_rel = old_path
+                        .strip_prefix(ws_canon)
+                        .unwrap_or(&old_path)
+                        .display()
+                        .to_string();
+                    let new_rel = new_path
+                        .strip_prefix(ws_canon)
+                        .unwrap_or(&new_path)
+                        .display()
+                        .to_string();
+                    deleted_files.push(old_rel);
+                    edited_files.push(new_rel);
+                }
+            }
+            LspResourceOp::Delete { path } => {
+                if path.is_file() {
+                    tokio::fs::remove_file(&path).await?;
+                    forget_fresh_file_state(ctx, &path);
+                    let rel = path
+                        .strip_prefix(ws_canon)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string();
+                    deleted_files.push(rel);
+                }
+            }
+        }
+    }
+
+    let summary_rows: Vec<String> = prepared_writes
+        .iter()
+        .map(|(_, rel, _, _, count)| format!("- `{rel}` ({count} edit(s))"))
+        .collect();
+    let mut out = ToolOutput::ok_with_diff(
+        format!(
+            "Renamed symbol to `{new_name}` via LSP ({total_edits} edit(s) across {} file(s)):\n{}",
+            prepared_writes.len(),
+            summary_rows.join("\n")
+        ),
+        diffs.join("\n"),
+    );
+    out.metadata = Some(json!({
+        "dry_run": false,
+        "new_name": new_name,
+        "edited_files": edited_files,
+        "deleted_files": deleted_files,
+        "total_edits": total_edits,
+    }));
+    Ok(out)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1612,6 +2060,12 @@ while True:
         send_msg({'jsonrpc': '2.0', 'id': mid, 'result': [{'uri': uri, 'range': {'start': {'line': 0, 'character': 3}, 'end': {'line': 0, 'character': 8}}}]})
     elif m == 'textDocument/documentSymbol':
         send_msg({'jsonrpc': '2.0', 'id': mid, 'result': [{'name': 'hello', 'kind': 12, 'range': {'start': {'line': 0, 'character': 0}, 'end': {'line': 0, 'character': 24}}, 'selectionRange': {'start': {'line': 0, 'character': 3}, 'end': {'line': 0, 'character': 8}}}]})
+    elif m == 'textDocument/prepareRename':
+        send_msg({'jsonrpc': '2.0', 'id': mid, 'result': {'start': {'line': 0, 'character': 3}, 'end': {'line': 0, 'character': 8}}})
+    elif m == 'textDocument/rename':
+        uri = msg['params']['textDocument']['uri']
+        nn = msg['params']['newName']
+        send_msg({'jsonrpc': '2.0', 'id': mid, 'result': {'changes': {uri: [{'range': {'start': {'line': 0, 'character': 3}, 'end': {'line': 0, 'character': 8}}, 'newText': nn}]}}})
     elif m == 'shutdown':
         send_msg({'jsonrpc': '2.0', 'id': mid, 'result': None})
     elif m == 'exit':
@@ -1644,6 +2098,7 @@ while True:
             max_output_bytes: 64 * 1024,
             headless_no_wait: true,
             demote_bg: Arc::new(Notify::new()),
+            file_state: None,
         };
 
         let diag = tool
@@ -1686,6 +2141,38 @@ while True:
             .await
             .expect("type_def");
         assert!(td.content.contains("main.rs:1:4"), "td={}", td.content);
+
+        // LSP semantic rename: dry_run previews diff without mutating disk, then live rename updates file!
+        let dry = tool
+            .execute(
+                &ctx,
+                json!({"action": "rename", "path": "main.rs", "line": 1, "column": 4, "new_name": "greet_world", "dry_run": true}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("dry_rename");
+        assert!(!dry.is_error, "dry err={}", dry.content);
+        assert!(dry.content.contains("Dry-run"), "dry={}", dry.content);
+        assert!(
+            std::fs::read_to_string(dir.join("main.rs"))
+                .expect("read")
+                .contains("fn hello()"),
+            "dry_run must not touch disk"
+        );
+
+        let renamed = tool
+            .execute(
+                &ctx,
+                json!({"action": "rename", "path": "main.rs", "line": 1, "column": 4, "new_name": "greet_world"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("rename");
+        assert!(!renamed.is_error, "rename err={}", renamed.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("main.rs")).expect("read"),
+            "fn greet_world() -> u32 { 42 }\n"
+        );
 
         // Stale diagnostic invalidation + Oh My Pi warm Diagnostics-on-Edit + UTF-16 -> UTF-8 column mapping!
         std::fs::write(dir.join("main.rs"), "let 🚀BROKEN_TYPE = 1;\n").expect("mutate");

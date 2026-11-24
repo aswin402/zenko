@@ -1,3 +1,4 @@
+use crate::jail::resolve_workspace_or_hub_path;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::process::Stdio;
@@ -74,11 +75,12 @@ impl Tool for ShellExecTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_SHELL_EXEC.into(),
-            description: "Execute a shell command inside the workspace with sanitized environment variables (no secrets exposed), timeout, output bounds, live foreground-to-background demotion, and optional async background execution (`run_in_background` or `auto_background_after_secs`).".into(),
+            description: "Execute a shell command inside the workspace (or an explicit workspace/hub-jailed `cwd` subdirectory) with sanitized environment variables (no secrets exposed), timeout, output bounds, live foreground-to-background demotion, and optional async background execution (`run_in_background` or `auto_background_after_secs`).".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to run via bash/sh" },
+                    "cwd": { "type": "string", "description": "Optional working directory relative to workspace (or `hub:...`), strictly jailed inside workspace/hub" },
                     "kind": { "type": "string", "enum": ["shell", "build", "dev", "debug", "script", "cron", "browser", "subagent"], "description": "Optional ZenkoTasks category (auto-inferred from command if omitted)" },
                     "label": { "type": "string", "description": "Optional human-readable task label" },
                     "timeout_secs": { "type": "integer", "description": "Optional foreground timeout override in seconds" },
@@ -101,6 +103,33 @@ impl Tool for ShellExecTool {
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| ZenkoError::Tool("missing `command`".into()))?;
+        let exec_dir = match args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(rel_cwd) => {
+                let resolved = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    rel_cwd,
+                    true,
+                )?;
+                match tokio::fs::metadata(&resolved).await {
+                    Ok(meta) if meta.is_dir() => resolved,
+                    Ok(_) => {
+                        return Ok(ToolOutput::err(format!(
+                            "`cwd` `{rel_cwd}` exists but is not a directory."
+                        )));
+                    }
+                    Err(e) => {
+                        return Ok(ToolOutput::err(format!("Invalid `cwd` `{rel_cwd}`: {e}")));
+                    }
+                }
+            }
+            None => ctx.workspace_dir.clone(),
+        };
         let run_in_background = args
             .get("run_in_background")
             .and_then(Value::as_bool)
@@ -140,7 +169,7 @@ impl Tool for ShellExecTool {
                     .spawn_shell(
                         &ctx.session_id,
                         cmd_str,
-                        &ctx.workspace_dir,
+                        &exec_dir,
                         task_kind,
                         task_label,
                         true,
@@ -167,7 +196,7 @@ impl Tool for ShellExecTool {
                     .spawn_shell(
                         &ctx.session_id,
                         cmd_str,
-                        &ctx.workspace_dir,
+                        &exec_dir,
                         task_kind,
                         task_label,
                         false,
@@ -231,7 +260,7 @@ impl Tool for ShellExecTool {
         let mut cmd = Command::new(SHELL_BIN_UNIX);
         cmd.arg("-c")
             .arg(cmd_str)
-            .current_dir(&ctx.workspace_dir)
+            .current_dir(&exec_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -295,5 +324,51 @@ impl Tool for ShellExecTool {
             true => Ok(ToolOutput::ok(combined)),
             false => Ok(ToolOutput::err(combined)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shell_exec_honors_jailed_cwd_and_blocks_escape() {
+        let dir = std::env::temp_dir().join(format!("zenko_shell_cwd_{}", zenko_core::new_id()));
+        let sub = dir.join("subcrate");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        let ctx = ToolContext {
+            session_id: "s1".into(),
+            workspace_dir: dir.clone(),
+            data_dir: dir.clone(),
+            hub_dir: dir.clone(),
+            shell_timeout_secs: 10,
+            auto_background_after_secs: 0,
+            max_output_bytes: 8192,
+            headless_no_wait: true,
+            demote_bg: Arc::new(tokio::sync::Notify::new()),
+            file_state: None,
+        };
+        let tool = ShellExecTool::new(None);
+        let ok = tool
+            .execute(
+                &ctx,
+                json!({ "command": "pwd", "cwd": "subcrate" }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("pwd");
+        assert!(!ok.is_error, "err={}", ok.content);
+        assert!(ok.content.contains("subcrate"), "out={}", ok.content);
+
+        let escaped = tool
+            .execute(
+                &ctx,
+                json!({ "command": "pwd", "cwd": "../../.." }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(escaped.is_err(), "cwd escape must be rejected by jail");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

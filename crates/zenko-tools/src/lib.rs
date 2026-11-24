@@ -1,11 +1,13 @@
 pub mod agents;
 pub mod batch;
+pub mod codex_patch;
 pub mod coerce;
 pub mod context_tools;
 pub mod fs_tools;
 pub mod git;
 pub mod glob;
 pub mod goals;
+pub mod html_md;
 pub mod jail;
 pub mod jobs;
 pub mod lsp;

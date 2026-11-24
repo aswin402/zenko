@@ -2855,6 +2855,7 @@ pub enum LspAction {
     WorkspaceSymbols,
     IncomingCalls,
     OutgoingCalls,
+    Rename,
 }
 
 pub const LSP_ACTIONS: &[&str] = &[
@@ -2869,6 +2870,7 @@ pub const LSP_ACTIONS: &[&str] = &[
     "workspace_symbols",
     "incoming_calls",
     "outgoing_calls",
+    "rename",
 ];
 
 impl LspAction {
@@ -2891,6 +2893,7 @@ impl LspAction {
             "workspace_symbols" | "workspacesymbol" => Some(Self::WorkspaceSymbols),
             "incoming_calls" | "incomingcalls" => Some(Self::IncomingCalls),
             "outgoing_calls" | "outgoingcalls" => Some(Self::OutgoingCalls),
+            "rename" | "rename_symbol" | "renamesymbol" => Some(Self::Rename),
             _ => None,
         }
     }
@@ -2908,8 +2911,132 @@ impl LspAction {
             Self::WorkspaceSymbols => "workspace_symbols",
             Self::IncomingCalls => "incoming_calls",
             Self::OutgoingCalls => "outgoing_calls",
+            Self::Rename => "rename",
         }
     }
+}
+
+/// Evaluates whether an `lsp_tool` invocation mutates workspace files (shared across ExecPolicy,
+/// Plan Mode, Checkpoint capture, ExecutionGuard, and ToolConcurrency — zero duplicated checks).
+pub fn is_lsp_tool_args_mutating(args: &serde_json::Value) -> bool {
+    let action = args
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(LspAction::parse);
+    match action {
+        Some(LspAction::Rename) => !args
+            .get("dry_run")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Declarative per-hunk edit operation for `hash_edit` (Oh My Pi Hashline pattern).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HashEditOp {
+    #[default]
+    Replace,
+    InsertAfter,
+    InsertBefore,
+    Delete,
+}
+
+impl HashEditOp {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "replace" => Some(Self::Replace),
+            "insert_after" | "insertafter" | "after" => Some(Self::InsertAfter),
+            "insert_before" | "insertbefore" | "before" => Some(Self::InsertBefore),
+            "delete" | "remove" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Replace => "replace",
+            Self::InsertAfter => "insert_after",
+            Self::InsertBefore => "insert_before",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// Declarative file-level action for atomic multi-file `apply_patch` transactions (Codex pattern).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PatchFileAction {
+    #[default]
+    Update,
+    Create,
+    Delete,
+    Move,
+}
+
+impl PatchFileAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "update" | "edit" | "modify" => Some(Self::Update),
+            "create" | "add" => Some(Self::Create),
+            "delete" | "remove" => Some(Self::Delete),
+            "move" | "rename" => Some(Self::Move),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Create => "create",
+            Self::Delete => "delete",
+            Self::Move => "move",
+        }
+    }
+}
+
+/// Declarative output format for `web_fetch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebFetchFormat {
+    #[default]
+    Markdown,
+    Text,
+    Raw,
+}
+
+impl WebFetchFormat {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "markdown" | "md" => Some(Self::Markdown),
+            "text" | "plain" => Some(Self::Text),
+            "raw" => Some(Self::Raw),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Text => "text",
+            Self::Raw => "raw",
+        }
+    }
+}
+
+/// Session-scoped file-freshness check outcome (Claude Code stale-read guard pattern).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileFreshnessCheck {
+    /// On-disk SHA-256 matches the last recorded session read/write snapshot.
+    Fresh,
+    /// Target file exists on disk and has not been read or written in this session.
+    UnreadExisting,
+    /// Target file was previously read/written in this session, but changed externally on disk.
+    ExternallyModified {
+        recorded_sha256: String,
+        current_sha256: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

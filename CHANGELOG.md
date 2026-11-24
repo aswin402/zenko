@@ -4,6 +4,30 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.18] - 2026-11-24
+
+Upgraded Zenko's minicode tool system and runtime dispatch pipeline into **Minicode Tool Architecture v3**, synthesizing patterns from Claude Code, OpenAI Codex CLI, and Oh My Pi in 100% pure Rust with zero hardcoding, zero `if/else` ladders, zero ad-hoc regex, and zero `/commands`.
+
+### Added
+- **Session File-Freshness & Stale-Read Guard (`SessionFileTracker`, `FileStateBridge` across `zenko-core`, `zenko-tools`, `zenko-runtime`):**
+  - Added bounded LRU `SessionFileTracker` (`crates/zenko-runtime/src/file_state.rs`) wired into `ToolContext`, recording single-pass streaming SHA-256 content fingerprints on `read_file` and synchronizing post-mutation fingerprints on `write_file`, `hash_edit`, `apply_patch`, and `lsp_tool(action="rename")`.
+  - Enforced **Guarded Freedom** on `write_file` (blocks blind overwrites of existing unread files with an inline hash-anchored preview unless `overwrite: true` is passed) and strict external-drift detection across `write_file`, `apply_patch`, and `lsp_tool(action="rename")` so out-of-band disk edits are never silently clobbered.
+- **Two-Phase Atomic Multi-File `apply_patch` & Codex Patch Grammar (`crates/zenko-tools/src/codex_patch.rs`, `fs_tools.rs`):**
+  - Added a pure-Rust, zero-regex finite-state parser for OpenAI Codex's native `*** Begin Patch` / `*** Add File:` / `*** Update File:` / `*** Move to:` / `*** Delete File:` / `*** End Patch` multi-file patch grammar.
+  - Extended `apply_patch` with structured multi-file `files[]` transactions (`create`, `update`, `move`, `delete`) alongside single-file mode, executing two-phase validation completely in memory before touching disk (zero partial writes on failure) and returning a combined multi-file unified diff.
+- **Fine-Grained Hashline Operations in `hash_edit` (`HashEditOp` in `zenko-core`, `fs_tools.rs`):**
+  - Added Oh My Pi–style declarative `op` support (`replace`, `insert_after`, `insert_before`, `delete`) per hunk with deterministic conflict checking and bottom-up atomic application, allowing hash-anchored insertions without duplicating existing anchor lines.
+- **IDE-Grade LSP Semantic Workspace Rename (`LspAction::Rename` in `zenko-core`, `lsp.rs`, `policy.rs`, `guard.rs`):**
+  - Added `lsp_tool(action="rename")` with `textDocument/prepareRename` + `textDocument/rename`, workspace-jailed `WorkspaceEdit` (`changes` + `documentChanges` `TextDocumentEdit`/`CreateFile`/`RenameFile`/`DeleteFile`), deterministic UTF-16 → UTF-8 byte-offset mapping, `dry_run: true` unified diff previews, Plan Mode / read-only subagent / Strict risk gating (`is_lsp_tool_args_mutating`), and pre-mutation Shadow-Git checkpoint support.
+- **Modular `ToolRouter` Dispatch Pipeline (`crates/zenko-runtime/src/tool_router.rs`):**
+  - Extracted Zenko's tool dispatch loop out of `turn.rs` into a dedicated, stage-based `ToolRouter` pipeline (`Resolve & Availability -> Coerce -> Hooks & Policy/HITL -> Execute -> Post-Execution Enrichers`) shared across top-level turns and `batch_tools`, with multi-file edited-path extraction for warm LSP Diagnostics-on-Edit.
+- **Structured HTML-to-Markdown `web_fetch` + Bounded 15-Min Cache & Jailed `shell_exec` `cwd` (`crates/zenko-tools/src/html_md.rs`, `web.rs`, `shell.rs`):**
+  - Added a pure-Rust zero-regex finite-state HTML-to-Markdown converter (preserving headings, fenced/inline code, resolved links, lists, blockquotes, tables, and decoded named/numeric HTML entities while never mangling plain text/JSON/source code), a bounded 64-entry / 15-minute LRU+TTL cache (`format: "markdown" | "text" | "raw"`, `bypass_cache`), and workspace/hub-jailed `cwd` support on `shell_exec`.
+
+### Changed
+- **Centralized Tool v3 Constants & Plan Mode Scoping (`constants.rs`, `types.rs`, `policy.rs`, `guard.rs`, `runtime/mod.rs`):**
+  - Centralized all v3 limits, caches, and enum registries in `crates/zenko-core/src/constants.rs`, moved `TOOL_LSP` into `PLAN_MODE_SCOPED_TOOLS` with per-argument mutation gating, and strengthened `SessionToolScope` so read-only subagent roles block mutating scoped tools automatically.
+
 ## [0.0.17] - 2026-11-24
 
 Hardened Zenko's Minicode Tool System & Runtime Dispatch after a full forensic audit: fixed 8 subtle tool/runtime bugs, centralized every remaining tool literal and magic number into `zenko-core/src/constants.rs`, and refactored all remaining `if/else if` and disguised `match ()` ladders into declarative tables and pure `match` dispatch.

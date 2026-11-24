@@ -794,6 +794,7 @@ mod tests {
             max_output_bytes: 8192,
             headless_no_wait: true,
             demote_bg: Arc::new(tokio::sync::Notify::new()),
+            file_state: None,
         };
         let cancel = CancellationToken::new();
 

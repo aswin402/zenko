@@ -324,6 +324,7 @@ mod tests {
             max_output_bytes: 16_384,
             headless_no_wait: true,
             demote_bg: Arc::new(Notify::new()),
+            file_state: None,
         };
 
         let rs_only = CodeSearchTool

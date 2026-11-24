@@ -628,6 +628,22 @@ pub const TOOL_FUZZY_TOKEN_WEIGHT: f64 = 0.45;
 pub const TOOL_FUZZY_SUBSTR_BONUS: f64 = 0.35;
 pub const TOOL_FUZZY_MIN_SCORE: f64 = 0.30;
 
+// Minicode Tool System v3 constants (Claude Code + Codex + Oh My Pi synthesis)
+pub const APPLY_PATCH_MAX_FILES: usize = 24;
+pub const SESSION_FILE_TRACKER_MAX_SESSIONS: usize = 64;
+pub const SESSION_FILE_TRACKER_MAX_FILES_PER_SESSION: usize = 512;
+pub const FILE_FRESHNESS_PREVIEW_LINES: usize = 20;
+pub const WEB_FETCH_DEFAULT_MAX_CHARS: usize = 10_000;
+pub const WEB_FETCH_MIN_MAX_CHARS: usize = 500;
+pub const WEB_FETCH_HARD_MAX_CHARS: usize = 32_000;
+pub const WEB_FETCH_CACHE_MAX_ENTRIES: usize = 64;
+pub const WEB_FETCH_CACHE_TTL_SECS: u64 = 900;
+pub const LSP_RENAME_MAX_FILES: usize = 64;
+pub const LSP_RENAME_MAX_EDITS: usize = 512;
+pub const HASH_EDIT_OPS: &[&str] = &["replace", "insert_after", "insert_before", "delete"];
+pub const PATCH_FILE_ACTIONS: &[&str] = &["update", "create", "delete", "move"];
+pub const WEB_FETCH_FORMATS: &[&str] = &["markdown", "text", "raw"];
+
 /// Declarative table of tools representing background-task or subagent orchestration/monitoring.
 /// When a running session has active jobs, active subagents, or any of these tools in flight,
 /// `SendMode::Auto` deterministically routes incoming user guidance as live `Steer` instead of `Queue`.
@@ -758,7 +774,6 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     TOOL_GLOB_FIND,
     TOOL_WEB_FETCH,
     TOOL_WEB_SEARCH,
-    TOOL_LSP,
     TOOL_MCP_RESOURCE,
     TOOL_JOB_LIST,
     TOOL_JOB_READ,
@@ -778,14 +793,16 @@ pub const PLANNING_TOOLS: &[&str] = &[
 ];
 /// Tools that are conditionally permitted in Read-Only Plan Mode (enforced per-argument by ExecPolicy):
 /// read-only shell commands, read-only memory actions, read-only subagent roles, worktree diff,
-/// read-only git actions, read-only `skill_manage` queries, read-only `goal_loop` queries,
-/// and `batch_tools` (each inner call individually policy-enforced).
+/// read-only git actions, read-only LSP actions (plus `rename` with `dry_run: true`), read-only
+/// `skill_manage` queries, read-only `goal_loop` queries, and `batch_tools` (each inner call
+/// individually policy-enforced).
 pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
     TOOL_MEMORY,
     TOOL_SPAWN_AGENT,
     TOOL_AGENT_WORKTREE,
     TOOL_GIT,
+    TOOL_LSP,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,
     TOOL_BATCH_TOOLS,

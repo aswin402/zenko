@@ -1,19 +1,113 @@
+use crate::codex_patch::{CodexPatchFileOp, CodexUpdateHunk, parse_codex_patch};
 use crate::jail::{resolve_readable_path, resolve_workspace_or_hub_path};
 use crate::outline::{extract_outline, format_outline_report};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use similar::TextDiff;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    APPLY_PATCH_AMBIGUITY_MAX_LOCS, APPLY_PATCH_MAX_EDITS, DEFAULT_READ_FILE_LINE_WINDOW,
-    DEFAULT_READ_FILE_MAX_BYTES, FS_MAX_EDIT_FILE_BYTES, FS_MAX_SINGLE_READ_LINE_BYTES,
-    HASH_EDIT_MAX_HUNKS, HASH_EDIT_RECOVERY_RADIUS, OUTLINE_MAX_ENTRIES, OUTLINE_MAX_FILE_BYTES,
-    READ_FILE_MAX_RANGES, ResourceLockKey, Result, RiskLevel, TOOL_APPLY_PATCH, TOOL_HASH_EDIT,
-    TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, Tool, ToolConcurrency, ToolContext, ToolOutput,
-    ToolSet, ToolSpec, ZenkoError,
+    APPLY_PATCH_AMBIGUITY_MAX_LOCS, APPLY_PATCH_MAX_EDITS, APPLY_PATCH_MAX_FILES,
+    DEFAULT_READ_FILE_LINE_WINDOW, DEFAULT_READ_FILE_MAX_BYTES, FILE_FRESHNESS_PREVIEW_LINES,
+    FS_MAX_EDIT_FILE_BYTES, FS_MAX_SINGLE_READ_LINE_BYTES, FileFreshnessCheck, HASH_EDIT_MAX_HUNKS,
+    HASH_EDIT_OPS, HASH_EDIT_RECOVERY_RADIUS, HashEditOp, OUTLINE_MAX_ENTRIES,
+    OUTLINE_MAX_FILE_BYTES, PATCH_FILE_ACTIONS, PatchFileAction, READ_FILE_MAX_RANGES,
+    ResourceLockKey, Result, RiskLevel, TOOL_APPLY_PATCH, TOOL_HASH_EDIT, TOOL_LIST_DIR,
+    TOOL_READ_FILE, TOOL_WRITE_FILE, Tool, ToolConcurrency, ToolContext, ToolOutput, ToolSet,
+    ToolSpec, ZenkoError,
 };
+
+/// Computes full-content SHA-256 hex digest used by `FileStateBridge` stale-read detection.
+pub(crate) fn content_sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    hex
+}
+
+fn canonical_state_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn record_fresh_file_state(ctx: &ToolContext, path: &Path, content: &str) {
+    if let Some(ref bridge) = ctx.file_state {
+        let canon = canonical_state_path(path);
+        let sha = content_sha256_hex(content.as_bytes());
+        bridge.record_file_state(&ctx.session_id, &canon, sha, content.len() as u64);
+    }
+}
+
+pub(crate) fn forget_fresh_file_state(ctx: &ToolContext, path: &Path) {
+    if let Some(ref bridge) = ctx.file_state {
+        let canon = canonical_state_path(path);
+        bridge.forget_file_state(&ctx.session_id, &canon);
+    }
+}
+
+fn format_fresh_head_preview(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return "(file is empty)".into();
+    }
+    let mut out = String::new();
+    for (idx, line) in lines.iter().take(FILE_FRESHNESS_PREVIEW_LINES).enumerate() {
+        let ln = idx + 1;
+        let h = line_hash(line);
+        out.push_str(&format!("{ln}:{h}| {line}\n"));
+    }
+    if lines.len() > FILE_FRESHNESS_PREVIEW_LINES {
+        out.push_str(&format!(
+            "... (+{} more lines; inspect with `read_file`)\n",
+            lines.len() - FILE_FRESHNESS_PREVIEW_LINES
+        ));
+    }
+    out
+}
+
+pub(crate) fn check_existing_file_freshness(
+    ctx: &ToolContext,
+    req_path: &str,
+    abs_path: &Path,
+    current_content: &str,
+    allow_unread_existing: bool,
+) -> std::result::Result<(), String> {
+    let Some(ref bridge) = ctx.file_state else {
+        return Ok(());
+    };
+    let canon = canonical_state_path(abs_path);
+    let current_sha = content_sha256_hex(current_content.as_bytes());
+    match bridge.check_file_freshness(&ctx.session_id, &canon, &current_sha) {
+        FileFreshnessCheck::Fresh => Ok(()),
+        FileFreshnessCheck::UnreadExisting => match allow_unread_existing {
+            true => Ok(()),
+            false => {
+                let total_lines = current_content.lines().count();
+                let preview = format_fresh_head_preview(current_content);
+                Err(format!(
+                    "Refused to overwrite existing unread file `{req_path}` (stale-read guard). Read it with `read_file` first, edit surgically with `hash_edit`/`apply_patch`, or pass `overwrite: true` to replace it intentionally.\nCurrent file preview ({total_lines} lines):\n{preview}"
+                ))
+            }
+        },
+        FileFreshnessCheck::ExternallyModified {
+            recorded_sha256,
+            current_sha256,
+        } => {
+            let total_lines = current_content.lines().count();
+            let preview = format_fresh_head_preview(current_content);
+            let old_short = &recorded_sha256[..recorded_sha256.len().min(10)];
+            let new_short = &current_sha256[..current_sha256.len().min(10)];
+            Err(format!(
+                "File `{req_path}` changed externally on disk since you last read it (sha256 `{old_short}..` -> `{new_short}..`). Re-read with `read_file` before mutating so external edits are not clobbered.\nCurrent file preview ({total_lines} lines):\n{preview}"
+            ))
+        }
+    }
+}
 
 /// Deterministic 3-hex-char content hash for Oh My Pi / Oh My OpenCode hash-anchored edits.
 pub fn line_hash(line: &str) -> String {
@@ -267,6 +361,8 @@ impl Tool for ReadFileTool {
             .saturating_mul(16)
             .clamp(64 * 1024, 512 * 1024);
         let stop_early = file_bytes > DEFAULT_READ_FILE_MAX_BYTES;
+        let track_hash = ctx.file_state.is_some() && !stop_early;
+        let mut full_hasher = track_hash.then(Sha256::new);
         let mut active_range_idx = 0usize;
 
         loop {
@@ -280,6 +376,9 @@ impl Tool for ReadFileTool {
             if n == 0 {
                 break;
             }
+            if let Some(ref mut hasher) = full_hasher {
+                hasher.update(&raw_line);
+            }
             if !raw_line.ends_with(b"\n") && n == FS_MAX_SINGLE_READ_LINE_BYTES {
                 truncated_line = true;
                 let mut discard = [0u8; 4096];
@@ -289,11 +388,17 @@ impl Tool for ReadFileTool {
                         break;
                     }
                     if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        if let Some(ref mut hasher) = full_hasher {
+                            hasher.update(&buf[..=pos]);
+                        }
                         reader.consume(pos + 1);
                         break;
                     }
                     let len = buf.len().min(discard.len());
                     discard[..len].copy_from_slice(&buf[..len]);
+                    if let Some(ref mut hasher) = full_hasher {
+                        hasher.update(&discard[..len]);
+                    }
                     reader.consume(len);
                 }
             }
@@ -327,6 +432,17 @@ impl Tool for ReadFileTool {
             if stop_early && line_no >= max_requested_end {
                 break;
             }
+        }
+
+        if let (Some(bridge), Some(hasher)) = (ctx.file_state.as_ref(), full_hasher) {
+            let digest = hasher.finalize();
+            let mut sha = String::with_capacity(64);
+            for b in digest {
+                use std::fmt::Write as _;
+                let _ = write!(&mut sha, "{b:02x}");
+            }
+            let canon = canonical_state_path(&path);
+            bridge.record_file_state(&ctx.session_id, &canon, sha, file_bytes);
         }
 
         let total_captured: usize = captured_per_range.iter().map(Vec::len).sum();
@@ -391,15 +507,44 @@ impl Tool for ReadFileTool {
     }
 }
 
-// ─── hash_edit (Multi-Hunk Atomic Hash-Anchored Edits + Inline Self-Healing) ──
+// ─── hash_edit (Multi-Hunk Atomic Hashline Edits + Fine-Grained Ops + Recovery) ──
 
 #[derive(Debug, Clone)]
 struct HashEditHunk {
+    op: HashEditOp,
     start_line: usize,
     start_hash: String,
     end_line: usize,
     end_hash: String,
     replacement: String,
+}
+
+fn hash_edit_op_order(op: HashEditOp) -> u8 {
+    match op {
+        HashEditOp::InsertBefore => 0,
+        HashEditOp::Replace | HashEditOp::Delete => 1,
+        HashEditOp::InsertAfter => 2,
+    }
+}
+
+fn hash_hunks_conflict(prev: &HashEditHunk, cur: &HashEditHunk) -> bool {
+    match (prev.op, cur.op) {
+        (HashEditOp::InsertBefore, HashEditOp::InsertBefore)
+        | (HashEditOp::InsertAfter, HashEditOp::InsertAfter) => prev.start_line == cur.start_line,
+        (HashEditOp::InsertBefore, HashEditOp::InsertAfter) => false,
+        (HashEditOp::InsertAfter, HashEditOp::InsertBefore) => prev.start_line == cur.start_line,
+        (HashEditOp::Replace | HashEditOp::Delete, HashEditOp::Replace | HashEditOp::Delete) => {
+            cur.start_line <= prev.end_line
+        }
+        (
+            HashEditOp::InsertBefore | HashEditOp::InsertAfter,
+            HashEditOp::Replace | HashEditOp::Delete,
+        ) => prev.start_line >= cur.start_line && prev.start_line <= cur.end_line,
+        (
+            HashEditOp::Replace | HashEditOp::Delete,
+            HashEditOp::InsertBefore | HashEditOp::InsertAfter,
+        ) => cur.start_line >= prev.start_line && cur.start_line <= prev.end_line,
+    }
 }
 
 fn parse_hash_edit_hunks(args: &Value) -> Result<Vec<HashEditHunk>> {
@@ -428,6 +573,15 @@ fn parse_single_hash_hunk(obj: &Value, idx: Option<usize>) -> Result<HashEditHun
         Some(i) => format!("edits[{i}]."),
         None => String::new(),
     };
+    let op = match obj.get("op").and_then(Value::as_str) {
+        Some(raw) => HashEditOp::parse(raw).ok_or_else(|| {
+            ZenkoError::Tool(format!(
+                "invalid `{prefix}op` `{raw}`. Valid ops: {}.",
+                HASH_EDIT_OPS.join(", ")
+            ))
+        })?,
+        None => HashEditOp::Replace,
+    };
     let start_line = obj
         .get("start_line")
         .and_then(Value::as_u64)
@@ -438,6 +592,12 @@ fn parse_single_hash_hunk(obj: &Value, idx: Option<usize>) -> Result<HashEditHun
         .and_then(Value::as_u64)
         .map(|v| v as usize)
         .unwrap_or(start_line);
+    if matches!(op, HashEditOp::InsertAfter | HashEditOp::InsertBefore) && end_line != start_line {
+        return Err(ZenkoError::Tool(format!(
+            "`{prefix}op` `{}` anchors on a single line (`start_line`={start_line}, omit `end_line` or set equal to `start_line`)",
+            op.as_str()
+        )));
+    }
     let start_hash = obj
         .get("start_hash")
         .and_then(Value::as_str)
@@ -458,12 +618,20 @@ fn parse_single_hash_hunk(obj: &Value, idx: Option<usize>) -> Result<HashEditHun
     if end_hash.is_empty() {
         return Err(ZenkoError::Tool(format!("missing `{prefix}end_hash`")));
     }
-    let replacement = obj
-        .get("replacement")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ZenkoError::Tool(format!("missing `{prefix}replacement`")))?
-        .to_string();
+    let replacement = match op {
+        HashEditOp::Delete => obj
+            .get("replacement")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        HashEditOp::Replace | HashEditOp::InsertAfter | HashEditOp::InsertBefore => obj
+            .get("replacement")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ZenkoError::Tool(format!("missing `{prefix}replacement`")))?
+            .to_string(),
+    };
     Ok(HashEditHunk {
+        op,
         start_line,
         start_hash,
         end_line,
@@ -487,29 +655,35 @@ impl Tool for HashEditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_HASH_EDIT.into(),
-            description: "Atomically replace one or multiple non-overlapping line spans verified by 3-char hashes from `read_file`. Supports single hunk (`start_line`/`start_hash`/`end_line`/`end_hash`/`replacement`) or multi-hunk `edits[]` applied bottom-up. On hash mismatch, returns fresh hash-anchored lines inline so you can retry immediately without re-reading.".into(),
+            description: "Atomically apply one or multiple fine-grained hashline edits (`replace`, `insert_after`, `insert_before`, `delete`) verified by 3-char hashes from `read_file`. Use `insert_after`/`insert_before` to insert lines anchored on a line hash without duplicating existing code. On hash mismatch, returns fresh hash-anchored lines inline so you can retry immediately.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Workspace or `hub:` file path" },
-                    "start_line": { "type": "integer", "description": "1-based start line (single-hunk mode)" },
+                    "op": {
+                        "type": "string",
+                        "enum": HASH_EDIT_OPS,
+                        "description": "Edit operation for single-hunk mode: `replace` (default), `insert_after`, `insert_before`, or `delete`"
+                    },
+                    "start_line": { "type": "integer", "description": "1-based start/anchor line (single-hunk mode)" },
                     "start_hash": { "type": "string", "description": "3-char hash of start_line (single-hunk mode)" },
                     "end_line": { "type": "integer", "description": "1-based inclusive end line (defaults to start_line)" },
                     "end_hash": { "type": "string", "description": "3-char hash of end_line (defaults to start_hash when single line)" },
-                    "replacement": { "type": "string", "description": "Replacement text for the anchored span (empty string deletes span)" },
+                    "replacement": { "type": "string", "description": "Replacement or inserted text (optional for `delete`)" },
                     "edits": {
                         "type": "array",
-                        "description": "Multi-hunk atomic edits applied bottom-up in one write (non-overlapping line ranges)",
+                        "description": "Multi-hunk atomic edits applied bottom-up in one write (non-conflicting line anchors/spans)",
                         "items": {
                             "type": "object",
                             "properties": {
+                                "op": { "type": "string", "enum": HASH_EDIT_OPS },
                                 "start_line": { "type": "integer" },
                                 "start_hash": { "type": "string" },
                                 "end_line": { "type": "integer" },
                                 "end_hash": { "type": "string" },
                                 "replacement": { "type": "string" }
                             },
-                            "required": ["start_line", "start_hash", "replacement"]
+                            "required": ["start_line", "start_hash"]
                         }
                     }
                 },
@@ -543,8 +717,8 @@ impl Tool for HashEditTool {
         let eol = detect_line_ending(&old);
         let mut lines: Vec<String> = old.lines().map(String::from).collect();
 
-        // Step 1: Bounds & overlap validation across all hunks before mutating anything.
-        hunks.sort_by_key(|h| (h.start_line, h.end_line));
+        // Step 1: Bounds & conflict validation across all hunks before mutating anything.
+        hunks.sort_by_key(|h| (h.start_line, hash_edit_op_order(h.op), h.end_line));
         for (i, h) in hunks.iter().enumerate() {
             if h.start_line == 0 || h.end_line < h.start_line || h.end_line > lines.len() {
                 let tail_window = format_hash_recovery_window(&lines, lines.len());
@@ -555,11 +729,13 @@ impl Tool for HashEditTool {
                     lines.len()
                 )));
             }
-            if i > 0 && h.start_line <= hunks[i - 1].end_line {
+            if i > 0 && hash_hunks_conflict(&hunks[i - 1], h) {
                 return Ok(ToolOutput::err(format!(
-                    "Overlapping hash_edit hunks: {}..={} overlaps {}..={}. Merge overlapping edits into a single span.",
+                    "Conflicting hash_edit hunks: {} {}..={} conflicts with {} {}..={}. Merge overlapping edits into a single hunk.",
+                    hunks[i - 1].op.as_str(),
                     hunks[i - 1].start_line,
                     hunks[i - 1].end_line,
+                    h.op.as_str(),
                     h.start_line,
                     h.end_line
                 )));
@@ -573,7 +749,8 @@ impl Tool for HashEditTool {
             let actual_end = line_hash(&lines[h.end_line - 1]);
             if actual_start != h.start_hash || actual_end != h.end_hash {
                 let mut detail = format!(
-                    "Hash mismatch on span {}..={} in `{req_path}`: expected start {}:{}, end {}:{} — actual start {}:{actual_start}, end {}:{actual_end}.",
+                    "Hash mismatch on {} {}..={} in `{req_path}`: expected start {}:{}, end {}:{} — actual start {}:{actual_start}, end {}:{actual_end}.",
+                    h.op.as_str(),
                     h.start_line,
                     h.end_line,
                     h.start_line,
@@ -599,17 +776,31 @@ impl Tool for HashEditTool {
             )));
         }
 
-        // Step 3: Apply splices bottom-up (descending `start_line`) so earlier line indices never drift.
+        // Step 3: Apply splices bottom-up so earlier line indices never drift.
         let applied_spans: Vec<String> = hunks
             .iter()
-            .map(|h| format!("{}..={}", h.start_line, h.end_line))
+            .map(|h| format!("{}({}..={})", h.op.as_str(), h.start_line, h.end_line))
             .collect();
         for h in hunks.into_iter().rev() {
             let replacement_lines: Vec<String> = match h.replacement.is_empty() {
                 true => Vec::new(),
                 false => h.replacement.lines().map(String::from).collect(),
             };
-            lines.splice((h.start_line - 1)..h.end_line, replacement_lines);
+            match h.op {
+                HashEditOp::Replace => {
+                    lines.splice((h.start_line - 1)..h.end_line, replacement_lines);
+                }
+                HashEditOp::Delete => {
+                    lines.splice((h.start_line - 1)..h.end_line, std::iter::empty());
+                }
+                HashEditOp::InsertAfter => {
+                    lines.splice(h.start_line..h.start_line, replacement_lines);
+                }
+                HashEditOp::InsertBefore => {
+                    let idx = h.start_line - 1;
+                    lines.splice(idx..idx, replacement_lines);
+                }
+            }
         }
 
         let mut new = lines.join(eol);
@@ -618,10 +809,11 @@ impl Tool for HashEditTool {
         }
 
         atomic_write(&path, &new).await?;
+        record_fresh_file_state(ctx, &path, &new);
         let diff = unified_diff(req_path, &old, &new);
         Ok(ToolOutput::ok_with_diff(
             format!(
-                "Applied {} hash_edit hunk(s) to {req_path} (lines {}).",
+                "Applied {} hash_edit hunk(s) to {req_path} ({}).",
                 applied_spans.len(),
                 applied_spans.join(", ")
             ),
@@ -808,6 +1000,552 @@ fn apply_single_patch_to_buffer(
     Ok((joined, count))
 }
 
+enum PlannedFileTx {
+    Create {
+        req_path: String,
+        abs_path: PathBuf,
+        content: String,
+    },
+    Update {
+        req_path: String,
+        abs_path: PathBuf,
+        old_content: String,
+        new_content: String,
+        replacements: usize,
+        move_to: Option<(String, PathBuf)>,
+    },
+    Delete {
+        req_path: String,
+        abs_path: PathBuf,
+        old_content: String,
+    },
+}
+
+fn apply_codex_hunk_to_buffer(
+    req_path: &str,
+    buf: &str,
+    eol: &str,
+    hunk: &CodexUpdateHunk,
+    hunk_idx: usize,
+) -> std::result::Result<(String, usize), String> {
+    let file_lines: Vec<&str> = buf.lines().collect();
+    if hunk.old_lines.is_empty() {
+        let mut rebuilt: Vec<String> = file_lines.iter().map(|s| (*s).to_string()).collect();
+        rebuilt.extend(hunk.new_lines.iter().cloned());
+        let mut joined = rebuilt.join(eol);
+        if !joined.is_empty() && !joined.ends_with('\n') {
+            joined.push_str(eol);
+        }
+        return Ok((joined, 1));
+    }
+    let pattern_refs: Vec<&str> = hunk.old_lines.iter().map(String::as_str).collect();
+    let mut matches = seek_sequence_all(&file_lines, &pattern_refs);
+    if matches.is_empty() {
+        return Err(format!(
+            "Codex patch hunk #{hunk_idx} in `{req_path}` could not locate target lines."
+        ));
+    }
+    let chosen_idx = match (matches.len(), hunk.is_eof, hunk.context_header.as_deref()) {
+        (1, _, _) => matches[0],
+        (_, true, _) => {
+            let eof_start = file_lines.len().saturating_sub(pattern_refs.len());
+            match matches.iter().copied().find(|&m| m == eof_start) {
+                Some(m) => m,
+                None => {
+                    let one_based: Vec<usize> = matches.iter().map(|&i| i + 1).collect();
+                    return Err(format!(
+                        "Ambiguous Codex patch hunk #{hunk_idx} in `{req_path}` matched {} places:\n{}",
+                        matches.len(),
+                        format_occurrence_locations(buf, &one_based)
+                    ));
+                }
+            }
+        }
+        (_, false, Some(ctx_hdr)) if !ctx_hdr.trim().is_empty() => {
+            let needle = ctx_hdr.trim();
+            let ctx_pos = file_lines.iter().position(|l| l.contains(needle));
+            match ctx_pos {
+                Some(cpos) => {
+                    matches.retain(|&m| m >= cpos);
+                    match matches.first().copied() {
+                        Some(first) => first,
+                        None => {
+                            return Err(format!(
+                                "Codex patch hunk #{hunk_idx} in `{req_path}` found no match after `@@ {needle}`."
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    let one_based: Vec<usize> = matches.iter().map(|&i| i + 1).collect();
+                    return Err(format!(
+                        "Ambiguous Codex patch hunk #{hunk_idx} in `{req_path}` matched {} places:\n{}",
+                        matches.len(),
+                        format_occurrence_locations(buf, &one_based)
+                    ));
+                }
+            }
+        }
+        _ => {
+            let one_based: Vec<usize> = matches.iter().map(|&i| i + 1).collect();
+            return Err(format!(
+                "Ambiguous Codex patch hunk #{hunk_idx} in `{req_path}` matched {} places:\n{}",
+                matches.len(),
+                format_occurrence_locations(buf, &one_based)
+            ));
+        }
+    };
+
+    let mut rebuilt: Vec<String> = file_lines.iter().map(|s| (*s).to_string()).collect();
+    rebuilt.splice(
+        chosen_idx..(chosen_idx + pattern_refs.len()),
+        hunk.new_lines.clone(),
+    );
+    let mut joined = rebuilt.join(eol);
+    if buf.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push_str(eol);
+    }
+    Ok((joined, 1))
+}
+
+async fn plan_codex_patch_transaction(
+    ctx: &ToolContext,
+    raw_patch: &str,
+) -> Result<std::result::Result<Vec<PlannedFileTx>, String>> {
+    let ops = parse_codex_patch(raw_patch)?;
+    let mut planned = Vec::with_capacity(ops.len());
+    let mut touched: HashSet<PathBuf> = HashSet::new();
+
+    for op in ops {
+        match op {
+            CodexPatchFileOp::Add { path: req_path, content } => {
+                let abs = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    &req_path,
+                    false,
+                )?;
+                let key = canonical_state_path(&abs);
+                if !touched.insert(key) {
+                    return Ok(Err(format!(
+                        "Duplicate operation targeting `{req_path}` in the same patch transaction."
+                    )));
+                }
+                if abs.exists() {
+                    return Ok(Err(format!(
+                        "Refused to add `{req_path}`: file already exists on disk."
+                    )));
+                }
+                planned.push(PlannedFileTx::Create {
+                    req_path,
+                    abs_path: abs,
+                    content,
+                });
+            }
+            CodexPatchFileOp::Delete { path: req_path } => {
+                let abs = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    &req_path,
+                    true,
+                )?;
+                let key = canonical_state_path(&abs);
+                if !touched.insert(key) {
+                    return Ok(Err(format!(
+                        "Duplicate operation targeting `{req_path}` in the same patch transaction."
+                    )));
+                }
+                let meta = tokio::fs::metadata(&abs).await?;
+                if !meta.is_file() {
+                    return Ok(Err(format!(
+                        "Refused to delete `{req_path}`: target is not a regular file."
+                    )));
+                }
+                if meta.len() > FS_MAX_EDIT_FILE_BYTES {
+                    return Ok(Err(format!(
+                        "Refused to delete `{req_path}`: file size ({} bytes) exceeds safety limit.",
+                        meta.len()
+                    )));
+                }
+                let old_content = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
+                if let Err(stale) =
+                    check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
+                {
+                    return Ok(Err(stale));
+                }
+                planned.push(PlannedFileTx::Delete {
+                    req_path,
+                    abs_path: abs,
+                    old_content,
+                });
+            }
+            CodexPatchFileOp::Update {
+                path: req_path,
+                move_to,
+                hunks,
+            } => {
+                let abs = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    &req_path,
+                    true,
+                )?;
+                let key = canonical_state_path(&abs);
+                if !touched.insert(key) {
+                    return Ok(Err(format!(
+                        "Duplicate operation targeting `{req_path}` in the same patch transaction."
+                    )));
+                }
+                let file_len = tokio::fs::metadata(&abs).await?.len();
+                if file_len > FS_MAX_EDIT_FILE_BYTES {
+                    return Ok(Err(format!(
+                        "Refused to update `{req_path}`: file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes)."
+                    )));
+                }
+                let old_content = tokio::fs::read_to_string(&abs).await?;
+                if let Err(stale) =
+                    check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
+                {
+                    return Ok(Err(stale));
+                }
+                let resolved_move = match move_to {
+                    Some(dest_req) => {
+                        let dest_abs = resolve_workspace_or_hub_path(
+                            &ctx.workspace_dir,
+                            &ctx.hub_dir,
+                            &dest_req,
+                            false,
+                        )?;
+                        let dest_key = canonical_state_path(&dest_abs);
+                        if dest_abs != abs {
+                            if !touched.insert(dest_key) {
+                                return Ok(Err(format!(
+                                    "Conflicting patch destination `{dest_req}`."
+                                )));
+                            }
+                            if dest_abs.exists() {
+                                return Ok(Err(format!(
+                                    "Refused to move `{req_path}` -> `{dest_req}`: destination already exists."
+                                )));
+                            }
+                        }
+                        Some((dest_req, dest_abs))
+                    }
+                    None => None,
+                };
+                let eol = detect_line_ending(&old_content);
+                let mut working = old_content.clone();
+                let mut replacements = 0usize;
+                for (h_idx, hunk) in hunks.iter().enumerate() {
+                    match apply_codex_hunk_to_buffer(&req_path, &working, eol, hunk, h_idx) {
+                        Ok((next, count)) => {
+                            working = next;
+                            replacements += count;
+                        }
+                        Err(err) => return Ok(Err(err)),
+                    }
+                }
+                planned.push(PlannedFileTx::Update {
+                    req_path,
+                    abs_path: abs,
+                    old_content,
+                    new_content: working,
+                    replacements,
+                    move_to: resolved_move,
+                });
+            }
+        }
+    }
+    Ok(Ok(planned))
+}
+
+async fn plan_structured_files_transaction(
+    ctx: &ToolContext,
+    items: &[Value],
+) -> Result<std::result::Result<Vec<PlannedFileTx>, String>> {
+    if items.is_empty() {
+        return Err(ZenkoError::Tool(
+            "`files` must contain at least one file operation".into(),
+        ));
+    }
+    if items.len() > APPLY_PATCH_MAX_FILES {
+        return Err(ZenkoError::Tool(format!(
+            "`files` exceeds maximum {APPLY_PATCH_MAX_FILES} files per atomic patch"
+        )));
+    }
+    let mut planned = Vec::with_capacity(items.len());
+    let mut touched: HashSet<PathBuf> = HashSet::new();
+
+    for (idx, item) in items.iter().enumerate() {
+        let req_path = item
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ZenkoError::Tool(format!("missing `files[{idx}].path`")))?
+            .to_string();
+        let action = match item.get("action").and_then(Value::as_str) {
+            Some(raw) => PatchFileAction::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "invalid `files[{idx}].action` `{raw}`. Valid actions: {}.",
+                    PATCH_FILE_ACTIONS.join(", ")
+                ))
+            })?,
+            None => PatchFileAction::Update,
+        };
+        let overwrite = item
+            .get("overwrite")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        match action {
+            PatchFileAction::Create => {
+                let content = item
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ZenkoError::Tool(format!(
+                            "missing `files[{idx}].content` for `action=\"create\"`"
+                        ))
+                    })?
+                    .to_string();
+                let abs = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    &req_path,
+                    false,
+                )?;
+                let key = canonical_state_path(&abs);
+                if !touched.insert(key) {
+                    return Ok(Err(format!(
+                        "Duplicate operation targeting `{req_path}` in `files[]`."
+                    )));
+                }
+                if abs.exists() && !overwrite {
+                    return Ok(Err(format!(
+                        "Refused to create `{req_path}`: file already exists (pass `overwrite: true` or use `action=\"update\"`)."
+                    )));
+                }
+                planned.push(PlannedFileTx::Create {
+                    req_path,
+                    abs_path: abs,
+                    content,
+                });
+            }
+            PatchFileAction::Delete => {
+                let abs = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    &req_path,
+                    true,
+                )?;
+                let key = canonical_state_path(&abs);
+                if !touched.insert(key) {
+                    return Ok(Err(format!(
+                        "Duplicate operation targeting `{req_path}` in `files[]`."
+                    )));
+                }
+                let meta = tokio::fs::metadata(&abs).await?;
+                if !meta.is_file() {
+                    return Ok(Err(format!(
+                        "Refused to delete `{req_path}`: target is not a regular file."
+                    )));
+                }
+                let old_content = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
+                if let Err(stale) =
+                    check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
+                {
+                    return Ok(Err(stale));
+                }
+                planned.push(PlannedFileTx::Delete {
+                    req_path,
+                    abs_path: abs,
+                    old_content,
+                });
+            }
+            PatchFileAction::Update | PatchFileAction::Move => {
+                let abs = resolve_workspace_or_hub_path(
+                    &ctx.workspace_dir,
+                    &ctx.hub_dir,
+                    &req_path,
+                    true,
+                )?;
+                let key = canonical_state_path(&abs);
+                if !touched.insert(key) {
+                    return Ok(Err(format!(
+                        "Duplicate operation targeting `{req_path}` in `files[]`."
+                    )));
+                }
+                let file_len = tokio::fs::metadata(&abs).await?.len();
+                if file_len > FS_MAX_EDIT_FILE_BYTES {
+                    return Ok(Err(format!(
+                        "Refused to patch `{req_path}`: file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes)."
+                    )));
+                }
+                let old_content = tokio::fs::read_to_string(&abs).await?;
+                if let Err(stale) =
+                    check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
+                {
+                    return Ok(Err(stale));
+                }
+                let move_to_req = item
+                    .get("move_to")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                if action == PatchFileAction::Move && move_to_req.is_none() {
+                    return Err(ZenkoError::Tool(format!(
+                        "missing `files[{idx}].move_to` for `action=\"move\"`"
+                    )));
+                }
+                let resolved_move = match move_to_req {
+                    Some(dest_req) => {
+                        let dest_abs = resolve_workspace_or_hub_path(
+                            &ctx.workspace_dir,
+                            &ctx.hub_dir,
+                            &dest_req,
+                            false,
+                        )?;
+                        let dest_key = canonical_state_path(&dest_abs);
+                        if dest_abs != abs {
+                            if !touched.insert(dest_key) {
+                                return Ok(Err(format!(
+                                    "Conflicting destination `{dest_req}` in `files[]`."
+                                )));
+                            }
+                            if dest_abs.exists() && !overwrite {
+                                return Ok(Err(format!(
+                                    "Refused to move `{req_path}` -> `{dest_req}`: destination already exists."
+                                )));
+                            }
+                        }
+                        Some((dest_req, dest_abs))
+                    }
+                    None => None,
+                };
+                let has_edits =
+                    item.get("edits").is_some() || item.get("old_text").is_some();
+                let (working, replacements) = match (action, has_edits) {
+                    (PatchFileAction::Move, false) => (old_content.clone(), 0),
+                    _ => {
+                        let edits = parse_patch_edits(item)?;
+                        let eol = detect_line_ending(&old_content);
+                        let mut cur = old_content.clone();
+                        let mut total = 0usize;
+                        for (e_idx, edit) in edits.iter().enumerate() {
+                            let label = format!("files[{idx}].edits[{e_idx}]");
+                            match apply_single_patch_to_buffer(&req_path, &cur, eol, edit, &label) {
+                                Ok((next, count)) => {
+                                    cur = next;
+                                    total += count;
+                                }
+                                Err(msg) => return Ok(Err(msg)),
+                            }
+                        }
+                        (cur, total)
+                    }
+                };
+                planned.push(PlannedFileTx::Update {
+                    req_path,
+                    abs_path: abs,
+                    old_content,
+                    new_content: working,
+                    replacements,
+                    move_to: resolved_move,
+                });
+            }
+        }
+    }
+    Ok(Ok(planned))
+}
+
+async fn commit_planned_file_tx(
+    ctx: &ToolContext,
+    ops: Vec<PlannedFileTx>,
+) -> Result<ToolOutput> {
+    let mut diffs: Vec<String> = Vec::with_capacity(ops.len());
+    let mut summaries: Vec<String> = Vec::with_capacity(ops.len());
+    let mut edited_files: Vec<String> = Vec::new();
+    let mut deleted_files: Vec<String> = Vec::new();
+
+    for op in ops {
+        match op {
+            PlannedFileTx::Create {
+                req_path,
+                abs_path,
+                content,
+            } => {
+                atomic_write(&abs_path, &content).await?;
+                record_fresh_file_state(ctx, &abs_path, &content);
+                diffs.push(unified_diff(&req_path, "", &content));
+                summaries.push(format!("created `{req_path}` ({} bytes)", content.len()));
+                edited_files.push(req_path);
+            }
+            PlannedFileTx::Update {
+                req_path,
+                abs_path,
+                old_content,
+                new_content,
+                replacements,
+                move_to,
+            } => match move_to {
+                Some((dest_req, dest_abs)) if dest_abs != abs_path => {
+                    atomic_write(&dest_abs, &new_content).await?;
+                    tokio::fs::remove_file(&abs_path).await?;
+                    forget_fresh_file_state(ctx, &abs_path);
+                    record_fresh_file_state(ctx, &dest_abs, &new_content);
+                    diffs.push(unified_diff(
+                        &format!("{req_path} -> {dest_req}"),
+                        &old_content,
+                        &new_content,
+                    ));
+                    summaries.push(format!(
+                        "moved `{req_path}` -> `{dest_req}` ({replacements} replacement(s))"
+                    ));
+                    deleted_files.push(req_path);
+                    edited_files.push(dest_req);
+                }
+                _ => {
+                    atomic_write(&abs_path, &new_content).await?;
+                    record_fresh_file_state(ctx, &abs_path, &new_content);
+                    diffs.push(unified_diff(&req_path, &old_content, &new_content));
+                    summaries.push(format!(
+                        "updated `{req_path}` ({replacements} replacement(s))"
+                    ));
+                    edited_files.push(req_path);
+                }
+            },
+            PlannedFileTx::Delete {
+                req_path,
+                abs_path,
+                old_content,
+            } => {
+                tokio::fs::remove_file(&abs_path).await?;
+                forget_fresh_file_state(ctx, &abs_path);
+                diffs.push(unified_diff(&req_path, &old_content, ""));
+                summaries.push(format!("deleted `{req_path}`"));
+                deleted_files.push(req_path);
+            }
+        }
+    }
+
+    let combined_diff = diffs.join("\n");
+    let mut out = ToolOutput::ok_with_diff(
+        format!(
+            "Committed atomic patch across {} file(s): {}.",
+            summaries.len(),
+            summaries.join("; ")
+        ),
+        combined_diff,
+    );
+    out.metadata = Some(json!({
+        "edited_files": edited_files,
+        "deleted_files": deleted_files,
+    }));
+    Ok(out)
+}
+
 pub struct ApplyPatchTool;
 
 #[async_trait]
@@ -817,24 +1555,27 @@ impl Tool for ApplyPatchTool {
     }
 
     fn concurrency_for_args(&self, args: &Value) -> ToolConcurrency {
-        file_lock_key(args)
+        match args.get("patch").is_some() || args.get("files").is_some() {
+            true => ToolConcurrency::Global,
+            false => file_lock_key(args),
+        }
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_APPLY_PATCH.into(),
-            description: "Apply one or multiple atomic search-and-replace edits to a workspace file with tolerant seeking (exact -> right-trimmed -> trimmed) and strict ambiguity protection (refuses multi-match silent corruption unless `replace_all` or `expected_occurrences` is set).".into(),
+            description: "Atomically apply single-file or multi-file patches (create, update, move/rename, delete) with two-phase validation (zero disk writes if any file fails), tolerant seeking, ambiguity protection, and stale-read safety. Supports single-file `path`+`old_text`/`new_text` or `edits[]`, structured multi-file `files[]`, OR Codex's native `patch` (`*** Begin Patch ... *** End Patch`) grammar.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Workspace or `hub:` file path" },
-                    "old_text": { "type": "string", "description": "Existing block to locate (single-edit mode)" },
-                    "new_text": { "type": "string", "description": "Replacement block (single-edit mode)" },
+                    "path": { "type": "string", "description": "Workspace or `hub:` file path (single-file mode)" },
+                    "old_text": { "type": "string", "description": "Existing block to locate (single-file mode)" },
+                    "new_text": { "type": "string", "description": "Replacement block (single-file mode)" },
                     "replace_all": { "type": "boolean", "description": "Replace every non-overlapping match instead of requiring uniqueness (default false)" },
                     "expected_occurrences": { "type": "integer", "description": "Optional exact expected match count guard" },
                     "edits": {
                         "type": "array",
-                        "description": "Atomic sequential list of `{old_text, new_text, replace_all?, expected_occurrences?}` edits applied before one atomic write",
+                        "description": "Atomic sequential list of `{old_text, new_text, replace_all?, expected_occurrences?}` edits (single-file mode)",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -845,9 +1586,32 @@ impl Tool for ApplyPatchTool {
                             },
                             "required": ["old_text", "new_text"]
                         }
+                    },
+                    "files": {
+                        "type": "array",
+                        "description": "Two-phase atomic multi-file transaction (`create`, `update`, `move`, `delete`) across up to 24 jailed files",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string" },
+                                "action": { "type": "string", "enum": PATCH_FILE_ACTIONS },
+                                "move_to": { "type": "string" },
+                                "content": { "type": "string" },
+                                "overwrite": { "type": "boolean" },
+                                "old_text": { "type": "string" },
+                                "new_text": { "type": "string" },
+                                "replace_all": { "type": "boolean" },
+                                "expected_occurrences": { "type": "integer" },
+                                "edits": { "type": "array" }
+                            },
+                            "required": ["path"]
+                        }
+                    },
+                    "patch": {
+                        "type": "string",
+                        "description": "Codex native multi-file patch block (`*** Begin Patch` / `*** Add File:` / `*** Update File:` / `*** Move to:` / `*** Delete File:` / `*** End Patch`)"
                     }
-                },
-                "required": ["path"]
+                }
             }),
             risk: RiskLevel::Moderate,
         }
@@ -859,10 +1623,26 @@ impl Tool for ApplyPatchTool {
         args: Value,
         _cancel: CancellationToken,
     ) -> Result<ToolOutput> {
+        if let Some(raw_patch) = args.get("patch").and_then(Value::as_str) {
+            return match plan_codex_patch_transaction(ctx, raw_patch).await? {
+                Ok(planned) => commit_planned_file_tx(ctx, planned).await,
+                Err(msg) => Ok(ToolOutput::err(msg)),
+            };
+        }
+
+        if let Some(files) = args.get("files").and_then(Value::as_array) {
+            return match plan_structured_files_transaction(ctx, files).await? {
+                Ok(planned) => commit_planned_file_tx(ctx, planned).await,
+                Err(msg) => Ok(ToolOutput::err(msg)),
+            };
+        }
+
         let req_path = args
             .get("path")
             .and_then(Value::as_str)
-            .ok_or_else(|| ZenkoError::Tool("missing `path`".into()))?;
+            .ok_or_else(|| {
+                ZenkoError::Tool("missing `path`, `files`, or `patch`".into())
+            })?;
         let edits = parse_patch_edits(&args)?;
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
@@ -874,6 +1654,9 @@ impl Tool for ApplyPatchTool {
             )));
         }
         let old = tokio::fs::read_to_string(&path).await?;
+        if let Err(stale) = check_existing_file_freshness(ctx, req_path, &path, &old, true) {
+            return Ok(ToolOutput::err(stale));
+        }
         let eol = detect_line_ending(&old);
 
         let mut working = old.clone();
@@ -893,14 +1676,17 @@ impl Tool for ApplyPatchTool {
         }
 
         atomic_write(&path, &working).await?;
+        record_fresh_file_state(ctx, &path, &working);
         let diff = unified_diff(req_path, &old, &working);
-        Ok(ToolOutput::ok_with_diff(
+        let mut out = ToolOutput::ok_with_diff(
             format!(
                 "Patched {req_path} successfully ({total_replacements} replacement(s) across {} edit(s)).",
                 edits.len()
             ),
             diff,
-        ))
+        );
+        out.metadata = Some(json!({ "edited_files": [req_path] }));
+        Ok(out)
     }
 }
 
@@ -960,12 +1746,16 @@ impl Tool for WriteFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_WRITE_FILE.into(),
-            description: "Create or overwrite a file inside the workspace atomically.".into(),
+            description: "Create or overwrite a file inside the workspace atomically. Protects against blind overwrites of existing unread files (pass `overwrite: true` to replace intentionally) and blocks silent clobbers when a previously read file changed externally on disk.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "content": { "type": "string" }
+                    "content": { "type": "string" },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "Explicitly allow overwriting an existing file that has not been read in this session (default false)"
+                    }
                 },
                 "required": ["path", "content"]
             }),
@@ -987,10 +1777,25 @@ impl Tool for WriteFileTool {
             .get("content")
             .and_then(Value::as_str)
             .ok_or_else(|| ZenkoError::Tool("missing `content`".into()))?;
+        let overwrite = args
+            .get("overwrite")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, false)?;
-        let old = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        let existed = path.is_file();
+        let old = match existed {
+            true => tokio::fs::read_to_string(&path).await.unwrap_or_default(),
+            false => String::new(),
+        };
+        if existed
+            && let Err(stale_msg) =
+                check_existing_file_freshness(ctx, req_path, &path, &old, overwrite)
+        {
+            return Ok(ToolOutput::err(stale_msg));
+        }
         atomic_write(&path, content).await?;
+        record_fresh_file_state(ctx, &path, content);
         let diff = unified_diff(req_path, &old, content);
         Ok(ToolOutput::ok_with_diff(
             format!("Wrote {} bytes to {req_path}.", content.len()),
@@ -1055,7 +1860,7 @@ impl Tool for ListDirTool {
     }
 }
 
-async fn atomic_write(path: &std::path::Path, content: &str) -> Result<()> {
+pub(crate) async fn atomic_write(path: &std::path::Path, content: &str) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     tokio::fs::create_dir_all(parent).await?;
     let name = path
@@ -1089,6 +1894,7 @@ mod tests {
             max_output_bytes: 4096,
             headless_no_wait: false,
             demote_bg: std::sync::Arc::new(tokio::sync::Notify::new()),
+            file_state: None,
         }
     }
 
@@ -1225,6 +2031,172 @@ mod tests {
             .expect("ok");
         assert!(!ok.is_error, "err={}", ok.content);
         assert_eq!(std::fs::read_to_string(&file).expect("read"), "qux\nbar\nqux\nBAZ\n");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[derive(Debug, Default)]
+    struct MockFileState(std::sync::Mutex<std::collections::HashMap<PathBuf, String>>);
+
+    impl zenko_core::FileStateBridge for MockFileState {
+        fn record_file_state(&self, _sid: &str, path: &Path, sha256: String, _bytes: u64) {
+            if let Ok(mut map) = self.0.lock() {
+                map.insert(path.to_path_buf(), sha256);
+            }
+        }
+        fn forget_file_state(&self, _sid: &str, path: &Path) {
+            if let Ok(mut map) = self.0.lock() {
+                map.remove(path);
+            }
+        }
+        fn check_file_freshness(
+            &self,
+            _sid: &str,
+            path: &Path,
+            current_sha256: &str,
+        ) -> FileFreshnessCheck {
+            let guard = self.0.lock().expect("lock");
+            match guard.get(path) {
+                None => FileFreshnessCheck::UnreadExisting,
+                Some(prev) if prev == current_sha256 => FileFreshnessCheck::Fresh,
+                Some(prev) => FileFreshnessCheck::ExternallyModified {
+                    recorded_sha256: prev.clone(),
+                    current_sha256: current_sha256.to_string(),
+                },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hash_edit_supports_insert_after_insert_before_and_delete() {
+        let dir = std::env::temp_dir().join(format!("zenko_fs_v3_ops_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "use std::io;\nfn alpha() {}\nfn dead() {}\n").expect("write");
+
+        let ctx = test_ctx(&dir);
+        let cancel = CancellationToken::new();
+        let h1 = line_hash("use std::io;");
+        let h2 = line_hash("fn alpha() {}");
+        let h3 = line_hash("fn dead() {}");
+
+        let res = HashEditTool
+            .execute(
+                &ctx,
+                json!({
+                    "path": "lib.rs",
+                    "edits": [
+                        { "op": "insert_after", "start_line": 1, "start_hash": h1, "replacement": "use std::fs;" },
+                        { "op": "insert_before", "start_line": 2, "start_hash": h2, "replacement": "// doc comment" },
+                        { "op": "delete", "start_line": 3, "start_hash": h3 }
+                    ]
+                }),
+                cancel,
+            )
+            .await
+            .expect("exec");
+        assert!(!res.is_error, "err={}", res.content);
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("read"),
+            "use std::io;\nuse std::fs;\n// doc comment\nfn alpha() {}\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_executes_atomic_multi_file_and_codex_patch_with_rollback() {
+        let dir = std::env::temp_dir().join(format!("zenko_patch_v3_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("a.rs"), "let x = 1;\n").expect("a");
+        std::fs::write(dir.join("obsolete.rs"), "old\n").expect("obs");
+
+        let ctx = test_ctx(&dir);
+        let cancel = CancellationToken::new();
+
+        // 1. Failing second file in `files[]` must NOT touch the first file on disk!
+        let fail_tx = ApplyPatchTool
+            .execute(
+                &ctx,
+                json!({
+                    "files": [
+                        { "path": "a.rs", "action": "update", "old_text": "let x = 1;", "new_text": "let x = 99;" },
+                        { "path": "a.rs", "action": "delete" }
+                    ]
+                }),
+                cancel.clone(),
+            )
+            .await
+            .expect("fail_tx");
+        assert!(fail_tx.is_error);
+        assert_eq!(std::fs::read_to_string(dir.join("a.rs")).expect("read"), "let x = 1;\n");
+
+        // 2. Native Codex multi-file patch (add + update/move + delete) succeeds atomically!
+        let codex = "*** Begin Patch\n*** Add File: created.rs\n+pub const OK: bool = true;\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-let x = 1;\n+let x = 2;\n*** Delete File: obsolete.rs\n*** End Patch\n";
+        let ok = ApplyPatchTool
+            .execute(&ctx, json!({ "patch": codex }), cancel)
+            .await
+            .expect("codex");
+        assert!(!ok.is_error, "codex err={}", ok.content);
+        assert!(!dir.join("a.rs").exists());
+        assert!(!dir.join("obsolete.rs").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("b.rs")).expect("b"), "let x = 2;\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("created.rs")).expect("created"),
+            "pub const OK: bool = true;\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stale_read_guard_blocks_unread_overwrite_and_external_drift() {
+        let dir = std::env::temp_dir().join(format!("zenko_stale_v3_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("config.toml");
+        std::fs::write(&file, "mode = \"safe\"\n").expect("write");
+
+        let mut ctx = test_ctx(&dir);
+        ctx.file_state = Some(std::sync::Arc::new(MockFileState::default()));
+        let cancel = CancellationToken::new();
+
+        // 1. Blind overwrite of existing unread file is refused unless `overwrite: true`
+        let blocked = WriteFileTool
+            .execute(
+                &ctx,
+                json!({ "path": "config.toml", "content": "mode = \"fast\"\n" }),
+                cancel.clone(),
+            )
+            .await
+            .expect("blocked");
+        assert!(blocked.is_error);
+        assert!(blocked.content.contains("stale-read guard"), "out={}", blocked.content);
+
+        // 2. Explicit `overwrite: true` succeeds under Guarded Freedom!
+        let forced = WriteFileTool
+            .execute(
+                &ctx,
+                json!({ "path": "config.toml", "content": "mode = \"fast\"\n", "overwrite": true }),
+                cancel.clone(),
+            )
+            .await
+            .expect("forced");
+        assert!(!forced.is_error, "forced err={}", forced.content);
+
+        // 3. Reading records fingerprint; external disk edit causes stale-read block!
+        let _ = ReadFileTool
+            .execute(&ctx, json!({ "path": "config.toml" }), cancel.clone())
+            .await
+            .expect("read");
+        std::fs::write(&file, "mode = \"external_edit\"\n").expect("ext");
+        let drifted = ApplyPatchTool
+            .execute(
+                &ctx,
+                json!({ "path": "config.toml", "old_text": "external_edit", "new_text": "clobber" }),
+                cancel,
+            )
+            .await
+            .expect("drift");
+        assert!(drifted.is_error);
+        assert!(drifted.content.contains("changed externally"), "out={}", drifted.content);
 
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -1607,6 +1607,7 @@ for line in sys.stdin:
             max_output_bytes: 64 * 1024,
             headless_no_wait: true,
             demote_bg: Arc::new(Notify::new()),
+            file_state: None,
         };
         let out = tool
             .execute(&ctx, json!({"msg": "hello"}), CancellationToken::new())
@@ -1754,6 +1755,7 @@ for line in sys.stdin:
             max_output_bytes: 64 * 1024,
             headless_no_wait: true,
             demote_bg: Arc::new(Notify::new()),
+            file_state: None,
         };
         let out = tool
             .execute(&ctx, json!({}), CancellationToken::new())

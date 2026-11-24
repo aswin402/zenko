@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod compaction;
 pub mod dream;
 pub mod export;
+pub mod file_state;
 pub mod goals;
 pub mod jobs;
 pub mod log_store;
@@ -13,6 +14,7 @@ pub mod policy;
 pub mod runtime;
 pub mod scheduler;
 pub mod telemetry;
+pub mod tool_router;
 pub mod watchers;
 pub mod worktree;
 
@@ -34,6 +36,7 @@ pub use compaction::{
 };
 pub use dream::{dream_status, run_dream_cycle, run_dream_worker};
 pub use export::{export_batch, export_session};
+pub use file_state::SessionFileTracker;
 pub use goals::{apply_verify_transition, execute_goal_iteration, run_goal_loop_scheduler, run_verify_argv};
 pub use jobs::{LocalJobSupervisor, read_job_log_slice, read_job_log_slice_sync};
 pub use log_store::{

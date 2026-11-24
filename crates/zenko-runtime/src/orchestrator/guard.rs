@@ -19,8 +19,8 @@ use zenko_core::{
     TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SHELL_EXEC,
     TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
     VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
-    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_memory_mutating_action,
-    is_skill_manage_args_mutating,
+    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
+    is_memory_mutating_action, is_skill_manage_args_mutating,
 };
 
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -64,6 +64,7 @@ struct CallFingerprint {
 fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
     match tool_name {
         TOOL_GIT => is_git_tool_args_mutating(arguments),
+        TOOL_LSP => is_lsp_tool_args_mutating(arguments),
         TOOL_SKILL_MANAGE => is_skill_manage_args_mutating(arguments),
         TOOL_GOAL_LOOP => is_goal_loop_args_mutating(arguments),
         TOOL_MEMORY => {
@@ -128,7 +129,8 @@ pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategor
     match (
         MUTATING_FILE_TOOLS.contains(&tool_name) || is_mutating_scoped_tool_call(tool_name, arguments),
         PLANNING_TOOLS.contains(&tool_name),
-        READ_ONLY_TOOLS.contains(&tool_name),
+        READ_ONLY_TOOLS.contains(&tool_name)
+            || (tool_name == TOOL_LSP && !is_lsp_tool_args_mutating(arguments)),
         VERIFICATION_SHELL_TOOLS.contains(&tool_name),
     ) {
         (true, _, _, _) => ToolCategory::Mutation,
@@ -393,15 +395,40 @@ impl ExecutionGuard {
                 }
             }
         }
-        if !is_error && MUTATING_FILE_TOOLS.contains(&tool_name)
-            && let Some(p) = arguments.get("path").and_then(Value::as_str) {
-                let norm = p.trim().trim_start_matches("./").to_string();
+        if !is_error
+            && (MUTATING_FILE_TOOLS.contains(&tool_name)
+                || (tool_name == TOOL_LSP && is_lsp_tool_args_mutating(arguments)))
+        {
+            let mut touched: Vec<String> = Vec::new();
+            if let Some(p) = arguments.get("path").and_then(Value::as_str) {
+                touched.push(p.to_string());
+            }
+            if let Some(files) = arguments.get("files").and_then(Value::as_array) {
+                for item in files {
+                    if let Some(p) = item.get("move_to").or_else(|| item.get("path")).and_then(Value::as_str) {
+                        touched.push(p.to_string());
+                    }
+                }
+            }
+            if let Some(meta_files) = metadata
+                .and_then(|m| m.get("edited_files"))
+                .and_then(Value::as_array)
+            {
+                for item in meta_files {
+                    if let Some(p) = item.as_str() {
+                        touched.push(p.to_string());
+                    }
+                }
+            }
+            for raw_p in touched {
+                let norm = raw_p.trim().trim_start_matches("./").to_string();
                 if !norm.is_empty() {
                     self.mutated_files.insert(norm.clone());
                     *self.file_edit_counts.entry(norm).or_insert(0) += 1;
                     self.verification_ran = false;
                 }
             }
+        }
         if is_error && tool_name == TOOL_SHELL_EXEC {
             let cmd = arguments
                 .get("command")
@@ -450,7 +477,7 @@ impl ExecutionGuard {
                     }
                 }
                 TOOL_LSP => {
-                    if !self.mutated_files.is_empty() {
+                    if !is_lsp_tool_args_mutating(arguments) && !self.mutated_files.is_empty() {
                         self.verification_ran = true;
                         self.last_verification_failed = false;
                     }

@@ -13,10 +13,10 @@ use zenko_core::{
     DANGEROUS_APPROVAL_BINS, HookConfig, HookEvent, MCP_TOOL_PREFIX, PIPE_TO_SHELL_BINS,
     PLAN_MODE_SCOPED_TOOLS, PLANNING_TOOLS, PROTECTED_DATA_SEGMENTS, PermissionMode, PolicyConfig,
     READ_ONLY_TOOLS, RiskLevel, SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS,
-    TOOL_GIT, TOOL_GOAL_LOOP, TOOL_MEMORY, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
-    ToolSpec, VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role,
-    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_memory_mutating_action,
-    is_skill_manage_args_mutating,
+    TOOL_GIT, TOOL_GOAL_LOOP, TOOL_LSP, TOOL_MEMORY, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
+    TOOL_SPAWN_AGENT, ToolSpec, VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role,
+    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
+    is_memory_mutating_action, is_skill_manage_args_mutating,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -773,16 +773,21 @@ pub fn evaluate_policy(
             }
         }
 
+    let effective_risk = match (spec.name.as_str(), is_lsp_tool_args_mutating(args)) {
+        (TOOL_LSP, true) => RiskLevel::Moderate,
+        _ => spec.risk,
+    };
+
     match mode {
         // Plan Mode is strictly rank-0 read-only: overrides even `always_allowed`!
         PermissionMode::Plan => evaluate_plan_mode_policy(spec, args),
         _ if always_allowed.contains(&spec.name) => PolicyVerdict::Allow,
         PermissionMode::Autonomous => PolicyVerdict::Allow,
-        PermissionMode::Balanced => match spec.risk {
+        PermissionMode::Balanced => match effective_risk {
             RiskLevel::Safe | RiskLevel::Moderate => PolicyVerdict::Allow,
             RiskLevel::Dangerous => PolicyVerdict::AskUser,
         },
-        PermissionMode::Strict => match spec.risk {
+        PermissionMode::Strict => match effective_risk {
             RiskLevel::Safe => PolicyVerdict::Allow,
             RiskLevel::Moderate | RiskLevel::Dangerous => PolicyVerdict::AskUser,
         },
@@ -835,6 +840,13 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
             false => PolicyVerdict::Allow,
             true => PolicyVerdict::Deny(
                 "Read-only Plan Mode only permits read-only `git_tool` actions (`status`, `diff`, `log`, `blame`, `show`, `branch(list)`). Approve the plan before staging, committing, or switching branches."
+                    .into(),
+            ),
+        },
+        TOOL_LSP => match is_lsp_tool_args_mutating(args) {
+            false => PolicyVerdict::Allow,
+            true => PolicyVerdict::Deny(
+                "Read-only Plan Mode only permits read-only `lsp_tool` actions or `rename` with `dry_run: true`. Approve the plan before applying LSP workspace renames."
                     .into(),
             ),
         },

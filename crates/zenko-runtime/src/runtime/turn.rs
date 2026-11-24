@@ -611,6 +611,7 @@ impl AgentRuntime {
             max_output_bytes: cfg.policy.max_output_bytes,
             headless_no_wait: opts.headless_no_wait,
             demote_bg,
+            file_state: Some(self.file_state.clone() as Arc<dyn FileStateBridge>),
         };
 
         let mut final_assistant_text = String::new();
@@ -1957,28 +1958,7 @@ impl AgentRuntime {
         effective_permission: PermissionMode,
         tc: &ToolCall,
     ) -> ToolConcurrency {
-        let Some(tool) = self.tools.get(&tc.name) else {
-            return ToolConcurrency::Global;
-        };
-        let base = tool.concurrency_for_args(&tc.arguments);
-        if base == ToolConcurrency::Global {
-            return ToolConcurrency::Global;
-        }
-        let allowed_set = self
-            .always_allowed
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default();
-        match evaluate_policy(
-            effective_permission,
-            &cfg.policy,
-            &tool.spec(),
-            &tc.arguments,
-            &allowed_set,
-        ) {
-            PolicyVerdict::Allow => base,
-            PolicyVerdict::AskUser | PolicyVerdict::Deny(_) => ToolConcurrency::Global,
-        }
+        tool_router::classify_tool_call(self, cfg, effective_permission, tc)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1989,307 +1969,23 @@ impl AgentRuntime {
         effective_permission: PermissionMode,
         tool_ctx: &ToolContext,
         headless_no_wait: bool,
-        mut tc: ToolCall,
+        tc: ToolCall,
         cancel: &CancellationToken,
     ) -> Result<ExecutedToolCall> {
-        if cancel.is_cancelled() {
-            return Err(ZenkoError::Cancelled);
-        }
-
-        let start_ts = Instant::now();
-        let scope = self.effective_session_scope(session_id);
-
-        let Some(tool) = self.tools.get(&tc.name) else {
-            let suggestions = self.tools.suggest_permitted_tools(
-                &tc.name,
-                TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS,
-                &scope.availability,
-                |spec| scope.permits_spec(spec),
-            );
-            let hint = match suggestions.is_empty() {
-                true => format!(
-                    "Unknown tool: `{}`. Use `{TOOL_TOOL_SEARCH}(action=\"list_toolsets\")` to inspect available tools.",
-                    tc.name
-                ),
-                false => format!(
-                    "Unknown tool: `{}`. Closest available tools: {}.",
-                    tc.name,
-                    suggestions
-                        .iter()
-                        .map(|s| format!("`{s}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            };
-            return Ok(ExecutedToolCall {
-                tool_call_id: tc.id,
-                tool_name: tc.name,
-                arguments: tc.arguments,
-                output: ToolOutput::err(hint),
-                duration_ms: 0,
-            });
-        };
-
-        if !tool.is_available(&scope.availability) {
-            return Ok(ExecutedToolCall {
-                tool_call_id: tc.id,
-                tool_name: tc.name.clone(),
-                arguments: tc.arguments,
-                output: ToolOutput::err(format!(
-                    "Tool `{}` is not available in the current session environment or scope.",
-                    tc.name
-                )),
-                duration_ms: 0,
-            });
-        }
-
-        let spec = tool.spec();
-        tc.arguments = coerce_and_repair_args(tc.arguments, &spec.parameters);
-        let args_preview = truncate_preview(&tc.arguments.to_string(), 320);
-
-        let _active_tool_guard =
-            ActiveToolGuard::enter(self.session_control(session_id), tc.name.clone());
-        self.emit(AgentEvent::ToolCallStarted {
-            session_id: session_id.to_string(),
-            call_id: tc.id.clone(),
-            tool_name: tc.name.clone(),
-            args_preview: args_preview.clone(),
-            risk: spec.risk,
-        });
-
-        let hook_res = run_hooks(
-            &cfg.hooks,
-            HookEvent::PreToolUse,
-            Some(&tc.name),
-            json!({ "session_id": session_id, "args": tc.arguments }),
+        tool_router::dispatch_tool_call(
+            self,
+            cfg,
+            session_id,
+            effective_permission,
+            tool_ctx,
+            headless_no_wait,
+            tc,
+            cancel,
         )
-        .await;
-
-        let format_tool_err = |err: ZenkoError| -> ToolOutput {
-            let base = format!("Tool error: {err}");
-            match err {
-                ZenkoError::Tool(_) => {
-                    let schema_hint = format_compact_schema_hint(&spec);
-                    match schema_hint.is_empty() {
-                        true => ToolOutput::err(base),
-                        false => ToolOutput::err(format!("{base}\n{schema_hint}")),
-                    }
-                }
-                _ => ToolOutput::err(base),
-            }
-        };
-
-        let activate_if_deferred = || {
-            if self.tools.is_deferred(&tc.name) {
-                let newly =
-                    self.activate_deferred_tools(session_id, std::slice::from_ref(&tc.name));
-                if !newly.is_empty() {
-                    self.emit(AgentEvent::OrchestratorUpdated {
-                        session_id: session_id.to_string(),
-                        stage: ORCH_STAGE_TOOL_ACTIVATED.into(),
-                        tier: zenko_core::ExecutionTier::Standard,
-                        detail: format!("Auto-activated deferred tool `{}` on direct call", tc.name),
-                        model: None,
-                    });
-                }
-            }
-        };
-
-        let mut tool_output = match hook_res {
-            Err(blocked) => ToolOutput::err(format!("Blocked by PreToolUse hook: {blocked}")),
-            Ok(()) => {
-                let allowed_set = self
-                    .always_allowed
-                    .read()
-                    .map(|g| g.clone())
-                    .unwrap_or_default();
-                let verdict = evaluate_policy(
-                    effective_permission,
-                    &cfg.policy,
-                    &spec,
-                    &tc.arguments,
-                    &allowed_set,
-                );
-
-                match verdict {
-                    PolicyVerdict::Deny(reason) => {
-                        ToolOutput::err(format!("Denied by execpolicy: {reason}"))
-                    }
-                    PolicyVerdict::AskUser if headless_no_wait => ToolOutput::err(format!(
-                        "Tool `{}` requires approval in `{}` mode (headless run did not block). Re-run with `--mode autonomous` or approve via daemon/WebUI.",
-                        tc.name,
-                        effective_permission.as_str()
-                    )),
-                    PolicyVerdict::AskUser => {
-                        let _ = run_hooks(
-                            &cfg.hooks,
-                            HookEvent::PermissionRequest,
-                            Some(&tc.name),
-                            json!({ "session_id": session_id, "args": tc.arguments }),
-                        )
-                        .await;
-                        match self
-                            .request_hitl_approval(
-                                session_id,
-                                &tc.id,
-                                &tc.name,
-                                &args_preview,
-                                spec.risk,
-                                cancel,
-                            )
-                            .await?
-                        {
-                            ApprovalDecision::Approve | ApprovalDecision::AlwaysAllow => {
-                                activate_if_deferred();
-                                match tool
-                                    .execute(tool_ctx, tc.arguments.clone(), cancel.clone())
-                                    .await
-                                {
-                                    Ok(out) => out,
-                                    Err(ZenkoError::Cancelled) => {
-                                        return Err(ZenkoError::Cancelled);
-                                    }
-                                    Err(e) => format_tool_err(e),
-                                }
-                            }
-                            ApprovalDecision::Deny => {
-                                ToolOutput::err(
-                                    "Tool execution skipped (user denied or steered the turn with updated instructions).",
-                                )
-                            }
-                        }
-                    }
-                    PolicyVerdict::Allow => {
-                        activate_if_deferred();
-                        match tool
-                            .execute(tool_ctx, tc.arguments.clone(), cancel.clone())
-                            .await
-                        {
-                            Ok(out) => out,
-                            Err(ZenkoError::Cancelled) => return Err(ZenkoError::Cancelled),
-                            Err(e) => format_tool_err(e),
-                        }
-                    }
-                }
-            }
-        };
-
-        if !tool_output.is_error
-            && (MUTATING_FILE_TOOLS.contains(&tc.name.as_str())
-                || (tc.name == TOOL_GIT && is_git_tool_args_mutating(&tc.arguments))
-                || tc.name == TOOL_SHELL_EXEC)
-        {
-            self.record_workspace_mutation();
-        }
-
-        // Oh My Pi–style Diagnostics-on-Edit: if a warm LSP server is already running for an edited
-        // file, attach fresh compiler/type errors directly to the edit output (zero cold spawns!).
-        if !tool_output.is_error
-            && cfg.lsp.enabled
-            && cfg.lsp.auto_diagnostics_on_edit
-            && MUTATING_FILE_TOOLS.contains(&tc.name.as_str())
-        {
-            for edited_rel in extract_edited_rel_paths(&tc.name, &tc.arguments) {
-                let candidate = tool_ctx.workspace_dir.join(&edited_rel);
-                if let Some(diag_block) = self
-                    .lsp
-                    .warm_diagnostics_for_edited_file(
-                        &tool_ctx.workspace_dir,
-                        &candidate,
-                        cancel.clone(),
-                    )
-                    .await
-                {
-                    tool_output.content.push_str(&diag_block);
-                }
-            }
-        }
-
-        // Async Prime-RLM / Codex Head+Tail Artifact Spilling for oversized tool outputs
-        if cfg.context.artifact_spilling && tool_output.content.len() > tool_ctx.max_output_bytes {
-            let (spilled_content, spill_rec) = artifacts::spill_tool_output_if_oversized(
-                &tool_ctx.data_dir,
-                session_id,
-                &tc.id,
-                &tc.name,
-                tool_output.content,
-                tool_ctx.max_output_bytes,
-            )
-            .await;
-            tool_output.content = spilled_content;
-            if let Some(rec) = spill_rec {
-                let art_val = serde_json::to_value(&rec).unwrap_or(Value::Null);
-                tool_output.metadata = match tool_output.metadata {
-                    Some(Value::Object(mut map)) => {
-                        map.insert("artifact".into(), art_val);
-                        Some(Value::Object(map))
-                    }
-                    Some(other) => Some(json!({ "data": other, "artifact": art_val })),
-                    None => Some(json!({ "artifact": art_val })),
-                };
-            }
-        }
-
-        let duration_ms = start_ts.elapsed().as_millis() as u64;
-
-        let _ = run_hooks(
-            &cfg.hooks,
-            HookEvent::PostToolUse,
-            Some(&tc.name),
-            json!({
-                "session_id": session_id,
-                "is_error": tool_output.is_error,
-                "duration_ms": duration_ms
-            }),
-        )
-        .await;
-
-        self.emit(AgentEvent::ToolCallFinished {
-            session_id: session_id.to_string(),
-            call_id: tc.id.clone(),
-            tool_name: tc.name.clone(),
-            is_error: tool_output.is_error,
-            duration_ms,
-            diff: tool_output.diff.clone(),
-            output_preview: truncate_preview(&tool_output.content, 600),
-        });
-
-        // Broadcast `SkillUpdated` when an agent mutates a procedural skill (notifies WebUI SSE & Telegram draft gate)
-        if tc.name == TOOL_SKILL_MANAGE && !tool_output.is_error
-            && let Some(action_raw) = tc.arguments.get("action").and_then(Value::as_str)
-                && let Some(action) = SkillManageAction::parse(action_raw)
-                    && action.is_mutating() {
-                        let meta_skill = tool_output.metadata.as_ref().and_then(|m| m.get("skill"));
-                        let slug = meta_skill
-                            .and_then(|s| s.get("slug"))
-                            .and_then(Value::as_str)
-                            .or_else(|| tc.arguments.get("slug").and_then(Value::as_str))
-                            .unwrap_or("")
-                            .to_string();
-                        let status = meta_skill
-                            .and_then(|s| s.get("status"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("active")
-                            .to_string();
-                        if !slug.is_empty() {
-                            self.emit(AgentEvent::SkillUpdated {
-                                slug,
-                                action: action_raw.to_string(),
-                                status,
-                            });
-                        }
-                    }
-
-        Ok(ExecutedToolCall {
-            tool_call_id: tc.id,
-            tool_name: tc.name,
-            arguments: tc.arguments,
-            output: tool_output,
-            duration_ms,
-        })
+        .await
     }
 
-    async fn request_hitl_approval(
+    pub(crate) async fn request_hitl_approval(
         &self,
         session_id: &str,
         call_id: &str,

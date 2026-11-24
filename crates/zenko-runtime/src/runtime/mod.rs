@@ -10,6 +10,7 @@ use crate::compaction::{
     estimate_tool_specs_tokens, microcompact_messages, plan_checkpoint_split,
     prepend_checkpoint_to_messages, slice_from_latest_checkpoint,
 };
+use crate::file_state::SessionFileTracker;
 use crate::jobs::LocalJobSupervisor;
 use crate::log_store::{CategorizedLogSink, install_panic_hook, wire_debug_enabled};
 use crate::orchestrator::{
@@ -20,11 +21,11 @@ use crate::orchestrator::{
 use crate::orchestrator::brainstorm::ClarificationHub;
 use crate::orchestrator::triage::{TriageInput, classify_turn};
 use crate::policy::{
-    PolicyVerdict, evaluate_policy, evaluate_verify_command_safety, is_tool_allowed_in_plan_schema,
-    run_hooks,
+    evaluate_verify_command_safety, is_tool_allowed_in_plan_schema, run_hooks,
 };
 use crate::scheduler::execute_tool_waves;
 use crate::telemetry::{LogBuffer, current_rss_bytes};
+use crate::tool_router;
 use async_trait::async_trait;
 use chrono::Utc;
 use croner::Cron;
@@ -51,7 +52,7 @@ use zenko_core::{
     DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_PAIRING_TTL_MINS,
     DaemonTelemetry, DreamRunRecord, DreamStatus, ESCALATION_OPT_PIVOT, ESCALATION_OPT_STOP,
     EXTERNAL_TOOL_REAPER_INTERVAL_SECS, EventKind, EventRole, ExecutionPlan, ExportOptions,
-    ExportReport, FILE_MODE_OWNER_ONLY, GOAL_LOOP_DEFAULT_INTERVAL_SECS,
+    ExportReport, FILE_MODE_OWNER_ONLY, FileStateBridge, GOAL_LOOP_DEFAULT_INTERVAL_SECS,
     GOAL_LOOP_DEFAULT_MAX_BUDGET_USD, GOAL_LOOP_DEFAULT_MAX_ITERATIONS,
     GOAL_LOOP_DEFAULT_NOTIFY_CHANNEL, GOAL_LOOP_DEFAULT_STALL_LIMIT, GOAL_LOOP_LIST_DEFAULT_LIMIT,
     GOAL_LOOP_MAX_ITERATIONS_CAP, GOAL_LOOP_MAX_STALL_CAP, GOAL_LOOP_RUNS_DEFAULT_LIMIT,
@@ -109,16 +110,17 @@ use zenko_core::{
     SessionTask, AutoDispatchDecision, resolve_auto_send_mode,
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT,
-    TOOL_HASH_EDIT, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE,
-    TOOL_RECORD_BRAINSTORM, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
-    TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
+    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT,
+    TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE,
+    TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
+    TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
     ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
     TriageReport,
     TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
     WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError,
     compact_preview, find_provider, find_subagent_role, is_git_tool_args_mutating,
-    is_memory_mutating_action, new_goal_loop_id, new_id, new_session_task_id,
+    is_lsp_tool_args_mutating, is_memory_mutating_action, new_goal_loop_id, new_id,
+    new_session_task_id,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
@@ -127,7 +129,7 @@ use zenko_memory::{
 use zenko_providers::{CompactModelRegistry, UnifiedLlmProvider};
 use zenko_tools::{
     ToolRegistry,
-    coerce::{coerce_and_repair_args, format_compact_schema_hint},
+    coerce::coerce_and_repair_args,
     lsp::LspPoolManager,
     mcp_client::McpClientManager,
     memory_cron::MemoryTool,
@@ -235,12 +237,12 @@ impl SessionToolScope {
                     && is_memory_mutating_action(
                         args.get("action").and_then(Value::as_str).unwrap_or(""),
                     );
-                let blocked_by_custom_ro = self.custom_read_only
+                let blocked_by_ro = (role_desc.read_only || self.custom_read_only)
                     && matches!(
                         orchestrator::classify_tool_category(tool_name, args),
                         orchestrator::ToolCategory::Mutation
                     );
-                match !role_desc.permits_tool(tool_name) || mutating_mem || blocked_by_custom_ro {
+                match !role_desc.permits_tool(tool_name) || mutating_mem || blocked_by_ro {
                     true => Err(format!(
                         "Subagent role `{}` policy denied tool `{}`.",
                         role_desc.id, tool_name
@@ -260,7 +262,7 @@ impl SessionToolScope {
 }
 
 #[derive(Default)]
-struct SessionControl {
+pub(crate) struct SessionControl {
     steer_queue: Mutex<VecDeque<String>>,
     job_notices: Mutex<VecDeque<WakeupNotice>>,
     active_tools: Mutex<HashMap<String, usize>>,
@@ -295,13 +297,13 @@ impl Drop for ActiveSessionScopeGuard {
 }
 
 /// RAII multiset counter tracking in-flight tool names on a session (cleanup guaranteed on cancel/error).
-struct ActiveToolGuard {
+pub(crate) struct ActiveToolGuard {
     ctrl: Arc<SessionControl>,
     tool_name: String,
 }
 
 impl ActiveToolGuard {
-    fn enter(ctrl: Arc<SessionControl>, tool_name: String) -> Self {
+    pub(crate) fn enter(ctrl: Arc<SessionControl>, tool_name: String) -> Self {
         if let Ok(mut map) = ctrl.active_tools.lock() {
             *map.entry(tool_name.clone()).or_insert(0) += 1;
         }
@@ -323,12 +325,12 @@ impl Drop for ActiveToolGuard {
     }
 }
 
-struct ExecutedToolCall {
-    tool_call_id: String,
-    tool_name: String,
-    arguments: Value,
-    output: ToolOutput,
-    duration_ms: u64,
+pub(crate) struct ExecutedToolCall {
+    pub(crate) tool_call_id: String,
+    pub(crate) tool_name: String,
+    pub(crate) arguments: Value,
+    pub(crate) output: ToolOutput,
+    pub(crate) duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +374,7 @@ pub struct AgentRuntime {
     skills_cfg: Arc<RwLock<SkillsConfig>>,
     pub lsp: Arc<LspPoolManager>,
     pub mcp_clients: Arc<McpClientManager>,
+    pub file_state: Arc<SessionFileTracker>,
     pub trigger_limiter: Arc<TriggerRateLimiter>,
     started_at: Instant,
     turn_seq: AtomicU64,
@@ -554,6 +557,7 @@ impl AgentRuntime {
             skills_cfg,
             lsp,
             mcp_clients,
+            file_state: Arc::new(SessionFileTracker::new()),
             trigger_limiter: Arc::new(TriggerRateLimiter::new()),
             started_at: Instant::now(),
             turn_seq: AtomicU64::new(1),
@@ -1092,7 +1096,7 @@ impl AgentRuntime {
             .clone()
     }
 
-    fn session_control(&self, session_id: &str) -> Arc<SessionControl> {
+    pub(crate) fn session_control(&self, session_id: &str) -> Arc<SessionControl> {
         let mut map = match self.session_controls.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -1100,6 +1104,13 @@ impl AgentRuntime {
         map.entry(session_id.to_string())
             .or_insert_with(|| Arc::new(SessionControl::default()))
             .clone()
+    }
+
+    pub(crate) fn snapshot_always_allowed(&self) -> HashSet<String> {
+        self.always_allowed
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub fn is_session_running(&self, session_id: &str) -> bool {
@@ -1236,7 +1247,7 @@ impl AgentRuntime {
         set
     }
 
-    fn activate_deferred_tools(&self, session_id: &str, names: &[String]) -> Vec<String> {
+    pub(crate) fn activate_deferred_tools(&self, session_id: &str, names: &[String]) -> Vec<String> {
         let mut newly = Vec::new();
         if let Ok(mut map) = self.activated_deferred.lock() {
             let entry = map.entry(session_id.to_string()).or_default();
@@ -1945,43 +1956,6 @@ impl AgentRuntime {
 
 }
 
-/// Deterministically extracts workspace-relative paths modified by `write_file`, `hash_edit`,
-/// or `apply_patch` (zero regex) for Oh My Pi–style warm LSP Diagnostics-on-Edit.
-fn extract_edited_rel_paths(tool_name: &str, args: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    match tool_name {
-        TOOL_WRITE_FILE | TOOL_HASH_EDIT | TOOL_APPLY_PATCH => {
-            if let Some(p) = args
-                .get("path")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty() && !s.starts_with("hub:"))
-            {
-                out.push(p.to_string());
-            }
-            if tool_name == TOOL_APPLY_PATCH
-                && let Some(patch) = args.get("patch").and_then(Value::as_str)
-            {
-                for line in patch.lines() {
-                    let trimmed = line.trim();
-                    let rel = trimmed
-                        .strip_prefix("*** Update File:")
-                        .or_else(|| trimmed.strip_prefix("*** Add File:"))
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty() && !s.starts_with("hub:"));
-                    if let Some(p) = rel
-                        && !out.iter().any(|existing| existing == p)
-                    {
-                        out.push(p.to_string());
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    out
-}
-
 fn is_workspace_mutating_call(tc: &ToolCall) -> Option<&str> {
     let name = tc.name.as_str();
     match name {
@@ -2024,6 +1998,10 @@ fn is_workspace_mutating_call(tc: &ToolCall) -> Option<&str> {
             }
         }
         TOOL_GIT => match is_git_tool_args_mutating(&tc.arguments) {
+            true => Some(name),
+            false => None,
+        },
+        TOOL_LSP => match is_lsp_tool_args_mutating(&tc.arguments) {
             true => Some(name),
             false => None,
         },
@@ -2239,16 +2217,6 @@ fn push_job_notice(
             q.pop_front();
         }
         q.push_back(notice);
-    }
-}
-
-fn truncate_preview(s: &str, max: usize) -> String {
-    match s.len() <= max {
-        true => s.to_string(),
-        false => {
-            let cut = s.floor_char_boundary(max);
-            format!("{}...", &s[..cut])
-        }
     }
 }
 

@@ -344,6 +344,7 @@ pub async fn run_debug_tool(
         max_output_bytes: cfg.policy.max_output_bytes,
         headless_no_wait: true,
         demote_bg: Arc::new(Notify::new()),
+        file_state: None,
     };
 
     let started = Instant::now();

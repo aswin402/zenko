@@ -354,6 +354,7 @@
             max_output_bytes: 16_384,
             headless_no_wait: true,
             demote_bg: Arc::new(Notify::new()),
+            file_state: Some(rt.file_state.clone() as Arc<dyn FileStateBridge>),
         };
         let cancel = CancellationToken::new();
 
@@ -455,7 +456,7 @@
         let coder = find_subagent_role("coder").expect("coder role");
         assert!(!coder.permits_tool(TOOL_ORCHESTRATE_CONTROL));
         assert!(!coder.permits_tool(zenko_core::TOOL_GOAL_LOOP));
-        assert!(!coder.permits_tool(TOOL_SKILL_MANAGE));
+        assert!(!coder.permits_tool(zenko_core::TOOL_SKILL_MANAGE));
 
         // 5. `tool_search` supports `list_toolsets` & hides unconfigured `mcp`.
         let list_ts = rt
@@ -560,10 +561,27 @@
             "Plan Mode must never write via batch_tools"
         );
 
-        // 7. LSP diagnostics-on-edit path extraction covers `apply_patch` `path` arg.
+        // 7. LSP diagnostics-on-edit path extraction covers `apply_patch` `path`, `files[]`, and metadata.
         assert_eq!(
-            extract_edited_rel_paths("apply_patch", &json!({ "path": "src/app.rs" })),
+            tool_router::extract_edited_rel_paths(
+                "apply_patch",
+                &json!({ "path": "src/app.rs" }),
+                None
+            ),
             vec!["src/app.rs".to_string()]
+        );
+        assert_eq!(
+            tool_router::extract_edited_rel_paths(
+                "apply_patch",
+                &json!({
+                    "files": [
+                        { "path": "src/a.rs", "action": "update" },
+                        { "path": "src/old.rs", "action": "move", "move_to": "src/new.rs" }
+                    ]
+                }),
+                None
+            ),
+            vec!["src/a.rs".to_string(), "src/new.rs".to_string()]
         );
 
         // 8. Denied deferred tool in Plan Mode must NOT prematurely auto-activate into session state.
@@ -649,6 +667,116 @@
         assert!(
             guard.check_completion_gate(true).is_none(),
             "trailing passing verification inside batch_tools must satisfy completion guard"
+        );
+
+        // 12. Tool Architecture v3: ToolRouter + SessionFileTracker end-to-end stale-read & LSP rename gates!
+        std::fs::write(dir.join("tracked.rs"), "let v = 1;\n").expect("tracked");
+        let blind_overwrite = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t12a".into(),
+                    name: "write_file".into(),
+                    arguments: json!({ "path": "tracked.rs", "content": "let v = 9;\n" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("blind_overwrite");
+        assert!(blind_overwrite.output.is_error);
+        assert!(blind_overwrite.output.content.contains("stale-read guard"));
+
+        let read_ok = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t12b".into(),
+                    name: "read_file".into(),
+                    arguments: json!({ "path": "tracked.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("read_ok");
+        assert!(!read_ok.output.is_error);
+
+        // External disk drift blocks apply_patch cleanly
+        std::fs::write(dir.join("tracked.rs"), "let v = 777;\n").expect("ext_drift");
+        let drift_block = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t12c".into(),
+                    name: "apply_patch".into(),
+                    arguments: json!({ "path": "tracked.rs", "old_text": "777", "new_text": "888" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("drift_block");
+        assert!(drift_block.output.is_error);
+        assert!(drift_block.output.content.contains("changed externally"));
+
+        // Plan Mode blocks mutating `lsp_tool(action="rename")`, while permitting `dry_run: true`!
+        let plan_lsp_rename = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t12d".into(),
+                    name: TOOL_LSP.into(),
+                    arguments: json!({ "action": "rename", "path": "tracked.rs", "line": 1, "column": 5, "new_name": "x" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_lsp_rename");
+        assert!(plan_lsp_rename.output.is_error);
+        assert!(
+            plan_lsp_rename.output.content.contains("Denied by execpolicy"),
+            "plan_lsp_rename={}",
+            plan_lsp_rename.output.content
+        );
+
+        let ro_scope = SessionToolScope {
+            role_id: Some("explorer".into()),
+            permission: PermissionMode::Autonomous,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext::default(),
+        };
+        assert!(
+            ro_scope
+                .permits_invocation(
+                    TOOL_LSP,
+                    &json!({ "action": "rename", "path": "tracked.rs", "line": 1, "column": 5, "new_name": "x" })
+                )
+                .is_err(),
+            "read-only explorer subagent must never execute mutating lsp_tool rename"
+        );
+        assert!(
+            ro_scope
+                .permits_invocation(
+                    TOOL_LSP,
+                    &json!({ "action": "rename", "path": "tracked.rs", "line": 1, "column": 5, "new_name": "x", "dry_run": true })
+                )
+                .is_ok(),
+            "read-only explorer subagent may preview dry_run lsp_tool rename"
         );
 
         let _ = std::fs::remove_dir_all(dir);

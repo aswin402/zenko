@@ -1,16 +1,21 @@
 //! SSRF-safe, streaming-bounded HTTP fetcher with deterministic URL parsing and
 //! RFC-compliant IP range filtering — zero regex, zero unbounded RAM reads.
 
+use crate::html_md::{html_to_markdown, html_to_plain_text, should_parse_as_html};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     DEFAULT_WEB_FETCH_MAX_BYTES, DEFAULT_WEB_FETCH_MAX_REDIRECTS, DEFAULT_WEB_FETCH_TIMEOUT_SECS,
     DEFAULT_WEB_FETCH_USER_AGENT, Result, RiskLevel, TOOL_WEB_FETCH, Tool, ToolContext,
-    ToolExposure, ToolOutput, ToolSpec, ZenkoError, sanitize_untrusted_markup,
+    ToolExposure, ToolOutput, ToolSpec, WEB_FETCH_CACHE_MAX_ENTRIES, WEB_FETCH_CACHE_TTL_SECS,
+    WEB_FETCH_DEFAULT_MAX_CHARS, WEB_FETCH_FORMATS, WEB_FETCH_HARD_MAX_CHARS,
+    WEB_FETCH_MIN_MAX_CHARS, WebFetchFormat, ZenkoError, sanitize_untrusted_markup,
 };
 
 struct SsrfSafeResolver;
@@ -62,14 +67,48 @@ pub(crate) fn build_ssrf_safe_http_client() -> Result<Client> {
         .map_err(|e| ZenkoError::Tool(format!("failed to build SSRF-safe HTTP client: {e}")))
 }
 
+#[derive(Debug, Clone)]
+struct CachedFetchEntry {
+    request_url: String,
+    final_url: String,
+    status_code: u16,
+    content_type: Option<String>,
+    body: String,
+    byte_capped: bool,
+    fetched_at: Instant,
+}
+
 pub struct WebFetchTool {
     client: Option<Client>,
+    cache: Mutex<VecDeque<CachedFetchEntry>>,
 }
 
 impl WebFetchTool {
     pub fn new(_fallback_client: Client) -> Self {
         Self {
             client: build_ssrf_safe_http_client().ok(),
+            cache: Mutex::new(VecDeque::with_capacity(WEB_FETCH_CACHE_MAX_ENTRIES)),
+        }
+    }
+
+    fn cache_get(&self, request_url: &str) -> Option<CachedFetchEntry> {
+        let ttl = Duration::from_secs(WEB_FETCH_CACHE_TTL_SECS);
+        let mut guard = self.cache.lock().ok()?;
+        guard.retain(|e| e.fetched_at.elapsed() < ttl);
+        let pos = guard.iter().position(|e| e.request_url == request_url)?;
+        let entry = guard.remove(pos)?;
+        guard.push_back(entry.clone());
+        Some(entry)
+    }
+
+    fn cache_put(&self, entry: CachedFetchEntry) {
+        let ttl = Duration::from_secs(WEB_FETCH_CACHE_TTL_SECS);
+        if let Ok(mut guard) = self.cache.lock() {
+            guard.retain(|e| e.fetched_at.elapsed() < ttl && e.request_url != entry.request_url);
+            while guard.len() >= WEB_FETCH_CACHE_MAX_ENTRIES {
+                guard.pop_front();
+            }
+            guard.push_back(entry);
         }
     }
 }
@@ -284,12 +323,24 @@ impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_WEB_FETCH.into(),
-            description: "Fetch a public HTTP/HTTPS URL safely (SSRF-protected, streaming byte-bounded) and return clean readable text.".into(),
+            description: "Fetch a public HTTP/HTTPS URL safely (SSRF-protected, streaming byte-bounded, 15-min bounded LRU cache) and return structured Markdown (default), plain text, or raw body.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "url": { "type": "string", "description": "Public HTTP or HTTPS URL to fetch" },
-                    "max_chars": { "type": "integer", "description": "Maximum characters to return (default 10000)" }
+                    "format": {
+                        "type": "string",
+                        "enum": WEB_FETCH_FORMATS,
+                        "description": "Output format: `markdown` (default, preserves headings/code/links/lists), `text`, or `raw`"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": format!("Maximum characters to return (default {WEB_FETCH_DEFAULT_MAX_CHARS}, range {WEB_FETCH_MIN_MAX_CHARS}..={WEB_FETCH_HARD_MAX_CHARS})")
+                    },
+                    "bypass_cache": {
+                        "type": "boolean",
+                        "description": "Set true to skip the 15-minute local response cache and fetch fresh content (default false)"
+                    }
                 },
                 "required": ["url"]
             }),
@@ -306,26 +357,69 @@ impl Tool for WebFetchTool {
         let initial_url = args
             .get("url")
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| ZenkoError::Tool("missing `url`".into()))?;
+        let format = match args.get("format").and_then(Value::as_str) {
+            Some(raw) => WebFetchFormat::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Invalid `format` `{raw}`. Valid formats: {}.",
+                    WEB_FETCH_FORMATS.join(", ")
+                ))
+            })?,
+            None => WebFetchFormat::Markdown,
+        };
         let max_chars = args
             .get("max_chars")
             .and_then(Value::as_u64)
-            .unwrap_or(10_000)
-            .clamp(500, 32_000) as usize;
+            .unwrap_or(WEB_FETCH_DEFAULT_MAX_CHARS as u64)
+            .clamp(
+                WEB_FETCH_MIN_MAX_CHARS as u64,
+                WEB_FETCH_HARD_MAX_CHARS as u64,
+            ) as usize;
+        let bypass_cache = args
+            .get("bypass_cache")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
-        let fetch_fut = self.fetch_with_verified_redirects(initial_url, cancel.clone());
-        let (final_url, status, raw_bytes, byte_capped) = tokio::select! {
-            _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
-            res = tokio::time::timeout(Duration::from_secs(DEFAULT_WEB_FETCH_TIMEOUT_SECS), fetch_fut) => {
-                match res {
-                    Ok(inner) => inner?,
-                    Err(_) => return Ok(ToolOutput::err(format!("Fetch timed out after {DEFAULT_WEB_FETCH_TIMEOUT_SECS}s"))),
+        let (entry, cache_hit) = match (!bypass_cache).then(|| self.cache_get(initial_url)).flatten()
+        {
+            Some(hit) => (hit, true),
+            None => {
+                let fetch_fut = self.fetch_with_verified_redirects(initial_url, cancel.clone());
+                let (final_url, status, content_type, raw_bytes, byte_capped) = tokio::select! {
+                    _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
+                    res = tokio::time::timeout(Duration::from_secs(DEFAULT_WEB_FETCH_TIMEOUT_SECS), fetch_fut) => {
+                        match res {
+                            Ok(inner) => inner?,
+                            Err(_) => return Ok(ToolOutput::err(format!("Fetch timed out after {DEFAULT_WEB_FETCH_TIMEOUT_SECS}s"))),
+                        }
+                    }
+                };
+                let body = String::from_utf8_lossy(&raw_bytes).into_owned();
+                let fresh = CachedFetchEntry {
+                    request_url: initial_url.to_string(),
+                    final_url,
+                    status_code: status.as_u16(),
+                    content_type,
+                    body,
+                    byte_capped,
+                    fetched_at: Instant::now(),
+                };
+                if status.is_success() {
+                    self.cache_put(fresh.clone());
                 }
+                (fresh, false)
             }
         };
 
-        let body = String::from_utf8_lossy(&raw_bytes);
-        let cleaned = sanitize_untrusted_markup(&strip_html_to_text(&body));
+        let formatted = format_fetched_body(
+            &entry.final_url,
+            entry.content_type.as_deref(),
+            &entry.body,
+            format,
+        );
+        let cleaned = sanitize_untrusted_markup(&formatted);
         let final_text = match cleaned.len() > max_chars {
             true => {
                 let cut = cleaned.floor_char_boundary(max_chars);
@@ -333,14 +427,47 @@ impl Tool for WebFetchTool {
             }
             false => cleaned,
         };
-        let cap_note = match byte_capped {
+        let cap_note = match entry.byte_capped {
             true => format!(" [body capped at {} KB]", DEFAULT_WEB_FETCH_MAX_BYTES / 1024),
             false => String::new(),
         };
+        let cache_note = match cache_hit {
+            true => " [cached]",
+            false => "",
+        };
 
         Ok(ToolOutput::ok(format!(
-            "HTTP {status} — {final_url}{cap_note}\n\n{final_text}"
+            "HTTP {} — {} ({}){cache_note}{cap_note}\n\n{final_text}",
+            entry.status_code,
+            entry.final_url,
+            format.as_str()
         )))
+    }
+}
+
+fn format_fetched_body(
+    final_url: &str,
+    content_type: Option<&str>,
+    body: &str,
+    format: WebFetchFormat,
+) -> String {
+    match format {
+        WebFetchFormat::Raw => body.to_string(),
+        WebFetchFormat::Markdown => match should_parse_as_html(content_type, body) {
+            true => {
+                let parsed = parse_http_url(final_url).ok();
+                html_to_markdown(
+                    body,
+                    parsed.as_ref().map(|p| p.origin.as_str()),
+                    parsed.as_ref().map(|p| p.base_dir.as_str()),
+                )
+            }
+            false => body.to_string(),
+        },
+        WebFetchFormat::Text => match should_parse_as_html(content_type, body) {
+            true => html_to_plain_text(body),
+            false => body.to_string(),
+        },
     }
 }
 
@@ -349,7 +476,7 @@ impl WebFetchTool {
         &self,
         start_url: &str,
         cancel: CancellationToken,
-    ) -> Result<(String, reqwest::StatusCode, Vec<u8>, bool)> {
+    ) -> Result<(String, reqwest::StatusCode, Option<String>, Vec<u8>, bool)> {
         let client = self.client.as_ref().ok_or_else(|| {
             ZenkoError::Tool("SSRF-safe HTTP client failed to initialize".into())
         })?;
@@ -373,6 +500,12 @@ impl WebFetchTool {
                 continue;
             }
 
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(String::from);
+
             let mut resp = resp;
             let mut buf = Vec::with_capacity(DEFAULT_WEB_FETCH_MAX_BYTES.min(32_768));
             let mut capped = false;
@@ -391,81 +524,13 @@ impl WebFetchTool {
                     }
                 }
             }
-            return Ok((current_url, status, buf, capped));
+            return Ok((current_url, status, content_type, buf, capped));
         }
 
         Err(ZenkoError::Tool(format!(
             "exceeded maximum redirects ({DEFAULT_WEB_FETCH_MAX_REDIRECTS})"
         )))
     }
-}
-
-#[derive(Clone, Copy)]
-enum HtmlState {
-    Text,
-    Tag,
-    SkipScript,
-    SkipStyle,
-}
-
-fn strip_html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len().min(32_768));
-    let mut state = HtmlState::Text;
-    let lower = html.to_ascii_lowercase();
-    let lower_bytes = lower.as_bytes();
-    let mut i = 0;
-
-    while i < html.len() {
-        let rest_lower = &lower_bytes[i..];
-        match state {
-            HtmlState::SkipScript => match rest_lower.starts_with(b"</script>") {
-                true => {
-                    state = HtmlState::Text;
-                    i += 9;
-                }
-                false => i += 1,
-            },
-            HtmlState::SkipStyle => match rest_lower.starts_with(b"</style>") {
-                true => {
-                    state = HtmlState::Text;
-                    i += 8;
-                }
-                false => i += 1,
-            },
-            HtmlState::Text | HtmlState::Tag => {
-                if rest_lower.starts_with(b"<script") {
-                    state = HtmlState::SkipScript;
-                    i += 7;
-                    continue;
-                }
-                if rest_lower.starts_with(b"<style") {
-                    state = HtmlState::SkipStyle;
-                    i += 6;
-                    continue;
-                }
-                let ch = html[i..].chars().next().unwrap_or(' ');
-                i += ch.len_utf8();
-                match (state, ch) {
-                    (_, '<') => state = HtmlState::Tag,
-                    (HtmlState::Tag, '>') => {
-                        state = HtmlState::Text;
-                        if !out.ends_with('\n') && !out.ends_with(' ') {
-                            out.push(' ');
-                        }
-                    }
-                    (HtmlState::Text, c) => out.push(c),
-                    (HtmlState::Tag, _) => {}
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    out.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
@@ -503,9 +568,40 @@ mod tests {
     }
 
     #[test]
-    fn html_state_machine_strips_scripts_styles_and_tags() {
-        let html = "<html><style>body{color:red}</style><script>alert(1)</script><h1>Zenko</h1><p>Fast Rust</p></html>";
-        assert_eq!(strip_html_to_text(html), "Zenko Fast Rust");
+    fn html_state_machine_converts_markdown_and_plain_text_and_caches() {
+        let html = "<html><style>body{color:red}</style><script>alert(1)</script><h1>Zenko</h1><p>Fast <a href=\"/docs\">Rust</a></p></html>";
+        let md = format_fetched_body(
+            "https://zenko.dev/index.html",
+            Some("text/html; charset=utf-8"),
+            html,
+            WebFetchFormat::Markdown,
+        );
+        assert!(md.contains("# Zenko"), "md={md}");
+        assert!(md.contains("[Rust](https://zenko.dev/docs)"), "md={md}");
+        assert!(!md.contains("alert(1)"));
+
+        let txt = format_fetched_body(
+            "https://zenko.dev/index.html",
+            Some("text/html"),
+            html,
+            WebFetchFormat::Text,
+        );
+        assert!(txt.contains("Zenko") && txt.contains("Fast"), "txt={txt}");
+
+        let tool = WebFetchTool::new(Client::new());
+        tool.cache_put(CachedFetchEntry {
+            request_url: "https://zenko.dev".into(),
+            final_url: "https://zenko.dev/".into(),
+            status_code: 200,
+            content_type: Some("text/plain".into()),
+            body: "hello".into(),
+            byte_capped: false,
+            fetched_at: Instant::now(),
+        });
+        assert_eq!(
+            tool.cache_get("https://zenko.dev").map(|e| e.body),
+            Some("hello".into())
+        );
     }
 
     #[test]

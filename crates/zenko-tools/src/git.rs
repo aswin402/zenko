@@ -646,6 +646,7 @@ mod tests {
             max_output_bytes: 64 * 1024,
             headless_no_wait: true,
             demote_bg: Arc::new(Notify::new()),
+            file_state: None,
         };
 
         let st = GitTool
