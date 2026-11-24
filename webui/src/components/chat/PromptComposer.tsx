@@ -22,6 +22,7 @@ import type {
 import { cn } from '@/lib/utils'
 import { ProgressRing } from '@/components/beui/ProgressRing'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
+import { CHAT_WIDTH_CLASS } from '@/components/chat/ChatStream'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { KokonutContextMeter } from '@/components/kokonutui/ai-context-meter'
 import { PromptInput as MotionBrewPromptInput } from '@/components/motion-brew/prompt-input'
@@ -156,6 +157,7 @@ export const PromptComposer = memo(function PromptComposer({
   onCancelBranchEdit,
   onOpenSettings,
   composerStyle,
+  contentWidth = 'balanced',
   popoverStyle = 'gooey',
   themeMode = 'dark',
   extraTools,
@@ -186,6 +188,7 @@ export const PromptComposer = memo(function PromptComposer({
   onCancelBranchEdit: () => void
   onOpenSettings?: () => void
   composerStyle: ComponentSlots['composer']
+  contentWidth?: ComponentSlots['chat_page']['content_width']
   popoverStyle?: 'gooey' | 'crisp'
   themeMode?: 'dark' | 'light'
   extraTools?: ReactNode
@@ -611,9 +614,11 @@ export const PromptComposer = memo(function PromptComposer({
     </ZenkoTooltip>
   )
 
+  const composerWidthClass = CHAT_WIDTH_CLASS[contentWidth] || CHAT_WIDTH_CLASS.balanced
+
   return (
-    <div className={compactWrapper ? 'w-full' : 'px-4 pb-5 pt-2 sm:px-8'}>
-      <div className={compactWrapper ? 'relative w-full' : 'relative mx-auto w-full max-w-[780px]'}>
+    <div className={compactWrapper ? 'w-full' : 'px-5 pb-5 pt-2 sm:px-14 md:px-16'}>
+      <div className={compactWrapper ? 'relative w-full' : cn('relative mx-auto w-full', composerWidthClass)}>
         {branchEditBanner && (
           <div
             className="mb-2 flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px]"

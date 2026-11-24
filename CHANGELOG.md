@@ -4,6 +4,15 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.14] - 2026-11-24
+
+Aligned chat message edges and the Chat Input Box to the exact same column width by hanging the Agent avatar outside the left edge and the User avatar outside the right edge on desktop viewports.
+
+### Changed
+- **Hanging Avatars & Unified Chat/Composer Column Width (`ChatStream.tsx`, `PromptComposer.tsx`, `App.tsx`, `StudioPreviews.tsx`):**
+  - Positioned the Zenko Agent avatar cleanly outside the left edge (`sm:right-full sm:mr-3`) and the User avatar cleanly outside the right edge (`sm:left-full sm:ml-3`) on desktop screens while preserving inline layout on narrow mobile screens and expanding `.zenko-turn-item` horizontal paint gutters (`sm:-mx-12 sm:px-12`) so `content-visibility: auto` never clips hanging avatars.
+  - Shared `CHAT_WIDTH_CLASS` and matching horizontal gutters (`px-5 sm:px-14 md:px-16`) between `ChatStream` and `PromptComposer` so assistant prose, tables, user bubbles, and the Chat Input Box stay pixel-aligned across every `content_width` preset (`narrow`, `balanced`, `wide`, `full`).
+
 ## [0.0.13] - 2026-11-24
 
 Added colored markdown headings in chat output, made Skiper106 Smooth Caret the default across chat & search inputs, integrated Skiper UI (`skiper106`, `skiper101`, `skiper98`, `skiper96`, `skiper89`, `skiper94`, `skiper87`, `skiper43`, `skiper40`, `skiper26`, `skiper4`) and VengeanceUI (`line-hover-link`, `liquid-button`, `animated-button`) theme options, and installed Libraries.dev `border-beam` with active agent-task animations for the Chat Input Box.

@@ -1123,6 +1123,7 @@ export default function App() {
               }}
               isRunning={isRunning}
               isOrchestratingBg={isOrchestratingBg}
+              contentWidth={ui.components.chat_page.content_width}
               themeMode={ui.mode === 'light' ? 'light' : 'dark'}
               activeProvider={activeProvider}
               activeModel={activeModel}

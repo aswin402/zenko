@@ -84,7 +84,7 @@ import {
   type NormalizedToolStep,
 } from '@/components/chat/ChatElements'
 
-const CHAT_WIDTH_CLASS: Record<ComponentSlots['chat_page']['content_width'], string> = {
+export const CHAT_WIDTH_CLASS: Record<ComponentSlots['chat_page']['content_width'], string> = {
   narrow: 'max-w-[680px]',
   balanced: 'max-w-[780px]',
   wide: 'max-w-[960px]',
@@ -630,10 +630,10 @@ const AssistantTurnView = memo(function AssistantTurnView({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: EASE_OUT }}
-      className="group flex items-start gap-3.5"
+      className="group relative flex items-start gap-3 sm:block"
     >
       {chatSlot.show_avatars && ui.motion.orb_style !== 'hidden' && (
-        <div className="mt-0.5 shrink-0">
+        <div className="mt-0.5 shrink-0 sm:absolute sm:right-full sm:top-0.5 sm:mr-3 sm:mt-0">
           <AgentAvatar
             variant={ui.motion.orb_style}
             frame={chatSlot.agent_avatar_frame || 'squircle'}
@@ -646,7 +646,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
 
       <div
         className={cn(
-          'min-w-0 flex-1',
+          'min-w-0 w-full flex-1',
           ui.layout.chat_layout === 'bubble_split' &&
             'rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 p-4',
         )}
@@ -1365,9 +1365,9 @@ function LiveAssistantTurn({
     liveActivityItems.length > 0
 
   return (
-    <div data-slot="message" data-from="assistant" className="flex items-start gap-3.5">
+    <div data-slot="message" data-from="assistant" className="relative flex items-start gap-3 sm:block">
       {chatSlot.show_avatars && ui.motion.orb_style !== 'hidden' && (
-        <div className="mt-0.5 shrink-0">
+        <div className="mt-0.5 shrink-0 sm:absolute sm:right-full sm:top-0.5 sm:mr-3 sm:mt-0">
           <AgentAvatar
             variant={ui.motion.orb_style}
             frame={chatSlot.agent_avatar_frame || 'squircle'}
@@ -1378,7 +1378,7 @@ function LiveAssistantTurn({
           />
         </div>
       )}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 w-full flex-1">
         {/* Single Unified Zenko Header */}
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px]">
           <span className="font-medium text-[var(--fg)]/85">Zenko</span>
@@ -1811,20 +1811,20 @@ export function ChatStream({
             const sibs = siblings[ev.id] || []
             const idx = sibs.indexOf(ev.id)
             return (
-              <div key={ev.id} className="zenko-turn-item flex flex-col gap-5">
+              <div key={ev.id} className="zenko-turn-item flex flex-col gap-5 sm:-mx-12 sm:px-12">
                 {dayNode}
                 <div
                   data-slot="message"
                   data-from="user"
-                  className="group flex flex-col items-end"
+                  className="group relative flex flex-col items-end"
                 >
-                  <div className="mb-1.5 mr-10 flex items-center gap-2 text-[11.5px] text-[var(--muted)]">
+                  <div className="mb-1.5 mr-10 flex items-center gap-2 text-[11.5px] text-[var(--muted)] sm:mr-0">
                     <span className="font-medium text-[var(--fg)]/80">You</span>
                     {ui.widgets.show_timestamps && (
                       <span className="text-[var(--muted)]/75">{formatTimeShort(ev.created_at)}</span>
                     )}
                   </div>
-                  <div className="flex max-w-[82%] items-start gap-2.5">
+                  <div className="relative flex max-w-[82%] items-start gap-2.5 sm:block">
                     {chatSlot.user_bubble === 'easeui_bubble' ? (
                       <EaseMessageBubble align="end" tone="neutral" className="whitespace-pre-wrap">
                         {text}
@@ -1838,7 +1838,7 @@ export function ChatStream({
                       </div>
                     )}
                     {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
-                      <div className="mt-0.5 shrink-0">
+                      <div className="mt-0.5 shrink-0 sm:absolute sm:left-full sm:top-0.5 sm:ml-3 sm:mt-0">
                         <UserAvatar
                           variant={chatSlot.user_avatar || 'icon_user'}
                           frame={chatSlot.user_avatar_frame || 'circle'}
@@ -1849,7 +1849,7 @@ export function ChatStream({
                       </div>
                     )}
                   </div>
-                  <div className="mt-1 mr-10 flex items-center gap-2 text-[11px] text-[var(--muted)] opacity-0 transition-opacity group-hover:opacity-100">
+                  <div className="mt-1 mr-10 flex items-center gap-2 text-[11px] text-[var(--muted)] opacity-0 transition-opacity group-hover:opacity-100 sm:mr-0">
                     <button
                       type="button"
                       onClick={() => onEditBranch(ev.parent_id ?? null, text)}
@@ -1887,7 +1887,7 @@ export function ChatStream({
           const promptForRegen = prevUserPrompt
           const parentForRegen = prevUserParentId
           return (
-            <div key={block.group.key} className="zenko-turn-item flex flex-col gap-5">
+            <div key={block.group.key} className="zenko-turn-item flex flex-col gap-5 sm:-mx-12 sm:px-12">
               {dayNode}
               <AssistantTurnView
                 group={block.group}
@@ -1968,7 +1968,7 @@ export function ChatStream({
         smooth
         busy={isRunning}
         className="min-h-0 flex-1"
-        viewportClassName="px-5 pb-6 pt-8 sm:px-8 scrollbar-hide"
+        viewportClassName="px-5 pb-6 pt-8 sm:px-14 md:px-16 scrollbar-hide"
       >
         {streamContent}
       </MessageScroller>
@@ -1980,7 +1980,7 @@ export function ChatStream({
       key={sessionId || 'new'}
       smooth={scrollerStyle === 'smooth'}
       className="min-h-0 flex-1"
-      viewportClassName="px-5 pb-6 pt-8 sm:px-8"
+      viewportClassName="px-5 pb-6 pt-8 sm:px-14 md:px-16"
     >
       {streamContent}
     </CompactScrollArea>

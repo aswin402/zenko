@@ -816,42 +816,46 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
         <div
           data-chat-bg={chatSlot.background}
           className={cn(
-            'zenko-chat-bg flex w-full max-w-[640px] flex-col gap-3.5 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-5',
+            'zenko-chat-bg flex w-full max-w-[640px] flex-col gap-3.5 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-5 py-5 sm:px-12',
             ui.layout.chat_layout === 'terminal_stream' && 'font-mono',
           )}
         >
           {chatSlot.show_day_separators !== false && <DayDivider label="Today" />}
-          <div className="flex items-start justify-end gap-2.5">
-            {renderUserBubblePreview(
-              chatSlot.user_bubble,
-              'Audit runtime memory and check tests',
-              'text-[13px]',
-            )}
-            {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
-              <UserAvatar
-                variant={chatSlot.user_avatar || 'icon_user'}
-                frame={chatSlot.user_avatar_frame || 'circle'}
-                color={chatSlot.user_avatar_color}
-                icons={ui.icons}
-                size={26}
-                className="mt-0.5"
-              />
-            )}
+          <div className="relative flex flex-col items-end">
+            <div className="relative flex items-start justify-end gap-2.5 sm:block">
+              {renderUserBubblePreview(
+                chatSlot.user_bubble,
+                'Audit runtime memory and check tests',
+                'text-[13px]',
+              )}
+              {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
+                <div className="mt-0.5 shrink-0 sm:absolute sm:left-full sm:top-0.5 sm:ml-2.5 sm:mt-0">
+                  <UserAvatar
+                    variant={chatSlot.user_avatar || 'icon_user'}
+                    frame={chatSlot.user_avatar_frame || 'circle'}
+                    color={chatSlot.user_avatar_color}
+                    icons={ui.icons}
+                    size={26}
+                  />
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex items-start gap-3">
+          <div className="relative flex items-start gap-3 sm:block">
             {chatSlot.show_avatars && ui.motion.orb_style !== 'hidden' && (
-              <AgentAvatar
-                variant={ui.motion.orb_style}
-                frame={chatSlot.agent_avatar_frame || 'squircle'}
-                color={chatSlot.agent_avatar_color}
-                icons={ui.icons}
-                size={26}
-                className="mt-0.5 shrink-0"
-              />
+              <div className="mt-0.5 shrink-0 sm:absolute sm:right-full sm:top-0.5 sm:mr-2.5 sm:mt-0">
+                <AgentAvatar
+                  variant={ui.motion.orb_style}
+                  frame={chatSlot.agent_avatar_frame || 'squircle'}
+                  color={chatSlot.agent_avatar_color}
+                  icons={ui.icons}
+                  size={26}
+                />
+              </div>
             )}
             <div
               className={cn(
-                'min-w-0 flex-1',
+                'min-w-0 w-full flex-1',
                 ui.layout.chat_layout === 'bubble_split' &&
                   'rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3.5',
               )}
@@ -886,23 +890,24 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
     },
 
     user_bubble: () => (
-      <div className="flex w-full max-w-[540px] flex-col items-end gap-1.5">
-        <span className="mr-10 font-mono text-[10.5px] text-[var(--muted)]">You · 16:04</span>
-        <div className="flex items-start gap-2.5">
+      <div className="flex w-full max-w-[540px] flex-col items-end gap-1.5 sm:pr-10">
+        <span className="mr-10 font-mono text-[10.5px] text-[var(--muted)] sm:mr-0">You · 16:04</span>
+        <div className="relative flex items-start gap-2.5 sm:block">
           {renderUserBubblePreview(
             chatSlot.user_bubble,
             'Refactor the streaming parser to zero-regex deterministic byte scanning.',
             'text-[14px] leading-relaxed',
           )}
           {chatSlot.show_avatars && chatSlot.user_avatar !== 'hidden' && (
-            <UserAvatar
-              variant={chatSlot.user_avatar || 'icon_user'}
-              frame={chatSlot.user_avatar_frame || 'circle'}
-              color={chatSlot.user_avatar_color}
-              icons={ui.icons}
-              size={28}
-              className="mt-0.5"
-            />
+            <div className="mt-0.5 shrink-0 sm:absolute sm:left-full sm:top-0.5 sm:ml-3 sm:mt-0">
+              <UserAvatar
+                variant={chatSlot.user_avatar || 'icon_user'}
+                frame={chatSlot.user_avatar_frame || 'circle'}
+                color={chatSlot.user_avatar_color}
+                icons={ui.icons}
+                size={28}
+              />
+            </div>
           )}
         </div>
       </div>
