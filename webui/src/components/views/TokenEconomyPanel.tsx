@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, Plus, RefreshCw, RotateCcw, Scissors, Trash2 } from 'lucide-react'
+import {
+  Activity,
+  Check,
+  Copy,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Scissors,
+  Search,
+  Trash2,
+} from 'lucide-react'
 import { api, formatCompactTokens } from '@/lib/api'
 import type {
   CodeMinimalismMode,
   DebtScanReport,
   EconomyConfig,
+  MinimalismAuditPayload,
   TokenEconomyReport,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -82,6 +93,9 @@ export function TokenEconomyPanel({
   const [showDetails, setShowDetails] = useState(false)
   const [debtReport, setDebtReport] = useState<DebtScanReport | null>(null)
   const [scanningDebt, setScanningDebt] = useState(false)
+  const [auditPayload, setAuditPayload] = useState<MinimalismAuditPayload | null>(null)
+  const [runningAudit, setRunningAudit] = useState(false)
+  const [copiedSummary, setCopiedSummary] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -217,6 +231,47 @@ export function TokenEconomyPanel({
     }
   }
 
+  const runBloatAudit = async () => {
+    setRunningAudit(true)
+    try {
+      const data = await api<MinimalismAuditPayload>('/api/economy/minimalism/audit')
+      setAuditPayload(data)
+      setShowDetails(true)
+      toast(
+        `Audited ${data.repo.files_scanned} files · ${data.repo.dormant_dependencies.length} dormant dep(s) · ${data.repo.duplicate_symbols.length} duplicate(s)`,
+        'info',
+      )
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to run code minimalism audit', 'error')
+    } finally {
+      setRunningAudit(false)
+    }
+  }
+
+  const copyMarkdownSummary = async () => {
+    if (!report) return
+    const s = report.summary
+    const m = report.code_metrics
+    const churnTotal = (m?.lines_added ?? 0) + (m?.lines_deleted ?? 0)
+    const delRatio = churnTotal > 0 ? (((m?.lines_deleted ?? 0) / churnTotal) * 100).toFixed(1) : '0.0'
+    const md = [
+      `### Zenko Efficiency Report (\`${report.repo_scope}\`)`,
+      `- **Net Token ROI:** ${s.net_tokens_saved >= 0 ? '+' : ''}${s.net_tokens_saved} tok (~$${s.estimated_usd_saved.toFixed(4)}) [Read-Less +${s.read_less_tokens_saved} · Tool-Prune +${s.tool_prune_tokens_saved} · Overhead -${s.overhead_tokens}]`,
+      `- **Micro-Skills:** ${s.active_micro_skills} active, ${s.candidate_micro_skills} candidate, ${s.retired_micro_skills} retired (${s.micro_skill_injections} injections)`,
+      `- **Tool Pruning & Loop Guard:** ${s.pruned_tools_count} soft-deferred · P90=${s.p90_turn_calls} (envelope ${s.envelope_calls}, ${s.loop_guard_interventions} redirects)`,
+      `- **Code Minimalism (\`${report.config.minimalism_mode}\`):** +${m?.lines_added ?? 0} / -${m?.lines_deleted ?? 0} LOC (deletion ratio ${delRatio}%, ${m?.new_files_created ?? 0} new files, ${m?.bloat_hints_issued ?? 0} hints, ${m?.debt_markers_last_seen ?? 0} debt markers)`,
+    ].join('\n')
+    try {
+      await navigator.clipboard.writeText(md)
+      setCopiedSummary(true)
+      toast('Copied Markdown efficiency summary', 'success')
+      window.setTimeout(() => setCopiedSummary(false), 1800)
+    } catch {
+      toast('Clipboard unavailable in this browser context', 'error')
+    }
+  }
+
   const cfg = report?.config
   const sum = report?.summary
   const codeMetrics = report?.code_metrics
@@ -283,6 +338,17 @@ export function TokenEconomyPanel({
         </div>
 
         <div className="flex items-center gap-2">
+          {report && (
+            <button
+              type="button"
+              onClick={copyMarkdownSummary}
+              className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+              title="Copy Markdown ROI & Minimalism Summary"
+            >
+              {copiedSummary ? <Check size={11.5} /> : <Copy size={11.5} />}
+              <span>{copiedSummary ? 'Copied' : 'Copy Summary'}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={refresh}
@@ -373,14 +439,25 @@ export function TokenEconomyPanel({
                 Code Minimalism (7-Rung Simplicity Ladder)
               </span>
             </div>
-            <button
-              type="button"
-              disabled={scanningDebt}
-              onClick={scanDebt}
-              className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
-            >
-              {scanningDebt ? 'Scanning…' : 'Scan Shortcut Debt'}
-            </button>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                disabled={runningAudit}
+                onClick={runBloatAudit}
+                className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+              >
+                <Search size={11} />
+                <span>{runningAudit ? 'Auditing…' : 'Run Bloat Audit'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={scanningDebt}
+                onClick={scanDebt}
+                className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+              >
+                {scanningDebt ? 'Scanning…' : 'Scan Shortcut Debt'}
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
             {minimalismLevels.map((lvl) => {
@@ -626,6 +703,78 @@ export function TokenEconomyPanel({
                 )}
               </div>
             </div>
+            {auditPayload && (
+              <div className="flex flex-col gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 p-3 md:col-span-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[12px] font-semibold text-[var(--fg)]">
+                    Code Minimalism Audit ({auditPayload.repo.files_scanned} files ·{' '}
+                    {auditPayload.repo.total_lines} LOC)
+                  </span>
+                  <span className="font-mono text-[10.5px] text-[var(--muted)]">
+                    Diff: +{auditPayload.diff.lines_added} / -{auditPayload.diff.lines_deleted} LOC
+                    ({auditPayload.diff.files_changed.length} files,{' '}
+                    {auditPayload.diff.new_files.length} new)
+                  </span>
+                </div>
+
+                {auditPayload.diff.findings.length > 0 && (
+                  <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 font-mono text-[10.5px]">
+                    <span className="font-semibold" style={{ color: 'var(--accent)' }}>
+                      Diff Findings
+                    </span>
+                    {auditPayload.diff.findings.map((f, idx) => (
+                      <span key={idx} className="text-[var(--fg)]">
+                        • {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[10.5px]">
+                    <span className="text-[var(--muted)]">
+                      Dormant Dependencies ({auditPayload.repo.dormant_dependencies.length})
+                    </span>
+                    {auditPayload.repo.dormant_dependencies.length === 0 ? (
+                      <span className="text-[var(--muted)]">None detected.</span>
+                    ) : (
+                      auditPayload.repo.dormant_dependencies.slice(0, 8).map((dep, i) => (
+                        <span key={i} className="truncate text-[var(--fg)]">
+                          <span style={{ color: 'var(--accent)' }}>{dep.package}</span>{' '}
+                          <span className="text-[var(--muted)]">({dep.manifest})</span>
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[10.5px]">
+                    <span className="text-[var(--muted)]">
+                      Duplicate Helpers ({auditPayload.repo.duplicate_symbols.length}) &amp; Thin
+                      Wrappers ({auditPayload.repo.thin_wrappers.length})
+                    </span>
+                    {auditPayload.repo.duplicate_symbols.length === 0 &&
+                    auditPayload.repo.thin_wrappers.length === 0 ? (
+                      <span className="text-[var(--muted)]">None detected.</span>
+                    ) : (
+                      <>
+                        {auditPayload.repo.duplicate_symbols.slice(0, 4).map((dup, i) => (
+                          <span key={`d-${i}`} className="truncate text-[var(--fg)]">
+                            dup <span style={{ color: 'var(--accent)' }}>{dup.symbol}</span> ·{' '}
+                            {dup.locations.slice(0, 2).join(', ')}
+                          </span>
+                        ))}
+                        {auditPayload.repo.thin_wrappers.slice(0, 4).map((w, i) => (
+                          <span key={`w-${i}`} className="truncate text-[var(--fg)]">
+                            wrap <span style={{ color: 'var(--accent)' }}>{w.name}</span> ·{' '}
+                            {w.path}:L{w.line} ({w.span_lines}L)
+                          </span>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {debtReport && (
               <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 p-3 md:col-span-2">
                 <span className="text-[12px] font-semibold text-[var(--fg)]">

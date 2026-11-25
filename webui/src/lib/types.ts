@@ -1171,6 +1171,70 @@ export interface DebtScanReport {
   items: DebtItem[]
 }
 
+export interface LargeFileFinding {
+  path: string
+  lines: number
+}
+
+export interface LongFunctionFinding {
+  path: string
+  line: number
+  span_lines: number
+  signature: string
+}
+
+export interface DuplicateSymbolFinding {
+  symbol: string
+  locations: string[]
+}
+
+export interface ThinWrapperFinding {
+  path: string
+  line: number
+  span_lines: number
+  kind: string
+  name: string
+}
+
+export interface DormantDependencyFinding {
+  manifest: string
+  package: string
+}
+
+export interface OversizedHunkFinding {
+  path: string
+  start_line: number
+  added_lines: number
+}
+
+export interface DiffAuditReport {
+  files_changed: string[]
+  new_files: string[]
+  lines_added: number
+  lines_deleted: number
+  net_loc_delta: number
+  manifest_changes: string[]
+  oversized_hunks: OversizedHunkFinding[]
+  duplicate_symbols: DuplicateSymbolFinding[]
+  findings: string[]
+}
+
+export interface RepoAuditReport {
+  files_scanned: number
+  total_lines: number
+  large_files: LargeFileFinding[]
+  long_functions: LongFunctionFinding[]
+  duplicate_symbols: DuplicateSymbolFinding[]
+  thin_wrappers: ThinWrapperFinding[]
+  dormant_dependencies: DormantDependencyFinding[]
+  debt_count: number
+}
+
+export interface MinimalismAuditPayload {
+  diff: DiffAuditReport
+  repo: RepoAuditReport
+}
+
 export interface EconomyConfig {
   enabled: boolean
   auto_micro_skills: boolean

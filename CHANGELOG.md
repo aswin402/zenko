@@ -4,6 +4,24 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.28] - 2026-11-25
+
+Completed full Ponytail-inspired Code Minimalism parity with zero-regex dormant dependency detection, accurate new/untracked file diff tracking, WebUI Bloat Audit & Copyable Summary controls, and a live Chat Context Popover minimalism switcher.
+
+### Added
+- **Zero-Regex Dormant Dependency Scanner (`crates/zenko-tools/src/minimalism.rs`, `constants.rs`, `types.rs`):**
+  - Added `scan_dormant_dependencies` and `DormantDependencyFinding` to `RepoAuditReport`, cross-checking `[dependencies]` in `Cargo.toml` and runtime `"dependencies"` in `package.json` against actual workspace `.rs` / `.ts` / `.tsx` / `.js` / `.jsx` / `.css` references (skipping `-sys` crates, `@types/*`, and sorted `MINIMALISM_IGNORED_DORMANT_DEPS` via `binary_search`).
+- **WebUI Bloat Audit Viewer & 1-Click Copy Markdown Summary (`webui/src/components/views/TokenEconomyPanel.tsx`):**
+  - Added **Run Bloat Audit** (`GET /api/economy/minimalism/audit`) rendering diff findings, dormant dependencies, duplicate helpers, and thin wrappers strictly in global 60/30/10 theme tokens.
+  - Added **Copy Summary** copying a concise Markdown Token Economy & Code Minimalism scoreboard directly to the clipboard.
+- **Live Chat Context Popover Minimalism Switcher (`webui/src/components/chat/PromptComposer.tsx`):**
+  - Added a compact 4-pill `Code Minimalism` (`Off | Lite | Full | Ultra`) live switcher right below `Concise English` inside the existing Context Breakdown popover (persisting globally and updating the active session immediately).
+
+### Fixed
+- **New-File & Untracked-File Diff Tracking (`crates/zenko-tools/src/minimalism.rs`):**
+  - Updated `parse_unified_diff_counts` and `analyze_unified_diff` to detect `@@ -0,0 +` hunks emitted by `fs_tools::unified_diff` (`write_file` / `apply_patch`) without double-counting `--- /dev/null`, fixing `new_files_created` counts and new-file bloat guard triggers.
+  - Updated `audit_git_diff_minimalism` (unstaged mode) to include brand-new untracked files from `git ls-files --others --exclude-standard` for LOC, oversized-hunk, manifest, and duplicate-symbol analysis.
+
 ## [0.0.27] - 2026-11-25
 
 Implemented Zenko's **Native Rust Code Minimalism Engine** (inspired by `DietrichGebert/ponytail`; 100% pure Rust, zero `/commands`, zero regex, zero hardcoding) — adding the 7-rung Simplicity Ladder, deterministic diff/repo bloat & duplicate-helper analysis, comment-scoped shortcut debt scanning, real SQLite net-LOC telemetry, 1-shot orchestrator diff-bloat guards, deferred `code_minimalism` tool, 3 native English skills, and 60/30/10 WebUI controls.

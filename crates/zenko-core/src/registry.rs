@@ -1253,6 +1253,14 @@ mod tests {
                 pair[1]
             );
         }
+        for pair in crate::MINIMALISM_IGNORED_DORMANT_DEPS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "MINIMALISM_IGNORED_DORMANT_DEPS must be strictly sorted: {} >= {}",
+                pair[0],
+                pair[1]
+            );
+        }
         for desc in CODE_MINIMALISM_REGISTRY {
             assert_eq!(CodeMinimalismMode::parse(desc.id), Some(desc.mode));
             assert_eq!(desc.mode.as_str(), desc.id);

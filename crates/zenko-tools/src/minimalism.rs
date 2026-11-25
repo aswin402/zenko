@@ -17,16 +17,17 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    CodeMinimalismAction, DebtItem, DebtScanReport, DiffAuditReport, DuplicateSymbolFinding,
-    EconomyBridge, LargeFileFinding, LongFunctionFinding, MINIMALISM_AUDIT_MAX_FILE_BYTES,
-    MINIMALISM_AUDIT_MAX_FILES, MINIMALISM_AUDIT_TOP_N, MINIMALISM_DEBT_MARKERS,
-    MINIMALISM_DEBT_MAX_ITEMS, MINIMALISM_DEBT_TEXT_MAX_CHARS, MINIMALISM_DIFF_LARGE_HUNK_LOC,
-    MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS, MINIMALISM_IGNORED_DUP_SYMBOLS,
-    MINIMALISM_LARGE_FILE_LINES, MINIMALISM_LONG_FN_LINES, MINIMALISM_MANIFEST_FILES,
-    MINIMALISM_SOURCE_EXTS, MINIMALISM_WRAPPER_MAX_LINES, MINIMALISM_WRAPPER_SUFFIXES,
-    MinimalismGainReport, OversizedHunkFinding, RepoAuditReport, Result, RiskLevel,
-    TOOL_CODE_MINIMALISM, ThinWrapperFinding, Tool, ToolConcurrency, ToolContext, ToolExposure,
-    ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    CodeMinimalismAction, DebtItem, DebtScanReport, DiffAuditReport, DormantDependencyFinding,
+    DuplicateSymbolFinding, EconomyBridge, LargeFileFinding, LongFunctionFinding,
+    MINIMALISM_AUDIT_MAX_FILE_BYTES, MINIMALISM_AUDIT_MAX_FILES, MINIMALISM_AUDIT_TOP_N,
+    MINIMALISM_DEBT_MARKERS, MINIMALISM_DEBT_MAX_ITEMS, MINIMALISM_DEBT_TEXT_MAX_CHARS,
+    MINIMALISM_DIFF_LARGE_HUNK_LOC, MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS,
+    MINIMALISM_IGNORED_DORMANT_DEPS, MINIMALISM_IGNORED_DUP_SYMBOLS, MINIMALISM_LARGE_FILE_LINES,
+    MINIMALISM_LONG_FN_LINES, MINIMALISM_MANIFEST_FILES, MINIMALISM_SOURCE_EXTS,
+    MINIMALISM_WRAPPER_MAX_LINES, MINIMALISM_WRAPPER_SUFFIXES, MinimalismGainReport,
+    OversizedHunkFinding, RepoAuditReport, Result, RiskLevel, TOOL_CODE_MINIMALISM,
+    ThinWrapperFinding, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
+    ToolSpec, ZenkoError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,29 +71,41 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 
 /// Deterministic zero-regex single-pass unified-diff counter reused by both `code_minimalism`
 /// and runtime edit hooks (`write_file`, `hash_edit`, `apply_patch`, `batch_tools`).
+/// Recognizes both `git diff` (`--- /dev/null`) and `similar::TextDiff` (`@@ -0,0 +`) new-file hunks.
 /// Returns `(lines_added, lines_deleted, new_files_created)`.
 pub fn parse_unified_diff_counts(diff: &str) -> (u64, u64, usize) {
     let mut added = 0u64;
     let mut deleted = 0u64;
     let mut new_files = 0usize;
     let mut prev_dev_null = false;
+    let mut file_counted_new = false;
 
     for line in diff.lines() {
         match line {
             l if l.starts_with("diff --git ") => {
                 prev_dev_null = false;
+                file_counted_new = false;
             }
             l if l == "--- /dev/null" || l.starts_with("--- /dev/null\t") => {
                 prev_dev_null = true;
+                file_counted_new = false;
             }
             l if l.starts_with("--- ") => {
                 prev_dev_null = false;
+                file_counted_new = false;
             }
             l if l.starts_with("+++ ") => {
-                if prev_dev_null && !l.contains("/dev/null") {
+                if prev_dev_null && !l.contains("/dev/null") && !file_counted_new {
                     new_files = new_files.saturating_add(1);
+                    file_counted_new = true;
                 }
                 prev_dev_null = false;
+            }
+            l if l.starts_with("@@ -0,0 +") => {
+                if !file_counted_new {
+                    new_files = new_files.saturating_add(1);
+                    file_counted_new = true;
+                }
             }
             l if l.starts_with("@@ ") || l.starts_with('\\') => {}
             l if l.starts_with('+') => {
@@ -548,6 +561,8 @@ fn collect_workspace_symbol_map(
     });
     duplicate_symbols.truncate(MINIMALISM_AUDIT_TOP_N);
 
+    let dormant_dependencies = scan_dormant_dependencies(workspace_dir);
+
     let report = RepoAuditReport {
         files_scanned,
         total_lines,
@@ -555,9 +570,318 @@ fn collect_workspace_symbol_map(
         long_functions,
         duplicate_symbols,
         thin_wrappers,
+        dormant_dependencies,
         debt_count,
     };
     (report, sym_locations)
+}
+
+/// Pure-Rust zero-regex TOML `[dependencies]` section key extractor for `Cargo.toml`.
+fn parse_cargo_dependencies(content: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    let mut in_deps = false;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let sec = line.trim();
+            in_deps = sec == "[dependencies]"
+                || (sec.starts_with("[target.") && sec.ends_with(".dependencies]"));
+            continue;
+        }
+        if !in_deps {
+            continue;
+        }
+        let Some((lhs, _)) = line.split_once('=') else {
+            continue;
+        };
+        let key = lhs.trim().trim_matches('"').trim_matches('\'');
+        if !key.is_empty()
+            && !key.contains('.')
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            deps.push(key.to_string());
+        }
+    }
+    deps
+}
+
+/// Deterministic zero-regex Rust crate reference collector (`foo::`, `use foo`, `extern crate foo`).
+fn collect_rust_crate_refs(content: &str, out: &mut BTreeSet<String>) {
+    let bytes = content.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if is_ident_byte(bytes[i]) && !bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && is_ident_byte(bytes[i]) {
+                i += 1;
+            }
+            let ident = &content[start..i];
+            if bytes.get(i) == Some(&b':') && bytes.get(i + 1) == Some(&b':') {
+                out.insert(ident.to_string());
+                i += 2;
+                continue;
+            }
+            if ident == "use" || ident == "crate" {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let next_start = j;
+                while j < bytes.len() && is_ident_byte(bytes[j]) {
+                    j += 1;
+                }
+                if j > next_start {
+                    out.insert(content[next_start..j].to_string());
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn normalize_npm_specifier(spec: &str) -> Option<String> {
+    let s = spec.trim();
+    if s.is_empty()
+        || s.starts_with('.')
+        || s.starts_with('/')
+        || s.starts_with("@/")
+        || s.starts_with("node:")
+        || s.starts_with("http://")
+        || s.starts_with("https://")
+    {
+        return None;
+    }
+    match s.starts_with('@') {
+        true => {
+            let mut parts = s.split('/');
+            let scope = parts.next()?;
+            let pkg = parts.next()?;
+            Some(format!("{scope}/{pkg}"))
+        }
+        false => s.split('/').next().map(String::from),
+    }
+}
+
+/// Deterministic zero-regex JS/TS/CSS package specifier collector (`from "..."`, `import "..."`, `require("...")`, `@import "..."`).
+fn collect_js_css_imports(content: &str, out: &mut BTreeSet<String>) {
+    let bytes = content.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let matched = [
+            "from ",
+            "from\t",
+            "from\"",
+            "from'",
+            "import ",
+            "import\"",
+            "import'",
+            "require(",
+            "@import ",
+        ]
+        .iter()
+        .find_map(|kw| {
+            content
+                .get(i..i + kw.len())
+                .filter(|s| *s == *kw)
+                .map(|_| kw.len())
+        });
+        let Some(kw_len) = matched else {
+            i += 1;
+            continue;
+        };
+        let mut j = i + kw_len;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        // Handle `from"` / `import"` where quote was consumed in keyword
+        let quote = match bytes.get(j).copied() {
+            Some(q @ (b'"' | b'\'')) => {
+                j += 1;
+                Some(q)
+            }
+            _ => match bytes.get(i + kw_len - 1).copied() {
+                Some(q @ (b'"' | b'\'')) => Some(q),
+                _ => None,
+            },
+        };
+        if let Some(q) = quote {
+            let start = j;
+            while j < bytes.len() && bytes[j] != q && bytes[j] != b'\n' {
+                j += 1;
+            }
+            if let Some(raw) = content.get(start..j)
+                && let Some(pkg) = normalize_npm_specifier(raw)
+            {
+                out.insert(pkg);
+            }
+        }
+        i = j.max(i + 1);
+    }
+}
+
+/// Zero-regex dormant runtime dependency scanner for `Cargo.toml` and `package.json` manifests.
+pub fn scan_dormant_dependencies(workspace_dir: &Path) -> Vec<DormantDependencyFinding> {
+    let mut findings = Vec::new();
+    let mut manifests = Vec::new();
+
+    for entry in WalkBuilder::new(workspace_dir)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .max_depth(Some(4))
+        .build()
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name == "Cargo.toml" || name == "package.json" {
+            manifests.push(path.to_path_buf());
+        }
+    }
+
+    for manifest_path in manifests {
+        let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let rel_manifest = manifest_path
+            .strip_prefix(workspace_dir)
+            .unwrap_or(&manifest_path)
+            .display()
+            .to_string();
+        let Some(manifest_dir) = manifest_path.parent() else {
+            continue;
+        };
+        let file_name = manifest_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        match file_name {
+            "Cargo.toml" => {
+                let deps = parse_cargo_dependencies(&raw);
+                if deps.is_empty() {
+                    continue;
+                }
+                let mut used_refs: BTreeSet<String> = BTreeSet::new();
+                let mut scanned = 0usize;
+                for src_entry in WalkBuilder::new(manifest_dir)
+                    .hidden(true)
+                    .git_ignore(true)
+                    .build()
+                    .flatten()
+                {
+                    if scanned >= MINIMALISM_AUDIT_MAX_FILES {
+                        break;
+                    }
+                    let p = src_entry.path();
+                    if p.is_file()
+                        && p.extension().and_then(|e| e.to_str()) == Some("rs")
+                        && p.metadata()
+                            .is_ok_and(|m| m.len() <= MINIMALISM_AUDIT_MAX_FILE_BYTES)
+                        && let Ok(text) = std::fs::read_to_string(p)
+                    {
+                        scanned += 1;
+                        collect_rust_crate_refs(&text, &mut used_refs);
+                    }
+                }
+                if scanned == 0 {
+                    continue;
+                }
+                for dep in deps {
+                    if dep.ends_with("-sys")
+                        || MINIMALISM_IGNORED_DORMANT_DEPS
+                            .binary_search(&dep.as_str())
+                            .is_ok()
+                    {
+                        continue;
+                    }
+                    let norm = dep.replace('-', "_");
+                    if !used_refs.contains(&norm) {
+                        findings.push(DormantDependencyFinding {
+                            manifest: rel_manifest.clone(),
+                            package: dep,
+                        });
+                    }
+                }
+            }
+            "package.json" => {
+                let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
+                    continue;
+                };
+                let Some(deps_obj) = parsed.get("dependencies").and_then(Value::as_object) else {
+                    continue;
+                };
+                if deps_obj.is_empty() {
+                    continue;
+                }
+                let mut used_pkgs: BTreeSet<String> = BTreeSet::new();
+                let mut scanned = 0usize;
+                for src_entry in WalkBuilder::new(manifest_dir)
+                    .hidden(true)
+                    .git_ignore(true)
+                    .build()
+                    .flatten()
+                {
+                    if scanned >= MINIMALISM_AUDIT_MAX_FILES {
+                        break;
+                    }
+                    let p = src_entry.path();
+                    let ext = p
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if p.is_file()
+                        && matches!(
+                            ext.as_str(),
+                            "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "css"
+                        )
+                        && p.metadata()
+                            .is_ok_and(|m| m.len() <= MINIMALISM_AUDIT_MAX_FILE_BYTES)
+                        && let Ok(text) = std::fs::read_to_string(p)
+                    {
+                        scanned += 1;
+                        collect_js_css_imports(&text, &mut used_pkgs);
+                    }
+                }
+                if scanned == 0 {
+                    continue;
+                }
+                for pkg in deps_obj.keys() {
+                    if pkg.starts_with("@types/")
+                        || MINIMALISM_IGNORED_DORMANT_DEPS
+                            .binary_search(&pkg.as_str())
+                            .is_ok()
+                    {
+                        continue;
+                    }
+                    if !used_pkgs.contains(pkg) {
+                        findings.push(DormantDependencyFinding {
+                            manifest: rel_manifest.clone(),
+                            package: pkg.clone(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    findings.sort_by(|a, b| a.manifest.cmp(&b.manifest).then_with(|| a.package.cmp(&b.package)));
+    findings.truncate(MINIMALISM_AUDIT_TOP_N);
+    findings
 }
 
 /// Deterministic repo-wide structural minimalism & bloat scan (zero LLM, zero regex).
@@ -579,6 +903,7 @@ fn parse_hunk_new_start(header: &str) -> usize {
 }
 
 /// Runs `git diff` safely in `workspace_dir` (staged or working tree vs HEAD) and audits the diff.
+/// When `staged == false`, also folds in newly created untracked files (`git ls-files --others --exclude-standard`).
 pub fn audit_git_diff_minimalism(workspace_dir: &Path, staged: bool) -> DiffAuditReport {
     let args: &[&str] = match staged {
         true => &["diff", "--staged", "--unified=0"],
@@ -599,11 +924,38 @@ pub fn audit_git_diff_minimalism(workspace_dir: &Path, staged: bool) -> DiffAudi
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default(),
     };
-    analyze_unified_diff(workspace_dir, &diff_text)
+    let untracked: Vec<String> = match staged {
+        true => Vec::new(),
+        false => Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard"])
+            .current_dir(workspace_dir)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .take(MINIMALISM_AUDIT_MAX_FILES)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    analyze_unified_diff_with_untracked(workspace_dir, &diff_text, &untracked)
 }
 
 /// Deterministic zero-regex analyzer over any unified diff, cross-checked against workspace symbols.
 pub fn analyze_unified_diff(workspace_dir: &Path, diff_text: &str) -> DiffAuditReport {
+    analyze_unified_diff_with_untracked(workspace_dir, diff_text, &[])
+}
+
+fn analyze_unified_diff_with_untracked(
+    workspace_dir: &Path,
+    diff_text: &str,
+    untracked_files: &[String],
+) -> DiffAuditReport {
     let mut files_changed: BTreeSet<String> = BTreeSet::new();
     let mut new_files: BTreeSet<String> = BTreeSet::new();
     let mut manifest_changes: BTreeSet<String> = BTreeSet::new();
@@ -660,6 +1012,9 @@ pub fn analyze_unified_diff(workspace_dir: &Path, diff_text: &str) -> DiffAuditR
             }
             l if l.starts_with("@@ ") => {
                 flush_hunk(&cur_file, hunk_start, hunk_added, &mut oversized_hunks);
+                if l.starts_with("@@ -0,0 +") && !cur_file.is_empty() {
+                    new_files.insert(cur_file.clone());
+                }
                 hunk_start = parse_hunk_new_start(l);
                 hunk_added = 0;
             }
@@ -684,6 +1039,50 @@ pub fn analyze_unified_diff(workspace_dir: &Path, diff_text: &str) -> DiffAuditR
         }
     }
     flush_hunk(&cur_file, hunk_start, hunk_added, &mut oversized_hunks);
+
+    for rel in untracked_files {
+        if files_changed.contains(rel) {
+            continue;
+        }
+        let full = workspace_dir.join(rel);
+        let Ok(meta) = full.metadata() else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > MINIMALISM_AUDIT_MAX_FILE_BYTES {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&full) else {
+            continue;
+        };
+        files_changed.insert(rel.clone());
+        new_files.insert(rel.clone());
+        if is_manifest_file(rel) {
+            manifest_changes.insert(rel.clone());
+        }
+        let line_count = content.lines().count();
+        lines_added = lines_added.saturating_add(line_count as u64);
+        if line_count >= MINIMALISM_DIFF_LARGE_HUNK_LOC {
+            oversized_hunks.push(OversizedHunkFinding {
+                path: rel.clone(),
+                start_line: 1,
+                added_lines: line_count,
+            });
+        }
+        if is_source_file(&full) {
+            let outline = extract_outline(&full, &content, 120);
+            for item in &outline.entries {
+                if item.kind == "fn"
+                    && let Some(sym) = extract_symbol_name("fn", &item.signature)
+                    && sym.len() >= MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS
+                    && MINIMALISM_IGNORED_DUP_SYMBOLS
+                        .binary_search(&sym.as_str())
+                        .is_err()
+                {
+                    added_fn_names.insert(sym);
+                }
+            }
+        }
+    }
 
     let mut duplicate_symbols = Vec::new();
     if !added_fn_names.is_empty() && workspace_dir.exists() {
@@ -918,6 +1317,12 @@ impl Tool for CodeMinimalismTool {
                         ));
                     }
                 }
+                if !report.dormant_dependencies.is_empty() {
+                    lines.push("Dormant dependency candidates:".into());
+                    for dep in report.dormant_dependencies.iter().take(8) {
+                        lines.push(format!("  - `{}` ({})", dep.package, dep.manifest));
+                    }
+                }
                 Ok(ok_with_meta(
                     lines.join("\n"),
                     serde_json::to_value(&report).unwrap_or(Value::Null),
@@ -1092,6 +1497,97 @@ fn run() {
         let debt = scan_workspace_debt(&dir);
         assert_eq!(debt.total_found, 1);
         assert_eq!(debt.items[0].marker, "PONYTAIL:");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn similar_new_file_diff_and_untracked_git_files_are_counted_accurately() {
+        // `fs_tools::unified_diff` emits `--- a/<path>` + `@@ -0,0 +1,N @@` (not `--- /dev/null`)
+        let write_file_diff = crate::fs_tools::unified_diff(
+            "src/fresh.rs",
+            "",
+            "pub fn fresh_helper() -> i32 {\n    42\n}\n",
+        );
+        assert_eq!(parse_unified_diff_counts(&write_file_diff), (3, 0, 1));
+        let rep = analyze_unified_diff(Path::new("/nonexistent"), &write_file_diff);
+        assert_eq!(rep.new_files, vec!["src/fresh.rs".to_string()]);
+        assert_eq!(rep.lines_added, 3);
+
+        // Real temporary git repo with a brand-new untracked file
+        let dir = std::env::temp_dir().join(format!("zenko_min_git_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+        let _ = Command::new("git").args(["init", "-q"]).current_dir(&dir).status();
+        std::fs::write(dir.join("src/base.rs"), "pub fn base() {}\n").expect("base");
+        let _ = Command::new("git").args(["add", "."]).current_dir(&dir).status();
+        let _ = Command::new("git")
+            .args([
+                "-c",
+                "user.email=test@zenko.local",
+                "-c",
+                "user.name=Zenko",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ])
+            .current_dir(&dir)
+            .status();
+        std::fs::write(
+            dir.join("src/untracked.rs"),
+            "pub fn new_untracked_fn() {\n    let x = 1;\n    let _ = x;\n}\n",
+        )
+        .expect("untracked");
+
+        let diff_rep = audit_git_diff_minimalism(&dir, false);
+        assert!(diff_rep.new_files.contains(&"src/untracked.rs".to_string()));
+        assert_eq!(diff_rep.lines_added, 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dormant_dependency_scanner_flags_unused_cargo_and_npm_packages_without_regex() {
+        let dir = std::env::temp_dir().join(format!("zenko_min_deps_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(dir.join("src")).expect("mkdir rs");
+        std::fs::create_dir_all(dir.join("web/src")).expect("mkdir web");
+
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\nunused-crate = \"2\"\nlibfoo-sys = \"0.1\"\n",
+        )
+        .expect("cargo toml");
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            "use serde::Serialize;\npub fn ok() { let _ = serde::ser::Impossible::<(), ()>::from; }\n",
+        )
+        .expect("lib.rs");
+
+        std::fs::write(
+            dir.join("web/package.json"),
+            r#"{"dependencies":{"react":"^19","unused-pkg":"^1","@scope/used":"^2","@scope/dormant":"^1","tailwindcss":"^4"}}"#,
+        )
+        .expect("pkg json");
+        std::fs::write(
+            dir.join("web/src/App.tsx"),
+            "import React from 'react'\nimport { run } from \"@scope/used/sub\"\nexport const App = () => run(React)\n",
+        )
+        .expect("app.tsx");
+
+        let audit = audit_workspace_minimalism(&dir);
+        let flagged: Vec<&str> = audit
+            .dormant_dependencies
+            .iter()
+            .map(|d| d.package.as_str())
+            .collect();
+        assert!(flagged.contains(&"unused-crate"), "expected unused-crate in {flagged:?}");
+        assert!(flagged.contains(&"unused-pkg"), "expected unused-pkg in {flagged:?}");
+        assert!(flagged.contains(&"@scope/dormant"), "expected @scope/dormant in {flagged:?}");
+        assert!(!flagged.contains(&"serde"));
+        assert!(!flagged.contains(&"libfoo-sys"));
+        assert!(!flagged.contains(&"react"));
+        assert!(!flagged.contains(&"@scope/used"));
+        assert!(!flagged.contains(&"tailwindcss"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

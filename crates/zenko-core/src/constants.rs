@@ -1505,3 +1505,16 @@ pub const MINIMALISM_IGNORED_DUP_SYMBOLS: &[&str] = &[
     "upgrade",
     "validate",
 ];
+
+/// Strictly ASCII-sorted build/tooling/CSS package names excluded from dormant-dependency findings
+/// (queried via O(log K) `binary_search`).
+pub const MINIMALISM_IGNORED_DORMANT_DEPS: &[&str] = &[
+    "@tailwindcss/vite",
+    "@vitejs/plugin-react",
+    "autoprefixer",
+    "postcss",
+    "tailwindcss",
+    "tslib",
+    "typescript",
+    "vite",
+];

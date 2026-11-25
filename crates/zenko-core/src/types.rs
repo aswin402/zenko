@@ -4076,6 +4076,13 @@ pub struct DiffAuditReport {
     pub findings: Vec<String>,
 }
 
+/// Potentially unused runtime dependency declared in a project manifest (`Cargo.toml` / `package.json`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DormantDependencyFinding {
+    pub manifest: String,
+    pub package: String,
+}
+
 /// Structured output of `code_minimalism(action="audit_repo")`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoAuditReport {
@@ -4085,6 +4092,8 @@ pub struct RepoAuditReport {
     pub long_functions: Vec<LongFunctionFinding>,
     pub duplicate_symbols: Vec<DuplicateSymbolFinding>,
     pub thin_wrappers: Vec<ThinWrapperFinding>,
+    #[serde(default)]
+    pub dormant_dependencies: Vec<DormantDependencyFinding>,
     pub debt_count: usize,
 }
 
