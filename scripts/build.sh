@@ -26,19 +26,25 @@ has_cmd() {
 cargo_run() {
   local subcmd="${1:-}"
   local interactive_tty=0
-  if [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" && -z "${CI:-}" && -z "${ANTIGRAVITY_SOURCE_METADATA:-}" ]]; then
+  if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${CI:-}" && -z "${ANTIGRAVITY_SOURCE_METADATA:-}" ]]; then
     interactive_tty=1
   fi
-  # cargo-pretty only supports `build` and `test` reliably in virtual Cargo workspaces
-  # (`cargo pretty run` queries Metadata::root_package(), which is None in virtual workspaces,
-  # and intercepts stdin/stdout needed by WebUI daemon logs and the ratatui setup TUI).
-  if [[ "${ZENKO_PRETTY:-auto}" != "0" && "${interactive_tty}" == "1" ]] \
-     && has_cmd cargo-pretty \
-     && [[ "${subcmd}" == "build" || "${subcmd}" == "test" ]]; then
-    cargo pretty "$@"
-  else
-    cargo "$@"
+  local pretty_mode="${ZENKO_PRETTY:-auto}"
+  if [[ "${pretty_mode}" != "0" && "${interactive_tty}" == "1" ]]; then
+    case "${subcmd}" in
+      build|b|check|c|test|t)
+        if [[ "${pretty_mode}" == "external" ]] && has_cmd cargo-pretty && [[ "${subcmd}" == "build" || "${subcmd}" == "test" ]]; then
+          cargo pretty "$@"
+          return
+        fi
+        if has_cmd python3 && [[ -f "${SCRIPT_DIR}/cargo_pretty.py" ]]; then
+          python3 -B "${SCRIPT_DIR}/cargo_pretty.py" "$@"
+          return
+        fi
+        ;;
+    esac
   fi
+  cargo "$@"
 }
 
 dir_size_mb() {
@@ -227,6 +233,7 @@ Environment overrides:
   ZENKO_TARGET_MAX_MB=1500   Max target/ size before cargo-sweep prunes oldest files
   ZENKO_MIN_FREE_MB=4096     Minimum free disk space guard before building
   ZENKO_KEEP_TEST_BINS=0     Set to 1 to retain compiled test executables in target/debug/deps
+  ZENKO_PRETTY=auto          Pretty Cargo renderer: auto (native), external (cargo-pretty), or 0 (raw)
 EOF
     ;;
   *)

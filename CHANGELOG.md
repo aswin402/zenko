@@ -4,6 +4,16 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.29] - 2026-11-25
+
+Fixed stuck/glitchy Cargo build progress animations during `just dev` (and `just build` / `just check` / `just test`) by replacing the buggy external `cargo-pretty` (`nobubbles-0.1.1`) default with a native, tear-free Obsidian Vermilion Cargo progress renderer.
+
+### Fixed
+- **Native Tear-Free Cargo Progress Renderer (`scripts/cargo_pretty.py`, `scripts/build.sh`):**
+  - Replaced external `cargo-pretty` (`nobubbles-0.1.1`) as the default TTY wrapper — fixing the false `100%` progress stall (`342/343` cached crates locking the bar at `100%` during `zenko-cli` compile/link), hardcoded 20-row absolute cursor addressing (`CSI row;colH`) overflowing short terminals, terminal DSR (`ESC[6n`) hangs, and double-invocation `--unit-graph` startup overhead.
+  - Added a zero-dependency, zero-regex native progress renderer (`scripts/cargo_pretty.py`) consuming `cargo --message-format=json-render-diagnostics` on an independent 12.5 FPS (80ms) tick loop with DEC Synchronized Output (`ESC[?2026h`/`ESC[?2026l`), strictly relative 2–5 row inline cursor positioning, run-length batched 60/30/10 Obsidian Vermilion (`#ea5829`) comet animation, clean `SIGINT`/`SIGTERM` cursor restoration, `NO_COLOR=1` and non-TTY fallback, and live test-stream passthrough for `just test`.
+  - Retained `ZENKO_PRETTY=external` (external `cargo-pretty`) and `ZENKO_PRETTY=0` (raw Cargo) overrides in `scripts/build.sh`.
+
 ## [0.0.28] - 2026-11-25
 
 Completed full Ponytail-inspired Code Minimalism parity with zero-regex dormant dependency detection, accurate new/untracked file diff tracking, WebUI Bloat Audit & Copyable Summary controls, and a live Chat Context Popover minimalism switcher.
