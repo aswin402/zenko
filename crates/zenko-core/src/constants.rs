@@ -698,6 +698,14 @@ pub const SCRIPT_BLOCK_MAX_LIST: usize = 64;
 pub const SCRIPT_BLOCK_SLUG_MAX_CHARS: usize = 48;
 pub const SCRIPT_BLOCK_DESC_PREFIX: &str = "# zenko-block:";
 pub const DOC_COMPRESS_MIN_BYTES: usize = 128;
+pub const DREAM_AUTO_COMPRESS_THRESHOLD_NUM: usize = 65;
+pub const DREAM_AUTO_COMPRESS_THRESHOLD_DEN: usize = 100;
+pub const DREAM_AUTO_COMPRESS_MIN_SAVED_BYTES: usize = 64;
+pub const DREAM_AUTO_COMPRESS_DOCS: &[(&str, usize)] = &[
+    ("USER.md", MAX_USER_DOC_TOKENS),
+    ("MEMORY.md", MAX_MEMORY_DOC_TOKENS),
+    (PROJECT_MEMORY_DOC_NAME, MAX_PROJECT_MEMORY_DOC_TOKENS),
+];
 
 /// Declarative table of tools representing background-task or subagent orchestration/monitoring.
 /// When a running session has active jobs, active subagents, or any of these tools in flight,

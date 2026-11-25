@@ -274,6 +274,29 @@ struct ReadLessSessionStats {
     tokens_saved: usize,
 }
 
+fn sum_persisted_read_less_stats(branch: &[SessionEvent]) -> (usize, u64, usize) {
+    let mut calls = 0usize;
+    let mut bytes_saved = 0u64;
+    let mut tokens_saved = 0usize;
+    for ev in branch {
+        if ev.role != EventRole::Tool || ev.kind != EventKind::ToolResult {
+            continue;
+        }
+        if let Some(rl) = ev.content_json.get("read_less").and_then(Value::as_object) {
+            calls = calls.saturating_add(1);
+            bytes_saved = bytes_saved.saturating_add(
+                rl.get("bytes_saved").and_then(Value::as_u64).unwrap_or(0),
+            );
+            tokens_saved = tokens_saved.saturating_add(
+                rl.get("tokens_saved")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+            );
+        }
+    }
+    (calls, bytes_saved, tokens_saved)
+}
+
 #[derive(Default)]
 pub(crate) struct SessionControl {
     steer_queue: Mutex<VecDeque<String>>,
@@ -1492,8 +1515,12 @@ impl AgentRuntime {
 
         let spilled_artifacts_count =
             artifacts::count_session_artifacts(&cfg.resolved_data_dir(), session_id).await;
-        let (read_less_calls_compressed, read_less_bytes_saved, read_less_tokens_saved) =
-            self.read_less_stats_for(session_id);
+        let (live_rl_calls, live_rl_bytes, live_rl_tokens) = self.read_less_stats_for(session_id);
+        let (persisted_rl_calls, persisted_rl_bytes, persisted_rl_tokens) =
+            sum_persisted_read_less_stats(&branch);
+        let read_less_calls_compressed = persisted_rl_calls.max(live_rl_calls);
+        let read_less_bytes_saved = persisted_rl_bytes.max(live_rl_bytes);
+        let read_less_tokens_saved = persisted_rl_tokens.max(live_rl_tokens);
 
         Ok(ContextBreakdown {
             session_id: session_id.to_string(),
@@ -1846,6 +1873,12 @@ impl AgentRuntime {
             .lock()
             .map(|st| (st.calls, st.bytes_saved, st.tokens_saved))
             .unwrap_or((0, 0, 0))
+    }
+
+    /// Sums durable Read-Less compression savings persisted in SQLite `ToolResult` events on `branch`
+    /// so `context_inspect` and WebUI Context Breakdown retain exact totals across daemon restarts.
+    pub fn persisted_read_less_stats(&self, branch: &[SessionEvent]) -> (usize, u64, usize) {
+        sum_persisted_read_less_stats(branch)
     }
 
     pub fn set_session_concise_mode(&self, session_id: &str, mode: ConciseMode) {

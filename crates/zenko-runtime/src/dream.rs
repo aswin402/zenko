@@ -19,7 +19,9 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zenko_core::{
-    AgentEvent, ChatMessage, ChatRequest, DREAM_KV_LAST_RUN_KEY, DREAM_KV_WATERMARK_KEY,
+    AgentEvent, ChatMessage, ChatRequest, ConciseMode, DREAM_AUTO_COMPRESS_DOCS,
+    DREAM_AUTO_COMPRESS_MIN_SAVED_BYTES, DREAM_AUTO_COMPRESS_THRESHOLD_DEN,
+    DREAM_AUTO_COMPRESS_THRESHOLD_NUM, DREAM_KV_LAST_RUN_KEY, DREAM_KV_WATERMARK_KEY,
     DREAM_LEASE_SECS, DREAM_MAX_ORIENTATION_MEMORIES, DREAM_MAX_OUTPUT_TOKENS,
     DREAM_MAX_PROPOSED_SKILLS, DREAM_MAX_SESSIONS_PER_RUN, DREAM_MAX_TRANSCRIPT_CHARS,
     DREAM_MIN_SESSION_EVENTS, DreamRunRecord, DreamStatus, EventKind, EventRole, ExecutionTier,
@@ -29,7 +31,9 @@ use zenko_core::{
     SessionEvent, SessionRolloutSummary, SkillAuthor, SkillStatus, UsageStats, compact_preview,
     format_hono_entry, new_id, scrub_secrets,
 };
-use zenko_memory::{SnapshotManager, find_missing_workspace_paths, project_scope_for_workspace};
+use zenko_memory::{
+    SnapshotManager, estimate_tokens, find_missing_workspace_paths, project_scope_for_workspace,
+};
 
 #[derive(Debug, Deserialize)]
 struct DreamExtractionPayload {
@@ -284,6 +288,48 @@ pub async fn run_dream_cycle(
     }
 }
 
+/// Zero-token Stage-0/post-patch memory doc hygiene: automatically compresses any persistent
+/// memory document (`USER.md`, `MEMORY.md`, `PROJECT_MEMORY.md`) once it reaches 65% of its token
+/// budget, writing an atomic `.history/` rollback backup first and validating headings/code/paths.
+pub(crate) fn auto_compress_bloated_memory_docs(
+    mgr: &SnapshotManager,
+    configured_mode: ConciseMode,
+) -> (usize, usize) {
+    let effective_mode = match configured_mode {
+        ConciseMode::Off => ConciseMode::Lite,
+        other => other,
+    };
+    let mut docs_compressed = 0usize;
+    let mut total_bytes_saved = 0usize;
+    for &(doc_name, max_tokens) in DREAM_AUTO_COMPRESS_DOCS {
+        let Ok(current) = mgr.read_doc(doc_name) else {
+            continue;
+        };
+        if current.trim().is_empty() {
+            continue;
+        }
+        let est_tokens = estimate_tokens(&current);
+        if est_tokens.saturating_mul(DREAM_AUTO_COMPRESS_THRESHOLD_DEN)
+            < max_tokens.saturating_mul(DREAM_AUTO_COMPRESS_THRESHOLD_NUM)
+        {
+            continue;
+        }
+        let Ok(preview) = mgr.compress_doc(doc_name, effective_mode, true) else {
+            continue;
+        };
+        if preview.bytes_saved < DREAM_AUTO_COMPRESS_MIN_SAVED_BYTES {
+            continue;
+        }
+        if let Ok(applied) = mgr.compress_doc(doc_name, effective_mode, false)
+            && applied.bytes_saved >= DREAM_AUTO_COMPRESS_MIN_SAVED_BYTES
+        {
+            docs_compressed = docs_compressed.saturating_add(1);
+            total_bytes_saved = total_bytes_saved.saturating_add(applied.bytes_saved);
+        }
+    }
+    (docs_compressed, total_bytes_saved)
+}
+
 async fn execute_dream_stages(
     runtime: &Arc<AgentRuntime>,
     cfg: &zenko_core::ZenkoConfig,
@@ -297,11 +343,23 @@ async fn execute_dream_stages(
     rec.memories_merged += hygiene.duplicates_merged;
     rec.memories_archived += hygiene.entries_archived;
 
+    let stage0_mgr = SnapshotManager::new(cfg.resolved_data_dir(), &ws)
+        .with_hub_dir(cfg.resolved_hub_dir());
+    let (stage0_compressed, stage0_bytes_saved) = match cfg.memory.dream_auto_patch_docs {
+        true => auto_compress_bloated_memory_docs(&stage0_mgr, cfg.context.concise_mode),
+        false => (0, 0),
+    };
+    rec.docs_patched += stage0_compressed;
+
     if sessions.is_empty() {
         rec.status = "hygiene_only".into();
         rec.detail = Some(format!(
-            "Stage-0 hygiene complete (dedup={}, archived={}, stale_paths={})",
-            hygiene.duplicates_merged, hygiene.entries_archived, hygiene.stale_flagged
+            "Stage-0 hygiene complete (dedup={}, archived={}, stale_paths={}, docs_compressed={}, bytes_saved={})",
+            hygiene.duplicates_merged,
+            hygiene.entries_archived,
+            hygiene.stale_flagged,
+            stage0_compressed,
+            stage0_bytes_saved,
         ));
         return Ok(None);
     }
@@ -629,6 +687,10 @@ async fn execute_dream_stages(
         if !diffs.is_empty() {
             rec.diff_preview = Some(compact_preview(&diffs.join("\n"), 2_000));
         }
+        // Re-check doc compression right after Stage-1 doc patches in case new bullets pushed a doc over threshold.
+        let (post_compressed, _) =
+            auto_compress_bloated_memory_docs(&stage0_mgr, cfg.context.concise_mode);
+        rec.docs_patched += post_compressed;
     }
 
     if cfg.skills.dream_propose_skills {
@@ -820,5 +882,41 @@ mod tests {
         );
         assert_eq!(parsed.doc_patches.len(), 1);
         assert_eq!(parsed.doc_patches[0].doc, "MEMORY.md");
+    }
+
+    #[test]
+    fn dream_auto_compresses_bloated_memory_doc_and_preserves_short_doc() {
+        let dir = std::env::temp_dir().join(format!("zenko_dream_cmp_{}", zenko_core::new_id()));
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).expect("ws");
+        let mgr = SnapshotManager::new(dir.join("data"), &ws);
+        mgr.ensure_defaults().expect("defaults");
+
+        // Short default docs stay untouched.
+        let (count0, saved0) = auto_compress_bloated_memory_docs(&mgr, ConciseMode::Full);
+        assert_eq!(count0, 0);
+        assert_eq!(saved0, 0);
+
+        // Bloated MEMORY.md (>= 65% of 1200-token cap) auto-compresses with a rollback snapshot!
+        let mut bloated = String::from("# Long-Term Memory\n\n");
+        for i in 0..36 {
+            bloated.push_str(&format!(
+                "- It is important to note that you should please make sure to run `cargo test --workspace` in order to verify rule {i} at `./crates/zenko-core/src/config.rs` prior to committing.\n"
+            ));
+        }
+        bloated.push_str("\n```rust\nfn keep_verbatim() { let _ = \"please note that\"; }\n```\n");
+        mgr.write_doc("MEMORY.md", &bloated).expect("write bloated");
+
+        let (count1, saved1) = auto_compress_bloated_memory_docs(&mgr, ConciseMode::Full);
+        assert_eq!(count1, 1);
+        assert!(saved1 >= DREAM_AUTO_COMPRESS_MIN_SAVED_BYTES, "saved={saved1}");
+        let compressed = mgr.read_doc("MEMORY.md").expect("read compressed");
+        assert!(compressed.contains("# Long-Term Memory"));
+        assert!(compressed.contains("`cargo test --workspace`"));
+        assert!(compressed.contains("./crates/zenko-core/src/config.rs"));
+        assert!(compressed.contains("let _ = \"please note that\";"));
+        assert!(!mgr.list_doc_history(Some("MEMORY.md")).expect("hist").is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,6 +4,21 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.21] - 2026-11-25
+
+Closed the final three autonomous automation gaps in Zenko's native English Concise & Read-Less Engine so background memory compression, durable savings telemetry, and concise tool/skill adoption operate automatically without user prompting.
+
+### Added
+- **Dream Stage-0 & Post-Patch Auto-Compression (`crates/zenko-runtime/src/dream.rs`, `constants.rs`):**
+  - Added deterministic, zero-token `auto_compress_bloated_memory_docs` inside Dream Stage-0 hygiene (runs even offline) and right after Stage-1 doc patches: automatically compacts `USER.md`, `MEMORY.md`, and `PROJECT_MEMORY.md` once they reach 65% of their token cap, saving a `.history/` rollback snapshot before writing and validating headings/code/paths verbatim.
+- **Durable SQLite Read-Less Savings Across Restarts (`crates/zenko-runtime/src/runtime/turn.rs`, `mod.rs`):**
+  - Persisted `read_less` compression metadata onto SQLite `EventKind::ToolResult` events and hydrated per-branch totals (`sum_persisted_read_less_stats`) inside `inspect_session_context`, so `context_inspect` and the WebUI Context Breakdown retain exact Read-Less savings across daemon restarts and branch switches without double-counting.
+- **Autonomous Efficiency Prompt Guidance (`crates/zenko-core/src/registry.rs`):**
+  - Added scope-aware autonomous efficiency guidance inside `<concise_mode>` prompting the orchestrator to proactively load `concise-review` / `concise-commit` / `concise-explore` via `skill_view`, save recurring shell workflows as Landlock-sandboxed `script_block`s, and compact bloated memory docs via `memory_tool(action="compress_doc")` (strictly omitting mutation hints in read-only Plan Mode and read-only subagents).
+- **Low-Disk Cargo Profiles, Disk-Guarded Build Script & Root `justfile` (`Cargo.toml`, `.cargo/config.toml`, `scripts/build.sh`, `justfile`, `AGENTS.md`):**
+  - Added lean `[profile.dev]` / `[profile.test]` settings (`debug = 0` for all 200+ third-party crates, `debug = "line-tables-only"` for workspace crates, `incremental = false`) slashing `target/` footprint by ~75–85% and eliminating multi-GB incremental cache accumulation across version bumps.
+  - Upgraded `scripts/build.sh` with a pre-flight disk-space guard, `cargo-sweep` `--stamp`/`--file`/`--maxsize` automatic old-version eviction, post-test executable pruning, `/tmp/zenko_*` cleanup, and storage breakdown reporting (`disk`), exposed cleanly via root `justfile` (`just check`, `just test`, `just build`, `just release`, `just verify`, `just sweep`, `just clean`, `just disk`).
+
 ## [0.0.20] - 2026-11-25
 
 Integrated a **100% pure-Rust, 100% English Native Concise & Read-Less Engine** across Zenko (`zenko-core`, `zenko-memory`, `zenko-tools`, `zenko-runtime`, `zenko-webui`, and the embedded WebUI) — bringing output compression modes, Read-Less + CCR input recovery, pure-Rust Markdown memory compression, English concise skills, reusable sandboxed script blocks, and live savings telemetry with zero Go proxy, zero Python, zero Node/JS hooks, zero `/commands`, zero non-English/Chinese modes, zero regex, and zero `.unwrap()`/`.expect()` in production paths.

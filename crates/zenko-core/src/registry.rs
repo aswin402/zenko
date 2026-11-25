@@ -786,10 +786,14 @@ pub fn render_concise_prompt_block(
         (true, false) => "\n- Auto-Clarity: automatically relax compression into clear full English sentences for security warnings, destructive/irreversible confirmations, architectural disagreements, or user confusion.",
         (false, _) => "",
     };
+    let efficiency_clause = match read_only_plan {
+        true => "\n- Autonomous efficiency: load matching concise skills (`concise-review`, `concise-explore`) via `skill_view` when reviewing diffs or exploring codebases.",
+        false => "\n- Autonomous efficiency: load matching concise skills (`concise-review`, `concise-commit`, `concise-explore`) via `skill_view` when reviewing, committing, or exploring; save recurring multi-step shell routines via `script_block`; compact bloated memory docs via `memory_tool(action=\"compress_doc\")`.",
+    };
     Some(format!(
         "<concise_mode level=\"{}\">\n\
          - {}\n\
-         - Verbatim invariant: NEVER alter or abbreviate code blocks, symbol names, file paths, CLI commands, stack traces, line numbers, or exact error messages.{clarity_clause}\n\
+         - Verbatim invariant: NEVER alter or abbreviate code blocks, symbol names, file paths, CLI commands, stack traces, line numbers, or exact error messages.{clarity_clause}{efficiency_clause}\n\
          - Mode control: switch live via `orchestrate_control(concise_mode=\"off|lite|full|ultra\")` if the user asks to change verbosity.\n\
          </concise_mode>",
         desc.id, desc.directive
@@ -933,6 +937,14 @@ mod tests {
         assert!(ultra.contains("level=\"ultra\""));
         assert!(ultra.contains("Verbatim invariant"));
         assert!(ultra.contains("Auto-Clarity"));
+        assert!(ultra.contains("script_block"));
+        assert!(ultra.contains("compress_doc"));
         assert!(ultra.is_ascii());
+
+        let plan_ro = render_concise_prompt_block(ConciseMode::Full, true, true).expect("plan_ro");
+        assert!(plan_ro.contains("concise-review"));
+        assert!(!plan_ro.contains("script_block"));
+        assert!(!plan_ro.contains("compress_doc"));
+        assert!(plan_ro.is_ascii());
     }
 }

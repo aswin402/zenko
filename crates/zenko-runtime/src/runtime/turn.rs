@@ -1647,19 +1647,25 @@ impl AgentRuntime {
                     }
                 }
 
+                let mut tool_payload = json!({
+                    "tool_call_id": done.tool_call_id,
+                    "tool_name": done.tool_name,
+                    "content": done.output.content,
+                    "is_error": done.output.is_error,
+                    "diff": done.output.diff,
+                    "duration_ms": done.duration_ms,
+                });
+                if let Some(rl_meta) = done.output.metadata.as_ref().and_then(|m| m.get("read_less"))
+                    && let Some(obj) = tool_payload.as_object_mut()
+                {
+                    obj.insert("read_less".into(), rl_meta.clone());
+                }
                 let ev = self.store.append_event(
                     &session_id,
                     head_id.as_deref(),
                     EventRole::Tool,
                     EventKind::ToolResult,
-                    json!({
-                        "tool_call_id": done.tool_call_id,
-                        "tool_name": done.tool_name,
-                        "content": done.output.content,
-                        "is_error": done.output.is_error,
-                        "diff": done.output.diff,
-                        "duration_ms": done.duration_ms,
-                    }),
+                    tool_payload,
                     &UsageStats::default(),
                 )?;
                 head_id = Some(ev.id);

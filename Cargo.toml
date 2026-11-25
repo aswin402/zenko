@@ -13,7 +13,7 @@ members = [
 default-members = ["crates/zenko-cli"]
 
 [workspace.package]
-version = "0.0.20"
+version = "0.0.21"
 edition = "2024"
 license = "MIT"
 authors = ["Aswin <aswin402>"]
@@ -87,9 +87,34 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 crossterm = "0.29"
 mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
 
+[profile.dev]
+# Keep exact file:line backtraces for workspace crates at ~15% of full DWARF size,
+# and disable unbounded multi-GB `target/debug/incremental/` sprawl across version bumps.
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+# Zero debug symbols for 200+ third-party dependencies (slashes target/ size & speeds linking).
+debug = 0
+
+[profile.dev.build-override]
+debug = 0
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test.package."*"]
+debug = 0
+
+[profile.test.build-override]
+debug = 0
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+debug = 0
+incremental = false

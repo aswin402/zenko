@@ -1,3 +1,8 @@
 [build]
-# Limit parallel compilation jobs to conserve CPU and RAM
+# Limit parallel compilation jobs to conserve CPU, RAM, and peak linker disk usage
 jobs = 2
+# Prevent multi-GB incremental query cache accumulation across version bumps
+incremental = false
+
+[net]
+git-fetch-with-cli = true

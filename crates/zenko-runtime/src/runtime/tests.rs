@@ -1073,6 +1073,42 @@
         assert!(sb_plan_deny.output.is_error);
         assert!(sb_plan_deny.output.content.contains("Denied by execpolicy"));
 
+        // e) Persisted SQLite `ToolResult.read_less` stats survive simulated daemon restart!
+        let _ = rt
+            .store
+            .append_event(
+                &sess.id,
+                None,
+                EventRole::Tool,
+                EventKind::ToolResult,
+                json!({
+                    "tool_call_id": "t14_persist",
+                    "tool_name": TOOL_SHELL_EXEC,
+                    "content": "compressed output",
+                    "is_error": false,
+                    "diff": Value::Null,
+                    "duration_ms": 12,
+                    "read_less": {
+                        "shape": "test_output",
+                        "original_bytes": 5000,
+                        "compressed_bytes": 904,
+                        "bytes_saved": 4096,
+                        "tokens_saved": 1024,
+                        "savings_pct": 81.9
+                    }
+                }),
+                &UsageStats::default(),
+            )
+            .expect("append read_less event");
+        rt.clear_session_deferred_tools(&sess.id); // clears in-memory SessionControl simulating restart
+        let after_restart = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("inspect after restart");
+        assert_eq!(after_restart.read_less_calls_compressed, 1);
+        assert_eq!(after_restart.read_less_bytes_saved, 4096);
+        assert_eq!(after_restart.read_less_tokens_saved, 1024);
+
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);
     }
