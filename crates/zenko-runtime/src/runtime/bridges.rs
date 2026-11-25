@@ -517,3 +517,66 @@ impl GoalLoopBridge for RuntimeGoalLoopBridge {
     }
 }
 
+/// Leak-free `Weak<AgentRuntime>` bridge connecting the deferred `token_economy` tool in
+/// `zenko-tools` to `AgentRuntime` without circular dependencies.
+pub(super) struct RuntimeEconomyBridge {
+    runtime: OnceLock<Weak<AgentRuntime>>,
+}
+
+impl RuntimeEconomyBridge {
+    pub(super) fn new() -> Self {
+        Self {
+            runtime: OnceLock::new(),
+        }
+    }
+
+    pub(super) fn bind(&self, weak: Weak<AgentRuntime>) {
+        let _ = self.runtime.set(weak);
+    }
+
+    fn upgrade(&self) -> Result<Arc<AgentRuntime>> {
+        self.runtime
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| ZenkoError::Config("runtime economy bridge unavailable".into()))
+    }
+}
+
+impl EconomyBridge for RuntimeEconomyBridge {
+    fn economy_report(&self, workspace_dir: &Path) -> Result<TokenEconomyReport> {
+        let rt = self.upgrade()?;
+        rt.economy_report(Some(workspace_dir))
+    }
+
+    fn add_micro_skill(
+        &self,
+        workspace_dir: &Path,
+        fact: &str,
+        failed_cmd: Option<&str>,
+        fixed_cmd: Option<&str>,
+    ) -> Result<RepoMicroSkill> {
+        let rt = self.upgrade()?;
+        rt.economy_add_micro_skill(Some(workspace_dir), fact, failed_cmd, fixed_cmd)
+    }
+
+    fn retire_micro_skill(&self, id: &str) -> Result<bool> {
+        let rt = self.upgrade()?;
+        rt.economy_retire_micro_skill(id)
+    }
+
+    fn apply_tool_prune(&self, workspace_dir: &Path, tool_name: &str) -> Result<bool> {
+        let rt = self.upgrade()?;
+        rt.economy_apply_tool_prune(Some(workspace_dir), tool_name)
+    }
+
+    fn restore_tool(&self, workspace_dir: &Path, tool_name: &str, pin: bool) -> Result<bool> {
+        let rt = self.upgrade()?;
+        rt.economy_restore_tool(Some(workspace_dir), tool_name, pin)
+    }
+
+    fn reaudit_pruned_tools(&self, workspace_dir: &Path) -> Result<usize> {
+        let rt = self.upgrade()?;
+        rt.economy_reaudit_tools(Some(workspace_dir))
+    }
+}
+

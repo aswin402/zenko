@@ -43,6 +43,7 @@ use zenko_runtime::TurnOptions;
 
 mod agents;
 mod auth;
+mod economy;
 mod mcp_lsp;
 mod memory_skills_automation;
 mod openai_webhooks;
@@ -53,6 +54,7 @@ mod ui_models;
 
 pub use agents::*;
 pub use auth::*;
+pub use economy::*;
 pub use mcp_lsp::*;
 pub use memory_skills_automation::*;
 pub use openai_webhooks::*;

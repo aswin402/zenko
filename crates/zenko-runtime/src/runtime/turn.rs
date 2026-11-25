@@ -560,12 +560,49 @@ impl AgentRuntime {
                     || active_role.is_some_and(|r| r.read_only),
             },
         };
+        let repo_scope = project_scope_for_workspace(&workspace_dir);
+        let economy_pruned_tools = match cfg.economy.enabled && cfg.economy.auto_tool_prune {
+            true => self.store.list_pruned_tools(&repo_scope).unwrap_or_default(),
+            false => BTreeSet::new(),
+        };
+        let active_micro_skills = match cfg.economy.enabled && cfg.economy.auto_micro_skills {
+            true => crate::economy::active_micro_skills_for_repo(&self.store, &repo_scope),
+            false => Vec::new(),
+        };
+        if cfg.economy.enabled
+            && cfg.economy.p90_loop_guard
+            && let Ok((_, envelope_calls, _)) = self
+                .store
+                .compute_repo_p90_envelope(&repo_scope, cfg.economy.p90_multiplier)
+            && envelope_calls > 0
+        {
+            orch.guard.set_p90_envelope(envelope_calls);
+        }
+        let mut economy_trace = crate::economy::TurnEconomyTrace::new(repo_scope.clone());
+        economy_trace.injected_skills = active_micro_skills.clone();
+        let unpruned_eager_specs = self.tools.specs_for_session_filtered(
+            cfg.context.deferred_tool_loading,
+            &BTreeSet::new(),
+            &session_scope.availability,
+            |spec| session_scope.permits_spec(spec),
+        );
+        let eager_tool_costs: Vec<(String, u32)> = unpruned_eager_specs
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    estimate_tool_specs_tokens(std::slice::from_ref(s)) as u32,
+                )
+            })
+            .collect();
+        let unpruned_eager_tokens = estimate_tool_specs_tokens(&unpruned_eager_specs);
+
         let deferred_catalog = match cfg.context.deferred_tool_loading {
-            true => self
-                .tools
-                .deferred_catalog_text_filtered(&session_scope.availability, |spec| {
-                    session_scope.permits_spec(spec)
-                }),
+            true => self.tools.deferred_catalog_text_with_demotions(
+                &economy_pruned_tools,
+                &session_scope.availability,
+                |spec| session_scope.permits_spec(spec),
+            ),
             false => None,
         };
         let active_concise_mode = self.effective_concise_mode(&session_id, cfg, &initial_branch);
@@ -577,6 +614,10 @@ impl AgentRuntime {
         ) {
             effective_system_prompt.push_str("\n\n");
             effective_system_prompt.push_str(&concise_block);
+        }
+        if let Some(ms_block) = render_repo_micro_skills_block(&active_micro_skills) {
+            effective_system_prompt.push_str("\n\n");
+            effective_system_prompt.push_str(&ms_block);
         }
         if let Some(role_desc) = active_role {
             let is_ro = role_desc.read_only || effective_custom_read_only;
@@ -706,18 +747,24 @@ impl AgentRuntime {
                 }
             }
 
+            economy_trace.iters_executed = economy_trace.iters_executed.saturating_add(1);
             let active_deferred = match cfg.context.freeze_tool_schemas {
                 true => BTreeSet::new(),
                 false => self.activated_deferred_for(&session_id),
             };
-            let active_tool_specs = self.tools.specs_for_session_filtered(
+            let active_tool_specs = self.tools.specs_for_session_with_demotions(
                 cfg.context.deferred_tool_loading,
                 &active_deferred,
+                &economy_pruned_tools,
                 &session_scope.availability,
                 |spec| session_scope.permits_spec(spec),
             );
-            let prefix_tokens =
-                effective_sys_tokens + estimate_tool_specs_tokens(&active_tool_specs);
+            let active_specs_tokens = estimate_tool_specs_tokens(&active_tool_specs);
+            if iter_idx == 0 && !economy_pruned_tools.is_empty() {
+                economy_trace.pruned_tokens_saved_per_iter =
+                    unpruned_eager_tokens.saturating_sub(active_specs_tokens);
+            }
+            let prefix_tokens = effective_sys_tokens + active_specs_tokens;
 
             let mut branch_events = self.store.get_active_branch(&session_id)?;
             let mut ckpt_slice = slice_from_latest_checkpoint(&branch_events);
@@ -1597,10 +1644,40 @@ impl AgentRuntime {
                             orch.guard.update_active_plan(plan);
                         }
 
+                if !was_phase_redirect {
+                    economy_trace.record_tool_use(eff_tool_name);
+                    if eff_tool_name == TOOL_SHELL_EXEC
+                        && let Some(cmd) = done
+                            .arguments
+                            .get("command")
+                            .or_else(|| done.arguments.get("args").and_then(|a| a.get("command")))
+                            .and_then(Value::as_str)
+                    {
+                        economy_trace.record_shell_outcome(
+                            cmd,
+                            done.output.is_error,
+                            &done.output.content,
+                        );
+                    }
+                    if let Some(saved_tok) = done
+                        .output
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("read_less"))
+                        .and_then(|rl| rl.get("tokens_saved"))
+                        .and_then(Value::as_u64)
+                    {
+                        economy_trace.read_less_tokens_saved = economy_trace
+                            .read_less_tokens_saved
+                            .saturating_add(saved_tok as usize);
+                    }
+                }
+
                 if !was_phase_redirect
                     && cfg.orchestrator.enabled
                     && cfg.orchestrator.loop_circuit_breaker
                 {
+                    let had_p90_redirect = orch.guard.p90_redirect_triggered();
                     match orch.guard.record_tool_outcome(
                         &done.tool_name,
                         &done.arguments,
@@ -1609,7 +1686,26 @@ impl AgentRuntime {
                         done.output.metadata.as_ref(),
                     ) {
                         GuardVerdict::Continue => {}
-                        GuardVerdict::Pivot { reason, hint } => {
+                        GuardVerdict::Pivot { reason, mut hint } => {
+                            if !had_p90_redirect && orch.guard.p90_redirect_triggered() {
+                                economy_trace.loop_guard_interventions =
+                                    economy_trace.loop_guard_interventions.saturating_add(1);
+                                if cfg.economy.optional_fast_judge
+                                    && let Some(judge_note) = self
+                                        .run_optional_economy_loop_judge(
+                                            cfg,
+                                            &repo_scope,
+                                            &reason,
+                                            &done.tool_name,
+                                            &done.output.content,
+                                            &cancel,
+                                        )
+                                        .await
+                                {
+                                    hint.push_str("\nFast-Judge Diagnosis: ");
+                                    hint.push_str(&judge_note);
+                                }
+                            }
                             let (next_model, next_effort, src) = escalate_on_pivot(
                                 cfg,
                                 &model,
@@ -1992,6 +2088,27 @@ impl AgentRuntime {
             json!({ "session_id": session_id }),
         )
         .await;
+
+        if cfg.economy.enabled && session.parent_session_id.is_none() {
+            let econ_update = crate::economy::after_turn_update(
+                &self.store,
+                &cfg.economy,
+                &session_id,
+                &eager_tool_costs,
+                &economy_trace,
+                tool_calls_count,
+                ended_with_final_text,
+            );
+            if let Some(detail) = econ_update.summary_line() {
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: session_id.clone(),
+                    stage: ORCH_STAGE_ECONOMY.into(),
+                    tier: orch.triage.tier,
+                    detail,
+                    model: None,
+                });
+            }
+        }
 
         if cfg.memory.dream_enabled && session.parent_session_id.is_none() {
             self.dream_notify.notify_one();

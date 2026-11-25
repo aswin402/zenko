@@ -207,6 +207,10 @@ pub struct ExecutionGuard {
     plan_recorded: bool,
     read_probe_streak: usize,
     wrapup_nudge_sent: bool,
+    p90_envelope_calls: usize,
+    p90_redirect_sent: bool,
+    total_tool_calls: usize,
+    total_tool_errors: usize,
 }
 
 impl ExecutionGuard {
@@ -275,6 +279,15 @@ impl ExecutionGuard {
     /// Records a text/reasoning doom-loop recovery pivot so retries stay strictly bounded.
     pub fn record_text_doom_pivot(&mut self) {
         self.pivot_count = self.pivot_count.saturating_add(1);
+    }
+
+    /// Configures the empirical per-repository `1.25 x P90` turn-envelope threshold (`0` disables).
+    pub fn set_p90_envelope(&mut self, envelope_calls: usize) {
+        self.p90_envelope_calls = envelope_calls;
+    }
+
+    pub fn p90_redirect_triggered(&self) -> bool {
+        self.p90_redirect_sent
     }
 
     /// LLM-sovereign pre-tool evaluation: never blocks tool calls based on guessed prompt keywords
@@ -583,8 +596,12 @@ impl ExecutionGuard {
             }
         }
 
+        self.total_tool_calls = self.total_tool_calls.saturating_add(1);
         match is_error {
-            true => self.consecutive_errors = self.consecutive_errors.saturating_add(1),
+            true => {
+                self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+                self.total_tool_errors = self.total_tool_errors.saturating_add(1);
+            }
             false => self.consecutive_errors = 0,
         }
 
@@ -695,6 +712,40 @@ impl ExecutionGuard {
                  </orchestrator_hint>"
             );
             return self.escalate_or_pivot(reason, hint);
+        }
+
+        // 5. Empirical P90 Turn-Envelope + Arg-Varying Oscillation Guard (bounded to 1 redirect/turn)
+        if self.p90_envelope_calls > 0
+            && !self.p90_redirect_sent
+            && self.total_tool_calls > self.p90_envelope_calls
+            && is_error
+        {
+            let err_density =
+                (self.total_tool_errors as f64) / (self.total_tool_calls.max(1) as f64);
+            let same_tool_errors = self
+                .window
+                .iter()
+                .filter(|fp| fp.is_error && fp.tool_name == tool_name)
+                .count();
+            if err_density >= zenko_core::ECONOMY_LOOP_ERROR_DENSITY_RATIO
+                || same_tool_errors >= zenko_core::ECONOMY_LOOP_OSCILLATION_MIN_ERRORS
+            {
+                self.p90_redirect_sent = true;
+                let reason = format!(
+                    "P90 turn envelope exceeded ({}/{} calls, {:.0}% errors; {} recent `{tool_name}` failures)",
+                    self.total_tool_calls,
+                    self.p90_envelope_calls,
+                    err_density * 100.0,
+                    same_tool_errors
+                );
+                let hint = format!(
+                    "<orchestrator_hint type=\"p90_loop_guard\">\n\
+                     Adaptive loop guard triggered: {reason}. This task has exceeded this repository's historical P90 call budget while hitting recurring errors.\n\
+                     Stop incremental trial-and-error immediately: step back, inspect root-cause ground truth cleanly, change strategy, or summarize blockers for the user.\n\
+                     </orchestrator_hint>"
+                );
+                return self.escalate_or_pivot(reason, hint);
+            }
         }
 
         GuardVerdict::Continue
@@ -1380,6 +1431,46 @@ mod tests {
         // Reset after user approval restores a clean pivot budget
         guard.reset_after_escalation();
         assert_eq!(guard.pivot_count(), 0);
+    }
+
+    #[test]
+    fn p90_turn_envelope_triggers_single_bounded_redirect_on_arg_varying_oscillation() {
+        let mut guard = ExecutionGuard::new(
+            ExecutionTier::Standard,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        guard.set_p90_envelope(4);
+        // 2 good reads + 2 distinct failing shell calls (at budget=4 -> Continue)
+        assert_eq!(
+            guard.record_tool_outcome("read_file", &json!({"path": "a.rs"}), false, "ok", None),
+            GuardVerdict::Continue
+        );
+        assert_eq!(
+            guard.record_tool_outcome("read_file", &json!({"path": "b.rs"}), false, "ok", None),
+            GuardVerdict::Continue
+        );
+        assert_eq!(
+            guard.record_tool_outcome("shell_exec", &json!({"command": "cmd_1"}), true, "err 1", None),
+            GuardVerdict::Continue
+        );
+        assert_eq!(
+            guard.record_tool_outcome("shell_exec", &json!({"command": "cmd_2"}), true, "err 2", None),
+            GuardVerdict::Continue
+        );
+        // 5th call breaches P90 envelope (5 > 4) with 3rd shell error -> fires single bounded redirect!
+        let fifth = guard.record_tool_outcome(
+            "shell_exec",
+            &json!({"command": "cmd_3"}),
+            true,
+            "err 3",
+            None,
+        );
+        assert!(
+            matches!(fifth, GuardVerdict::Pivot { ref hint, .. } if hint.contains("p90_loop_guard")),
+            "expected p90_loop_guard pivot, got {fifth:?}"
+        );
+        assert!(guard.p90_redirect_triggered());
     }
 
     #[test]

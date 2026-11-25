@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod checkpoint;
 pub mod compaction;
 pub mod dream;
+pub mod economy;
 pub mod export;
 pub mod file_state;
 pub mod goals;

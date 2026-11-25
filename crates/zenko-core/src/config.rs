@@ -988,6 +988,65 @@ fn default_mcp_idle_timeout() -> u64 {
     MCP_IDLE_TIMEOUT_SECS
 }
 
+/// Experience-driven cross-session Token Economy settings (inspired by Microsoft TokenEconomizer).
+/// All core mechanisms run deterministically with zero extra LLM calls by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EconomyConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_micro_skills: bool,
+    #[serde(default = "default_true")]
+    pub auto_tool_prune: bool,
+    #[serde(default = "default_true")]
+    pub p90_loop_guard: bool,
+    #[serde(default)]
+    pub optional_fast_judge: bool,
+    #[serde(default = "default_economy_micro_skill_min_sessions")]
+    pub micro_skill_min_sessions: u32,
+    #[serde(default = "default_economy_tool_prune_min_prompts")]
+    pub tool_prune_min_prompts: u32,
+    #[serde(default = "default_economy_tool_prune_min_sessions")]
+    pub tool_prune_min_sessions: u32,
+    #[serde(default = "default_economy_tool_prune_reaudit_tasks")]
+    pub tool_prune_reaudit_tasks: u32,
+    #[serde(default = "default_economy_p90_multiplier")]
+    pub p90_multiplier: f64,
+}
+
+impl Default for EconomyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_micro_skills: true,
+            auto_tool_prune: true,
+            p90_loop_guard: true,
+            optional_fast_judge: false,
+            micro_skill_min_sessions: default_economy_micro_skill_min_sessions(),
+            tool_prune_min_prompts: default_economy_tool_prune_min_prompts(),
+            tool_prune_min_sessions: default_economy_tool_prune_min_sessions(),
+            tool_prune_reaudit_tasks: default_economy_tool_prune_reaudit_tasks(),
+            p90_multiplier: default_economy_p90_multiplier(),
+        }
+    }
+}
+
+fn default_economy_micro_skill_min_sessions() -> u32 {
+    ECONOMY_MICRO_SKILL_MIN_SESSIONS
+}
+fn default_economy_tool_prune_min_prompts() -> u32 {
+    ECONOMY_TOOL_PRUNE_MIN_PROMPTS
+}
+fn default_economy_tool_prune_min_sessions() -> u32 {
+    ECONOMY_TOOL_PRUNE_MIN_SESSIONS
+}
+fn default_economy_tool_prune_reaudit_tasks() -> u32 {
+    ECONOMY_TOOL_PRUNE_REAUDIT_TASKS
+}
+fn default_economy_p90_multiplier() -> f64 {
+    ECONOMY_LOOP_P90_MULTIPLIER
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZenkoConfig {
     #[serde(default)]
@@ -1006,6 +1065,8 @@ pub struct ZenkoConfig {
     pub orchestrator: OrchestratorConfig,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub economy: EconomyConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]

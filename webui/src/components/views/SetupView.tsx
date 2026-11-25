@@ -30,6 +30,7 @@ import {
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoSelect } from '@/components/ui/ZenkoSelect'
 import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
+import { TokenEconomyPanel } from './TokenEconomyPanel'
 import { InputField, ScrollPage, splitShellArgs, type SecondaryTabsVariant } from './shared'
 
 // ─── Setup & Settings View ────────────────────────────────────────────────────
@@ -668,6 +669,9 @@ export function SetupView({
               </div>
             </div>
           </div>
+
+          {/* Native Token Economy Engine (Micro-Skills, Soft Tool Pruning, P90 Loop Guard, Net ROI Ledger) */}
+          <TokenEconomyPanel toast={toast} />
         </div>
         )}
 

@@ -1,0 +1,514 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Activity, Plus, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { api, formatCompactTokens } from '@/lib/api'
+import type { EconomyConfig, TokenEconomyReport } from '@/lib/types'
+import { cn } from '@/lib/utils'
+
+interface EconomyToggleMeta {
+  key: 'auto_micro_skills' | 'auto_tool_prune' | 'p90_loop_guard' | 'optional_fast_judge'
+  label: string
+  hint: string
+}
+
+const ECONOMY_TOGGLES: readonly EconomyToggleMeta[] = [
+  {
+    key: 'auto_micro_skills',
+    label: 'Auto Micro-Skills',
+    hint: 'Learns recurring workspace fail->fix facts across sessions (zero LLM) and auto-retires on 1 contradiction.',
+  },
+  {
+    key: 'auto_tool_prune',
+    label: 'Smart Tool Pruning',
+    hint: 'Soft-demotes persistently unused non-core tools to deferred (still 100% callable via invoke_tool) with periodic re-audit.',
+  },
+  {
+    key: 'p90_loop_guard',
+    label: 'P90 Loop Guard',
+    hint: 'Tracks empirical repo turn baselines (1.25x P90) and redirects subtle arg-varying error oscillations.',
+  },
+  {
+    key: 'optional_fast_judge',
+    label: 'Fast-Model Loop Judge (Opt-in)',
+    hint: 'Uses fast_model for semantic loop diagnosis when P90 breaches; logs exact overhead in the Net ROI Ledger.',
+  },
+]
+
+const STATUS_BADGE_LABEL: Record<string, string> = {
+  active: 'ACTIVE',
+  candidate: 'CANDIDATE',
+  retired: 'RETIRED',
+}
+
+/**
+ * Native Token Economy Engine Control Panel (Settings & Setup).
+ * Strictly inherits global 60/30/10 theme tokens (zero hardcoded colors).
+ */
+export function TokenEconomyPanel({
+  toast,
+}: {
+  toast: (msg: string, kind?: 'info' | 'success' | 'error') => void
+}) {
+  const [report, setReport] = useState<TokenEconomyReport | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [newFact, setNewFact] = useState('')
+  const [newFixedCmd, setNewFixedCmd] = useState('')
+  const [showDetails, setShowDetails] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await api<TokenEconomyReport>('/api/economy')
+      setReport(data)
+    } catch {
+      /* fail open when daemon is starting */
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const updateEconomyCfg = async (patch: Partial<EconomyConfig>) => {
+    setBusy(true)
+    try {
+      const res = await api<{ ok: boolean; economy?: EconomyConfig }>('/api/economy/config', {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      })
+      if (res.economy) {
+        setReport((prev) => (prev ? { ...prev, config: res.economy! } : prev))
+      }
+      toast('Updated Token Economy settings', 'success')
+    } catch (e: any) {
+      toast(e?.message || 'Failed to update Token Economy config', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addMicroSkill = async () => {
+    if (!newFact.trim()) return
+    setBusy(true)
+    try {
+      await api('/api/economy/micro-skills', {
+        method: 'POST',
+        body: JSON.stringify({
+          fact: newFact.trim(),
+          fixed_cmd: newFixedCmd.trim() || null,
+        }),
+      })
+      setNewFact('')
+      setNewFixedCmd('')
+      toast('Added active repository micro-skill', 'success')
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to add micro-skill', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const retireSkill = async (id: string) => {
+    setBusy(true)
+    try {
+      await api(`/api/economy/micro-skills/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      toast('Retired micro-skill', 'info')
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to retire micro-skill', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const restoreTool = async (toolName: string, pin = true) => {
+    setBusy(true)
+    try {
+      await api('/api/economy/tools/restore', {
+        method: 'POST',
+        body: JSON.stringify({ tool_name: toolName, pin }),
+      })
+      toast(`Restored ${toolName} (${pin ? 'pinned' : 'unpinned'})`, 'success')
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to restore tool', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pruneTool = async (toolName: string) => {
+    setBusy(true)
+    try {
+      await api('/api/economy/tools/prune', {
+        method: 'POST',
+        body: JSON.stringify({ tool_name: toolName }),
+      })
+      toast(`Soft-pruned ${toolName} to deferred`, 'info')
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to prune tool', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reauditTools = async () => {
+    setBusy(true)
+    try {
+      const res = await api<{ ok: boolean; restored: number }>('/api/economy/tools/reaudit', {
+        method: 'POST',
+      })
+      toast(`Re-audited tools (${res.restored} restored for fresh evaluation)`, 'info')
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to re-audit tools', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cfg = report?.config
+  const sum = report?.summary
+  const enabled = cfg?.enabled ?? true
+
+  return (
+    <div className="z-surface-card flex flex-col gap-3.5 md:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <div
+            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border"
+            style={
+              enabled
+                ? {
+                    borderColor: 'color-mix(in srgb, var(--accent) 45%, var(--border))',
+                    backgroundColor: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+                    color: 'var(--accent)',
+                  }
+                : {
+                    borderColor: 'var(--border)',
+                    backgroundColor: 'var(--surface)',
+                    color: 'var(--muted)',
+                  }
+            }
+          >
+            <Activity size={15} />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <strong className="text-[14px]">Token Economy Engine</strong>
+              <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
+                {report?.repo_scope || 'workspace'}
+              </span>
+              {sum && (
+                <span
+                  className="rounded-full border px-2 py-0.5 font-mono text-[10.5px]"
+                  style={{
+                    color: 'var(--accent)',
+                    borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)',
+                    backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+                  }}
+                >
+                  Net {sum.net_tokens_saved >= 0 ? '+' : ''}
+                  {formatCompactTokens(Math.abs(sum.net_tokens_saved))} tok (~$
+                  {sum.estimated_usd_saved.toFixed(4)})
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[12px] text-[var(--muted)]">
+              Cross-session experience controller: zero-LLM micro-skills, soft tool pruning, adaptive
+              1.25x P90 loop guard, and honest Net ROI ledger (gross savings minus Dream/Judge
+              overhead).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+          >
+            <RefreshCw size={11.5} className={loading ? 'animate-spin' : ''} />
+            <span>Refresh</span>
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-label="Toggle Token Economy Engine"
+            aria-checked={enabled}
+            disabled={busy || !cfg}
+            onClick={() => updateEconomyCfg({ enabled: !enabled })}
+            className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors disabled:opacity-50"
+            style={{
+              backgroundColor: enabled ? 'var(--accent)' : 'var(--bg)',
+              borderColor: enabled ? 'var(--accent)' : 'var(--border)',
+            }}
+          >
+            <span
+              className={cn(
+                'inline-block h-4 w-4 rounded-full bg-white shadow-xs transition-transform',
+                enabled ? 'translate-x-5.5' : 'translate-x-1',
+              )}
+            />
+          </button>
+        </div>
+      </div>
+
+      {/* Live Net ROI Telemetry Strip */}
+      {sum && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            [
+              'Read-Less + Prune',
+              `${formatCompactTokens(sum.read_less_tokens_saved + sum.tool_prune_tokens_saved)} tok`,
+              `Overhead -${formatCompactTokens(sum.overhead_tokens)} tok`,
+            ],
+            [
+              'Micro-Skills',
+              `${sum.active_micro_skills} active`,
+              `${sum.candidate_micro_skills} candidate · ${sum.retired_micro_skills} retired`,
+            ],
+            [
+              'Soft-Pruned Tools',
+              `${sum.pruned_tools_count} deferred`,
+              `${report?.prune_candidates.length ?? 0} approaching threshold`,
+            ],
+            [
+              'P90 Loop Baseline',
+              sum.envelope_calls > 0 ? `${sum.envelope_calls} calls` : 'Learning',
+              sum.baseline_samples > 0
+                ? `P90=${sum.p90_turn_calls} (${sum.baseline_samples} runs)`
+                : 'Needs 5 completed runs',
+            ],
+          ].map(([label, val, sub]) => (
+            <div
+              key={label}
+              className="flex flex-col gap-0.5 rounded-xl border border-[var(--border)] bg-[var(--bg)]/55 px-3 py-2"
+            >
+              <span className="text-[10.5px] text-[var(--muted)]">{label}</span>
+              <span className="font-mono text-[13px] font-semibold text-[var(--fg)]">{val}</span>
+              <span className="font-mono text-[10px] text-[var(--muted)]">{sub}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Feature Toggles */}
+      {cfg && (
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          {ECONOMY_TOGGLES.map((item) => {
+            const on = Boolean(cfg[item.key])
+            return (
+              <div
+                key={item.key}
+                className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 px-3.5 py-2.5"
+              >
+                <div>
+                  <div className="text-[12.5px] font-medium text-[var(--fg)]">{item.label}</div>
+                  <div className="text-[11px] leading-snug text-[var(--muted)]">{item.hint}</div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label={item.label}
+                  aria-checked={on}
+                  disabled={busy || !enabled}
+                  onClick={() => updateEconomyCfg({ [item.key]: !on })}
+                  className="relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-full border transition-colors disabled:opacity-45"
+                  style={{
+                    backgroundColor: on ? 'var(--accent)' : 'var(--bg)',
+                    borderColor: on ? 'var(--accent)' : 'var(--border)',
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'inline-block h-3.5 w-3.5 rounded-full bg-white shadow-xs transition-transform',
+                      on ? 'translate-x-5' : 'translate-x-1',
+                    )}
+                  />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Expandable Micro-Skills & Pruned Tools Manager */}
+      <div className="border-t border-[var(--border)]/70 pt-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setShowDetails((v) => !v)}
+            className="z-btn z-btn-ghost z-btn-sm font-mono text-[11px]"
+          >
+            {showDetails
+              ? 'Hide Micro-Skills & Pruned Tools'
+              : `Inspect Micro-Skills (${report?.micro_skills.length ?? 0}) & Tool Pruning (${report?.pruned_tools.length ?? 0})`}
+          </button>
+          {(report?.pruned_tools.length ?? 0) > 0 && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={reauditTools}
+              className="z-btn z-btn-secondary z-btn-sm font-mono text-[10.5px]"
+            >
+              <RotateCcw size={11} /> Re-Audit Pruned Tools
+            </button>
+          )}
+        </div>
+
+        {showDetails && report && (
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {/* Micro-Skills Column */}
+            <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 p-3">
+              <span className="text-[12px] font-semibold text-[var(--fg)]">
+                Repository Micro-Skills ({report.micro_skills.length})
+              </span>
+              <div className="flex flex-col gap-1.5">
+                <input
+                  value={newFact}
+                  onChange={(e) => setNewFact(e.target.value)}
+                  placeholder="Add verified 1-line fact (e.g. Use just verify for Rust tests)"
+                  className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11.5px] text-[var(--fg)] placeholder:text-[var(--muted)]/60 focus:border-[var(--accent)] focus:outline-none"
+                />
+                <div className="flex gap-1.5">
+                  <input
+                    value={newFixedCmd}
+                    onChange={(e) => setNewFixedCmd(e.target.value)}
+                    placeholder="Optional working command (e.g. just verify)"
+                    className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 font-mono text-[11px] text-[var(--fg)] placeholder:text-[var(--muted)]/60 focus:border-[var(--accent)] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || !newFact.trim()}
+                    onClick={addMicroSkill}
+                    className="z-btn z-btn-secondary z-btn-sm"
+                  >
+                    <Plus size={12} /> Add
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex max-h-48 flex-col gap-1.5 overflow-y-auto">
+                {report.micro_skills.length === 0 ? (
+                  <span className="font-mono text-[11px] text-[var(--muted)]">
+                    No micro-skills learned yet — Zenko extracts recurring fail-&gt;fix facts
+                    automatically across sessions.
+                  </span>
+                ) : (
+                  report.micro_skills.map((ms) => (
+                    <div
+                      key={ms.id}
+                      className="flex items-start justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                          <span
+                            style={{
+                              color:
+                                ms.status === 'active' ? 'var(--accent)' : 'var(--muted)',
+                            }}
+                          >
+                            {STATUS_BADGE_LABEL[ms.status] || ms.status.toUpperCase()}
+                          </span>
+                          <span className="text-[var(--muted)]">
+                            {ms.corroborations}x · hits {ms.need_hits}/{ms.exposures}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11.5px] leading-snug text-[var(--fg)]">
+                          {ms.fact}
+                        </p>
+                      </div>
+                      {ms.status !== 'retired' && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => retireSkill(ms.id)}
+                          title="Retire micro-skill"
+                          className="z-btn z-btn-ghost z-btn-sm shrink-0 px-1.5 text-[var(--muted)] hover:text-[var(--fg)]"
+                        >
+                          <Trash2 size={11.5} />
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Tool Utilization & Soft-Pruning Column */}
+            <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 p-3">
+              <span className="text-[12px] font-semibold text-[var(--fg)]">
+                Tool Utilization &amp; Soft Pruning ({report.tool_usage.length})
+              </span>
+              <div className="flex max-h-60 flex-col gap-1.5 overflow-y-auto">
+                {report.tool_usage.length === 0 ? (
+                  <span className="font-mono text-[11px] text-[var(--muted)]">
+                    No tool telemetry collected yet for this repository.
+                  </span>
+                ) : (
+                  report.tool_usage.slice(0, 20).map((tu) => (
+                    <div
+                      key={tu.tool_name}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 font-mono text-[11px] text-[var(--fg)]">
+                          <span className="truncate">{tu.tool_name}</span>
+                          {tu.pruned_to_deferred && (
+                            <span
+                              className="rounded border px-1 py-px text-[9.5px]"
+                              style={{
+                                color: 'var(--accent)',
+                                borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)',
+                              }}
+                            >
+                              deferred
+                            </span>
+                          )}
+                          {tu.manually_pinned && (
+                            <span className="rounded border border-[var(--border)] px-1 py-px text-[9.5px] text-[var(--muted)]">
+                              pinned
+                            </span>
+                          )}
+                        </div>
+                        <div className="font-mono text-[10px] text-[var(--muted)]">
+                          calls={tu.call_count} · idle={tu.prompts_since_used}p · ~
+                          {tu.estimated_schema_tokens} tok
+                        </div>
+                      </div>
+                      {tu.pruned_to_deferred ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => restoreTool(tu.tool_name, true)}
+                          className="z-btn z-btn-secondary z-btn-sm shrink-0 font-mono text-[10px]"
+                        >
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => pruneTool(tu.tool_name)}
+                          className="z-btn z-btn-ghost z-btn-sm shrink-0 font-mono text-[10px]"
+                        >
+                          Defer
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

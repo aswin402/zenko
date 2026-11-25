@@ -639,6 +639,10 @@ export const PromptComposer = memo(function PromptComposer({
                     'Read-Less CCR',
                     `${contextData.read_less_calls_compressed ?? 0} (${formatCompactTokens(contextData.read_less_tokens_saved ?? 0)} saved)`,
                   ],
+                  [
+                    'Token Economy',
+                    `${(contextData.economy_net_tokens_saved ?? 0) >= 0 ? '+' : '-'}${formatCompactTokens(Math.abs(contextData.economy_net_tokens_saved ?? 0))} net · ${contextData.economy_active_micro_skills ?? 0} ms · ${contextData.economy_pruned_tools_count ?? 0} pruned`,
+                  ],
                   ['Checkpoints', `${contextData.checkpoints_count}`],
                   ['Spilled Artifacts', `${contextData.spilled_artifacts_count}`],
                 ].map(([label, val]) => (

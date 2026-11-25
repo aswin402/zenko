@@ -4,6 +4,27 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.25] - 2026-11-25
+
+Implemented Zenko's **Native Rust Token Economy Engine** (inspired by `microsoft/TokenEconomizer`, 100% native Rust, zero Python, zero regex, zero hardcoding) — adding cross-session repository Micro-Skills, experience-driven soft Tool Pruning, empirical `1.25× P90` Turn-Envelope Loop Guard, and an honest Net ROI Economy Ledger across Core, SQLite, Runtime, Tools, and WebUI.
+
+### Added
+- **Zero-LLM Repository Micro-Skills (`crates/zenko-runtime/src/economy/micro_skills.rs`, `sqlite/economy.rs`, `registry.rs`):**
+  - Deterministically extracts recurring fail→fix shell command patterns across turns using a pure byte/token command-head parser and 64-bit FNV-1a signatures (zero regex, zero extra LLM calls).
+  - Enforces multi-session corroboration (`>= 2` distinct sessions) before promoting `candidate -> active`, injects verified facts into Tier-2 `<repo_micro_skills>` (keeping Tier-1 KV-cache prefix frozen), tracks exposure need-rate (`>= 0.40`), and immediately retires contradicted facts on 1 strike.
+- **Experience-Driven Soft Tool Pruning (`crates/zenko-tools/src/lib.rs`, `sqlite/economy.rs`, `runtime/turn.rs`):**
+  - Tracks per-repository tool utilization across prompts and sessions while permanently protecting core tools (`ECONOMY_PROTECTED_CORE_TOOLS`).
+  - Automatically soft-demotes persistently unused non-core eager tools (`>= 10` prompts across `>= 2` sessions) to `Deferred` (saving full per-turn schema tokens while preserving 100% reachability via `invoke_tool`), self-heals immediately if invoked, and periodically re-audits every 5 completed tasks.
+- **Empirical `1.25× P90` Turn-Envelope Loop Guard + Optional Fast Judge (`crates/zenko-runtime/src/orchestrator/guard.rs`, `runtime/mod.rs`):**
+  - Records successful per-repo turn lengths in SQLite (`repo_turn_baselines`) and computes a deterministic nearest-rank `1.25× P90` call envelope.
+  - Detects high error density and arg-varying repeated tool oscillations when breaching the repo envelope, issuing a bounded 1-shot `<orchestrator_hint type="p90_loop_guard">` redirect (zero LLM default, optional opt-in `fast_model` semantic judge).
+- **Honest Net Economy Ledger (`economy_ledger`, `dream.rs`, `PromptComposer.tsx`):**
+  - Accounts for Read-Less + Tool-Prune token savings, Micro-Skill injections, and Loop-Guard interventions **minus** background Dream & Fast-Judge overhead tokens/USD.
+- **Deferred `token_economy` Tool, Built-in English Skill & WebUI Control Plane (`economy_tool.rs`, `api/economy.rs`, `TokenEconomyPanel.tsx`):**
+  - Added deferred `token_economy` tool (`status`, `micro_skills`, `add_micro_skill`, `retire_micro_skill`, `prune_report`, `apply_prune`, `restore_tool`, `reaudit`, `ledger`) with zero eager KV-cache overhead.
+  - Seeded built-in `token-economy-audit.md` skill in `DEFAULT_SKILL_TEMPLATES`.
+  - Added `/api/economy*` endpoints, the Settings **Token Economy Engine** panel (live switches, Net ROI telemetry, micro-skill add/retire, tool defer/restore/re-audit), and Context Breakdown net economy metrics.
+
 ## [0.0.24] - 2026-11-25
 
 Added 1-click Caveman Mode ON/OFF & compression level controls directly in the Chat Input bar and Settings view, plus full Theme Studio button style customization.

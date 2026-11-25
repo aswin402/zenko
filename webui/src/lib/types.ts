@@ -1124,6 +1124,82 @@ export interface ContextBreakdown {
   read_less_calls_compressed?: number
   read_less_bytes_saved?: number
   read_less_tokens_saved?: number
+  economy_net_tokens_saved?: number
+  economy_active_micro_skills?: number
+  economy_pruned_tools_count?: number
+  economy_p90_turn_calls?: number
+}
+
+export interface EconomyConfig {
+  enabled: boolean
+  auto_micro_skills: boolean
+  auto_tool_prune: boolean
+  p90_loop_guard: boolean
+  optional_fast_judge: boolean
+  micro_skill_min_sessions: number
+  tool_prune_min_prompts: number
+  tool_prune_min_sessions: number
+  tool_prune_reaudit_tasks: number
+  p90_multiplier: number
+}
+
+export interface RepoMicroSkill {
+  id: string
+  repo_scope: string
+  signature: string
+  fact: string
+  failed_cmd: string
+  fixed_cmd: string
+  corroborations: number
+  session_ids: string[]
+  need_hits: number
+  exposures: number
+  contradictions: number
+  status: 'candidate' | 'active' | 'retired'
+  created_at: string
+  updated_at: string
+}
+
+export interface RepoToolUsage {
+  repo_scope: string
+  tool_name: string
+  call_count: number
+  prompts_since_used: number
+  sessions_observed: number
+  estimated_schema_tokens: number
+  pruned_to_deferred: boolean
+  manually_pinned: boolean
+  last_used_at?: string | null
+  updated_at: string
+}
+
+export interface EconomyLedgerSummary {
+  repo_scope: string
+  read_less_tokens_saved: number
+  tool_prune_tokens_saved: number
+  micro_skill_injections: number
+  loop_guard_interventions: number
+  overhead_tokens: number
+  net_tokens_saved: number
+  estimated_usd_saved: number
+  p90_turn_calls: number
+  envelope_calls: number
+  baseline_samples: number
+  active_micro_skills: number
+  candidate_micro_skills: number
+  retired_micro_skills: number
+  pruned_tools_count: number
+  completed_tasks: number
+}
+
+export interface TokenEconomyReport {
+  repo_scope: string
+  config: EconomyConfig
+  summary: EconomyLedgerSummary
+  micro_skills: RepoMicroSkill[]
+  tool_usage: RepoToolUsage[]
+  pruned_tools: string[]
+  prune_candidates: string[]
 }
 
 export interface MemoryKindMeta {

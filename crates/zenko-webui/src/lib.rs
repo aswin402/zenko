@@ -261,6 +261,17 @@ pub fn build_router(state: WebState) -> Router {
         // Setup & Gateways
         .route("/api/setup", post(api::api_save_setup))
         .route("/api/context/concise", patch(api::api_update_context_concise))
+        // Native Token Economy Engine
+        .route("/api/economy", get(api::api_get_economy))
+        .route("/api/economy/config", patch(api::api_update_economy_config))
+        .route("/api/economy/micro-skills", post(api::api_add_micro_skill))
+        .route(
+            "/api/economy/micro-skills/{id}",
+            delete(api::api_retire_micro_skill),
+        )
+        .route("/api/economy/tools/prune", post(api::api_prune_tool))
+        .route("/api/economy/tools/restore", post(api::api_restore_tool))
+        .route("/api/economy/tools/reaudit", post(api::api_reaudit_tools))
         .route(
             "/api/setup/verify-provider",
             post(api::api_verify_provider),

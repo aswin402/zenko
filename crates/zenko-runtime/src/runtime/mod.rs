@@ -34,7 +34,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
@@ -99,7 +99,7 @@ use zenko_core::{
     NOTE_KIND_PLAN_APPROVED, NOTE_KIND_REWIND_SUMMARY, ORCH_MAX_TRUNCATION_RETRIES,
     ORCH_MONITORING_TOOLS, ORCH_REASONING_MAX_OUTPUT_CAP, ORCH_REASONING_MIN_MAX_TOKENS,
     ORCH_STAGE_BUDGET_GUARD, ORCH_STAGE_CHECKPOINT, ORCH_STAGE_CIRCUIT_BREAKER,
-    ORCH_STAGE_COMPACTION, ORCH_STAGE_CONCISE, ORCH_STAGE_ESCALATED,
+    ORCH_STAGE_COMPACTION, ORCH_STAGE_CONCISE, ORCH_STAGE_ECONOMY, ORCH_STAGE_ESCALATED,
     ORCH_STAGE_GEAR_SHIFT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT, ORCH_STAGE_PACING,
     ORCH_STAGE_PHASE_GATE, ORCH_STAGE_PLAN_MODE, ORCH_STAGE_POSTURE, ORCH_STAGE_RECON,
     ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TOOL_ACTIVATED, ORCH_STAGE_TRIAGED,
@@ -119,10 +119,12 @@ use zenko_core::{
     ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
     TriageReport,
     TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
-    WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError,
-    compact_preview, find_concise_mode, find_provider, find_subagent_role,
+    ECONOMY_FAST_JUDGE_MAX_TOKENS, EconomyBridge, EconomyLedgerKind, RepoMicroSkill,
+    TokenEconomyReport, WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig,
+    ZenkoError, compact_preview, find_concise_mode, find_provider, find_subagent_role,
     is_git_tool_args_mutating, is_lsp_tool_args_mutating, is_memory_mutating_action,
     new_goal_loop_id, new_id, new_session_task_id, render_concise_prompt_block,
+    render_repo_micro_skills_block,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
@@ -535,6 +537,7 @@ impl AgentRuntime {
         let batch_bridge = Arc::new(RuntimeBatchBridge::new());
         let subagent_bridge = Arc::new(RuntimeSubagentBridge::new());
         let goal_bridge = Arc::new(RuntimeGoalLoopBridge::new());
+        let economy_bridge = Arc::new(RuntimeEconomyBridge::new());
         let web_search_cfg = Arc::new(RwLock::new(config.web_search.clone()));
         let lsp_cfg = Arc::new(RwLock::new(config.lsp.clone()));
         let mcp_servers_cfg = Arc::new(RwLock::new(config.mcp_servers.clone()));
@@ -569,6 +572,7 @@ impl AgentRuntime {
             goal_bridge.clone() as Arc<dyn GoalLoopBridge>,
         );
         tool_reg.register_context_tools(ctx_bridge.clone() as Arc<dyn ContextBridge>);
+        tool_reg.register_economy_tool(economy_bridge.clone() as Arc<dyn EconomyBridge>);
         tool_reg.register_batch_tool(batch_bridge.clone() as Arc<dyn ToolBatchBridge>);
         tool_reg.register_subagent_tools(subagent_bridge.clone() as Arc<dyn SubagentBridge>);
         tool_reg.register(Arc::new(ShellExecTool::new_with_runtime(
@@ -637,6 +641,7 @@ impl AgentRuntime {
         batch_bridge.bind(Arc::downgrade(&rt));
         subagent_bridge.bind(Arc::downgrade(&rt));
         goal_bridge.bind(Arc::downgrade(&rt));
+        economy_bridge.bind(Arc::downgrade(&rt));
         rt.clarifications.bind_runtime(Arc::downgrade(&rt));
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -1522,6 +1527,12 @@ impl AgentRuntime {
         let read_less_bytes_saved = persisted_rl_bytes.max(live_rl_bytes);
         let read_less_tokens_saved = persisted_rl_tokens.max(live_rl_tokens);
 
+        let repo_scope = self.resolve_repo_scope(None);
+        let econ_sum = self
+            .store
+            .summarize_economy_ledger(&repo_scope, cfg.economy.p90_multiplier)
+            .unwrap_or_default();
+
         Ok(ContextBreakdown {
             session_id: session_id.to_string(),
             model: active_model,
@@ -1549,7 +1560,141 @@ impl AgentRuntime {
             read_less_calls_compressed,
             read_less_bytes_saved,
             read_less_tokens_saved,
+            economy_net_tokens_saved: econ_sum.net_tokens_saved,
+            economy_active_micro_skills: econ_sum.active_micro_skills,
+            economy_pruned_tools_count: econ_sum.pruned_tools_count,
+            economy_p90_turn_calls: econ_sum.p90_turn_calls,
         })
+    }
+
+    pub fn resolve_repo_scope(&self, workspace_dir: Option<&Path>) -> String {
+        let cfg = self.config();
+        let ws = workspace_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        project_scope_for_workspace(&ws)
+    }
+
+    pub fn economy_report(&self, workspace_dir: Option<&Path>) -> Result<TokenEconomyReport> {
+        let cfg = self.config();
+        let scope = self.resolve_repo_scope(workspace_dir);
+        crate::economy::build_economy_report(&self.store, &cfg.economy, &scope)
+    }
+
+    pub fn economy_add_micro_skill(
+        &self,
+        workspace_dir: Option<&Path>,
+        fact: &str,
+        failed_cmd: Option<&str>,
+        fixed_cmd: Option<&str>,
+    ) -> Result<RepoMicroSkill> {
+        let scope = self.resolve_repo_scope(workspace_dir);
+        crate::economy::add_manual_micro_skill(&self.store, &scope, fact, failed_cmd, fixed_cmd)
+    }
+
+    pub fn economy_retire_micro_skill(&self, id: &str) -> Result<bool> {
+        self.store.retire_micro_skill(id)
+    }
+
+    pub fn economy_apply_tool_prune(
+        &self,
+        workspace_dir: Option<&Path>,
+        tool_name: &str,
+    ) -> Result<bool> {
+        let scope = self.resolve_repo_scope(workspace_dir);
+        self.store.set_tool_pruned(&scope, tool_name, true, false)
+    }
+
+    pub fn economy_restore_tool(
+        &self,
+        workspace_dir: Option<&Path>,
+        tool_name: &str,
+        pin: bool,
+    ) -> Result<bool> {
+        let scope = self.resolve_repo_scope(workspace_dir);
+        self.store.set_tool_pruned(&scope, tool_name, false, pin)
+    }
+
+    pub fn economy_reaudit_tools(&self, workspace_dir: Option<&Path>) -> Result<usize> {
+        let scope = self.resolve_repo_scope(workspace_dir);
+        self.store.reaudit_pruned_tools(&scope)
+    }
+
+    /// Optional opt-in fast-model semantic loop judge invoked only when `cfg.economy.optional_fast_judge`
+    /// is enabled AND a turn breaches its empirical `1.25 x P90` call envelope. Fails open cleanly
+    /// and logs exact background token overhead into `economy_ledger`.
+    pub(super) async fn run_optional_economy_loop_judge(
+        &self,
+        cfg: &ZenkoConfig,
+        repo_scope: &str,
+        reason: &str,
+        tool_name: &str,
+        last_error_output: &str,
+        cancel: &CancellationToken,
+    ) -> Option<String> {
+        let judge_model = [cfg.provider.fast_model.as_str(), cfg.provider.lead_model.as_str()]
+            .into_iter()
+            .map(str::trim)
+            .find(|m| !m.is_empty())?;
+        let req = zenko_core::ChatRequest {
+            session_id: format!("econ_judge_{}", new_id()),
+            model: judge_model.to_string(),
+            fallbacks: Vec::new(),
+            system_prompt: "You are a concise engineering loop-breaker judge. Given a failing tool loop signal, output 1-2 concrete sentences telling the agent what assumption to check or how to change strategy. No filler.".into(),
+            messages: vec![zenko_core::ChatMessage {
+                role: EventRole::User,
+                content: format!(
+                    "Trigger: {reason}\nTool: {tool_name}\nLatest error excerpt:\n{}",
+                    compact_preview(last_error_output, 600)
+                ),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: Vec::new(),
+            temperature: 0.1,
+            max_tokens: ECONOMY_FAST_JUDGE_MAX_TOKENS,
+            enable_streaming: false,
+            enable_prompt_caching: false,
+            sticky_session_routing: false,
+            provider_sort: cfg.provider.provider_sort.clone(),
+            reasoning_effort: None,
+        };
+
+        let out = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut stream = self.provider.stream_chat(req, cancel.clone()).await?;
+            let mut text = String::new();
+            let mut usage = UsageStats::default();
+            while let Some(item) = stream.next().await {
+                match item? {
+                    LlmDelta::Text(t) => text.push_str(&t),
+                    LlmDelta::Usage(u) => usage = u,
+                    _ => {}
+                }
+            }
+            Ok::<(String, UsageStats), ZenkoError>((text, usage))
+        })
+        .await
+        .ok()?
+        .ok()?;
+
+        let (text, usage) = out;
+        let overhead_toks = usage.prompt_tokens.saturating_add(usage.completion_tokens) as i64;
+        if overhead_toks > 0 {
+            let _ = self.store.record_economy_ledger_event(
+                repo_scope,
+                EconomyLedgerKind::OverheadJudge,
+                overhead_toks,
+                -usage.cost_usd.abs(),
+                &format!("Loop judge ({judge_model})"),
+            );
+        }
+        let clean = text.trim().to_string();
+        match clean.is_empty() {
+            true => None,
+            false => Some(clean),
+        }
     }
 
     /// Async Stage-B iterative-merge checkpoint summarizer using `compaction_model -> fast_model

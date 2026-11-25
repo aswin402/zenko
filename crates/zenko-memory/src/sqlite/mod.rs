@@ -486,6 +486,66 @@ impl SqliteStore {
                 );
                 CREATE INDEX IF NOT EXISTS idx_goal_loop_runs_goal
                     ON goal_loop_runs(goal_id, iteration DESC);
+
+                CREATE TABLE IF NOT EXISTS repo_micro_skills (
+                    id TEXT PRIMARY KEY,
+                    repo_scope TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    fact TEXT NOT NULL,
+                    failed_cmd TEXT NOT NULL DEFAULT '',
+                    fixed_cmd TEXT NOT NULL DEFAULT '',
+                    corroborations INTEGER NOT NULL DEFAULT 1,
+                    session_ids_json TEXT NOT NULL DEFAULT '[]',
+                    need_hits INTEGER NOT NULL DEFAULT 0,
+                    exposures INTEGER NOT NULL DEFAULT 0,
+                    contradictions INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(repo_scope, signature)
+                );
+                CREATE INDEX IF NOT EXISTS idx_micro_skills_scope_status
+                    ON repo_micro_skills(repo_scope, status, corroborations DESC);
+
+                CREATE TABLE IF NOT EXISTS repo_tool_usage (
+                    repo_scope TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    call_count INTEGER NOT NULL DEFAULT 0,
+                    prompts_since_used INTEGER NOT NULL DEFAULT 0,
+                    sessions_observed INTEGER NOT NULL DEFAULT 0,
+                    last_session_id TEXT NOT NULL DEFAULT '',
+                    estimated_schema_tokens INTEGER NOT NULL DEFAULT 0,
+                    pruned_to_deferred INTEGER NOT NULL DEFAULT 0,
+                    manually_pinned INTEGER NOT NULL DEFAULT 0,
+                    last_used_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(repo_scope, tool_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_tool_usage_scope_pruned
+                    ON repo_tool_usage(repo_scope, pruned_to_deferred);
+
+                CREATE TABLE IF NOT EXISTS repo_turn_baselines (
+                    id TEXT PRIMARY KEY,
+                    repo_scope TEXT NOT NULL,
+                    tool_calls INTEGER NOT NULL,
+                    iterations INTEGER NOT NULL,
+                    succeeded INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_baselines_scope
+                    ON repo_turn_baselines(repo_scope, succeeded, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS economy_ledger (
+                    id TEXT PRIMARY KEY,
+                    repo_scope TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    tokens_delta INTEGER NOT NULL DEFAULT 0,
+                    cost_usd_delta REAL NOT NULL DEFAULT 0.0,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_economy_ledger_scope
+                    ON economy_ledger(repo_scope, created_at DESC);
                 "#,
             )?;
 
@@ -917,6 +977,7 @@ fn row_to_ui_profile(r: &rusqlite::Row<'_>) -> rusqlite::Result<UiProfile> {
 
 mod approvals_gateways;
 mod cron_ui_logs;
+mod economy;
 mod jobs_agents;
 mod memories;
 mod sessions;

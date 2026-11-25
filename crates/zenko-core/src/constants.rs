@@ -1340,3 +1340,82 @@ pub const LOG_PREVIEW_ERR_CHARS: usize = 84;
 pub const LOG_PREVIEW_ARG_VAL_CHARS: usize = 36;
 pub const LOG_PREVIEW_COMPLEX_VAL_CHARS: usize = 28;
 pub const LOG_MAX_ARG_KEYS: usize = 3;
+
+// Shared deterministic 64-bit FNV-1a hash constants (reused across Read-Less, Guard, and Token Economy)
+pub const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+// Native Token Economy Engine constants (inspired by Microsoft TokenEconomizer; 100% native Rust, zero regex)
+pub const TOOL_TOKEN_ECONOMY: &str = "token_economy";
+pub const ORCH_STAGE_ECONOMY: &str = "economy";
+pub const ECONOMY_MICRO_SKILL_MIN_SESSIONS: u32 = 2;
+pub const ECONOMY_MICRO_SKILL_MIN_NEED_RATE: f64 = 0.40;
+pub const ECONOMY_MICRO_SKILL_MIN_EXPOSURES_FOR_RATE: u32 = 8;
+pub const ECONOMY_MICRO_SKILL_MAX_INJECT: usize = 8;
+pub const ECONOMY_MICRO_SKILL_MAX_CHARS: usize = 240;
+pub const ECONOMY_MICRO_SKILL_MAX_CONTRADICTIONS: u32 = 1;
+pub const ECONOMY_TOOL_PRUNE_MIN_PROMPTS: u32 = 10;
+pub const ECONOMY_TOOL_PRUNE_MIN_SESSIONS: u32 = 2;
+pub const ECONOMY_TOOL_PRUNE_REAUDIT_TASKS: u32 = 5;
+pub const ECONOMY_LOOP_P90_MIN_SAMPLES: usize = 5;
+pub const ECONOMY_LOOP_P90_MULTIPLIER: f64 = 1.25;
+pub const ECONOMY_LOOP_MAX_BASELINE_SAMPLES: usize = 64;
+pub const ECONOMY_LOOP_MIN_ENVELOPE_CALLS: usize = 8;
+pub const ECONOMY_LOOP_ERROR_DENSITY_RATIO: f64 = 0.45;
+pub const ECONOMY_LOOP_OSCILLATION_MIN_ERRORS: usize = 3;
+pub const ECONOMY_LOOP_MAX_REDIRECTS_PER_TURN: usize = 1;
+pub const ECONOMY_LEDGER_MAX_EVENTS: usize = 500;
+pub const ECONOMY_ESTIMATED_USD_PER_1M_TOKENS: f64 = 3.0;
+pub const ECONOMY_FAST_JUDGE_MAX_TOKENS: u32 = 220;
+pub const ECONOMY_FAST_JUDGE_MIN_CONFIDENCE: f64 = 0.70;
+pub const ECONOMY_CMD_PREVIEW_CHARS: usize = 120;
+
+/// Core operational tools permanently protected from experience-driven tool pruning.
+pub const ECONOMY_PROTECTED_CORE_TOOLS: &[&str] = &[
+    TOOL_READ_FILE,
+    TOOL_HASH_EDIT,
+    TOOL_APPLY_PATCH,
+    TOOL_WRITE_FILE,
+    TOOL_LIST_DIR,
+    TOOL_CODE_SEARCH,
+    TOOL_GLOB_FIND,
+    TOOL_SHELL_EXEC,
+    TOOL_TOOL_SEARCH,
+    TOOL_INVOKE_TOOL,
+    TOOL_BATCH_TOOLS,
+    TOOL_ASK_CLARIFICATION,
+    TOOL_ORCHESTRATE_CONTROL,
+    TOOL_TOKEN_ECONOMY,
+];
+
+/// Declarative shell wrapper prefixes skipped when extracting the primary executable command.
+pub const ECONOMY_SHELL_WRAPPERS: &[&str] = &["env", "time", "nice", "timeout", "command", "nohup"];
+
+/// Declarative environment/invocation error markers signaling a learnable command failure.
+pub const ECONOMY_LEARNABLE_FAIL_MARKERS: &[&str] = &[
+    "command not found",
+    "not found",
+    "no such file or directory",
+    "unknown option",
+    "unrecognized option",
+    "unexpected argument",
+    "invalid option",
+    "unknown subcommand",
+    "no such subcommand",
+    "is not recognized",
+    "exit_code: 127",
+    "exit_code: 126",
+    "exit_code: 2",
+];
+
+/// Declarative markers indicating a shell command failed because the invoked tool itself is broken/missing
+/// (triggers 1-strike contradiction retirement when matching an active micro-skill's recommended command).
+pub const ECONOMY_CONTRADICTION_MARKERS: &[&str] = &[
+    "command not found",
+    "no such file or directory",
+    "unknown option",
+    "unrecognized option",
+    "unknown subcommand",
+    "no such subcommand",
+    "exit_code: 127",
+];

@@ -539,6 +539,14 @@ pub struct ContextBreakdown {
     pub read_less_bytes_saved: u64,
     #[serde(default)]
     pub read_less_tokens_saved: usize,
+    #[serde(default)]
+    pub economy_net_tokens_saved: i64,
+    #[serde(default)]
+    pub economy_active_micro_skills: usize,
+    #[serde(default)]
+    pub economy_pruned_tools_count: usize,
+    #[serde(default)]
+    pub economy_p90_turn_calls: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3769,4 +3777,169 @@ pub struct ExportReport {
     pub events_exported: usize,
     pub bytes: usize,
     pub content: String,
+}
+
+/// Lifecycle state of an experience-learned repository micro-skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MicroSkillStatus {
+    #[default]
+    Candidate,
+    Active,
+    Retired,
+}
+
+impl MicroSkillStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Candidate => "candidate",
+            Self::Active => "active",
+            Self::Retired => "retired",
+        }
+    }
+
+    pub fn from_str_loose(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "active" => Self::Active,
+            "retired" => Self::Retired,
+            _ => Self::Candidate,
+        }
+    }
+}
+
+/// Corroborated 1-line repository/environment fact learned across sessions (zero-LLM default).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoMicroSkill {
+    pub id: String,
+    pub repo_scope: String,
+    pub signature: String,
+    pub fact: String,
+    pub failed_cmd: String,
+    pub fixed_cmd: String,
+    pub corroborations: u32,
+    pub session_ids: Vec<String>,
+    pub need_hits: u32,
+    pub exposures: u32,
+    pub contradictions: u32,
+    pub status: MicroSkillStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Per-repository tool utilization & soft-pruning state (demotes unused non-core tools to deferred).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoToolUsage {
+    pub repo_scope: String,
+    pub tool_name: String,
+    pub call_count: u64,
+    pub prompts_since_used: u32,
+    pub sessions_observed: u32,
+    pub estimated_schema_tokens: u32,
+    pub pruned_to_deferred: bool,
+    pub manually_pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Categorized token savings vs. optimizer overhead event recorded in `economy_ledger`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomyLedgerKind {
+    ReadLess,
+    ToolPrune,
+    MicroSkill,
+    LoopGuard,
+    OverheadDream,
+    OverheadJudge,
+}
+
+impl EconomyLedgerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadLess => "read_less",
+            Self::ToolPrune => "tool_prune",
+            Self::MicroSkill => "micro_skill",
+            Self::LoopGuard => "loop_guard",
+            Self::OverheadDream => "overhead_dream",
+            Self::OverheadJudge => "overhead_judge",
+        }
+    }
+
+    pub fn from_str_loose(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "read_less" => Some(Self::ReadLess),
+            "tool_prune" => Some(Self::ToolPrune),
+            "micro_skill" => Some(Self::MicroSkill),
+            "loop_guard" => Some(Self::LoopGuard),
+            "overhead_dream" => Some(Self::OverheadDream),
+            "overhead_judge" => Some(Self::OverheadJudge),
+            _ => None,
+        }
+    }
+}
+
+/// Aggregated per-repository net Token Economy ROI summary (gross savings minus overhead).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EconomyLedgerSummary {
+    pub repo_scope: String,
+    pub read_less_tokens_saved: u64,
+    pub tool_prune_tokens_saved: u64,
+    pub micro_skill_injections: u64,
+    pub loop_guard_interventions: u64,
+    pub overhead_tokens: u64,
+    pub net_tokens_saved: i64,
+    pub estimated_usd_saved: f64,
+    pub p90_turn_calls: usize,
+    pub envelope_calls: usize,
+    pub baseline_samples: usize,
+    pub active_micro_skills: usize,
+    pub candidate_micro_skills: usize,
+    pub retired_micro_skills: usize,
+    pub pruned_tools_count: usize,
+    pub completed_tasks: u64,
+}
+
+/// Full Token Economy report returned by `GET /api/economy` and the deferred `token_economy` tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenEconomyReport {
+    pub repo_scope: String,
+    pub config: crate::config::EconomyConfig,
+    pub summary: EconomyLedgerSummary,
+    pub micro_skills: Vec<RepoMicroSkill>,
+    pub tool_usage: Vec<RepoToolUsage>,
+    pub pruned_tools: Vec<String>,
+    pub prune_candidates: Vec<String>,
+}
+
+/// Declarative action enum for the deferred `token_economy` tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomyAction {
+    Status,
+    MicroSkills,
+    AddMicroSkill,
+    RetireMicroSkill,
+    PruneReport,
+    ApplyPrune,
+    RestoreTool,
+    Reaudit,
+    Ledger,
+}
+
+impl EconomyAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "status" | "overview" => Some(Self::Status),
+            "micro_skills" | "microskills" | "list_skills" => Some(Self::MicroSkills),
+            "add_micro_skill" | "add_skill" => Some(Self::AddMicroSkill),
+            "retire_micro_skill" | "retire_skill" | "retire" => Some(Self::RetireMicroSkill),
+            "prune_report" | "toolprune" | "tools" => Some(Self::PruneReport),
+            "apply_prune" | "prune" => Some(Self::ApplyPrune),
+            "restore_tool" | "restore" => Some(Self::RestoreTool),
+            "reaudit" | "reset_prune" => Some(Self::Reaudit),
+            "ledger" | "roi" | "savings" => Some(Self::Ledger),
+            _ => None,
+        }
+    }
 }

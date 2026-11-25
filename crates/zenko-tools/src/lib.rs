@@ -4,6 +4,7 @@ pub mod blocks;
 pub mod codex_patch;
 pub mod coerce;
 pub mod context_tools;
+pub mod economy_tool;
 pub mod fs_tools;
 pub mod git;
 pub mod glob;
@@ -28,8 +29,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
 use zenko_core::{
-    ContextBridge, GoalLoopBridge, JobSupervisor, OrchestratorBridge, SecretVault, SkillsConfig,
-    SubagentBridge, TOOL_BM25_B, TOOL_BM25_EXACT_NAME_BOOST, TOOL_BM25_K1,
+    ContextBridge, EconomyBridge, GoalLoopBridge, JobSupervisor, OrchestratorBridge, SecretVault,
+    SkillsConfig, SubagentBridge, TOOL_BM25_B, TOOL_BM25_EXACT_NAME_BOOST, TOOL_BM25_K1,
     TOOL_BM25_PREFIX_TF_WEIGHT, TOOL_BM25_SUBSTR_NAME_BOOST, TOOL_INVOKE_TOOL, TOOL_TOOL_SEARCH,
     Tool, ToolAvailabilityContext, ToolBatchBridge, ToolExposure, ToolSet, ToolSetSummary, ToolSpec,
     WebSearchConfig, find_toolset_descriptor,
@@ -145,6 +146,11 @@ impl ToolRegistry {
         self.register(Arc::new(context_tools::ContextInspectTool::new(bridge)));
     }
 
+    /// Registers the deferred `token_economy` tool backed by `EconomyBridge`.
+    pub fn register_economy_tool(&self, bridge: Arc<dyn EconomyBridge>) {
+        self.register(Arc::new(economy_tool::TokenEconomyTool::new(bridge)));
+    }
+
     /// Registers wave-aware `batch_tools` and KV-cache-safe `invoke_tool` backed by `ToolBatchBridge`.
     pub fn register_batch_tool(&self, bridge: Arc<dyn ToolBatchBridge>) {
         self.register(Arc::new(batch::BatchToolsTool::new(bridge.clone())));
@@ -235,6 +241,29 @@ impl ToolRegistry {
     where
         F: Fn(&ToolSpec) -> bool,
     {
+        self.specs_for_session_with_demotions(
+            deferred_enabled,
+            activated_deferred,
+            &BTreeSet::new(),
+            avail,
+            allow,
+        )
+    }
+
+    /// Like `specs_for_session_filtered`, additionally soft-demoting any tool in `demoted_tools`
+    /// from `Eager` to `Deferred` (Token Economy pruning — 0 schema tokens per turn while staying
+    /// 100% reachable via `invoke_tool`).
+    pub fn specs_for_session_with_demotions<F>(
+        &self,
+        deferred_enabled: bool,
+        activated_deferred: &BTreeSet<String>,
+        demoted_tools: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSpec>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut eager = Vec::new();
         let mut active_def = Vec::new();
         if let Ok(map) = self.tools.read() {
@@ -246,7 +275,11 @@ impl ToolRegistry {
                 if !allow(&spec) {
                     continue;
                 }
-                match (deferred_enabled, tool.exposure(), activated_deferred.contains(name)) {
+                let eff_exposure = match (tool.exposure(), demoted_tools.contains(name)) {
+                    (ToolExposure::Eager, true) => ToolExposure::Deferred,
+                    (other, _) => other,
+                };
+                match (deferred_enabled, eff_exposure, activated_deferred.contains(name)) {
                     (false, _, _) | (true, ToolExposure::Eager, _) => eager.push(spec),
                     (true, ToolExposure::Deferred, true) => active_def.push(spec),
                     (true, ToolExposure::Deferred, false) => {}
@@ -318,10 +351,26 @@ impl ToolRegistry {
     where
         F: Fn(&ToolSpec) -> bool,
     {
+        self.deferred_catalog_text_with_demotions(&BTreeSet::new(), avail, allow)
+    }
+
+    /// Like `deferred_catalog_text_filtered`, also listing Token-Economy soft-demoted tools so
+    /// the orchestrator remains aware of them and can invoke them on demand via `invoke_tool`.
+    pub fn deferred_catalog_text_with_demotions<F>(
+        &self,
+        demoted_tools: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Option<String>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut grouped: BTreeMap<ToolSet, Vec<String>> = BTreeMap::new();
         if let Ok(map) = self.tools.read() {
             for (name, tool) in map.iter() {
-                if tool.exposure() != ToolExposure::Deferred || !tool.is_available(avail) {
+                let is_deferred_or_demoted =
+                    tool.exposure() == ToolExposure::Deferred || demoted_tools.contains(name);
+                if !is_deferred_or_demoted || !tool.is_available(avail) {
                     continue;
                 }
                 let spec = tool.spec();

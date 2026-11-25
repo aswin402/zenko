@@ -4,10 +4,10 @@ use crate::types::{
     BatchToolStepOutcome, BrainstormSpec, ChatRequest, ClarificationAnswer, ClarificationOption,
     ClarificationRecord, ContextBreakdown, ExecutionPlan, FileFreshnessCheck,
     GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta,
-    ModelInfo, OrchestrateControlReceipt, OrchestrateControlRequest, SessionTask, SessionTaskPatch,
-    SubagentRecord, SubagentSpawnRequest, TaskKind, ToolAvailabilityContext, ToolConcurrency,
-    ToolExposure, ToolOutput, ToolSet, ToolSetSummary, ToolSpec, WorktreeDiffReport,
-    WorktreePruneReport,
+    ModelInfo, OrchestrateControlReceipt, OrchestrateControlRequest, RepoMicroSkill, SessionTask,
+    SessionTaskPatch, SubagentRecord, SubagentSpawnRequest, TaskKind, TokenEconomyReport,
+    ToolAvailabilityContext, ToolConcurrency, ToolExposure, ToolOutput, ToolSet, ToolSetSummary,
+    ToolSpec, WorktreeDiffReport, WorktreePruneReport,
 };
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -398,6 +398,22 @@ pub trait GoalLoopBridge: Send + Sync {
     fn update_goal(&self, id: &str, patch: GoalLoopPatch) -> Result<Option<GoalLoopRecord>>;
     async fn trigger_goal_now(&self, id: &str) -> Result<GoalLoopRecord>;
     fn delete_goal(&self, id: &str) -> Result<bool>;
+}
+
+/// Bridge connecting the deferred `token_economy` tool in `zenko-tools` to `AgentRuntime`.
+pub trait EconomyBridge: Send + Sync {
+    fn economy_report(&self, workspace_dir: &Path) -> Result<TokenEconomyReport>;
+    fn add_micro_skill(
+        &self,
+        workspace_dir: &Path,
+        fact: &str,
+        failed_cmd: Option<&str>,
+        fixed_cmd: Option<&str>,
+    ) -> Result<RepoMicroSkill>;
+    fn retire_micro_skill(&self, id: &str) -> Result<bool>;
+    fn apply_tool_prune(&self, workspace_dir: &Path, tool_name: &str) -> Result<bool>;
+    fn restore_tool(&self, workspace_dir: &Path, tool_name: &str, pin: bool) -> Result<bool>;
+    fn reaudit_pruned_tools(&self, workspace_dir: &Path) -> Result<usize>;
 }
 
 #[derive(Debug, Clone, Copy)]

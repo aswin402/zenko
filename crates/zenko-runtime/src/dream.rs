@@ -563,6 +563,16 @@ async fn execute_dream_stages(
     };
 
     if usage.prompt_tokens > 0 || usage.completion_tokens > 0 || usage.cost_usd > 0.0 {
+        let overhead_toks = usage.prompt_tokens.saturating_add(usage.completion_tokens) as i64;
+        if overhead_toks > 0 && cfg.economy.enabled {
+            let _ = runtime.store.record_economy_ledger_event(
+                &default_proj_scope,
+                zenko_core::EconomyLedgerKind::OverheadDream,
+                overhead_toks,
+                -usage.cost_usd.abs(),
+                &format!("Dream cycle ({model})"),
+            );
+        }
         let _ = runtime
             .store
             .record_usage("dream", &cfg.provider.kind, &model, &usage);

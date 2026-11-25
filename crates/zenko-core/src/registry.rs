@@ -826,7 +826,40 @@ enabled: true\n\
 - Report findings strictly as `path:Lstart-Lend -- <symbol/fact>` bullets.\n\
 - Zero speculative filler; note unverified gaps explicitly in one line.\n",
     },
+    DefaultSkillTemplate {
+        filename: "token-economy-audit.md",
+        content: "---\n\
+name: Token Economy Audit\n\
+description: Audit per-repository token savings, corroborated micro-skills, soft-pruned tools, and P90 loop guard baselines.\n\
+enabled: true\n\
+---\n\n\
+- Call `invoke_tool(tool=\"token_economy\", args={\"action\":\"status\"})` to inspect net tokens saved, active micro-skills, pruned tools, and P90 turn envelope.\n\
+- Retire any stale or contradicted repository micro-skill via `invoke_tool(tool=\"token_economy\", args={\"action\":\"retire_micro_skill\",\"id\":\"...\"})`.\n\
+- Soft-demote persistently unused non-core tools via `apply_prune` (still reachable via `invoke_tool`) or pin/restore required tools via `restore_tool`.\n\
+- Report net ROI honestly: gross savings (Read-Less + Tool Pruning + Micro-Skills + Loop Guard) minus background Dream/Judge overhead.\n",
+    },
 ];
+
+/// Renders corroborated active repository micro-skills into a compact Tier-2 XML block.
+/// Returns `None` when no active corroborated skills exist (zero prompt bloat).
+pub fn render_repo_micro_skills_block(skills: &[crate::types::RepoMicroSkill]) -> Option<String> {
+    let active: Vec<&crate::types::RepoMicroSkill> = skills
+        .iter()
+        .filter(|s| s.status == crate::types::MicroSkillStatus::Active && !s.fact.trim().is_empty())
+        .take(crate::constants::ECONOMY_MICRO_SKILL_MAX_INJECT)
+        .collect();
+    if active.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(active.len() + 3);
+    lines.push("<repo_micro_skills>".to_string());
+    lines.push("Verified workspace shortcuts learned from prior sessions in this repository (auto-retired if contradicted):".to_string());
+    for s in active {
+        lines.push(format!("- [{}x] {}", s.corroborations.max(1), s.fact.trim()));
+    }
+    lines.push("</repo_micro_skills>".to_string());
+    Some(lines.join("\n"))
+}
 
 /// Renders the Tier-2 English `<concise_mode>` directive block (returns `None` when `Off`).
 /// Enforces Verbatim Payload Protection and optional Auto-Clarity safety hatch with zero Chinese terms.
