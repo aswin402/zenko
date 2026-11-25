@@ -369,24 +369,19 @@ pub async fn api_rewind_session(
             }
         }
     };
-    let cp_cfg = state.runtime.config().checkpoints;
     match state
         .runtime
-        .checkpoints
-        .rewind(
-            &cp_cfg,
-            &RewindRequest {
-                checkpoint_id: cp_id,
-                mode: req
-                    .mode
-                    .as_deref()
-                    .map(RewindMode::from_str_loose)
-                    .unwrap_or(RewindMode::CodeAndConversation),
-                files: req.files,
-                overwrite_manual_edits: req.overwrite_manual_edits,
-                summarize_abandoned: req.summarize_abandoned,
-            },
-        )
+        .rewind_checkpoint(&RewindRequest {
+            checkpoint_id: cp_id,
+            mode: req
+                .mode
+                .as_deref()
+                .map(RewindMode::from_str_loose)
+                .unwrap_or(RewindMode::CodeAndConversation),
+            files: req.files,
+            overwrite_manual_edits: req.overwrite_manual_edits,
+            summarize_abandoned: req.summarize_abandoned,
+        })
         .await
     {
         Ok(rep) => Json(rep).into_response(),

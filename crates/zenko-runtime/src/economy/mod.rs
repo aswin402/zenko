@@ -107,7 +107,24 @@ pub fn record_tool_outcome_in_economy_trace(
                         trace.record_shell_outcome(cmd, status == "error", preview);
                     }
                 }
-                if let Some(saved_tok) = step.get("read_less_tokens_saved").and_then(Value::as_u64)
+                if step
+                    .get("ccr_recovery")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    trace.ccr_recoveries = trace.ccr_recoveries.saturating_add(1);
+                }
+                if let Some(dedup_tok) = step
+                    .get("output_dedup_tokens_saved")
+                    .and_then(Value::as_u64)
+                    .filter(|&v| v > 0)
+                {
+                    trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
+                    trace.output_dedup_tokens_saved = trace
+                        .output_dedup_tokens_saved
+                        .saturating_add(dedup_tok as usize);
+                } else if let Some(saved_tok) =
+                    step.get("read_less_tokens_saved").and_then(Value::as_u64)
                 {
                     trace.read_less_tokens_saved =
                         trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
@@ -510,6 +527,22 @@ mod tests {
                         "status": "skipped",
                         "duration_ms": 0,
                         "quiet": false
+                    },
+                    {
+                        "index": 4,
+                        "tool": "glob_find",
+                        "status": "ok",
+                        "duration_ms": 5,
+                        "quiet": true,
+                        "output_dedup_tokens_saved": 280
+                    },
+                    {
+                        "index": 5,
+                        "tool": "read_file",
+                        "status": "ok",
+                        "duration_ms": 4,
+                        "quiet": false,
+                        "ccr_recovery": true
                     }
                 ]
             })),
@@ -519,8 +552,12 @@ mod tests {
 
         assert!(trace.used_tools.contains("web_search"));
         assert!(trace.used_tools.contains("shell_exec"));
+        assert!(trace.used_tools.contains("glob_find"));
         assert!(!trace.used_tools.contains("git_tool"), "skipped step must not count as used");
         assert_eq!(trace.read_less_tokens_saved, 350);
+        assert_eq!(trace.output_dedup_hits, 1);
+        assert_eq!(trace.output_dedup_tokens_saved, 280);
+        assert_eq!(trace.ccr_recoveries, 1);
         assert_eq!(trace.shell_traces.len(), 2);
 
         let mined = mine_turn_shell_micro_skills(&trace.shell_traces);

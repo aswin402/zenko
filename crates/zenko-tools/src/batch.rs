@@ -459,6 +459,15 @@ impl Tool for BatchToolsTool {
                         Value::Number(step.read_less_tokens_saved.into()),
                     );
                 }
+                if step.output_dedup_tokens_saved > 0 {
+                    obj.insert(
+                        "output_dedup_tokens_saved".into(),
+                        Value::Number(step.output_dedup_tokens_saved.into()),
+                    );
+                }
+                if step.ccr_recovery {
+                    obj.insert("ccr_recovery".into(), Value::Bool(true));
+                }
             }
             step_meta.push(step_obj);
         }
@@ -601,6 +610,8 @@ mod tests {
                     shell_command: None,
                     raw_output_preview: None,
                     read_less_tokens_saved: 0,
+                    output_dedup_tokens_saved: 0,
+                    ccr_recovery: false,
                 })
                 .collect())
         }

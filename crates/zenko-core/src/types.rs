@@ -345,6 +345,10 @@ pub struct BatchToolStepOutcome {
     pub raw_output_preview: Option<String>,
     #[serde(default)]
     pub read_less_tokens_saved: u64,
+    #[serde(default)]
+    pub output_dedup_tokens_saved: u64,
+    #[serde(default)]
+    pub ccr_recovery: bool,
 }
 
 /// Declarative PTY terminal action for persistent `shell_exec(session=...)` sessions.

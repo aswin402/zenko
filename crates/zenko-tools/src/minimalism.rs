@@ -1652,8 +1652,22 @@ impl Tool for CodeMinimalismTool {
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("audit_diff task failed: {e}")))?;
 
+                let total_src_added = report
+                    .added_code_lines
+                    .saturating_add(report.added_comment_lines);
+                let src_ratio_note = match total_src_added > 0 {
+                    true => {
+                        let ratio = (report.added_comment_lines.saturating_mul(100))
+                            / total_src_added.max(1);
+                        format!(
+                            " · src: {} code / {} comment ({ratio}%)",
+                            report.added_code_lines, report.added_comment_lines
+                        )
+                    }
+                    false => String::new(),
+                };
                 let mut lines = vec![format!(
-                    "Diff Minimalism Audit ({} file(s), {} new): +{} / -{} LOC (net {}{})",
+                    "Diff Minimalism Audit ({} file(s), {} new): +{} / -{} LOC (net {}{}){src_ratio_note}",
                     report.files_changed.len(),
                     report.new_files.len(),
                     report.lines_added,
@@ -1817,7 +1831,7 @@ impl Tool for CodeMinimalismTool {
                     "Minimalism & Economy Gain ({scope}) · mode={mode}\n\
                      - Code Churn: +{added} / -{deleted} LOC (net {sign}{net}, deletion ratio {ratio:.1}%)\n\
                      - Activity: {turns} edit turn(s), {new_f} new file(s), {hints} bloat hint(s), {debt} debt marker(s)\n\
-                     - Token Economy Net Saved: {tok} tok (~${usd:.4})",
+                     - Token Economy Net Saved: {tok} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · CCR Recoveries {ccr}]",
                     scope = rep.repo_scope,
                     mode = mode.as_str(),
                     added = m.lines_added,
@@ -1834,6 +1848,10 @@ impl Tool for CodeMinimalismTool {
                     debt = m.debt_markers_last_seen,
                     tok = rep.summary.net_tokens_saved,
                     usd = rep.summary.estimated_usd_saved,
+                    rl = rep.summary.read_less_tokens_saved,
+                    od = rep.summary.output_dedup_tokens_saved,
+                    od_hits = rep.summary.output_dedup_hits,
+                    ccr = rep.summary.ccr_recoveries,
                 );
                 Ok(ok_with_meta(
                     text,

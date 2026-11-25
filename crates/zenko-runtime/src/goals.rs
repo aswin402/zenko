@@ -237,17 +237,13 @@ pub async fn execute_goal_iteration(
     if goal.status == GoalLoopStatus::Stalled && goal.auto_rewind_on_stall
         && let Some(ref cp_id) = checkpoint_id {
             let _ = runtime
-                .checkpoints
-                .rewind(
-                    &cfg.checkpoints,
-                    &RewindRequest {
-                        checkpoint_id: cp_id.clone(),
-                        mode: RewindMode::CodeOnly,
-                        files: Vec::new(),
-                        overwrite_manual_edits: true,
-                        summarize_abandoned: true,
-                    },
-                )
+                .rewind_checkpoint(&RewindRequest {
+                    checkpoint_id: cp_id.clone(),
+                    mode: RewindMode::CodeOnly,
+                    files: Vec::new(),
+                    overwrite_manual_edits: true,
+                    summarize_abandoned: true,
+                })
                 .await;
         }
 

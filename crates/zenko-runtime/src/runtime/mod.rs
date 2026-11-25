@@ -2186,6 +2186,25 @@ impl AgentRuntime {
         }
     }
 
+    /// Executes 3-mode checkpoint rewind and atomically invalidates per-session output-dedup
+    /// (and file-freshness state when code is restored) so post-rewind calls never cite
+    /// abandoned future branches or stale file hashes.
+    pub async fn rewind_checkpoint(
+        &self,
+        req: &zenko_core::RewindRequest,
+    ) -> Result<zenko_core::RewindReport> {
+        let cp_cfg = self.config().checkpoints;
+        let report = self.checkpoints.rewind(&cp_cfg, req).await?;
+        self.clear_session_output_dedup(&report.session_id);
+        if matches!(
+            req.mode,
+            zenko_core::RewindMode::CodeAndConversation | zenko_core::RewindMode::CodeOnly
+        ) {
+            self.file_state.clear_session(&report.session_id);
+        }
+        Ok(report)
+    }
+
     pub fn read_less_stats_for(&self, session_id: &str) -> (usize, u64, usize) {
         let ctrl = self.session_control(session_id);
         ctrl.read_less_stats

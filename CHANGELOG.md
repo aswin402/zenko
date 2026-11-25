@@ -4,6 +4,20 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.31] - 2026-11-25
+
+Closed all four remaining end-to-end wiring seams across `batch_tools`, checkpoint rewinds, background subagent collection (`agent_wait`), and `code_minimalism` text summaries.
+
+### Fixed
+- **`batch_tools` Output-Dedup & CCR Recovery Unwrapping (`types.rs`, `batch.rs`, `runtime/bridges.rs`, `economy/mod.rs`):**
+  - Added `output_dedup_tokens_saved` and `ccr_recovery` fields to `BatchToolStepOutcome`, extracted them cleanly across both sequential and wave-parallel `batch_tools` paths (without double-counting into `read_less_tokens_saved`), and unwrapped them in `record_tool_outcome_in_economy_trace`.
+- **Unified Rewind Cache Invalidation (`runtime/mod.rs`, `tasks_checkpoints.rs`, `ipc.rs`, `goals.rs`, `mcp.rs`, `dag_checkpoints.rs`):**
+  - Added `AgentRuntime::rewind_checkpoint` and routed all 5 rewind callers (WebUI, IPC, Goal Loops, MCP, CLI) through it so every rewind atomically clears `SessionOutputDedup` (and `file_state` on code restores), preventing stale `[dedup:]` references to abandoned branches.
+- **Background Subagent Output Eligibility (`crates/zenko-core/src/constants.rs`):**
+  - Added `TOOL_AGENT_WAIT` to `READ_LESS_ELIGIBLE_TOOLS` so bulky background subagent result summaries receive automatic 3-tier `dedup`/`scrub`/`read-less` compression.
+- **`code_minimalism` Text Summary Parity (`crates/zenko-tools/src/minimalism.rs`):**
+  - Surfaced added source code-vs-comment line ratios in `audit_diff` text output and `Output-Dedup` hits/savings + `CCR Recoveries` in `gain` text output.
+
 ## [0.0.30] - 2026-11-25
 
 Implemented five native Rust Chisle-inspired minicode and context-efficiency upgrades (zero `/commands`, zero Node hooks, zero regex): single-implementation abstraction & comment-bloat auditing, session-level exact tool-output deduplication, lossless `scrub` & `glob_find` directory grouping, error-salvaging middle elision, and CCR backfire telemetry.

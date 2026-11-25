@@ -392,21 +392,16 @@ pub async fn run_checkpoints_rewind(
     {
         Ok(resp) => unwrap_ipc_result(resp)?,
         Err(e) if is_daemon_offline(&e) => {
-            let cp_cfg = cfg.checkpoints.clone();
             let (rt, _) = AgentRuntime::build(config_path.to_path_buf(), cfg)?;
             serde_json::to_value(
-                rt.checkpoints
-                    .rewind(
-                        &cp_cfg,
-                        &RewindRequest {
-                            checkpoint_id: checkpoint_id.to_string(),
-                            mode: RewindMode::from_str_loose(mode),
-                            files,
-                            overwrite_manual_edits,
-                            summarize_abandoned,
-                        },
-                    )
-                    .await?,
+                rt.rewind_checkpoint(&RewindRequest {
+                    checkpoint_id: checkpoint_id.to_string(),
+                    mode: RewindMode::from_str_loose(mode),
+                    files,
+                    overwrite_manual_edits,
+                    summarize_abandoned,
+                })
+                .await?,
             )?
         }
         Err(e) => return Err(e),

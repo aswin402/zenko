@@ -1489,19 +1489,14 @@ impl AgentRuntime {
                     .and_then(|p| p.get("summarize_abandoned"))
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
-                let cp_cfg = self.config().checkpoints;
                 match self
-                    .checkpoints
-                    .rewind(
-                        &cp_cfg,
-                        &RewindRequest {
-                            checkpoint_id: cp_id,
-                            mode,
-                            files,
-                            overwrite_manual_edits,
-                            summarize_abandoned,
-                        },
-                    )
+                    .rewind_checkpoint(&RewindRequest {
+                        checkpoint_id: cp_id,
+                        mode,
+                        files,
+                        overwrite_manual_edits,
+                        summarize_abandoned,
+                    })
                     .await
                 {
                     Ok(rep) => json!({"ok": true, "result": rep}),

@@ -184,6 +184,8 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         shell_command: None,
                         raw_output_preview: None,
                         read_less_tokens_saved: 0,
+                        output_dedup_tokens_saved: 0,
+                        ccr_recovery: false,
                     });
                     continue;
                 }
@@ -211,6 +213,8 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         shell_command: None,
                         raw_output_preview: None,
                         read_less_tokens_saved: 0,
+                        output_dedup_tokens_saved: 0,
+                        ccr_recovery: false,
                     });
                     if req.stop_on_error {
                         halted = true;
@@ -245,14 +249,32 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     ),
                     false => None,
                 };
-                let read_less_tokens_saved = exec
+                let output_dedup_tokens_saved = exec
                     .output
                     .metadata
                     .as_ref()
-                    .and_then(|m| m.get("read_less"))
-                    .and_then(|rl| rl.get("tokens_saved"))
+                    .and_then(|m| m.get("output_dedup"))
+                    .and_then(|od| od.get("tokens_saved"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
+                let read_less_tokens_saved = match output_dedup_tokens_saved > 0 {
+                    true => 0,
+                    false => exec
+                        .output
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("read_less"))
+                        .and_then(|rl| rl.get("tokens_saved"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                };
+                let ccr_recovery = exec
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("ccr_recovery"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let projected = match exec.output.is_error {
                     true => exec.output.content,
                     false => zenko_tools::batch::extract_step_output(
@@ -278,6 +300,8 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     shell_command,
                     raw_output_preview,
                     read_less_tokens_saved,
+                    output_dedup_tokens_saved,
+                    ccr_recovery,
                 });
             }
             return Ok(outcomes);
@@ -308,6 +332,8 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     shell_command: None,
                     raw_output_preview: None,
                     read_less_tokens_saved: 0,
+                    output_dedup_tokens_saved: 0,
+                    ccr_recovery: false,
                 });
             } else {
                 allowed.push((idx, tc, item.extract, item.quiet));
@@ -362,14 +388,32 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     ),
                     false => None,
                 };
-                let read_less_tokens_saved = exec
+                let output_dedup_tokens_saved = exec
                     .output
                     .metadata
                     .as_ref()
-                    .and_then(|m| m.get("read_less"))
-                    .and_then(|rl| rl.get("tokens_saved"))
+                    .and_then(|m| m.get("output_dedup"))
+                    .and_then(|od| od.get("tokens_saved"))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
+                let read_less_tokens_saved = match output_dedup_tokens_saved > 0 {
+                    true => 0,
+                    false => exec
+                        .output
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("read_less"))
+                        .and_then(|rl| rl.get("tokens_saved"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                };
+                let ccr_recovery = exec
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("ccr_recovery"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let projected = match exec.output.is_error {
                     true => exec.output.content,
                     false => zenko_tools::batch::extract_step_output(
@@ -390,6 +434,8 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     shell_command,
                     raw_output_preview,
                     read_less_tokens_saved,
+                    output_dedup_tokens_saved,
+                    ccr_recovery,
                 });
             }
         }

@@ -901,6 +901,7 @@ mod tests {
     fn read_file_is_strictly_exempt_from_read_less() {
         assert!(!is_read_less_eligible(TOOL_READ_FILE));
         assert!(is_read_less_eligible(TOOL_SHELL_EXEC));
+        assert!(is_read_less_eligible(zenko_core::TOOL_AGENT_WAIT));
         assert!(is_read_less_eligible("mcp__github__list_issues"));
         let big = "line\n".repeat(200);
         assert!(try_compress_tool_output(TOOL_READ_FILE, &big, 128).is_none());

@@ -1117,19 +1117,14 @@ async fn execute_mcp_tool(
                         .get("summarize_abandoned")
                         .and_then(Value::as_bool)
                         .unwrap_or(true);
-                    let cp_cfg = rt.config().checkpoints;
                     let rep = rt
-                        .checkpoints
-                        .rewind(
-                            &cp_cfg,
-                            &RewindRequest {
-                                checkpoint_id: cp_id,
-                                mode,
-                                files,
-                                overwrite_manual_edits,
-                                summarize_abandoned,
-                            },
-                        )
+                        .rewind_checkpoint(&RewindRequest {
+                            checkpoint_id: cp_id,
+                            mode,
+                            files,
+                            overwrite_manual_edits,
+                            summarize_abandoned,
+                        })
                         .await?;
                     Ok(serde_json::to_value(rep)?)
                 }

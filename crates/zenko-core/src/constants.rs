@@ -743,6 +743,7 @@ pub const READ_LESS_ELIGIBLE_TOOLS: &[&str] = &[
     TOOL_GLOB_FIND,
     TOOL_SCRIPT_BLOCK,
     TOOL_SPAWN_AGENT,
+    TOOL_AGENT_WAIT,
 ];
 pub const READ_LESS_SCRUB_MIN_BYTES: usize = 256;
 pub const READ_LESS_SCRUB_MIN_SAVED_BYTES: usize = 64;
