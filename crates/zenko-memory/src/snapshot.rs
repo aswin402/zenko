@@ -170,6 +170,45 @@ impl SnapshotManager {
              4. Apply a minimal fix via `hash_edit` or `apply_patch`, then run tests via `shell_exec`.\n",
         )?;
 
+        write_if_missing(
+            &skills_dir.join("concise-review.md"),
+            "---\n\
+             name: Concise Code Review\n\
+             description: Ultra-terse English code review returning one-line findings (`L<line>: bug|risk|nit|q: <problem>. <fix>.`) with zero filler.\n\
+             enabled: true\n\
+             ---\n\n\
+             - Format every finding strictly on one line: `path:L<line> [bug|risk|nit|q]: <problem>. <fix>.`\n\
+             - Zero throat-clearing, pleasantries, or restating unchanged code.\n\
+             - Preserve exact symbol names, line numbers, error codes, and file paths verbatim.\n\
+             - Auto-Clarity: expand to clear full English sentences for security flaws, data-loss risks, or architectural regressions.\n\
+             - End with a single verdict line (`approve`, `changes_requested`, or `blocked`) plus finding counts.\n",
+        )?;
+
+        write_if_missing(
+            &skills_dir.join("concise-commit.md"),
+            "---\n\
+             name: Concise Commit\n\
+             description: Generate crisp English Conventional Commit messages from staged diffs without blindly staging or pushing.\n\
+             enabled: true\n\
+             ---\n\n\
+             - Inspect staged changes via `git_tool(action=\"diff\", staged=true)` and `git_tool(action=\"status\")`.\n\
+             - Format subject as `<type>(<scope>): <imperative lowercase summary>` (<= 72 chars, no trailing period).\n\
+             - Add terse body bullets ONLY for non-obvious rationale or breaking changes (`BREAKING CHANGE:`).\n\
+             - Never auto-stage, commit, or push unless explicitly requested by the user.\n",
+        )?;
+
+        write_if_missing(
+            &skills_dir.join("concise-explore.md"),
+            "---\n\
+             name: Concise Explore\n\
+             description: Fast read-only codebase reconnaissance returning exact path:line citations and dense technical facts.\n\
+             enabled: true\n\
+             ---\n\n\
+             - Use `glob_find`, `code_search`, and `read_file(mode=\"outline\")` first; read targeted line ranges only.\n\
+             - Report findings strictly as `path:Lstart-Lend — <symbol/fact>` bullets.\n\
+             - Zero speculative filler; note unverified gaps explicitly in one line.\n",
+        )?;
+
         Ok(())
     }
 
@@ -317,6 +356,45 @@ impl SnapshotManager {
         self.write_doc(name, &updated)?;
         let diff = build_doc_diff(name, &current, &updated);
         Ok((diff, snap))
+    }
+
+    /// Compresses an English Markdown memory doc (`USER.md` / `MEMORY.md` / `PROJECT_MEMORY.md` /
+    /// `ZENKO.md`) deterministically in pure Rust, preserving headings, code blocks, inline code,
+    /// tables, paths, and URLs verbatim. Saves a pre-edit `.history/` rollback backup before writing.
+    pub fn compress_doc(
+        &self,
+        name: &str,
+        mode: zenko_core::ConciseMode,
+        dry_run: bool,
+    ) -> Result<zenko_core::DocCompressReport> {
+        let current = self.read_doc(name)?;
+        if current.trim().is_empty() {
+            return Err(ZenkoError::Tool(format!("{name} is empty; nothing to compress.")));
+        }
+        let outcome = crate::compress::compress_markdown_doc(&current, mode)?;
+        let backup_snapshot_id = match !dry_run && outcome.bytes_saved > 0 {
+            true => {
+                let snap = self.snapshot_doc_before_edit(name, "compress_doc")?;
+                self.write_doc(name, &outcome.compressed)?;
+                snap.map(|s| s.id)
+            }
+            false => None,
+        };
+        let preview = zenko_core::compact_preview(&outcome.compressed, 420);
+        Ok(zenko_core::DocCompressReport {
+            doc_name: name.to_string(),
+            mode,
+            original_bytes: outcome.original_bytes,
+            compressed_bytes: outcome.compressed_bytes,
+            bytes_saved: outcome.bytes_saved,
+            tokens_saved: outcome.tokens_saved,
+            savings_pct: outcome.savings_pct,
+            backup_snapshot_id,
+            dry_run,
+            headings_preserved: outcome.headings_preserved,
+            code_blocks_preserved: outcome.code_blocks_preserved,
+            preview,
+        })
     }
 
     /// Guarded append over `USER.md` / `MEMORY.md` / `PROJECT_MEMORY.md` / `ZENKO.md` with

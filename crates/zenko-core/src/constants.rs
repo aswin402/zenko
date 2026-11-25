@@ -397,6 +397,7 @@ pub const MEMORY_MUTATING_ACTIONS: &[&str] = &[
     "append_doc",
     "append_user",
     "append_memory",
+    "compress_doc",
     "rollback_doc",
 ];
 
@@ -592,6 +593,7 @@ pub const TOOL_AGENT_KILL: &str = "agent_kill";
 pub const TOOL_AGENT_WORKTREE: &str = "agent_worktree";
 pub const TOOL_BATCH_TOOLS: &str = "batch_tools";
 pub const TOOL_INVOKE_TOOL: &str = "invoke_tool";
+pub const TOOL_SCRIPT_BLOCK: &str = "script_block";
 
 // Minicode Tool System v2 constants (zero hardcoding)
 pub const BATCH_TOOLS_MAX_CALLS: usize = 12;
@@ -667,6 +669,36 @@ pub const BATCH_EXTRACTS: &[&str] = &[
 ];
 pub const BATCH_MAX_VAR_BYTES: usize = 64 * 1024;
 
+// Native English Concise Mode, Read-Less Structural Compressor & Reusable Script Blocks (v5)
+pub const CONCISE_MODES: &[&str] = &["off", "lite", "full", "ultra"];
+pub const READ_LESS_DEFAULT_MIN_BYTES: usize = 2_048;
+pub const READ_LESS_MIN_LINES: usize = 24;
+pub const READ_LESS_MIN_SAVED_BYTES: usize = 256;
+pub const READ_LESS_MIN_SAVINGS_PCT: usize = 20;
+pub const READ_LESS_MAX_SAMPLE_ROWS: usize = 5;
+pub const READ_LESS_TAIL_ROWS: usize = 2;
+pub const READ_LESS_MAX_JSON_ARRAY_SAMPLE: usize = 4;
+pub const READ_LESS_MAX_JSON_KEYS: usize = 24;
+pub const READ_LESS_MAX_STRING_CHARS: usize = 320;
+pub const READ_LESS_MAX_TAIL_LINES: usize = 28;
+pub const READ_LESS_DEDUP_MIN_REPEATS: usize = 2;
+/// Ephemeral/noisy tools eligible for Read-Less structural compression (strictly excludes `read_file`
+/// and code editors so exact line numbers and hash anchors are never modified).
+pub const READ_LESS_ELIGIBLE_TOOLS: &[&str] = &[
+    TOOL_SHELL_EXEC,
+    TOOL_JOB_READ,
+    TOOL_GIT,
+    TOOL_WEB_FETCH,
+    TOOL_SCRIPT_BLOCK,
+];
+pub const SCRIPT_BLOCKS_DIR_NAME: &str = "blocks";
+pub const SCRIPT_BLOCK_ACTIONS: &[&str] = &["list", "save", "read", "run", "delete"];
+pub const SCRIPT_BLOCK_MAX_BYTES: usize = 64 * 1024;
+pub const SCRIPT_BLOCK_MAX_LIST: usize = 64;
+pub const SCRIPT_BLOCK_SLUG_MAX_CHARS: usize = 48;
+pub const SCRIPT_BLOCK_DESC_PREFIX: &str = "# zenko-block:";
+pub const DOC_COMPRESS_MIN_BYTES: usize = 128;
+
 /// Declarative table of tools representing background-task or subagent orchestration/monitoring.
 /// When a running session has active jobs, active subagents, or any of these tools in flight,
 /// `SendMode::Auto` deterministically routes incoming user guidance as live `Steer` instead of `Queue`.
@@ -697,6 +729,7 @@ pub const NOTE_KIND_SUBAGENT_REPORT: &str = "subagent_report";
 pub const NOTE_KIND_REWIND_SUMMARY: &str = "rewind_summary";
 pub const NOTE_KIND_PLAN_APPROVED: &str = "plan_approved";
 pub const NOTE_KIND_ORCHESTRATE_CONTROL: &str = "orchestrate_control";
+pub const NOTE_KIND_CONCISE_MODE: &str = "concise_mode";
 
 pub const ORCH_STAGE_TRIAGED: &str = "triaged";
 pub const ORCH_STAGE_POSTURE: &str = "posture";
@@ -725,6 +758,8 @@ pub const ORCH_STAGE_MCP: &str = "mcp";
 pub const ORCH_STAGE_SKILL: &str = "skill";
 pub const ORCH_STAGE_GOAL_LOOP: &str = "goal_loop";
 pub const ORCH_STAGE_TRIGGER: &str = "trigger";
+pub const ORCH_STAGE_CONCISE: &str = "concise";
+pub const ORCH_STAGE_READ_LESS: &str = "read_less";
 
 pub const TELEGRAM_CB_APPROVAL_PREFIX: &str = "apr";
 pub const TELEGRAM_CB_CLARIFY_PREFIX: &str = "clr";
@@ -830,6 +865,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_GOAL_LOOP,
     TOOL_BATCH_TOOLS,
     TOOL_INVOKE_TOOL,
+    TOOL_SCRIPT_BLOCK,
 ];
 pub const MUTATING_FILE_TOOLS: &[&str] = &[TOOL_WRITE_FILE, TOOL_HASH_EDIT, TOOL_APPLY_PATCH];
 pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];
@@ -846,6 +882,7 @@ pub const MICROCOMPACTABLE_TOOLS: &[&str] = &[
     TOOL_WEB_SEARCH,
     TOOL_MCP_RESOURCE,
     TOOL_JOB_READ,
+    TOOL_SCRIPT_BLOCK,
 ];
 /// High-signal state/planning tools strictly exempt from microcompaction (prevents working-memory amnesia).
 pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[

@@ -6,11 +6,12 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    CronJob, CronKind, MEMORY_DEFAULT_SEARCH_LIMIT, MEMORY_SCOPE_GLOBAL, MemoryKind,
-    PROJECT_MEMORY_DOC_NAME, Result, RiskLevel, SESSION_CONTEXT_DEFAULT_WINDOW,
-    SESSION_CONTEXT_MAX_WINDOW, SESSION_SEARCH_DEFAULT_LIMIT, SESSION_SEARCH_MAX_LIMIT,
-    SecretVault, SessionSearchFilter, TOOL_CRON, TOOL_MEMORY, TOOL_SESSION_SEARCH, Tool,
-    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec, ZenkoError, new_id,
+    CONCISE_MODES, ConciseMode, CronJob, CronKind, MEMORY_DEFAULT_SEARCH_LIMIT,
+    MEMORY_SCOPE_GLOBAL, MemoryKind, PROJECT_MEMORY_DOC_NAME, Result, RiskLevel,
+    SESSION_CONTEXT_DEFAULT_WINDOW, SESSION_CONTEXT_MAX_WINDOW, SESSION_SEARCH_DEFAULT_LIMIT,
+    SESSION_SEARCH_MAX_LIMIT, SecretVault, SessionSearchFilter, TOOL_CRON, TOOL_MEMORY,
+    TOOL_SESSION_SEARCH, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSpec,
+    ZenkoError, new_id,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, parse_since_window, project_scope_for_workspace, resolve_git_root,
@@ -98,7 +99,7 @@ impl Tool for MemoryTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_MEMORY.into(),
-            description: "Manage Zenko's scoped persistent memory: hybrid RRF search with staleness checks, deduplicated add/update/delete entries, surgical `patch_doc` / guarded `append_doc` over USER.md/MEMORY.md/ZENKO.md, and versioned `.history/` rollback.".into(),
+            description: "Manage Zenko's scoped persistent memory: hybrid RRF search with staleness checks, deduplicated add/update/delete entries, surgical `patch_doc` / guarded `append_doc` / pure-Rust `compress_doc` over USER.md/MEMORY.md/PROJECT_MEMORY.md/ZENKO.md, and versioned `.history/` rollback.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -113,6 +114,7 @@ impl Tool for MemoryTool {
                             "append_doc",
                             "append_user",
                             "append_memory",
+                            "compress_doc",
                             "read_snapshot",
                             "history",
                             "rollback_doc"
@@ -126,6 +128,8 @@ impl Tool for MemoryTool {
                     "content": { "type": "string" },
                     "salience": { "type": "number", "description": "Importance weight 0.1..3.0 (default 1.0)" },
                     "doc": { "type": "string", "enum": ["USER.md", "MEMORY.md", "PROJECT_MEMORY.md", "ZENKO.md"] },
+                    "mode": { "type": "string", "enum": CONCISE_MODES, "description": "English compression intensity for `compress_doc` (`lite`, `full` default, or `ultra`)" },
+                    "dry_run": { "type": "boolean", "description": "When true on `compress_doc`, previews savings without writing to disk" },
                     "old_text": { "type": "string", "description": "Exact unique substring to replace (for patch_doc)" },
                     "new_text": { "type": "string", "description": "Replacement text (for patch_doc)" },
                     "snapshot_id": { "type": "string", "description": "History snapshot ID (for rollback_doc)" },
@@ -352,6 +356,45 @@ impl Tool for MemoryTool {
                         "Skipped duplicate note already present in {doc}."
                     ))),
                 }
+            }
+            "compress_doc" => {
+                let doc = resolve_target_doc(action, &args)?;
+                let mode = args
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .and_then(ConciseMode::parse)
+                    .unwrap_or(ConciseMode::Full);
+                let dry_run = args
+                    .get("dry_run")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let report = self.scoped_snapshots(ctx).compress_doc(doc, mode, dry_run)?;
+                let backup = report
+                    .backup_snapshot_id
+                    .as_deref()
+                    .map(|id| format!(" · rollback snapshot `{id}`"))
+                    .unwrap_or_default();
+                let verb = match report.dry_run {
+                    true => "Dry-run compressed",
+                    false => "Compressed",
+                };
+                Ok(ToolOutput {
+                    content: format!(
+                        "{verb} {} [mode={}]: {} -> {} bytes (-{:.1}%, ~{} tok saved; {} headings & {} code blocks preserved verbatim){backup}\nPreview:\n{}",
+                        report.doc_name,
+                        report.mode.as_str(),
+                        report.original_bytes,
+                        report.compressed_bytes,
+                        report.savings_pct,
+                        report.tokens_saved,
+                        report.headings_preserved,
+                        report.code_blocks_preserved,
+                        report.preview,
+                    ),
+                    is_error: false,
+                    diff: None,
+                    metadata: serde_json::to_value(&report).ok(),
+                })
             }
             "read_snapshot" => {
                 let snap = self.scoped_snapshots(ctx).load_snapshot()?;

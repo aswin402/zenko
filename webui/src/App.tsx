@@ -21,6 +21,8 @@ import type {
   OrchestratorStatus,
   PermissionMode,
   ProviderDescriptor,
+  ConciseMode,
+  ConciseModeDescriptor,
   QueuedPrompt,
   RewindMode,
   RewindReport,
@@ -169,6 +171,7 @@ export default function App() {
   const [presets, setPresets] = useState<ThemePresetMeta[]>([])
   const [studioSchema, setStudioSchema] = useState<StudioCategory[]>([])
   const [providers, setProviders] = useState<ProviderDescriptor[]>([])
+  const [conciseModes, setConciseModes] = useState<ConciseModeDescriptor[]>([])
   const [configuredProviders, setConfiguredProviders] = useState<Record<string, boolean>>({})
   const [hasProviderKey, setHasProviderKey] = useState(false)
   const [hasTelegram, setHasTelegram] = useState(false)
@@ -298,6 +301,7 @@ export default function App() {
       setTelemetry(data.telemetry)
       setSessions(data.sessions || [])
       setProviders(data.providers || [])
+      setConciseModes(data.concise_modes || [])
       setConfiguredProviders(data.configured_providers || {})
       setPendingApprovals(data.pending_approvals || [])
       setPendingClarifications(data.pending_clarifications || [])
@@ -1128,6 +1132,25 @@ export default function App() {
               activeProvider={activeProvider}
               activeModel={activeModel}
               providers={providers}
+              conciseModes={conciseModes}
+              conciseMode={(config?.context?.concise_mode as ConciseMode) || 'lite'}
+              readLessEnabled={config?.context?.read_less !== false}
+              onUpdateConcise={async (patch) => {
+                try {
+                  const res = await api<{ ok: boolean; context?: any }>('/api/context/concise', {
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                      ...patch,
+                      session_id: activeSessionId || undefined,
+                    }),
+                  })
+                  if (res.context) {
+                    setConfig((prev: any) => (prev ? { ...prev, context: res.context } : prev))
+                  }
+                } catch (e: any) {
+                  toast(e?.message || 'Failed to update concise settings', 'error')
+                }
+              }}
               configuredProviders={configuredProviders}
               models={models}
               onSelectProviderModel={async (providerId, modelId) => {

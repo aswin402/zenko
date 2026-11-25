@@ -405,6 +405,104 @@ pub struct CompactionCheckpointPayload {
     pub created_at: DateTime<Utc>,
 }
 
+/// Pure-English output conciseness tier (`off`, `lite`, `full`, `ultra`).
+/// Inspired by ASD-STE100 Simplified Technical English with strict Verbatim Payload Protection
+/// and Auto-Clarity safety hatch (zero non-English variants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConciseMode {
+    Off,
+    #[default]
+    Lite,
+    Full,
+    Ultra,
+}
+
+impl ConciseMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lite => "lite",
+            Self::Full => "full",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "normal" | "standard" | "disabled" => Some(Self::Off),
+            "lite" | "light" | "crisp" => Some(Self::Lite),
+            "full" | "concise" | "terse" | "caveman" => Some(Self::Full),
+            "ultra" | "max" | "extreme" | "ultracave" => Some(Self::Ultra),
+            _ => None,
+        }
+    }
+
+    pub fn from_str_loose(raw: &str) -> Self {
+        Self::parse(raw).unwrap_or_default()
+    }
+
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+/// Declarative action enum for reusable Landlock-sandboxed `script_block` automation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptBlockAction {
+    List,
+    Save,
+    Read,
+    Run,
+    Delete,
+}
+
+impl ScriptBlockAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Save => "save",
+            Self::Read => "read",
+            Self::Run => "run",
+            Self::Delete => "delete",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "list" | "ls" => Some(Self::List),
+            "save" | "create" | "upsert" | "write" => Some(Self::Save),
+            "read" | "get" | "show" | "view" => Some(Self::Read),
+            "run" | "exec" | "execute" => Some(Self::Run),
+            "delete" | "remove" | "rm" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    pub fn is_mutating(self) -> bool {
+        matches!(self, Self::Save | Self::Run | Self::Delete)
+    }
+}
+
+/// Deterministic summary returned by pure-Rust Markdown memory document compression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocCompressReport {
+    pub doc_name: String,
+    pub mode: ConciseMode,
+    pub original_bytes: usize,
+    pub compressed_bytes: usize,
+    pub bytes_saved: usize,
+    pub tokens_saved: usize,
+    pub savings_pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_snapshot_id: Option<String>,
+    pub dry_run: bool,
+    pub headings_preserved: usize,
+    pub code_blocks_preserved: usize,
+    pub preview: String,
+}
+
 /// Live token-budget & KV-cache breakdown for `context_inspect`, CLI `zenko context`, and WebUI drawer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContextBreakdown {
@@ -429,6 +527,18 @@ pub struct ContextBreakdown {
     pub checkpoints_count: usize,
     pub spilled_artifacts_count: usize,
     pub cache_hit_pct: f64,
+    #[serde(default)]
+    pub concise_mode: ConciseMode,
+    #[serde(default)]
+    pub auto_clarity: bool,
+    #[serde(default)]
+    pub read_less_enabled: bool,
+    #[serde(default)]
+    pub read_less_calls_compressed: usize,
+    #[serde(default)]
+    pub read_less_bytes_saved: u64,
+    #[serde(default)]
+    pub read_less_tokens_saved: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1733,6 +1843,8 @@ pub struct OrchestrateControlRequest {
     pub cognitive_tier: Option<ModelRoutingRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concise_mode: Option<ConciseMode>,
     #[serde(default)]
     pub refresh_recon: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1752,6 +1864,8 @@ pub struct OrchestrateControlReceipt {
     pub resolved_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concise_mode: Option<ConciseMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

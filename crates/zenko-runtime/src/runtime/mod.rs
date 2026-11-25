@@ -46,8 +46,9 @@ use zenko_core::{
     APPROVAL_RESOLVER_CANCELLED, APPROVAL_RESOLVER_STEERED, APPROVAL_RESOLVER_TIMEOUT,
     ATTACH_DEFAULT_REPLAY_EVENTS, AgentEvent, ApprovalDecision, ApprovalRecord, ApprovalStatus,
     BackgroundJobRecord, BackgroundJobStatus, BatchToolRequest, BatchToolStepOutcome,
-    CHECKPOINT_LABEL_MAX_CHARS, CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS, ChatMessage, ChatRequest,
-    ClarificationOption, CompactionCheckpointPayload, ContextBreakdown, ContextBridge, CronJob,
+    CHECKPOINT_LABEL_MAX_CHARS, CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS,
+    ChatMessage, ChatRequest, ClarificationOption, CompactionCheckpointPayload, ConciseMode,
+    ContextBreakdown, ContextBridge, CronJob,
     CronKind, DEFAULT_APPROVAL_TIMEOUT_SECS, DEFAULT_CONTEXT_WINDOW_FALLBACK,
     DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_PAIRING_TTL_MINS,
     DaemonTelemetry, DreamRunRecord, DreamStatus, ESCALATION_OPT_PIVOT, ESCALATION_OPT_STOP,
@@ -93,11 +94,12 @@ use zenko_core::{
     MODEL_KV_COMPACT_REGISTRY_KEY, MODEL_KV_LEGACY_COMPACT_THRESHOLD_BYTES,
     MODEL_KV_PROVIDER_PREFIX, MODEL_KV_REGISTRY_KEY, MUTATING_FILE_TOOLS, McpServerConfig,
     McpServerStatus, ModelInfo, ModelRoutingRole, NOTE_KIND_BRAINSTORM_SPEC,
-    NOTE_KIND_CLARIFICATION_DECISION, NOTE_KIND_DEFERRED_TOOLS, NOTE_KIND_EXECUTION_PLAN,
-    NOTE_KIND_MEMORY_RECALL, NOTE_KIND_ORCHESTRATE_CONTROL, NOTE_KIND_PLAN_APPROVED,
-    NOTE_KIND_REWIND_SUMMARY, ORCH_MAX_TRUNCATION_RETRIES, ORCH_MONITORING_TOOLS,
-    ORCH_REASONING_MAX_OUTPUT_CAP, ORCH_REASONING_MIN_MAX_TOKENS, ORCH_STAGE_BUDGET_GUARD,
-    ORCH_STAGE_CHECKPOINT, ORCH_STAGE_CIRCUIT_BREAKER, ORCH_STAGE_COMPACTION, ORCH_STAGE_ESCALATED,
+    NOTE_KIND_CLARIFICATION_DECISION, NOTE_KIND_CONCISE_MODE, NOTE_KIND_DEFERRED_TOOLS,
+    NOTE_KIND_EXECUTION_PLAN, NOTE_KIND_MEMORY_RECALL, NOTE_KIND_ORCHESTRATE_CONTROL,
+    NOTE_KIND_PLAN_APPROVED, NOTE_KIND_REWIND_SUMMARY, ORCH_MAX_TRUNCATION_RETRIES,
+    ORCH_MONITORING_TOOLS, ORCH_REASONING_MAX_OUTPUT_CAP, ORCH_REASONING_MIN_MAX_TOKENS,
+    ORCH_STAGE_BUDGET_GUARD, ORCH_STAGE_CHECKPOINT, ORCH_STAGE_CIRCUIT_BREAKER,
+    ORCH_STAGE_COMPACTION, ORCH_STAGE_CONCISE, ORCH_STAGE_ESCALATED,
     ORCH_STAGE_GEAR_SHIFT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT, ORCH_STAGE_PACING,
     ORCH_STAGE_PHASE_GATE, ORCH_STAGE_PLAN_MODE, ORCH_STAGE_POSTURE, ORCH_STAGE_RECON,
     ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TOOL_ACTIVATED, ORCH_STAGE_TRIAGED,
@@ -111,16 +113,16 @@ use zenko_core::{
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
     TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_INVOKE_TOOL,
-    TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE,
-    TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
+    TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM,
+    TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
     TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
     ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
     TriageReport,
     TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
     WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig, ZenkoError,
-    compact_preview, find_provider, find_subagent_role, is_git_tool_args_mutating,
-    is_lsp_tool_args_mutating, is_memory_mutating_action, new_goal_loop_id, new_id,
-    new_session_task_id,
+    compact_preview, find_concise_mode, find_provider, find_subagent_role,
+    is_git_tool_args_mutating, is_lsp_tool_args_mutating, is_memory_mutating_action,
+    new_goal_loop_id, new_id, new_session_task_id, render_concise_prompt_block,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
@@ -129,6 +131,7 @@ use zenko_memory::{
 use zenko_providers::{CompactModelRegistry, UnifiedLlmProvider};
 use zenko_tools::{
     ToolRegistry,
+    blocks::ScriptBlockTool,
     coerce::coerce_and_repair_args,
     lsp::LspPoolManager,
     mcp_client::McpClientManager,
@@ -172,6 +175,7 @@ pub(crate) struct PendingControlShift {
     pub posture: Option<TurnPosture>,
     pub cognitive_tier: Option<ModelRoutingRole>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub concise_mode: Option<ConciseMode>,
     pub rationale: Option<String>,
 }
 
@@ -263,6 +267,13 @@ impl SessionToolScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ReadLessSessionStats {
+    calls: usize,
+    bytes_saved: u64,
+    tokens_saved: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct SessionControl {
     steer_queue: Mutex<VecDeque<String>>,
@@ -271,6 +282,8 @@ pub(crate) struct SessionControl {
     pending_control: Mutex<Option<PendingControlShift>>,
     explicit_model_locked: AtomicBool,
     active_scope: Mutex<Option<SessionToolScope>>,
+    concise_mode_override: Mutex<Option<ConciseMode>>,
+    read_less_stats: Mutex<ReadLessSessionStats>,
 }
 
 /// RAII guard binding the live `SessionToolScope` while a turn executes (restores previous scope on drop).
@@ -540,6 +553,7 @@ impl AgentRuntime {
             pty.clone(),
             os_sandbox.clone(),
         )));
+        tool_reg.register(Arc::new(ScriptBlockTool::new(os_sandbox.clone())));
         tool_reg.register(Arc::new(MemoryTool::new_with_vault(
             store.clone(),
             snapshots.clone(),
@@ -1432,7 +1446,16 @@ impl AgentRuntime {
                 }),
             false => None,
         };
-        let effective_sys = snapshot.compose_system_prompt(deferred_catalog.as_deref());
+        let active_concise_mode = self.effective_concise_mode(session_id, &cfg, &branch);
+        let mut effective_sys = snapshot.compose_system_prompt(deferred_catalog.as_deref());
+        if let Some(concise_block) = render_concise_prompt_block(
+            active_concise_mode,
+            cfg.context.auto_clarity,
+            scope.availability.read_only,
+        ) {
+            effective_sys.push_str("\n\n");
+            effective_sys.push_str(&concise_block);
+        }
         let sys_tokens = estimate_text_tokens(&effective_sys);
         let tool_schema_tokens = estimate_tool_specs_tokens(&active_specs);
         let prefix_tokens = sys_tokens + tool_schema_tokens;
@@ -1469,6 +1492,8 @@ impl AgentRuntime {
 
         let spilled_artifacts_count =
             artifacts::count_session_artifacts(&cfg.resolved_data_dir(), session_id).await;
+        let (read_less_calls_compressed, read_less_bytes_saved, read_less_tokens_saved) =
+            self.read_less_stats_for(session_id);
 
         Ok(ContextBreakdown {
             session_id: session_id.to_string(),
@@ -1491,6 +1516,12 @@ impl AgentRuntime {
             checkpoints_count: ckpt_slice.checkpoints_count,
             spilled_artifacts_count,
             cache_hit_pct,
+            concise_mode: active_concise_mode,
+            auto_clarity: cfg.context.auto_clarity,
+            read_less_enabled: cfg.context.read_less,
+            read_less_calls_compressed,
+            read_less_bytes_saved,
+            read_less_tokens_saved,
         })
     }
 
@@ -1718,7 +1749,8 @@ impl AgentRuntime {
 
         let has_shift = req.posture.is_some()
             || req.cognitive_tier.is_some()
-            || req.reasoning_effort.is_some();
+            || req.reasoning_effort.is_some()
+            || req.concise_mode.is_some();
         if has_shift && let Ok(mut slot) = ctrl.pending_control.lock() {
             let entry = slot.get_or_insert_with(PendingControlShift::default);
             if req.posture.is_some() {
@@ -1730,9 +1762,22 @@ impl AgentRuntime {
             if req.reasoning_effort.is_some() {
                 entry.reasoning_effort = req.reasoning_effort;
             }
+            if req.concise_mode.is_some() {
+                entry.concise_mode = req.concise_mode;
+            }
             if req.rationale.is_some() {
                 entry.rationale = req.rationale.clone();
             }
+        }
+        if let Some(cm) = req.concise_mode {
+            self.set_session_concise_mode(session_id, cm);
+            self.emit(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: ORCH_STAGE_CONCISE.into(),
+                tier: zenko_core::ExecutionTier::Standard,
+                detail: format!("Concise mode -> `{}`", cm.as_str()),
+                model: None,
+            });
         }
 
         if let Some(posture) = req.posture {
@@ -1774,10 +1819,80 @@ impl AgentRuntime {
             cognitive_tier: req.cognitive_tier,
             resolved_model,
             reasoning_effort: req.reasoning_effort,
+            concise_mode: req.concise_mode,
             recon_summary: None,
             rationale: req.rationale.clone(),
             model_locked_by_override: model_locked,
         }
+    }
+
+    pub(crate) fn record_read_less_savings(
+        &self,
+        session_id: &str,
+        bytes_saved: u64,
+        tokens_saved: usize,
+    ) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut st) = ctrl.read_less_stats.lock() {
+            st.calls = st.calls.saturating_add(1);
+            st.bytes_saved = st.bytes_saved.saturating_add(bytes_saved);
+            st.tokens_saved = st.tokens_saved.saturating_add(tokens_saved);
+        }
+    }
+
+    pub fn read_less_stats_for(&self, session_id: &str) -> (usize, u64, usize) {
+        let ctrl = self.session_control(session_id);
+        ctrl.read_less_stats
+            .lock()
+            .map(|st| (st.calls, st.bytes_saved, st.tokens_saved))
+            .unwrap_or((0, 0, 0))
+    }
+
+    pub fn set_session_concise_mode(&self, session_id: &str, mode: ConciseMode) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut slot) = ctrl.concise_mode_override.lock() {
+            *slot = Some(mode);
+        }
+    }
+
+    /// Resolves the active English `ConciseMode` for a session: live session override ->
+    /// latest persisted branch `orchestrate_control` / `concise_mode` note -> global config.
+    pub fn effective_concise_mode(
+        &self,
+        session_id: &str,
+        cfg: &ZenkoConfig,
+        branch: &[SessionEvent],
+    ) -> ConciseMode {
+        let ctrl = self.session_control(session_id);
+        if let Ok(slot) = ctrl.concise_mode_override.lock()
+            && let Some(mode) = *slot
+        {
+            return mode;
+        }
+        for ev in branch.iter().rev() {
+            if ev.role != EventRole::System || ev.kind != EventKind::SystemNote {
+                continue;
+            }
+            let nk = ev.content_json.get("note_kind").and_then(Value::as_str);
+            let parsed = match nk {
+                Some(NOTE_KIND_CONCISE_MODE) => ev
+                    .content_json
+                    .get("concise_mode")
+                    .and_then(Value::as_str)
+                    .and_then(ConciseMode::parse),
+                Some(NOTE_KIND_ORCHESTRATE_CONTROL) => ev
+                    .content_json
+                    .get("control")
+                    .and_then(|c| c.get("concise_mode"))
+                    .and_then(Value::as_str)
+                    .and_then(ConciseMode::parse),
+                _ => None,
+            };
+            if let Some(mode) = parsed {
+                return mode;
+            }
+        }
+        cfg.context.concise_mode
     }
 
     fn take_pending_control(&self, session_id: &str) -> Option<PendingControlShift> {

@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod batch;
+pub mod blocks;
 pub mod codex_patch;
 pub mod coerce;
 pub mod context_tools;
@@ -64,6 +65,9 @@ impl ToolRegistry {
         reg.register(Arc::new(glob::GlobFindTool));
         reg.register(Arc::new(git::GitTool));
         reg.register(Arc::new(shell::ShellExecTool::new(jobs.clone())));
+        reg.register(Arc::new(blocks::ScriptBlockTool::new(Arc::new(
+            std::sync::atomic::AtomicBool::new(true),
+        ))));
         reg.register(Arc::new(web::WebFetchTool::new(http)));
         reg.register(Arc::new(memory_cron::MemoryTool::new(
             store.clone(),

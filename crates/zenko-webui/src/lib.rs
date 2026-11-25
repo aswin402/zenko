@@ -260,6 +260,7 @@ pub fn build_router(state: WebState) -> Router {
         )
         // Setup & Gateways
         .route("/api/setup", post(api::api_save_setup))
+        .route("/api/context/concise", patch(api::api_update_context_concise))
         .route(
             "/api/setup/verify-provider",
             post(api::api_verify_provider),

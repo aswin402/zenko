@@ -390,6 +390,7 @@ impl Tool for ContextInspectTool {
              - Tier 2 (session stable): {} tok\n\
              - Tool schemas: {} tok (eager={}, deferred_active={}/{})\n\
              - History: {} tok (microcompacted={} tools, ~{} tok saved)\n\
+             - Concise Mode: `{}` (auto_clarity={}) · Read-Less: {} ({} outputs compressed, {} B / ~{} tok saved)\n\
              - Checkpoints: {} (active={ckpt}) · Spilled artifacts: {}",
             info.session_id,
             info.model,
@@ -407,6 +408,15 @@ impl Tool for ContextInspectTool {
             info.history_tokens,
             info.microcompacted_tools_count,
             info.microcompacted_tokens_saved,
+            info.concise_mode.as_str(),
+            info.auto_clarity,
+            match info.read_less_enabled {
+                true => "on",
+                false => "off",
+            },
+            info.read_less_calls_compressed,
+            info.read_less_bytes_saved,
+            info.read_less_tokens_saved,
             info.checkpoints_count,
             info.spilled_artifacts_count,
         );

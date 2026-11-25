@@ -4,6 +4,27 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.20] - 2026-11-25
+
+Integrated a **100% pure-Rust, 100% English Native Concise & Read-Less Engine** across Zenko (`zenko-core`, `zenko-memory`, `zenko-tools`, `zenko-runtime`, `zenko-webui`, and the embedded WebUI) — bringing output compression modes, Read-Less + CCR input recovery, pure-Rust Markdown memory compression, English concise skills, reusable sandboxed script blocks, and live savings telemetry with zero Go proxy, zero Python, zero Node/JS hooks, zero `/commands`, zero non-English/Chinese modes, zero regex, and zero `.unwrap()`/`.expect()` in production paths.
+
+### Added
+- **Declarative English Concise Modes & Auto-Clarity (`zenko-core`, `zenko-runtime`):**
+  - Added `ConciseMode` (`off`, `lite` default, `full`, `ultra`), `CONCISE_MODE_REGISTRY`, and `render_concise_prompt_block` in `crates/zenko-core/src/registry.rs` with strict Verbatim Payload Protection (code, paths, commands, stack traces, errors untouched) and Auto-Clarity safety hatch (auto-relaxes to full sentences on security warnings, irreversible confirmations, and Plan Mode trade-offs).
+  - Propagated active `<concise_mode>` cleanly into both the main orchestrator and all spawned subagents while keeping the Tier-1 KV-cache prefix invariant; extended `orchestrate_control` with live `concise_mode` switching persisted on the session branch.
+- **Read-Less Structural Tool-Output Compressor + Native CCR Recovery (`crates/zenko-runtime/src/read_less.rs`, `artifacts.rs`, `tool_router.rs`):**
+  - Added zero-regex deterministic structural compression for bulky `shell_exec`, `job_read`, `git_tool`, `web_fetch`, `script_block`, and `mcp__*` outputs (JSON array/schema sampling, Cargo/Pytest/Go/JS test pass collapsing while preserving failures verbatim, CSV header+sample+tail, and build/log progress deduplication), strictly exempting `read_file` and code editors so line numbers and hash anchors stay intact.
+  - Persisted 100% verbatim raw bytes atomically (`0600`) via `artifacts::persist_raw_ccr_artifact` (`artifact:<session>/<call>.txt`) for exact byte recovery via `read_file` or `code_search`, and tracked live per-session Read-Less savings in `ContextBreakdown` and `context_inspect`.
+- **Pure-Rust Markdown Document Compressor (`crates/zenko-memory/src/compress.rs`, `snapshot.rs`, `memory_cron.rs`):**
+  - Built a zero-regex finite-state English Markdown compressor replacing Python `compress.py`: preserves YAML frontmatter, headings, fenced code blocks, Markdown tables, inline code spans, URLs, and file paths verbatim with a strict structural integrity validator and automatic `.history/` rollback snapshot.
+  - Exposed via `memory_tool(action="compress_doc", doc=..., mode=..., dry_run=...)` with Plan Mode safety gating (`dry_run: true` allowed read-only).
+- **Built-In English Concise Workflow Skills (`crates/zenko-memory/src/snapshot.rs`):**
+  - Seeded `concise-review.md` (`path:L<line> [bug|risk|nit|q]: <problem>. <fix>.`), `concise-commit.md` (terse Conventional Commits without auto-staging), and `concise-explore.md` (exact `path:Lstart-Lend` reconnaissance) via `ensure_defaults()`.
+- **Reusable Landlock-Sandboxed Script Blocks (`crates/zenko-tools/src/blocks.rs`, `lib.rs`, `policy.rs`, `guard.rs`):**
+  - Added deferred `script_block` tool (`list`, `save`, `read`, `run`, `delete` under `hub:blocks/<slug>.sh`) executing inside jailed workspace `cwd` + Linux Landlock write sandbox with zero JS/QuickJS engine bloat and Plan Mode read-only enforcement.
+- **WebUI Concise Controls & Read-Less Telemetry (`crates/zenko-webui`, `webui/src/components/chat/PromptComposer.tsx`):**
+  - Added `PATCH /api/context/concise`, exposed `CONCISE_MODE_REGISTRY` in `/api/bootstrap`, and added theme-compliant (60/30/10) English Concise Mode selector, Read-Less toggle, and live Read-Less CCR token savings inside the Context Breakdown popover.
+
 ## [0.0.19] - 2026-11-25
 
 Upgraded Zenko's tool system and execution runtime into **Minicode Tool Architecture v4**, closing the four highest-impact gaps identified against Claude Code, OpenAI Codex CLI, Oh My Pi, and Prime Agent — in 100% pure Rust with zero hardcoding, zero `if/else` ladders, zero ad-hoc regex, zero `.unwrap()`/`.expect()` in production paths, and zero `/commands`.

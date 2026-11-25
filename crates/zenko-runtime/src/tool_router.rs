@@ -5,18 +5,19 @@
 
 use crate::artifacts;
 use crate::policy::{PolicyVerdict, evaluate_policy, run_hooks};
+use crate::read_less;
 use crate::runtime::{ActiveSessionScopeGuard, ActiveToolGuard, AgentRuntime, ExecutedToolCall};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    AgentEvent, ApprovalDecision, HookEvent, MUTATING_FILE_TOOLS, ORCH_STAGE_TOOL_ACTIVATED,
-    PermissionMode, Result, SkillManageAction, TOOL_APPLY_PATCH, TOOL_GIT, TOOL_HASH_EDIT,
-    TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC,
-    TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency,
-    ToolContext, ToolOutput, ToolSpec, ZenkoConfig, ZenkoError, is_git_tool_args_mutating,
-    is_lsp_tool_args_mutating,
+    AgentEvent, ApprovalDecision, HookEvent, MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS,
+    ORCH_STAGE_TOOL_ACTIVATED, PermissionMode, Result, ScriptBlockAction, SkillManageAction,
+    TOOL_APPLY_PATCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_SCRIPT_BLOCK,
+    TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH,
+    TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec,
+    ZenkoConfig, ZenkoError, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
 };
 use zenko_tools::coerce::{coerce_and_repair_args, format_compact_schema_hint};
 
@@ -381,11 +382,18 @@ pub(crate) async fn dispatch_tool_call(
     )
     .await?;
 
-    // Stage 5: Post-execution enrichers (mutation watermark, warm LSP diagnostics, artifact spill, telemetry).
+    // Stage 5: Post-execution enrichers (mutation watermark, warm LSP diagnostics, Read-Less + CCR, artifact spill, telemetry).
     let mutated_workspace = !tool_output.is_error
         && (MUTATING_FILE_TOOLS.contains(&tc.name.as_str())
             || (tc.name == TOOL_GIT && is_git_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_LSP && is_lsp_tool_args_mutating(&tc.arguments))
+            || (tc.name == TOOL_SCRIPT_BLOCK
+                && tc
+                    .arguments
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .and_then(ScriptBlockAction::parse)
+                    == Some(ScriptBlockAction::Run))
             || tc.name == TOOL_SHELL_EXEC);
     if mutated_workspace {
         rt.record_workspace_mutation();
@@ -413,6 +421,81 @@ pub(crate) async fn dispatch_tool_call(
                 tool_output.content.push_str(&diag_block);
             }
         }
+    }
+
+    if cfg.context.read_less
+        && let Some(rl) = read_less::try_compress_tool_output(
+            &tc.name,
+            &tool_output.content,
+            cfg.context.read_less_min_bytes,
+        )
+    {
+        let raw_ccr = artifacts::persist_raw_ccr_artifact(
+            &tool_ctx.data_dir,
+            session_id,
+            &tc.id,
+            &tool_output.content,
+        )
+        .await;
+        let ccr_footer = match &raw_ccr {
+            Some(rec) => format!(
+                "\n\n[read-less: {}, {} -> {} bytes (-{:.1}%, ~{} tok saved) · raw saved at `{}`; inspect slices via `read_file` or `code_search`]",
+                rl.shape.as_str(),
+                rl.original_bytes,
+                rl.compressed_bytes,
+                rl.savings_pct,
+                rl.tokens_saved,
+                rec.handle,
+            ),
+            None => format!(
+                "\n\n[read-less: {}, {} -> {} bytes (-{:.1}%, ~{} tok saved)]",
+                rl.shape.as_str(),
+                rl.original_bytes,
+                rl.compressed_bytes,
+                rl.savings_pct,
+                rl.tokens_saved,
+            ),
+        };
+        tool_output.content = format!("{}{ccr_footer}", rl.compressed);
+        rt.record_read_less_savings(session_id, rl.bytes_saved as u64, rl.tokens_saved);
+        rt.emit(AgentEvent::OrchestratorUpdated {
+            session_id: session_id.to_string(),
+            stage: ORCH_STAGE_READ_LESS.into(),
+            tier: zenko_core::ExecutionTier::Standard,
+            detail: format!(
+                "Read-Less `{}` ({}): {} -> {} B (-{:.1}%, ~{} tok saved)",
+                tc.name,
+                rl.shape.as_str(),
+                rl.original_bytes,
+                rl.compressed_bytes,
+                rl.savings_pct,
+                rl.tokens_saved,
+            ),
+            model: None,
+        });
+        let rl_meta = json!({
+            "shape": rl.shape.as_str(),
+            "original_bytes": rl.original_bytes,
+            "compressed_bytes": rl.compressed_bytes,
+            "bytes_saved": rl.bytes_saved,
+            "tokens_saved": rl.tokens_saved,
+            "savings_pct": rl.savings_pct,
+            "raw_handle": raw_ccr.as_ref().map(|r| r.handle.as_str()),
+        });
+        tool_output.metadata = match tool_output.metadata {
+            Some(Value::Object(mut map)) => {
+                map.insert("read_less".into(), rl_meta);
+                if let Some(rec) = raw_ccr {
+                    map.insert(
+                        "artifact".into(),
+                        serde_json::to_value(&rec).unwrap_or(Value::Null),
+                    );
+                }
+                Some(Value::Object(map))
+            }
+            Some(other) => Some(json!({ "data": other, "read_less": rl_meta })),
+            None => Some(json!({ "read_less": rl_meta })),
+        };
     }
 
     if cfg.context.artifact_spilling && tool_output.content.len() > tool_ctx.max_output_bytes {

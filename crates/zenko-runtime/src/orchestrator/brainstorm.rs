@@ -701,6 +701,7 @@ impl OrchestratorBridge for ClarificationHub {
                 cognitive_tier: req.cognitive_tier,
                 resolved_model: None,
                 reasoning_effort: req.reasoning_effort,
+                concise_mode: req.concise_mode,
                 recon_summary: None,
                 rationale: req.rationale.clone(),
                 model_locked_by_override: false,

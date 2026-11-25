@@ -3,16 +3,16 @@
 //! from each provider's `/models` API and hydrated via the live metadata registry.
 
 use crate::{
-    SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_KILL, TOOL_AGENT_LIST, TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT,
-    TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS,
-    TOOL_CODE_SEARCH, TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND, TOOL_GOAL_LOOP,
-    TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL,
-    TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_SEARCH,
-    TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT,
-    TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_WRITE_FILE, ToolSet,
-    VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER, VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI,
-    VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI, VAULT_KEY_OPENROUTER,
-    VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
+    ConciseMode, SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_KILL, TOOL_AGENT_LIST, TOOL_AGENT_MESSAGE,
+    TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION,
+    TOOL_BATCH_TOOLS, TOOL_CODE_SEARCH, TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND,
+    TOOL_GOAL_LOOP, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY,
+    TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM,
+    TOOL_SCRIPT_BLOCK, TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
+    TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH,
+    TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
+    VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI, VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI,
+    VAULT_KEY_OPENROUTER, VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
 };
 use serde::Serialize;
 
@@ -236,6 +236,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_HASH_EDIT,
             TOOL_APPLY_PATCH,
             TOOL_SHELL_EXEC,
+            TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
             TOOL_SPAWN_AGENT,
@@ -283,6 +284,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_HASH_EDIT,
             TOOL_APPLY_PATCH,
             TOOL_SHELL_EXEC,
+            TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
             TOOL_AGENT_WORKTREE,
@@ -368,6 +370,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_HASH_EDIT,
             TOOL_APPLY_PATCH,
             TOOL_SHELL_EXEC,
+            TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
             TOOL_SPAWN_AGENT,
@@ -407,6 +410,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_HASH_EDIT,
             TOOL_APPLY_PATCH,
             TOOL_SHELL_EXEC,
+            TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
             TOOL_SPAWN_AGENT,
@@ -713,6 +717,85 @@ pub fn find_gateway(id: &str) -> Option<&'static GatewayDescriptor> {
         .find(|g| g.id.eq_ignore_ascii_case(id))
 }
 
+/// Declarative English conciseness profile descriptor (shared by prompt builder, runtime, CLI, and WebUI).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ConciseModeDescriptor {
+    pub mode: ConciseMode,
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub target_reduction_pct: u8,
+    pub directive: &'static str,
+}
+
+pub const CONCISE_MODE_REGISTRY: &[ConciseModeDescriptor] = &[
+    ConciseModeDescriptor {
+        mode: ConciseMode::Off,
+        id: "off",
+        label: "Off",
+        description: "Standard full English prose with no output compression",
+        target_reduction_pct: 0,
+        directive: "",
+    },
+    ConciseModeDescriptor {
+        mode: ConciseMode::Lite,
+        id: "lite",
+        label: "Lite",
+        description: "Filler-free professional English: drop pleasantries and hedging, keep clear sentences",
+        target_reduction_pct: 30,
+        directive: "Write crisp, direct English. Drop pleasantries, throat-clearing, hedging, and repetition while keeping clear complete sentences.",
+    },
+    ConciseModeDescriptor {
+        mode: ConciseMode::Full,
+        id: "full",
+        label: "Full",
+        description: "Telegraphic English (ASD-STE100 style): short active-voice fragments, zero fluff",
+        target_reduction_pct: 60,
+        directive: "Write ultra-terse telegraphic English: drop filler, articles, and padding; use short active-voice fragments and bullets. State each fact once.",
+    },
+    ConciseModeDescriptor {
+        mode: ConciseMode::Ultra,
+        id: "ultra",
+        label: "Ultra",
+        description: "Maximum English token density: minimal fragments, arrows (A -> B), zero narrative padding",
+        target_reduction_pct: 75,
+        directive: "Write maximum-density telegraphic English: minimal fragments, causal arrows (`cause -> effect -> fix`), compact bullet lines, zero narrative padding. State each fact once.",
+    },
+];
+
+pub fn find_concise_mode(mode: ConciseMode) -> &'static ConciseModeDescriptor {
+    CONCISE_MODE_REGISTRY
+        .iter()
+        .find(|d| d.mode == mode)
+        .unwrap_or(&CONCISE_MODE_REGISTRY[0])
+}
+
+/// Renders the Tier-2 English `<concise_mode>` directive block (returns `None` when `Off`).
+/// Enforces Verbatim Payload Protection and optional Auto-Clarity safety hatch with zero Chinese terms.
+pub fn render_concise_prompt_block(
+    mode: ConciseMode,
+    auto_clarity: bool,
+    read_only_plan: bool,
+) -> Option<String> {
+    if !mode.is_active() {
+        return None;
+    }
+    let desc = find_concise_mode(mode);
+    let clarity_clause = match (auto_clarity, read_only_plan) {
+        (true, true) => "\n- Auto-Clarity (Plan Mode active): use full, unmistakable English sentences for security warnings, irreversible trade-offs, and architectural proposals.",
+        (true, false) => "\n- Auto-Clarity: automatically relax compression into clear full English sentences for security warnings, destructive/irreversible confirmations, architectural disagreements, or user confusion.",
+        (false, _) => "",
+    };
+    Some(format!(
+        "<concise_mode level=\"{}\">\n\
+         - {}\n\
+         - Verbatim invariant: NEVER alter or abbreviate code blocks, symbol names, file paths, CLI commands, stack traces, line numbers, or exact error messages.{clarity_clause}\n\
+         - Mode control: switch live via `orchestrate_control(concise_mode=\"off|lite|full|ultra\")` if the user asks to change verbosity.\n\
+         </concise_mode>",
+        desc.id, desc.directive
+    ))
+}
+
 /// Pure arithmetic hex `#RRGGBB` parser (zero regex, zero heap allocation).
 pub fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let bytes = hex.trim().strip_prefix('#').unwrap_or(hex.trim()).as_bytes();
@@ -832,5 +915,24 @@ mod tests {
             PermissionMode::strictest(PermissionMode::Autonomous, PermissionMode::Autonomous),
             PermissionMode::Autonomous
         );
+    }
+
+    #[test]
+    fn concise_mode_registry_is_pure_english_and_roundtrips() {
+        for desc in CONCISE_MODE_REGISTRY {
+            assert_eq!(ConciseMode::parse(desc.id), Some(desc.mode));
+            assert_eq!(desc.mode.as_str(), desc.id);
+            assert!(
+                desc.directive.is_ascii() && desc.description.is_ascii() && desc.label.is_ascii(),
+                "concise mode `{}` must stay strictly ASCII English",
+                desc.id
+            );
+        }
+        assert!(render_concise_prompt_block(ConciseMode::Off, true, false).is_none());
+        let ultra = render_concise_prompt_block(ConciseMode::Ultra, true, false).expect("ultra");
+        assert!(ultra.contains("level=\"ultra\""));
+        assert!(ultra.contains("Verbatim invariant"));
+        assert!(ultra.contains("Auto-Clarity"));
+        assert!(ultra.is_ascii());
     }
 }

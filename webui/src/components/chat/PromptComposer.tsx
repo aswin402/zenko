@@ -13,6 +13,8 @@ import { SPRING_PRESS } from '@/lib/ease'
 import { api, formatCompactTokens } from '@/lib/api'
 import type {
   ComponentSlots,
+  ConciseMode,
+  ConciseModeDescriptor,
   ContextBreakdown,
   ModelInfo,
   PermissionMode,
@@ -144,6 +146,10 @@ export const PromptComposer = memo(function PromptComposer({
   activeProvider,
   activeModel,
   providers,
+  conciseModes = [],
+  conciseMode = 'lite',
+  readLessEnabled = true,
+  onUpdateConcise,
   configuredProviders,
   models,
   onSelectProviderModel,
@@ -175,6 +181,10 @@ export const PromptComposer = memo(function PromptComposer({
   activeProvider: string
   activeModel: string
   providers: ProviderDescriptor[]
+  conciseModes?: ConciseModeDescriptor[]
+  conciseMode?: ConciseMode
+  readLessEnabled?: boolean
+  onUpdateConcise?: (patch: { concise_mode?: ConciseMode; read_less?: boolean }) => Promise<void>
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   onSelectProviderModel: (providerId: string, modelId: string) => void
@@ -590,6 +600,10 @@ export const PromptComposer = memo(function PromptComposer({
                     'Microcompacted',
                     `${contextData.microcompacted_tools_count} (${formatCompactTokens(contextData.microcompacted_tokens_saved)} saved)`,
                   ],
+                  [
+                    'Read-Less CCR',
+                    `${contextData.read_less_calls_compressed ?? 0} (${formatCompactTokens(contextData.read_less_tokens_saved ?? 0)} saved)`,
+                  ],
                   ['Checkpoints', `${contextData.checkpoints_count}`],
                   ['Spilled Artifacts', `${contextData.spilled_artifacts_count}`],
                 ].map(([label, val]) => (
@@ -599,6 +613,54 @@ export const PromptComposer = memo(function PromptComposer({
                   </div>
                 ))}
               </div>
+
+              {onUpdateConcise && conciseModes.length > 0 && (
+                <div className="space-y-2 border-t border-[var(--border)]/60 pt-2.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-[var(--muted)]">Concise English</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nextReadLess = !(contextData.read_less_enabled ?? readLessEnabled)
+                        await onUpdateConcise({ read_less: nextReadLess })
+                        if (activeSessionId) refreshContextBreakdown(activeSessionId)
+                      }}
+                      className={cn(
+                        'cursor-pointer rounded-md border px-1.5 py-0.5 font-mono text-[10px] transition-colors',
+                        (contextData.read_less_enabled ?? readLessEnabled)
+                          ? 'border-[var(--accent)]/60 bg-[var(--accent)]/14 text-[var(--accent)]'
+                          : 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--fg)]',
+                      )}
+                    >
+                      Read-Less {(contextData.read_less_enabled ?? readLessEnabled) ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {conciseModes.map((m) => {
+                      const active = (contextData.concise_mode ?? conciseMode) === m.id
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          title={m.description}
+                          onClick={async () => {
+                            await onUpdateConcise({ concise_mode: m.id })
+                            if (activeSessionId) refreshContextBreakdown(activeSessionId)
+                          }}
+                          className={cn(
+                            'cursor-pointer rounded-md border px-1.5 py-1 font-mono text-[10.5px] transition-colors',
+                            active
+                              ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--bg)] font-semibold'
+                              : 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--fg)]',
+                          )}
+                        >
+                          {m.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {contextData.repo_rules_loaded.length > 0 && (
                 <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10.5px] text-[var(--muted)]">

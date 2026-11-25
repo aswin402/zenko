@@ -271,6 +271,7 @@
                     posture: Some(TurnPosture::Brainstorm),
                     cognitive_tier: Some(ModelRoutingRole::Advisor),
                     reasoning_effort: Some(ReasoningEffort::High),
+                    concise_mode: None,
                     refresh_recon: true,
                     recon_query: Some("Cargo.toml".into()),
                     rationale: Some("Deep architecture comparison".into()),
@@ -309,6 +310,7 @@
                     posture: Some(TurnPosture::Review),
                     cognitive_tier: Some(ModelRoutingRole::Fast),
                     reasoning_effort: Some(ReasoningEffort::Low),
+                    concise_mode: None,
                     refresh_recon: false,
                     recon_query: None,
                     rationale: None,
@@ -922,6 +924,154 @@
             .expect("pty2");
         assert!(!pty2.output.is_error, "pty2 err={}", pty2.output.content);
         assert!(pty2.output.content.contains("hello_pty|src"), "pty2={}", pty2.output.content);
+
+        // 14. Native English Concise Mode + Read-Less CCR + Pure-Rust Doc Compress + Script Blocks (v5)
+        // a) Read-Less compresses bulky cargo-test-style shell output AND persists 100% raw CCR artifact!
+        let rl_cmd = "i=0; while [ $i -lt 30 ]; do echo \"test suite::case_$i ... ok\"; i=$((i+1)); done; echo \"test result: ok. 30 passed; 0 failed; 0 ignored\"";
+        let rl_exec = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14a".into(),
+                    name: TOOL_SHELL_EXEC.into(),
+                    arguments: json!({ "command": rl_cmd }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("read_less exec");
+        assert!(!rl_exec.output.is_error, "rl err={}", rl_exec.output.content);
+        assert!(
+            rl_exec.output.content.contains("+30 passing tests collapsed"),
+            "expected collapsed passing tests, got:\n{}",
+            rl_exec.output.content
+        );
+        assert!(
+            rl_exec.output.content.contains("[read-less: test_output")
+                && rl_exec.output.content.contains("artifact:"),
+            "expected CCR artifact pointer in:\n{}",
+            rl_exec.output.content
+        );
+        let (rl_calls, rl_bytes, rl_toks) = rt.read_less_stats_for(&sess.id);
+        assert!(rl_calls >= 1 && rl_bytes >= 256 && rl_toks >= 64);
+
+        // b) `orchestrate_control` switches English concise_mode live & reflects in `inspect_session_context`!
+        let cm_shift = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14b".into(),
+                    name: TOOL_ORCHESTRATE_CONTROL.into(),
+                    arguments: json!({ "concise_mode": "ultra", "rationale": "high-density run" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("concise shift");
+        assert!(!cm_shift.output.is_error, "cm err={}", cm_shift.output.content);
+        assert!(cm_shift.output.content.contains("concise_mode=ultra"));
+        let ctx_after_rl = rt.inspect_session_context(&sess.id).await.expect("ctx_after_rl");
+        assert_eq!(ctx_after_rl.concise_mode, ConciseMode::Ultra);
+        assert!(ctx_after_rl.read_less_enabled);
+        assert_eq!(ctx_after_rl.read_less_calls_compressed, rl_calls);
+        assert_eq!(ctx_after_rl.read_less_bytes_saved, rl_bytes);
+
+        // c) `memory_tool(action="compress_doc")` compresses MEMORY.md in pure Rust with rollback backup!
+        rt.snapshots
+            .write_doc(
+                "MEMORY.md",
+                "# Long-Term Memory\n\n- Please make sure to run `cargo test` in order to verify the build prior to committing.\n- It is important to note that the config lives at `./zenko.toml`.\n",
+            )
+            .expect("seed memory");
+        let compressed_doc = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14c".into(),
+                    name: TOOL_MEMORY.into(),
+                    arguments: json!({ "action": "compress_doc", "doc": "MEMORY.md", "mode": "full" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("compress_doc");
+        assert!(!compressed_doc.output.is_error, "cd err={}", compressed_doc.output.content);
+        assert!(compressed_doc.output.content.contains("Compressed MEMORY.md [mode=full]"));
+        assert!(compressed_doc.output.content.contains("rollback snapshot"));
+        let mem_now = rt.snapshots.read_doc("MEMORY.md").expect("read mem");
+        assert!(mem_now.contains("`cargo test`") && mem_now.contains("./zenko.toml"));
+
+        // d) `script_block` saves & runs inside Landlock sandbox, and Plan Mode denies mutating `run`!
+        let sb_save = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14d".into(),
+                    name: zenko_core::TOOL_SCRIPT_BLOCK.into(),
+                    arguments: json!({
+                        "action": "save",
+                        "name": "quick-check",
+                        "description": "Verify workspace name",
+                        "script": "echo \"block-ok:$1\""
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("sb_save");
+        assert!(!sb_save.output.is_error, "sb_save err={}", sb_save.output.content);
+        let sb_run = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14e".into(),
+                    name: zenko_core::TOOL_SCRIPT_BLOCK.into(),
+                    arguments: json!({ "action": "run", "name": "quick-check", "args": ["v5"] }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("sb_run");
+        assert!(!sb_run.output.is_error, "sb_run err={}", sb_run.output.content);
+        assert!(sb_run.output.content.contains("block-ok:v5"));
+        let sb_plan_deny = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14f".into(),
+                    name: zenko_core::TOOL_SCRIPT_BLOCK.into(),
+                    arguments: json!({ "action": "run", "name": "quick-check" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("sb_plan_deny");
+        assert!(sb_plan_deny.output.is_error);
+        assert!(sb_plan_deny.output.content.contains("Denied by execpolicy"));
 
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);

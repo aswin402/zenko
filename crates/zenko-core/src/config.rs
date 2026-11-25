@@ -583,6 +583,18 @@ pub struct ContextConfig {
     pub freeze_tool_schemas: bool,
     #[serde(default = "default_true")]
     pub auto_repo_rules: bool,
+    /// Native English output compression intensity (`off`, `lite`, `full`, `ultra`).
+    #[serde(default)]
+    pub concise_mode: crate::types::ConciseMode,
+    /// Automatically relax terse phrasing for security warnings, irreversible confirmations, and Plan Mode trade-offs.
+    #[serde(default = "default_true")]
+    pub auto_clarity: bool,
+    /// Enable Read-Less structural compression on bulky tool outputs with 100% verbatim `artifact:` recovery.
+    #[serde(default = "default_true")]
+    pub read_less: bool,
+    /// Minimum byte threshold before Read-Less structural compression evaluates a tool output.
+    #[serde(default = "default_read_less_min_bytes")]
+    pub read_less_min_bytes: usize,
 }
 
 impl Default for ContextConfig {
@@ -595,6 +607,10 @@ impl Default for ContextConfig {
             deferred_tool_loading: true,
             freeze_tool_schemas: true,
             auto_repo_rules: true,
+            concise_mode: crate::types::ConciseMode::Lite,
+            auto_clarity: true,
+            read_less: true,
+            read_less_min_bytes: default_read_less_min_bytes(),
         }
     }
 }
@@ -605,6 +621,10 @@ fn default_microcompact_ratio() -> f64 {
 
 fn default_compaction_ratio() -> f64 {
     DEFAULT_COMPACTION_TRIGGER_RATIO
+}
+
+fn default_read_less_min_bytes() -> usize {
+    READ_LESS_DEFAULT_MIN_BYTES
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

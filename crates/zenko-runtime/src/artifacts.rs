@@ -119,6 +119,35 @@ pub async fn spill_tool_output_if_oversized(
     }
 }
 
+/// Persists raw verbatim tool output bytes atomically (`0600`) for Read-Less CCR
+/// (Context Compression Recovery) so any line of a compressed output stays 100% recoverable
+/// via `read_file` or `code_search` on the returned `artifact:<session>/<call>.txt` handle.
+pub async fn persist_raw_ccr_artifact(
+    data_dir: &Path,
+    session_id: &str,
+    call_id: &str,
+    raw_content: &str,
+) -> Option<ArtifactSpillRecord> {
+    let safe_sid = sanitize_segment(session_id);
+    let safe_cid = sanitize_segment(call_id);
+    let filename = format!("{safe_cid}.txt");
+    let rel_handle = format!("{ARTIFACT_PATH_PREFIX}{safe_sid}/{filename}");
+    let session_dir = data_dir.join(ARTIFACTS_DIR_NAME).join(&safe_sid);
+    let abs_path = session_dir.join(&filename);
+    let total_bytes = raw_content.len();
+    let total_lines = raw_content.lines().count();
+    match write_owner_only_async(&session_dir, &abs_path, raw_content.as_bytes()).await {
+        Ok(()) => Some(ArtifactSpillRecord {
+            handle: rel_handle,
+            abs_path: abs_path.display().to_string(),
+            total_bytes,
+            total_lines,
+            preview: String::new(),
+        }),
+        Err(_) => None,
+    }
+}
+
 async fn write_owner_only_async(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     tokio::fs::create_dir_all(dir).await?;
     let tmp = path.with_extension("tmp");

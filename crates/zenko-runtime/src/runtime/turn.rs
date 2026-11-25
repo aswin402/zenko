@@ -568,7 +568,16 @@ impl AgentRuntime {
                 }),
             false => None,
         };
+        let active_concise_mode = self.effective_concise_mode(&session_id, cfg, &initial_branch);
         let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
+        if let Some(concise_block) = render_concise_prompt_block(
+            active_concise_mode,
+            cfg.context.auto_clarity,
+            session_scope.availability.read_only,
+        ) {
+            effective_system_prompt.push_str("\n\n");
+            effective_system_prompt.push_str(&concise_block);
+        }
         if let Some(role_desc) = active_role {
             let is_ro = role_desc.read_only || effective_custom_read_only;
             let custom_block = opts
@@ -668,6 +677,17 @@ impl AgentRuntime {
                     }
                     if let Some(eff) = shift.reasoning_effort {
                         reasoning_effort = Some(eff);
+                    }
+                    if let Some(cm) = shift.concise_mode {
+                        let desc = find_concise_mode(cm);
+                        let hint = match cm.is_active() {
+                            true => format!(
+                                "Live Concise Mode updated to `{}`: {} Preserve code, paths, symbols, and errors verbatim.",
+                                desc.id, desc.directive
+                            ),
+                            false => "Live Concise Mode disabled (`off`): respond in standard clear English prose.".to_string(),
+                        };
+                        pending_orch_hints.push(hint);
                     }
                 }
                 for steer_text in self.drain_steering(&session_id) {

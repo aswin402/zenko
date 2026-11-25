@@ -1075,6 +1075,17 @@ export interface WorkspaceSnapshot {
   total_tokens_estimate: number
 }
 
+export type ConciseMode = 'off' | 'lite' | 'full' | 'ultra'
+
+export interface ConciseModeDescriptor {
+  mode: ConciseMode
+  id: ConciseMode
+  label: string
+  description: string
+  target_reduction_pct: number
+  directive: string
+}
+
 export interface ContextBreakdown {
   session_id: string
   model: string
@@ -1096,6 +1107,12 @@ export interface ContextBreakdown {
   checkpoints_count: number
   spilled_artifacts_count: number
   cache_hit_pct: number
+  concise_mode?: ConciseMode
+  auto_clarity?: boolean
+  read_less_enabled?: boolean
+  read_less_calls_compressed?: number
+  read_less_bytes_saved?: number
+  read_less_tokens_saved?: number
 }
 
 export interface MemoryKindMeta {
@@ -1268,6 +1285,7 @@ export interface BootstrapResponse {
   presets: ThemePresetMeta[]
   studio_schema?: StudioCategory[]
   providers?: ProviderDescriptor[]
+  concise_modes?: ConciseModeDescriptor[]
   configured_providers?: Record<string, boolean>
   pending_approvals?: ApprovalRecord[]
   pending_clarifications?: ClarificationRecord[]

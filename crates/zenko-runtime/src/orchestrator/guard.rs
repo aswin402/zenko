@@ -14,10 +14,12 @@ use zenko_core::{
     ORCH_MAX_PLAN_CONTINUATION_NUDGES, ORCH_MAX_TOTAL_CONTINUATION_NUDGES,
     ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD, ORCH_TEXT_DOOM_MIN_LINE_CHARS,
     ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD, OrchestratorPhase, PLANNING_TOOLS,
-    READ_ONLY_FIND_MUTATING_FLAGS, READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, TOOL_AGENT_KILL,
-    TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL,
-    TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM,
-    TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
+    READ_ONLY_FIND_MUTATING_FLAGS, READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS,
+    ScriptBlockAction, TOOL_AGENT_KILL, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_CRON, TOOL_GIT,
+    TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE,
+    TOOL_RECORD_BRAINSTORM, TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
+    TOOL_SPAWN_AGENT, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS,
+    VERIFICATION_SPOOF_FLAGS_CI,
     VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
     is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
     is_memory_mutating_action, is_skill_manage_args_mutating,
@@ -69,8 +71,15 @@ fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
         TOOL_GOAL_LOOP => is_goal_loop_args_mutating(arguments),
         TOOL_MEMORY => {
             let action = arguments.get("action").and_then(Value::as_str).unwrap_or("");
-            is_memory_mutating_action(action)
+            let dry_run_compress = action == "compress_doc"
+                && arguments.get("dry_run").and_then(Value::as_bool) == Some(true);
+            !dry_run_compress && is_memory_mutating_action(action)
         }
+        TOOL_SCRIPT_BLOCK => arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .and_then(ScriptBlockAction::parse)
+            .is_none_or(ScriptBlockAction::is_mutating),
         TOOL_CRON => arguments
             .get("action")
             .and_then(Value::as_str)

@@ -246,3 +246,62 @@ pub async fn api_delete_telegram_peer(
     }
 }
 
+#[derive(Deserialize)]
+pub struct UpdateConciseReq {
+    #[serde(default)]
+    concise_mode: Option<String>,
+    #[serde(default)]
+    auto_clarity: Option<bool>,
+    #[serde(default)]
+    read_less: Option<bool>,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+pub async fn api_update_context_concise(
+    State(state): State<WebState>,
+    Json(req): Json<UpdateConciseReq>,
+) -> Response {
+    let parsed_mode = match req.concise_mode.as_deref() {
+        Some(raw) => match ConciseMode::parse(raw) {
+            Some(mode) => Some(mode),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("Invalid concise_mode `{raw}` (expected off, lite, full, or ultra)")})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    let res = state.runtime.update_config(|c| {
+        if let Some(m) = parsed_mode {
+            c.context.concise_mode = m;
+        }
+        if let Some(ac) = req.auto_clarity {
+            c.context.auto_clarity = ac;
+        }
+        if let Some(rl) = req.read_less {
+            c.context.read_less = rl;
+        }
+    });
+
+    if let (Some(sid), Some(mode)) = (
+        req.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        parsed_mode,
+    ) {
+        state.runtime.set_session_concise_mode(sid, mode);
+    }
+
+    match res {
+        Ok(cfg) => Json(json!({"ok": true, "context": cfg.context})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+

@@ -15,8 +15,9 @@ use tokio::sync::broadcast::error::RecvError;
 use zeroize::Zeroizing;
 use axum::body::Bytes;
 use zenko_core::{
-    AgentEvent, AgentMessageOptions, ApprovalDecision, CHECKPOINT_LIST_DEFAULT_LIMIT, CronJob,
-    CronKind, DEFAULT_PAIRING_TTL_MINS, DEFAULT_SSE_KEEPALIVE_SECS, DashboardAnalytics,
+    AgentEvent, AgentMessageOptions, ApprovalDecision, CHECKPOINT_LIST_DEFAULT_LIMIT,
+    CONCISE_MODE_REGISTRY, ConciseMode, CronJob, CronKind, DEFAULT_PAIRING_TTL_MINS,
+    DEFAULT_SSE_KEEPALIVE_SECS, DashboardAnalytics,
     ExportFormat, ExportOptions, GOAL_LOOP_LIST_DEFAULT_LIMIT, GOAL_LOOP_RUNS_DEFAULT_LIMIT,
     GoalLoopCreateRequest, GoalLoopPatch, HUB_CATEGORIES, JOB_DEFAULT_LIST_LIMIT,
     JOB_DEFAULT_READ_BYTES, JOB_DEFAULT_WAIT_SECS, JOB_MAX_WAIT_SECS, JobSupervisor,
