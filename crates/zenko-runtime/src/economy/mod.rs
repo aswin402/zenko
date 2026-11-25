@@ -10,7 +10,8 @@ use micro_skills::{
     micro_skill_signature, mine_turn_shell_micro_skills,
 };
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use zenko_core::{
     CodeMinimalismMode, ECONOMY_PROTECTED_CORE_TOOLS, ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS,
     EconomyConfig, EconomyLedgerKind, MicroSkillStatus, RepoMicroSkill, Result, TOOL_BATCH_TOOLS,
@@ -29,8 +30,11 @@ pub struct TurnEconomyTrace {
     pub pruned_tokens_saved_per_iter: usize,
     pub iters_executed: usize,
     pub read_less_tokens_saved: usize,
+    pub read_less_by_cmd: BTreeMap<String, usize>,
     pub output_dedup_hits: usize,
     pub output_dedup_tokens_saved: usize,
+    pub output_dedup_by_cmd: Vec<(String, usize)>,
+    pub raw_bypasses: Vec<String>,
     pub ccr_recoveries: usize,
     pub loop_guard_interventions: usize,
     pub lines_added: u64,
@@ -147,6 +151,21 @@ pub fn record_tool_outcome_in_economy_trace(
     {
         trace.ccr_recoveries = trace.ccr_recoveries.saturating_add(1);
     }
+    if output
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("raw_bypass"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let fam = output
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("command_family"))
+            .and_then(Value::as_str)
+            .unwrap_or("shell");
+        trace.raw_bypasses.push(fam.to_string());
+    }
     if let Some(dedup_tok) = output
         .metadata
         .as_ref()
@@ -154,10 +173,20 @@ pub fn record_tool_outcome_in_economy_trace(
         .and_then(|od| od.get("tokens_saved"))
         .and_then(Value::as_u64)
     {
+        let fam = output
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("output_dedup"))
+            .and_then(|od| od.get("command_family"))
+            .and_then(Value::as_str)
+            .unwrap_or("shell");
         trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
         trace.output_dedup_tokens_saved = trace
             .output_dedup_tokens_saved
             .saturating_add(dedup_tok as usize);
+        trace
+            .output_dedup_by_cmd
+            .push((fam.to_string(), dedup_tok as usize));
     } else if let Some(saved_tok) = output
         .metadata
         .as_ref()
@@ -165,8 +194,19 @@ pub fn record_tool_outcome_in_economy_trace(
         .and_then(|rl| rl.get("tokens_saved"))
         .and_then(Value::as_u64)
     {
+        let fam = output
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("read_less"))
+            .and_then(|rl| rl.get("command_family"))
+            .and_then(Value::as_str)
+            .unwrap_or("shell");
         trace.read_less_tokens_saved =
             trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
+        *trace
+            .read_less_by_cmd
+            .entry(fam.to_string())
+            .or_insert(0) += saved_tok as usize;
     }
 }
 
@@ -323,32 +363,74 @@ pub fn after_turn_update(
         }
     }
 
-    // 4. Net Economy Ledger accounting (Read-Less + Output-Dedup + Tool-Prune + Loop-Guard + CCR Backfire)
+    // 4. Net Economy Ledger accounting (Read-Less + Output-Dedup + Raw-Bypass + Tool-Prune + Loop-Guard + CCR Backfire)
     if trace.read_less_tokens_saved > 0 {
-        let _ = store.record_economy_ledger_event(
-            scope,
-            EconomyLedgerKind::ReadLess,
-            trace.read_less_tokens_saved as i64,
-            0.0,
-            "Read-Less tool output compression",
-        );
+        let mut accounted = 0usize;
+        for (fam, tok) in &trace.read_less_by_cmd {
+            if *tok > 0 {
+                accounted = accounted.saturating_add(*tok);
+                let _ = store.record_economy_ledger_event_with_cmd(
+                    scope,
+                    EconomyLedgerKind::ReadLess,
+                    *tok as i64,
+                    0.0,
+                    fam,
+                    &format!("Read-Less ({fam}) tool output compression"),
+                );
+            }
+        }
+        let remainder = trace.read_less_tokens_saved.saturating_sub(accounted);
+        if remainder > 0 {
+            let _ = store.record_economy_ledger_event_with_cmd(
+                scope,
+                EconomyLedgerKind::ReadLess,
+                remainder as i64,
+                0.0,
+                "batch",
+                "Read-Less tool output compression",
+            );
+        }
         update.net_tokens_delta += trace.read_less_tokens_saved as i64;
     }
     if trace.output_dedup_hits > 0 {
-        for idx in 0..trace.output_dedup_hits {
-            let delta = match idx == 0 {
-                true => trace.output_dedup_tokens_saved as i64,
-                false => 0,
-            };
-            let _ = store.record_economy_ledger_event(
-                scope,
-                EconomyLedgerKind::OutputDedup,
-                delta,
-                0.0,
-                "Session tool output deduplication",
-            );
+        if trace.output_dedup_by_cmd.len() == trace.output_dedup_hits {
+            for (fam, tok) in &trace.output_dedup_by_cmd {
+                let _ = store.record_economy_ledger_event_with_cmd(
+                    scope,
+                    EconomyLedgerKind::OutputDedup,
+                    *tok as i64,
+                    0.0,
+                    fam,
+                    &format!("Session tool output deduplication ({fam})"),
+                );
+            }
+        } else {
+            for idx in 0..trace.output_dedup_hits {
+                let delta = match idx == 0 {
+                    true => trace.output_dedup_tokens_saved as i64,
+                    false => 0,
+                };
+                let _ = store.record_economy_ledger_event_with_cmd(
+                    scope,
+                    EconomyLedgerKind::OutputDedup,
+                    delta,
+                    0.0,
+                    "batch",
+                    "Session tool output deduplication",
+                );
+            }
         }
         update.net_tokens_delta += trace.output_dedup_tokens_saved as i64;
+    }
+    for fam in &trace.raw_bypasses {
+        let _ = store.record_economy_ledger_event_with_cmd(
+            scope,
+            EconomyLedgerKind::RawBypass,
+            0,
+            0.0,
+            fam,
+            &format!("Raw bypass requested for `{fam}` command"),
+        );
     }
     if trace.ccr_recoveries > 0 {
         for _ in 0..trace.ccr_recoveries {
@@ -415,9 +497,18 @@ pub fn build_economy_report(
     store: &SqliteStore,
     cfg: &EconomyConfig,
     repo_scope: &str,
+    data_dir: &Path,
+    workspace_dir: &Path,
 ) -> Result<TokenEconomyReport> {
     let summary = store.summarize_economy_ledger(repo_scope, cfg.p90_multiplier)?;
     let code_metrics = store.get_repo_code_metrics(repo_scope)?;
+    let by_command = store.query_economy_by_command(repo_scope).unwrap_or_default();
+    let filter_status = crate::read_less::custom_filters::inspect_filter_trust_status(
+        store,
+        repo_scope,
+        data_dir,
+        workspace_dir,
+    );
     let micro_skills = store.list_repo_micro_skills(repo_scope, true)?;
     let tool_usage = store.list_repo_tool_usage(repo_scope)?;
     let pruned_tools: Vec<String> = tool_usage
@@ -442,6 +533,8 @@ pub fn build_economy_report(
         config: cfg.clone(),
         summary,
         code_metrics,
+        by_command,
+        filter_status,
         micro_skills,
         tool_usage,
         pruned_tools,
@@ -637,6 +730,77 @@ mod tests {
         assert_eq!(sum.output_dedup_tokens_saved, 420);
         assert_eq!(sum.ccr_recoveries, 1);
         assert_eq!(sum.net_tokens_saved, 420);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn per_command_savings_raw_bypass_and_missed_savings_discover_persist_cleanly() {
+        let db_path = std::env::temp_dir().join(format!("zenko_econ_rtk_{}.db", zenko_core::new_id()));
+        let store = SqliteStore::open(&db_path).expect("open db");
+        let cfg = EconomyConfig::default();
+        let mut trace = TurnEconomyTrace::new("project:rtk".into());
+
+        let cargo_out = ToolOutput {
+            content: "compressed cargo output".into(),
+            is_error: false,
+            diff: None,
+            metadata: Some(json!({
+                "read_less": { "shape": "compiler_diag", "command_family": "cargo", "tokens_saved": 640 }
+            })),
+        };
+        record_tool_outcome_in_economy_trace(&mut trace, TOOL_SHELL_EXEC, &json!({ "command": "cargo check" }), &cargo_out);
+
+        let raw_out = ToolOutput {
+            content: "raw docker output".into(),
+            is_error: false,
+            diff: None,
+            metadata: Some(json!({ "raw_bypass": true, "command_family": "docker" })),
+        };
+        record_tool_outcome_in_economy_trace(&mut trace, TOOL_SHELL_EXEC, &json!({ "command": "docker ps", "raw": true }), &raw_out);
+
+        let _ = after_turn_update(&store, &cfg, "sess_r1", &[], &trace, 2, true);
+
+        let by_cmd = store.query_economy_by_command("project:rtk").expect("by_command");
+        let cargo_row = by_cmd.iter().find(|r| r.command_family == "cargo").expect("cargo stat");
+        assert_eq!(cargo_row.tokens_saved, 640);
+        assert_eq!(cargo_row.calls, 1);
+        let docker_row = by_cmd.iter().find(|r| r.command_family == "docker").expect("docker stat");
+        assert_eq!(docker_row.raw_bypasses, 1);
+
+        let sum = store.summarize_economy_ledger("project:rtk", cfg.p90_multiplier).expect("summary");
+        assert_eq!(sum.raw_bypasses, 1);
+
+        // Record an uncompressed bulky shell_exec event pair and verify `discover_missed_savings` finds it
+        let sess = store
+            .create_session("Discover Test", "webui", None, None, zenko_core::PermissionMode::Autonomous)
+            .expect("session");
+        let _ = store
+            .append_event(
+                &sess.id,
+                None,
+                zenko_core::EventRole::Assistant,
+                zenko_core::EventKind::ToolCall,
+                json!({ "call_id": "call_disc_1", "name": "shell_exec", "arguments": { "command": "bazel build //app:server" } }),
+                &zenko_core::UsageStats::default(),
+            )
+            .expect("tc event");
+        let _ = store
+            .append_event(
+                &sess.id,
+                None,
+                zenko_core::EventRole::Tool,
+                zenko_core::EventKind::ToolResult,
+                json!({ "call_id": "call_disc_1", "name": "shell_exec", "content": "INFO: noisy build line\n".repeat(120) }),
+                &zenko_core::UsageStats::default(),
+            )
+            .expect("tr event");
+
+        let discovered = store.discover_missed_savings(None, 5).expect("discover");
+        assert!(
+            discovered.iter().any(|d| d.command_prefix == "bazel build" && d.estimated_missed_tokens > 200),
+            "expected bazel build in discovered opportunities: {discovered:?}"
+        );
 
         let _ = std::fs::remove_file(&db_path);
     }

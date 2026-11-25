@@ -111,7 +111,8 @@ impl Tool for ShellExecTool {
                     "label": { "type": "string", "description": "Optional human-readable task label" },
                     "timeout_secs": { "type": "integer", "description": "Optional foreground timeout override in seconds" },
                     "run_in_background": { "type": "boolean", "description": "Run asynchronously as a managed ZenkoTask; streams output to ~/.zenko/tasks/<kind>/ and returns task_id immediately" },
-                    "auto_background_after_secs": { "type": "integer", "description": "Optional seconds to wait before seamlessly handing off a long-running command to ZenkoTasks instead of killing it" }
+                    "auto_background_after_secs": { "type": "integer", "description": "Optional seconds to wait before seamlessly handing off a long-running command to ZenkoTasks instead of killing it" },
+                    "raw": { "type": "boolean", "description": "Optional bypass flag: return uncompressed raw output (skips Read-Less & custom filters while remaining tracked in the economy ledger)" }
                 }
             }),
             risk: RiskLevel::Dangerous,

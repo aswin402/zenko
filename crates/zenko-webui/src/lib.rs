@@ -281,6 +281,15 @@ pub fn build_router(state: WebState) -> Router {
             "/api/economy/minimalism/audit",
             get(api::api_economy_minimalism_audit),
         )
+        .route("/api/economy/discover", get(api::api_economy_discover))
+        .route(
+            "/api/economy/filters/verify",
+            get(api::api_economy_verify_filters),
+        )
+        .route(
+            "/api/economy/filters/trust",
+            post(api::api_economy_trust_filters).delete(api::api_economy_untrust_filters),
+        )
         .route(
             "/api/setup/verify-provider",
             post(api::api_verify_provider),

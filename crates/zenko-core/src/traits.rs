@@ -416,6 +416,15 @@ pub trait EconomyBridge: Send + Sync {
     fn reaudit_pruned_tools(&self, workspace_dir: &Path) -> Result<usize>;
     fn session_minimalism_mode(&self, session_id: &str) -> crate::types::CodeMinimalismMode;
     fn update_repo_debt_count(&self, workspace_dir: &Path, debt_count: usize) -> Result<()>;
+    fn discover_missed_savings(
+        &self,
+        workspace_dir: &Path,
+        limit: usize,
+    ) -> Result<Vec<crate::types::MissedSavingsOpportunity>>;
+    fn verify_custom_filters(
+        &self,
+        workspace_dir: &Path,
+    ) -> Result<crate::types::CustomFilterVerifyReport>;
 }
 
 #[derive(Debug, Clone, Copy)]

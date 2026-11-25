@@ -697,22 +697,28 @@ pub const READ_LESS_LOG_MAX_MIDDLE_DIAGS: usize = 16;
 pub const READ_LESS_JSON_PRIORITY_KEYS: &[&str] = &[
     "error", "errors", "message", "status", "code", "ok", "id", "name", "total", "count",
 ];
-pub const READ_LESS_PASS_PREFIXES: &[&str] = &["--- PASS:", "PASS ", "✓ ", "ok  \t"];
+pub const READ_LESS_PASS_PREFIXES: &[&str] = &[
+    "--- PASS:", "PASS ", "PASS\t", "✓ ", "✔ ", "ok  \t",
+];
 pub const READ_LESS_FAIL_PREFIXES: &[&str] = &[
-    "--- FAIL:", "FAIL", "✗ ", "error[", "error:", "fatal:", "E   ",
+    "--- FAIL:", "FAIL", "✗ ", "✖ ", "× ", "error[", "error:", "fatal:", "ERR!", "E   ",
 ];
 pub const READ_LESS_FAIL_SUBSTRS: &[&str] = &[
     "panicked at",
     "assertion ",
+    "assertionerror",
     "traceback (most recent",
     "permission denied",
+    "error ts",
 ];
 pub const READ_LESS_SUMMARY_PREFIXES: &[&str] = &[
     "test result:",
     "failures:",
     "Test Files",
+    "Test Suites:",
     "Tests ",
     "Summary:",
+    "=== short test summary",
 ];
 pub const READ_LESS_BUILD_PROGRESS_PREFIXES: &[&str] = &[
     "Compiling ",
@@ -752,6 +758,44 @@ pub const READ_LESS_GLOB_MAX_PER_DIR: usize = 8;
 pub const READ_LESS_DEDUP_MIN_BYTES: usize = 384;
 pub const READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION: usize = 48;
 pub const READ_LESS_DEDUP_MAX_CALL_GAP: u64 = 16;
+pub const READ_LESS_FAILURE_TEE_MIN_BYTES: usize = 768;
+pub const READ_LESS_DIAG_MAX_GROUPS: usize = 18;
+pub const READ_LESS_DIAG_SAMPLES_BALANCED: usize = 5;
+pub const READ_LESS_DIAG_SAMPLES_HIGH: usize = 3;
+pub const READ_LESS_DIAG_SAMPLES_ULTRA: usize = 2;
+pub const READ_LESS_GIT_LOG_MAX_ENTRIES: usize = 30;
+pub const READ_LESS_PKG_MAX_WARN_LINES: usize = 24;
+pub const READ_LESS_LOCKFILE_DIFF_NAMES: &[&str] = &[
+    "Cargo.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+    "poetry.lock",
+    "uv.lock",
+    "Gemfile.lock",
+    "composer.lock",
+    "go.sum",
+    "flake.lock",
+];
+pub const READ_LESS_GENERATED_DIFF_SUFFIXES: &[&str] = &[
+    ".min.js",
+    ".min.css",
+    ".map",
+    ".pb.go",
+    ".pb.rs",
+    ".generated.ts",
+];
+pub const CUSTOM_FILTERS_FILE_NAME: &str = "filters.toml";
+pub const CUSTOM_FILTERS_PROJECT_DIR: &str = ".zenko";
+pub const CUSTOM_FILTERS_SCHEMA_VERSION: u32 = 1;
+pub const CUSTOM_FILTERS_MAX_FILE_BYTES: usize = 128 * 1024;
+pub const CUSTOM_FILTERS_MAX_RULES: usize = 64;
+pub const CUSTOM_FILTERS_MAX_ON_EMPTY_CHARS: usize = 160;
+pub const ECONOMY_DISCOVER_DEFAULT_LIMIT: usize = 10;
+pub const ECONOMY_DISCOVER_MIN_BYTES: usize = 1_200;
+pub const ECONOMY_DISCOVER_SCAN_EVENTS: usize = 600;
 pub const ARTIFACT_SALVAGE_MAX_LINES: usize = 12;
 pub const ARTIFACT_SALVAGE_MAX_LINE_CHARS: usize = 180;
 pub const FILE_MODE_OWNER_EXEC: u32 = 0o700;

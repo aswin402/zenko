@@ -335,6 +335,49 @@ pub(crate) enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Inspect Token Economy ROI, discover missed savings, and trust/verify `.zenko/filters.toml`
+    Economy {
+        #[command(subcommand)]
+        action: EconomyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum EconomyCmd {
+    /// Display net token savings, per-command-family breakdown, and custom filter trust status
+    Gain {
+        /// Optional workspace path (defaults to configured workspace)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Scan recent session history for uncompressed noisy shell/git commands (`rtk discover`-style)
+    Discover {
+        /// Optional workspace path (defaults to configured workspace)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+        /// Maximum missed-savings opportunities to list
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Validate and pin SHA-256 trust for `<workspace>/.zenko/filters.toml`
+    Trust {
+        /// Optional workspace path (defaults to configured workspace)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Revoke trust for `<workspace>/.zenko/filters.toml`
+    Untrust {
+        /// Optional workspace path (defaults to configured workspace)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Validate `<workspace>/.zenko/filters.toml` schema and run all inline `[[tests]]`
+    VerifyFilters {
+        /// Optional workspace path (defaults to configured workspace)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

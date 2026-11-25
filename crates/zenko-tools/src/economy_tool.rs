@@ -49,7 +49,9 @@ impl Tool for TokenEconomyTool {
                             "apply_prune",
                             "restore_tool",
                             "reaudit",
-                            "ledger"
+                            "ledger",
+                            "discover",
+                            "verify_filters"
                         ],
                         "description": "Operation to perform on the current repository's Token Economy state."
                     },
@@ -76,6 +78,10 @@ impl Tool for TokenEconomyTool {
                     "pin": {
                         "type": "boolean",
                         "description": "When restoring a tool, pin it so auto-pruning never demotes it (default: true)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max missed-savings opportunities to return (for action=discover, default: 10)."
                     }
                 },
                 "required": ["action"]
@@ -108,7 +114,7 @@ impl Tool for TokenEconomyTool {
             .unwrap_or("status");
         let Some(action) = EconomyAction::parse(raw_action) else {
             return Err(ZenkoError::Tool(format!(
-                "Invalid action `{raw_action}` (expected status, micro_skills, add_micro_skill, retire_micro_skill, prune_report, apply_prune, restore_tool, reaudit, or ledger)"
+                "Invalid action `{raw_action}` (expected status, micro_skills, add_micro_skill, retire_micro_skill, prune_report, apply_prune, restore_tool, reaudit, ledger, discover, or verify_filters)"
             )));
         };
 
@@ -116,10 +122,37 @@ impl Tool for TokenEconomyTool {
             EconomyAction::Status => {
                 let rep = self.bridge.economy_report(&ctx.workspace_dir)?;
                 let s = &rep.summary;
+                let cmd_summary = match rep.by_command.is_empty() {
+                    true => "none yet".to_string(),
+                    false => rep
+                        .by_command
+                        .iter()
+                        .take(6)
+                        .map(|c| format!("{} (+{} tok, {}x)", c.command_family, c.tokens_saved, c.calls))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                };
+                let filter_line = match rep.filter_status.project_file_exists {
+                    true => format!(
+                        "project `.zenko/filters.toml`: {} ({} rule(s)); user global: {} rule(s)",
+                        match rep.filter_status.trusted {
+                            true => "trusted",
+                            false => "UNTRUSTED (run `zenko economy trust` or trust in WebUI)",
+                        },
+                        rep.filter_status.rule_count,
+                        rep.filter_status.user_rule_count
+                    ),
+                    false => format!(
+                        "no project `.zenko/filters.toml`; user global: {} rule(s)",
+                        rep.filter_status.user_rule_count
+                    ),
+                };
                 let text = format!(
                     "Token Economy ({scope}) · enabled={enabled}\n\
                      - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · Tool-Prune +{tp} · Overhead -{oh}]\n\
-                     - Compression Health: {ccr} CCR artifact recovery read(s)\n\
+                     - Compression Health: {ccr} CCR recovery read(s) · {raw} raw bypass(es)\n\
+                     - By Command Family: {cmd_summary}\n\
+                     - Custom Filters: {filter_line}\n\
                      - Micro-Skills: {active} active, {cand} candidate, {ret} retired ({inj} injections)\n\
                      - Tool Pruning: {pruned} soft-demoted to deferred ({cands} candidates)\n\
                      - Loop Guard Baseline: P90={p90} calls, envelope={env} calls ({samples} samples, {lg} redirects)",
@@ -133,6 +166,7 @@ impl Tool for TokenEconomyTool {
                     tp = s.tool_prune_tokens_saved,
                     oh = s.overhead_tokens,
                     ccr = s.ccr_recoveries,
+                    raw = s.raw_bypasses,
                     active = s.active_micro_skills,
                     cand = s.candidate_micro_skills,
                     ret = s.retired_micro_skills,
@@ -285,25 +319,94 @@ impl Tool for TokenEconomyTool {
             EconomyAction::Ledger => {
                 let rep = self.bridge.economy_report(&ctx.workspace_dir)?;
                 let s = &rep.summary;
+                let mut text = format!(
+                    "Net Economy Ledger ({}):\n\
+                     - Read-Less saved: {} tok\n\
+                     - Output-Dedup saved: {} tok ({} hits)\n\
+                     - Tool-Prune saved: {} tok\n\
+                     - CCR recoveries: {} | Raw bypasses: {}\n\
+                     - Micro-Skill injections: {}\n\
+                     - Loop-Guard redirects: {}\n\
+                     - Background overhead (Dream/Judge): {} tok\n\
+                     - Net tokens saved: {} tok (~${:.4})",
+                    rep.repo_scope,
+                    s.read_less_tokens_saved,
+                    s.output_dedup_tokens_saved,
+                    s.output_dedup_hits,
+                    s.tool_prune_tokens_saved,
+                    s.ccr_recoveries,
+                    s.raw_bypasses,
+                    s.micro_skill_injections,
+                    s.loop_guard_interventions,
+                    s.overhead_tokens,
+                    s.net_tokens_saved,
+                    s.estimated_usd_saved
+                );
+                if !rep.by_command.is_empty() {
+                    text.push_str("\nBy Command Family:");
+                    for c in &rep.by_command {
+                        text.push_str(&format!(
+                            "\n- {}: +{} tok ({} calls, {} raw bypasses)",
+                            c.command_family, c.tokens_saved, c.calls, c.raw_bypasses
+                        ));
+                    }
+                }
                 Ok(ok_with_meta(
-                    format!(
-                        "Net Economy Ledger ({}):\n\
-                         - Read-Less saved: {} tok\n\
-                         - Tool-Prune saved: {} tok\n\
-                         - Micro-Skill injections: {}\n\
-                         - Loop-Guard redirects: {}\n\
-                         - Background overhead (Dream/Judge): {} tok\n\
-                         - Net tokens saved: {} tok (~${:.4})",
-                        rep.repo_scope,
-                        s.read_less_tokens_saved,
-                        s.tool_prune_tokens_saved,
-                        s.micro_skill_injections,
-                        s.loop_guard_interventions,
-                        s.overhead_tokens,
-                        s.net_tokens_saved,
-                        s.estimated_usd_saved
+                    text,
+                    serde_json::to_value(&rep).unwrap_or(Value::Null),
+                ))
+            }
+            EconomyAction::Discover => {
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as usize)
+                    .unwrap_or(zenko_core::ECONOMY_DISCOVER_DEFAULT_LIMIT);
+                let items = self.bridge.discover_missed_savings(&ctx.workspace_dir, limit)?;
+                let text = match items.is_empty() {
+                    true => "No large uncompressed shell/git command families found in recent sessions.".to_string(),
+                    false => {
+                        let mut lines = vec![format!(
+                            "Discovered {} missed-savings command opportunit(y/ies) (add to `.zenko/filters.toml` and trust):",
+                            items.len()
+                        )];
+                        for item in &items {
+                            lines.push(format!(
+                                "- `{}`: {} call(s), {} bytes raw -> ~{} missed tok",
+                                item.command_prefix,
+                                item.calls,
+                                item.total_bytes,
+                                item.estimated_missed_tokens
+                            ));
+                        }
+                        lines.join("\n")
+                    }
+                };
+                Ok(ok_with_meta(
+                    text,
+                    serde_json::to_value(&items).unwrap_or(Value::Null),
+                ))
+            }
+            EconomyAction::VerifyFilters => {
+                let rep = self.bridge.verify_custom_filters(&ctx.workspace_dir)?;
+                let text = match rep.exists {
+                    false => format!("No project filter file found at `{}`.", rep.file_path),
+                    true => format!(
+                        "Custom filters `{}`: valid={} · {} rule(s) · {} test(s) passed, {} failed{}",
+                        rep.file_path,
+                        rep.valid,
+                        rep.rule_count,
+                        rep.tests_passed,
+                        rep.tests_failed,
+                        match rep.errors.is_empty() {
+                            true => String::new(),
+                            false => format!("\nErrors:\n- {}", rep.errors.join("\n- ")),
+                        }
                     ),
-                    serde_json::to_value(s).unwrap_or(Value::Null),
+                };
+                Ok(ok_with_meta(
+                    text,
+                    serde_json::to_value(&rep).unwrap_or(Value::Null),
                 ))
             }
         }

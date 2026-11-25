@@ -4,15 +4,17 @@
 use super::{SqliteStore, parse_dt};
 use chrono::Utc;
 use rusqlite::{OptionalExtension, params};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 use zenko_core::{
+    CommandSavingsStat, ECONOMY_DISCOVER_MIN_BYTES, ECONOMY_DISCOVER_SCAN_EVENTS,
     ECONOMY_ESTIMATED_USD_PER_1M_TOKENS, ECONOMY_LEDGER_MAX_EVENTS,
     ECONOMY_LOOP_MAX_BASELINE_SAMPLES, ECONOMY_LOOP_MIN_ENVELOPE_CALLS,
     ECONOMY_LOOP_P90_MIN_SAMPLES, ECONOMY_MICRO_SKILL_MAX_CHARS,
     ECONOMY_MICRO_SKILL_MAX_CONTRADICTIONS, ECONOMY_MICRO_SKILL_MIN_EXPOSURES_FOR_RATE,
     ECONOMY_MICRO_SKILL_MIN_NEED_RATE, ECONOMY_PROTECTED_CORE_TOOLS, EconomyConfig,
-    EconomyLedgerKind, EconomyLedgerSummary, MicroSkillStatus, RepoCodeMetrics, RepoMicroSkill,
-    RepoToolUsage, Result, new_id,
+    EconomyLedgerKind, EconomyLedgerSummary, MicroSkillStatus, MissedSavingsOpportunity,
+    RepoCodeMetrics, RepoMicroSkill, RepoToolUsage, Result, TOOL_GIT, TOOL_SHELL_EXEC, new_id,
 };
 
 fn truncate_utf8_chars(s: &str, max_chars: usize) -> String {
@@ -25,6 +27,50 @@ fn truncate_utf8_chars(s: &str, max_chars: usize) -> String {
 
 fn is_protected_core_tool(tool_name: &str) -> bool {
     ECONOMY_PROTECTED_CORE_TOOLS.contains(&tool_name)
+}
+
+fn extract_command_prefix(cmd: &str) -> Option<String> {
+    // Take the terminal segment of `cd ... && real_cmd` chains without regex.
+    let seg = cmd
+        .rsplit("&&")
+        .next()
+        .unwrap_or(cmd)
+        .rsplit(';')
+        .next()
+        .unwrap_or(cmd)
+        .trim();
+    let mut toks = seg
+        .split_whitespace()
+        .skip_while(|t| t.contains('=') && !t.starts_with('-'))
+        .skip_while(|t| matches!(*t, "sudo" | "env" | "time" | "nice" | "nohup"));
+    let first = toks.next()?;
+    let bin = first.rsplit('/').next().unwrap_or(first).to_ascii_lowercase();
+    if bin.is_empty() {
+        return None;
+    }
+    let second = toks
+        .next()
+        .filter(|t| !t.starts_with('-') && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')));
+    Some(match second {
+        Some(sub) => format!("{bin} {}", sub.to_ascii_lowercase()),
+        None => bin,
+    })
+}
+
+fn sanitize_filter_slug(prefix: &str) -> String {
+    let mut slug = String::with_capacity(prefix.len());
+    for ch in prefix.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    match trimmed.is_empty() {
+        true => "custom-cmd".into(),
+        false => trimmed.chars().take(36).collect(),
+    }
 }
 
 fn row_to_micro_skill(r: &rusqlite::Row<'_>) -> rusqlite::Result<RepoMicroSkill> {
@@ -727,19 +773,42 @@ impl SqliteStore {
         cost_usd_delta: f64,
         detail: &str,
     ) -> Result<()> {
+        self.record_economy_ledger_event_with_cmd(
+            repo_scope,
+            kind,
+            tokens_delta,
+            cost_usd_delta,
+            "",
+            detail,
+        )
+    }
+
+    /// Appends a categorized savings/bypass/overhead event tagged with a normalized `command_family`.
+    pub fn record_economy_ledger_event_with_cmd(
+        &self,
+        repo_scope: &str,
+        kind: EconomyLedgerKind,
+        tokens_delta: i64,
+        cost_usd_delta: f64,
+        command_family: &str,
+        detail: &str,
+    ) -> Result<()> {
         let id = format!("el_{}", new_id());
         let now_str = Utc::now().to_rfc3339();
         let clean_detail = truncate_utf8_chars(detail, 180);
+        let clean_family = truncate_utf8_chars(command_family, 40).to_ascii_lowercase();
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO economy_ledger (id, repo_scope, kind, tokens_delta, cost_usd_delta, detail, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO economy_ledger
+                 (id, repo_scope, kind, tokens_delta, cost_usd_delta, command_family, detail, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id,
                     repo_scope,
                     kind.as_str(),
                     tokens_delta,
                     cost_usd_delta,
+                    clean_family,
                     clean_detail,
                     now_str
                 ],
@@ -756,6 +825,204 @@ impl SqliteStore {
             )?;
             Ok(())
         })
+    }
+
+    /// Per-command-family savings & bypass breakdown (`cargo`, `git`, `tsc`, `lint`, `test`, `pkg`, `docker`, `custom`, `mcp`).
+    pub fn query_economy_by_command(&self, repo_scope: &str) -> Result<Vec<CommandSavingsStat>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT command_family,
+                        SUM(CASE WHEN kind IN ('read_less', 'output_dedup') THEN 1 ELSE 0 END) AS calls,
+                        COALESCE(SUM(CASE WHEN kind IN ('read_less', 'output_dedup') AND tokens_delta > 0 THEN tokens_delta ELSE 0 END), 0) AS saved,
+                        SUM(CASE WHEN kind = 'raw_bypass' THEN 1 ELSE 0 END) AS bypasses
+                 FROM economy_ledger
+                 WHERE repo_scope = ?1 AND command_family <> ''
+                 GROUP BY command_family
+                 ORDER BY saved DESC, calls DESC, command_family ASC
+                 LIMIT 16",
+            )?;
+            let rows = stmt
+                .query_map(params![repo_scope], |r| {
+                    Ok(CommandSavingsStat {
+                        command_family: r.get(0)?,
+                        calls: r.get::<_, i64>(1)?.max(0) as u64,
+                        tokens_saved: r.get::<_, i64>(2)?.max(0) as u64,
+                        raw_bypasses: r.get::<_, i64>(3)?.max(0) as u64,
+                    })
+                })?
+                .filter_map(std::result::Result::ok)
+                .filter(|s| s.calls > 0 || s.tokens_saved > 0 || s.raw_bypasses > 0)
+                .collect();
+            Ok(rows)
+        })
+    }
+
+    /// Reads the SHA-256 trust digest for `<workspace>/.zenko/filters.toml`, if previously approved.
+    pub fn get_trusted_filter_hash(
+        &self,
+        repo_scope: &str,
+        file_path: &str,
+    ) -> Result<Option<String>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT sha256_hex FROM trusted_filter_files WHERE repo_scope = ?1 AND file_path = ?2",
+                params![repo_scope, file_path],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+        })
+    }
+
+    /// Approves `<workspace>/.zenko/filters.toml` pinned to its exact SHA-256 digest.
+    pub fn trust_filter_file(
+        &self,
+        repo_scope: &str,
+        file_path: &str,
+        sha256_hex: &str,
+    ) -> Result<()> {
+        let now_str = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO trusted_filter_files (repo_scope, file_path, sha256_hex, trusted_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(repo_scope) DO UPDATE SET
+                   file_path = excluded.file_path,
+                   sha256_hex = excluded.sha256_hex,
+                   trusted_at = excluded.trusted_at",
+                params![repo_scope, file_path, sha256_hex, now_str],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Revokes trust for `<workspace>/.zenko/filters.toml`.
+    pub fn untrust_filter_file(&self, repo_scope: &str) -> Result<bool> {
+        self.with_conn(|conn| {
+            let n = conn.execute(
+                "DELETE FROM trusted_filter_files WHERE repo_scope = ?1",
+                params![repo_scope],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Scans recent SQLite `session_events` for high-volume uncompressed `shell_exec` / `git_tool`
+    /// outputs and proposes ready-to-paste zero-regex `.zenko/filters.toml` rules (`discover`).
+    pub fn discover_missed_savings(
+        &self,
+        workspace_dir: Option<&Path>,
+        limit: usize,
+    ) -> Result<Vec<MissedSavingsOpportunity>> {
+        let ws_filter = workspace_dir.map(|p| p.to_string_lossy().to_string());
+        let rows: Vec<(String, String)> = self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT e.kind, e.content_json
+                 FROM session_events e
+                 LEFT JOIN sessions s ON s.id = e.session_id
+                 WHERE e.kind IN ('tool_call', 'tool_result')
+                   AND (?1 IS NULL OR s.workspace_dir = ?1 OR s.workspace_dir IS NULL)
+                 ORDER BY e.created_at DESC
+                 LIMIT ?2",
+            )?;
+            let collected = stmt
+                .query_map(
+                    params![ws_filter, ECONOMY_DISCOVER_SCAN_EVENTS as i64],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )?
+                .filter_map(std::result::Result::ok)
+                .collect();
+            Ok(collected)
+        })?;
+
+        let mut call_prefixes: HashMap<String, String> = HashMap::new();
+        let mut results_by_call: Vec<(String, usize)> = Vec::new();
+
+        for (kind, raw_json) in rows {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw_json) else {
+                continue;
+            };
+            match kind.as_str() {
+                "tool_call" => {
+                    let Some(call_id) = val.get("call_id").and_then(serde_json::Value::as_str)
+                    else {
+                        continue;
+                    };
+                    let tool = val
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let args = val.get("arguments");
+                    let prefix = match tool {
+                        TOOL_SHELL_EXEC => args
+                            .and_then(|a| a.get("command"))
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(extract_command_prefix),
+                        TOOL_GIT => args
+                            .and_then(|a| a.get("action"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(|a| format!("git {}", a.trim().to_ascii_lowercase())),
+                        _ => None,
+                    };
+                    if let Some(p) = prefix {
+                        call_prefixes.insert(call_id.to_string(), p);
+                    }
+                }
+                "tool_result" => {
+                    let Some(call_id) = val.get("call_id").and_then(serde_json::Value::as_str)
+                    else {
+                        continue;
+                    };
+                    let content = val
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let already_shaped = content.contains("[read-less:")
+                        || content.contains("[dedup:")
+                        || content.contains("[failure-tee:");
+                    if !already_shaped && content.len() >= ECONOMY_DISCOVER_MIN_BYTES {
+                        results_by_call.push((call_id.to_string(), content.len()));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut grouped: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for (call_id, bytes) in results_by_call {
+            if let Some(prefix) = call_prefixes.get(&call_id) {
+                let entry = grouped.entry(prefix.clone()).or_insert((0, 0));
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 = entry.1.saturating_add(bytes as u64);
+            }
+        }
+
+        let mut out: Vec<MissedSavingsOpportunity> = grouped
+            .into_iter()
+            .map(|(prefix, (calls, total_bytes))| {
+                // Conservative 55% savings heuristic on uncompressed bulky command outputs
+                let estimated_missed_tokens = ((total_bytes * 55) / 100).div_ceil(4);
+                let slug = sanitize_filter_slug(&prefix);
+                let suggested_filter_toml = format!(
+                    "[filters.{slug}]\ndescription = \"Compact `{prefix}` output\"\nmatch_command_prefixes = [\"{prefix}\"]\nstrip_ansi = true\ncollapse_repeats = true\nmax_lines = 60\n"
+                );
+                MissedSavingsOpportunity {
+                    command_prefix: prefix,
+                    calls,
+                    total_bytes,
+                    estimated_missed_tokens,
+                    suggested_filter_toml,
+                }
+            })
+            .collect();
+
+        out.sort_by(|a, b| {
+            b.estimated_missed_tokens
+                .cmp(&a.estimated_missed_tokens)
+                .then_with(|| b.calls.cmp(&a.calls))
+                .then_with(|| a.command_prefix.cmp(&b.command_prefix))
+        });
+        out.truncate(limit.clamp(1, 25));
+        Ok(out)
     }
 
     /// Aggregates honest per-repo Token Economy ROI (gross savings minus background overhead).
@@ -821,6 +1088,10 @@ impl SqliteStore {
                     Some(EconomyLedgerKind::CcrRecovery) => {
                         summary.ccr_recoveries =
                             summary.ccr_recoveries.saturating_add(count);
+                    }
+                    Some(EconomyLedgerKind::RawBypass) => {
+                        summary.raw_bypasses =
+                            summary.raw_bypasses.saturating_add(count);
                     }
                     Some(EconomyLedgerKind::OverheadDream | EconomyLedgerKind::OverheadJudge) => {
                         summary.overhead_tokens =

@@ -444,8 +444,38 @@ pub(crate) async fn dispatch_tool_call(
         };
     }
 
-    // Tier 1 (Session Output Dedup) -> Tier 2 (Read-Less Structural + Lossless Scrub) -> Tier 3 (Error-Salvaging Spill)
-    let raw_for_dedup_handle = match cfg.context.read_less
+    // Tier 1 (Session Output Dedup) -> Tier 2 (Custom Filters + Command-Aware Read-Less + Failure Tee) -> Tier 3 (Error-Salvaging Spill)
+    let raw_bypass = tc.name == TOOL_SHELL_EXEC
+        && tc
+            .arguments
+            .get("raw")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let (cmd_family, _) = read_less::command_shapers::classify_tool_command(&tc.name, &tc.arguments);
+    let default_family_label =
+        read_less::command_shapers::command_family_label(&tc.name, cmd_family, false);
+
+    if raw_bypass {
+        let bypass_meta = json!({
+            "raw_bypass": true,
+            "command_family": default_family_label,
+        });
+        tool_output.metadata = match tool_output.metadata {
+            Some(Value::Object(mut map)) => {
+                map.insert("raw_bypass".into(), Value::Bool(true));
+                map.insert(
+                    "command_family".into(),
+                    Value::String(default_family_label.to_string()),
+                );
+                Some(Value::Object(map))
+            }
+            Some(other) => Some(json!({ "data": other, "raw_bypass": true, "command_family": default_family_label })),
+            None => Some(bypass_meta),
+        };
+    }
+
+    let raw_for_dedup_handle = match !raw_bypass
+        && cfg.context.read_less
         && !tool_output.is_error
         && read_less::is_read_less_eligible(&tc.name)
     {
@@ -454,7 +484,8 @@ pub(crate) async fn dispatch_tool_call(
     };
 
     let mut deduped_this_call = false;
-    if cfg.context.read_less
+    if !raw_bypass
+        && cfg.context.read_less
         && let Some(hit) = rt.check_or_record_output_dedup(
             session_id,
             &tc.name,
@@ -470,13 +501,19 @@ pub(crate) async fn dispatch_tool_call(
             stage: ORCH_STAGE_READ_LESS.into(),
             tier: zenko_core::ExecutionTier::Standard,
             detail: format!(
-                "Dedup `{}` (-{} calls): {} -> {} B (~{} tok saved)",
-                tc.name, hit.calls_ago, hit.original_bytes, hit.compressed_bytes, hit.tokens_saved,
+                "Dedup `{}` ({}) (-{} calls): {} -> {} B (~{} tok saved)",
+                tc.name,
+                default_family_label,
+                hit.calls_ago,
+                hit.original_bytes,
+                hit.compressed_bytes,
+                hit.tokens_saved,
             ),
             model: None,
         });
         let dedup_meta = json!({
             "calls_ago": hit.calls_ago,
+            "command_family": default_family_label,
             "original_bytes": hit.original_bytes,
             "compressed_bytes": hit.compressed_bytes,
             "bytes_saved": hit.bytes_saved,
@@ -485,6 +522,7 @@ pub(crate) async fn dispatch_tool_call(
         });
         let rl_meta = json!({
             "shape": "dedup",
+            "command_family": default_family_label,
             "original_bytes": hit.original_bytes,
             "compressed_bytes": hit.compressed_bytes,
             "bytes_saved": hit.bytes_saved,
@@ -503,82 +541,140 @@ pub(crate) async fn dispatch_tool_call(
         };
     }
 
-    if !deduped_this_call
-        && cfg.context.read_less
-        && let Some(rl) = read_less::try_compress_tool_output(
+    let mut shaped_this_call = false;
+    if !raw_bypass && !deduped_this_call && cfg.context.read_less {
+        let active_zmode = rt.effective_zmode(session_id, cfg, &[]);
+        let repo_scope = rt.resolve_repo_scope(Some(&tool_ctx.workspace_dir));
+        let custom_ctx = read_less::CustomFilterContext {
+            store: &rt.store,
+            repo_scope: &repo_scope,
+            data_dir: &tool_ctx.data_dir,
+            workspace_dir: &tool_ctx.workspace_dir,
+        };
+        if let Some(rl) = read_less::try_compress_tool_output_with_context(
             &tc.name,
+            &tc.arguments,
             &tool_output.content,
             cfg.context.read_less_min_bytes,
-        )
-    {
-        let raw_ccr = artifacts::persist_raw_ccr_artifact(
+            active_zmode,
+            tool_output.is_error,
+            Some(&custom_ctx),
+        ) {
+            shaped_this_call = true;
+            let raw_ccr = artifacts::persist_raw_ccr_artifact(
+                &tool_ctx.data_dir,
+                session_id,
+                &tc.id,
+                &tool_output.content,
+            )
+            .await;
+            if let (Some(rec), Some(raw_src)) = (&raw_ccr, raw_for_dedup_handle.as_deref()) {
+                rt.attach_output_dedup_handle(session_id, &tc.name, raw_src, rec.handle.clone());
+            }
+            let tag_prefix = match tool_output.is_error {
+                true => "failure-tee",
+                false => "read-less",
+            };
+            let shape_label = match rl.custom_filter_name.as_deref() {
+                Some(fname) => format!("{} ({fname})", rl.shape.as_str()),
+                None => format!("{} ({})", rl.shape.as_str(), rl.command_family),
+            };
+            let ccr_footer = match &raw_ccr {
+                Some(rec) => format!(
+                    "\n\n[{tag_prefix}: {shape_label}, {} -> {} bytes (-{:.1}%, ~{} tok saved) · raw saved at `{}`; inspect slices via `read_file` or `code_search`]",
+                    rl.original_bytes,
+                    rl.compressed_bytes,
+                    rl.savings_pct,
+                    rl.tokens_saved,
+                    rec.handle,
+                ),
+                None => format!(
+                    "\n\n[{tag_prefix}: {shape_label}, {} -> {} bytes (-{:.1}%, ~{} tok saved)]",
+                    rl.original_bytes,
+                    rl.compressed_bytes,
+                    rl.savings_pct,
+                    rl.tokens_saved,
+                ),
+            };
+            tool_output.content = format!("{}{ccr_footer}", rl.compressed);
+            rt.record_read_less_savings(session_id, rl.bytes_saved as u64, rl.tokens_saved);
+            rt.emit(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: ORCH_STAGE_READ_LESS.into(),
+                tier: zenko_core::ExecutionTier::Standard,
+                detail: format!(
+                    "{} `{}` ({shape_label}): {} -> {} B (-{:.1}%, ~{} tok saved)",
+                    match tool_output.is_error {
+                        true => "Failure-Tee",
+                        false => "Read-Less",
+                    },
+                    tc.name,
+                    rl.original_bytes,
+                    rl.compressed_bytes,
+                    rl.savings_pct,
+                    rl.tokens_saved,
+                ),
+                model: None,
+            });
+            let rl_meta = json!({
+                "shape": rl.shape.as_str(),
+                "command_family": rl.command_family,
+                "custom_filter": rl.custom_filter_name,
+                "failure_tee": tool_output.is_error,
+                "original_bytes": rl.original_bytes,
+                "compressed_bytes": rl.compressed_bytes,
+                "bytes_saved": rl.bytes_saved,
+                "tokens_saved": rl.tokens_saved,
+                "savings_pct": rl.savings_pct,
+                "raw_handle": raw_ccr.as_ref().map(|r| r.handle.as_str()),
+            });
+            tool_output.metadata = match tool_output.metadata {
+                Some(Value::Object(mut map)) => {
+                    map.insert("read_less".into(), rl_meta);
+                    if let Some(rec) = raw_ccr {
+                        map.insert(
+                            "artifact".into(),
+                            serde_json::to_value(&rec).unwrap_or(Value::Null),
+                        );
+                    }
+                    Some(Value::Object(map))
+                }
+                Some(other) => Some(json!({ "data": other, "read_less": rl_meta })),
+                None => Some(json!({ "read_less": rl_meta })),
+            };
+        }
+    }
+
+    // Native Failure Tee fallback: persist full raw error output even if it stayed uncompressed
+    // and below `max_output_bytes`, guaranteeing zero hidden error lines across retries.
+    if !shaped_this_call
+        && !deduped_this_call
+        && tool_output.is_error
+        && cfg.context.artifact_spilling
+        && read_less::is_read_less_eligible(&tc.name)
+        && tool_output.content.len() >= zenko_core::READ_LESS_FAILURE_TEE_MIN_BYTES
+        && tool_output.content.len() <= tool_ctx.max_output_bytes
+        && !tool_output.content.contains(ARTIFACT_PATH_PREFIX)
+        && let Some(rec) = artifacts::persist_raw_ccr_artifact(
             &tool_ctx.data_dir,
             session_id,
             &tc.id,
             &tool_output.content,
         )
-        .await;
-        if let (Some(rec), Some(raw_src)) = (&raw_ccr, raw_for_dedup_handle.as_deref()) {
-            rt.attach_output_dedup_handle(session_id, &tc.name, raw_src, rec.handle.clone());
-        }
-        let ccr_footer = match &raw_ccr {
-            Some(rec) => format!(
-                "\n\n[read-less: {}, {} -> {} bytes (-{:.1}%, ~{} tok saved) · raw saved at `{}`; inspect slices via `read_file` or `code_search`]",
-                rl.shape.as_str(),
-                rl.original_bytes,
-                rl.compressed_bytes,
-                rl.savings_pct,
-                rl.tokens_saved,
-                rec.handle,
-            ),
-            None => format!(
-                "\n\n[read-less: {}, {} -> {} bytes (-{:.1}%, ~{} tok saved)]",
-                rl.shape.as_str(),
-                rl.original_bytes,
-                rl.compressed_bytes,
-                rl.savings_pct,
-                rl.tokens_saved,
-            ),
-        };
-        tool_output.content = format!("{}{ccr_footer}", rl.compressed);
-        rt.record_read_less_savings(session_id, rl.bytes_saved as u64, rl.tokens_saved);
-        rt.emit(AgentEvent::OrchestratorUpdated {
-            session_id: session_id.to_string(),
-            stage: ORCH_STAGE_READ_LESS.into(),
-            tier: zenko_core::ExecutionTier::Standard,
-            detail: format!(
-                "Read-Less `{}` ({}): {} -> {} B (-{:.1}%, ~{} tok saved)",
-                tc.name,
-                rl.shape.as_str(),
-                rl.original_bytes,
-                rl.compressed_bytes,
-                rl.savings_pct,
-                rl.tokens_saved,
-            ),
-            model: None,
-        });
-        let rl_meta = json!({
-            "shape": rl.shape.as_str(),
-            "original_bytes": rl.original_bytes,
-            "compressed_bytes": rl.compressed_bytes,
-            "bytes_saved": rl.bytes_saved,
-            "tokens_saved": rl.tokens_saved,
-            "savings_pct": rl.savings_pct,
-            "raw_handle": raw_ccr.as_ref().map(|r| r.handle.as_str()),
-        });
+        .await
+    {
+        tool_output.content.push_str(&format!(
+            "\n\n[failure-tee: full raw error output ({} bytes) archived at `{}`]",
+            rec.total_bytes, rec.handle
+        ));
+        let art_val = serde_json::to_value(&rec).unwrap_or(Value::Null);
         tool_output.metadata = match tool_output.metadata {
             Some(Value::Object(mut map)) => {
-                map.insert("read_less".into(), rl_meta);
-                if let Some(rec) = raw_ccr {
-                    map.insert(
-                        "artifact".into(),
-                        serde_json::to_value(&rec).unwrap_or(Value::Null),
-                    );
-                }
+                map.insert("artifact".into(), art_val);
                 Some(Value::Object(map))
             }
-            Some(other) => Some(json!({ "data": other, "read_less": rl_meta })),
-            None => Some(json!({ "read_less": rl_meta })),
+            Some(other) => Some(json!({ "data": other, "artifact": art_val })),
+            None => Some(json!({ "artifact": art_val })),
         };
     }
 

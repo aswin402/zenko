@@ -974,6 +974,40 @@
         let (rl_calls, rl_bytes, rl_toks) = rt.read_less_stats_for(&sess.id);
         assert!(rl_calls >= 1 && rl_bytes >= 256 && rl_toks >= 64);
 
+        // a2) `shell_exec(raw=true)` explicitly bypasses Read-Less/Dedup and tags `raw_bypass` metadata!
+        let raw_exec = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t14a_raw".into(),
+                    name: TOOL_SHELL_EXEC.into(),
+                    arguments: json!({ "command": rl_cmd, "raw": true }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("raw bypass exec");
+        assert!(!raw_exec.output.is_error);
+        assert!(
+            !raw_exec.output.content.contains("[read-less:")
+                && !raw_exec.output.content.contains("[dedup:"),
+            "raw=true must skip compression/dedup: {}",
+            raw_exec.output.content
+        );
+        assert_eq!(
+            raw_exec
+                .output
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("raw_bypass"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
         // b) `orchestrate_control` switches English concise_mode live & reflects in `inspect_session_context`!
         let cm_shift = rt
             .execute_single_tool_call(

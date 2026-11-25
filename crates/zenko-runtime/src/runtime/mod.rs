@@ -1707,8 +1707,59 @@ impl AgentRuntime {
 
     pub fn economy_report(&self, workspace_dir: Option<&Path>) -> Result<TokenEconomyReport> {
         let cfg = self.config();
+        let ws = workspace_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let scope = self.resolve_repo_scope(Some(&ws));
+        crate::economy::build_economy_report(
+            &self.store,
+            &cfg.economy,
+            &scope,
+            &cfg.resolved_data_dir(),
+            &ws,
+        )
+    }
+
+    pub fn economy_discover_missed_savings(
+        &self,
+        workspace_dir: Option<&Path>,
+        limit: usize,
+    ) -> Result<Vec<zenko_core::MissedSavingsOpportunity>> {
+        let cfg = self.config();
+        let ws = workspace_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        self.store.discover_missed_savings(Some(&ws), limit)
+    }
+
+    pub fn economy_verify_custom_filters(
+        &self,
+        workspace_dir: Option<&Path>,
+    ) -> Result<zenko_core::CustomFilterVerifyReport> {
+        let cfg = self.config();
+        let ws = workspace_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let path = crate::read_less::custom_filters::project_filter_path(&ws);
+        Ok(crate::read_less::custom_filters::verify_filter_file_at(&path))
+    }
+
+    pub fn economy_trust_project_filters(
+        &self,
+        workspace_dir: Option<&Path>,
+    ) -> Result<(String, zenko_core::CustomFilterVerifyReport)> {
+        let cfg = self.config();
+        let ws = workspace_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let scope = self.resolve_repo_scope(Some(&ws));
+        crate::read_less::custom_filters::trust_project_filter_file(&self.store, &scope, &ws)
+            .map_err(ZenkoError::Config)
+    }
+
+    pub fn economy_untrust_project_filters(&self, workspace_dir: Option<&Path>) -> Result<bool> {
         let scope = self.resolve_repo_scope(workspace_dir);
-        crate::economy::build_economy_report(&self.store, &cfg.economy, &scope)
+        self.store.untrust_filter_file(&scope)
     }
 
     pub fn economy_add_micro_skill(

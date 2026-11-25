@@ -1324,12 +1324,56 @@ export interface RepoToolUsage {
   updated_at: string
 }
 
+export interface CommandSavingsStat {
+  command_family: string
+  calls: number
+  tokens_saved: number
+  raw_bypasses?: number
+}
+
+export interface MissedSavingsOpportunity {
+  command_prefix: string
+  calls: number
+  total_bytes: number
+  estimated_missed_tokens: number
+  suggested_filter_toml: string
+}
+
+export interface CustomFilterTestFailure {
+  filter_name: string
+  test_name: string
+  expected: string
+  actual: string
+}
+
+export interface CustomFilterVerifyReport {
+  file_path: string
+  exists: boolean
+  valid: boolean
+  rule_count: number
+  tests_passed: number
+  tests_failed: number
+  errors?: string[]
+  test_failures?: CustomFilterTestFailure[]
+}
+
+export interface CustomFilterTrustStatus {
+  project_file_path: string
+  project_file_exists: boolean
+  project_sha256?: string | null
+  trusted: boolean
+  trusted_sha256?: string | null
+  rule_count: number
+  user_rule_count: number
+}
+
 export interface EconomyLedgerSummary {
   repo_scope: string
   read_less_tokens_saved: number
   output_dedup_tokens_saved?: number
   output_dedup_hits?: number
   ccr_recoveries?: number
+  raw_bypasses?: number
   tool_prune_tokens_saved: number
   micro_skill_injections: number
   loop_guard_interventions: number
@@ -1351,6 +1395,8 @@ export interface TokenEconomyReport {
   config: EconomyConfig
   summary: EconomyLedgerSummary
   code_metrics?: RepoCodeMetrics
+  by_command?: CommandSavingsStat[]
+  filter_status?: CustomFilterTrustStatus
   minimalism_modes?: CodeMinimalismDescriptor[]
   micro_skills: RepoMicroSkill[]
   tool_usage: RepoToolUsage[]

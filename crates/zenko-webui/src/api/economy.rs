@@ -237,3 +237,59 @@ pub async fn api_economy_minimalism_audit(
             .into_response(),
     }
 }
+
+#[derive(Deserialize, Default)]
+pub struct EconomyDiscoverQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+pub async fn api_economy_discover(
+    State(state): State<WebState>,
+    Query(q): Query<EconomyDiscoverQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(zenko_core::ECONOMY_DISCOVER_DEFAULT_LIMIT);
+    match state.runtime.economy_discover_missed_savings(None, limit) {
+        Ok(items) => Json(json!({ "opportunities": items })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn api_economy_verify_filters(State(state): State<WebState>) -> Response {
+    match state.runtime.economy_verify_custom_filters(None) {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn api_economy_trust_filters(State(state): State<WebState>) -> Response {
+    match state.runtime.economy_trust_project_filters(None) {
+        Ok((sha256, report)) => {
+            Json(json!({ "ok": true, "sha256": sha256, "verify": report })).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn api_economy_untrust_filters(State(state): State<WebState>) -> Response {
+    match state.runtime.economy_untrust_project_filters(None) {
+        Ok(removed) => Json(json!({ "ok": true, "removed": removed })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}

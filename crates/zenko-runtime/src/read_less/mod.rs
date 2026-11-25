@@ -1,17 +1,30 @@
 //! Pure-Rust, zero-regex Read-Less Structural Tool-Output Compressor (CCR-backed).
 //! Shrinks bulky ephemeral outputs (`shell_exec`, `job_read`, `git_tool`, `web_fetch`,
-//! `script_block`, and external `mcp__*` blobs) BEFORE they consume LLM context tokens,
-//! while strictly excluding `read_file` and code editors so line numbers and hash anchors
-//! remain untouched. Uses deterministic structural algorithms:
-//! - JSON schema/array sampler (`serde_json`)
-//! - Test-runner pass collapser preserving failures & stack traces verbatim
-//! - RFC-4180 quote-aware finite-state CSV/TSV column detector
-//! - Drain-style FNV-1a digit/hex-normalized log-template clustering
-//! Every compressed payload is paired with an atomic raw `artifact:` file so 100% of the
-//! original bytes stay recoverable on demand.
+//! `web_search`, `glob_find`, `script_block`, `spawn_agent`, `agent_wait`, and external `mcp__*`)
+//! BEFORE they consume LLM context tokens, while strictly excluding `read_file`, `code_search`,
+//! `lsp_tool`, and code editors so line numbers and hash anchors remain untouched.
+//!
+//! Pipeline layers:
+//! - Layer 0: Trust-gated declarative custom filters (`~/.zenko/filters.toml` & SHA-256-verified `.zenko/filters.toml`)
+//! - Layer 1: Command-aware ecosystem shapers (`cargo`/`rustc`/`clippy`, `tsc`, linters, `git diff/log/status`,
+//!   `npm`/`pnpm`/`bun`/`pip`/`uv`, `docker`/`kubectl`, multi-ecosystem test runners) governed by `ZMode`
+//! - Layer 2: Generic structural shapers (JSON schema sampler, RFC-4180 CSV sampler, `glob_find` directory
+//!   grouper, Drain-style FNV-1a log template clusterer, and lossless `scrub`)
+//! Every compressed payload is paired with an atomic raw `artifact:` file (`0600`) so 100% of the
+//! original bytes stay recoverable on demand ("Never Worse", "Nothing Hidden").
 
+pub mod command_shapers;
+pub mod custom_filters;
+
+use command_shapers::{
+    CommandFamily, classify_tool_command, command_family_label, normalize_carriage_returns,
+    shape_compiler_or_lint, shape_container_or_k8s, shape_git_diff, shape_git_log,
+    shape_git_status, shape_package_install,
+};
+use custom_filters::try_apply_trusted_custom_filters;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::path::Path;
 use zenko_core::{
     ARTIFACT_PATH_PREFIX, FNV1A_OFFSET_BASIS, FNV1A_PRIME, MCP_TOOL_PREFIX,
     READ_LESS_BUILD_PROGRESS_PREFIXES, READ_LESS_CSV_MIN_COLS, READ_LESS_CSV_MIN_ROWS,
@@ -27,11 +40,20 @@ use zenko_core::{
     READ_LESS_PASS_PREFIXES, READ_LESS_SCRUB_MIN_BYTES, READ_LESS_SCRUB_MIN_SAVED_BYTES,
     READ_LESS_SUMMARY_PREFIXES, READ_LESS_TAIL_ROWS, READ_LESS_TEST_MAX_KEPT_OTHER_LINES,
     READ_LESS_TEST_MIN_PASS_WITHOUT_SUMMARY, READ_LESS_TEST_MIN_PASS_WITH_SUMMARY, TOOL_GLOB_FIND,
+    ZMode,
 };
+use zenko_memory::SqliteStore;
 use zenko_tools::pty::strip_ansi_escapes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadLessShape {
+    CustomFilter,
+    CompilerDiag,
+    GitDiff,
+    GitLog,
+    GitStatus,
+    PackageInstall,
+    ContainerLog,
     Json,
     Csv,
     GlobList,
@@ -43,6 +65,13 @@ pub enum ReadLessShape {
 impl ReadLessShape {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::CustomFilter => "custom_filter",
+            Self::CompilerDiag => "compiler_diag",
+            Self::GitDiff => "git_diff",
+            Self::GitLog => "git_log",
+            Self::GitStatus => "git_status",
+            Self::PackageInstall => "pkg_install",
+            Self::ContainerLog => "container_log",
             Self::Json => "json",
             Self::Csv => "csv",
             Self::GlobList => "glob_list",
@@ -57,11 +86,21 @@ impl ReadLessShape {
 pub struct ReadLessResult {
     pub compressed: String,
     pub shape: ReadLessShape,
+    pub command_family: &'static str,
+    pub custom_filter_name: Option<String>,
     pub original_bytes: usize,
     pub compressed_bytes: usize,
     pub bytes_saved: usize,
     pub tokens_saved: usize,
     pub savings_pct: f64,
+}
+
+/// Optional runtime context enabling trust-gated custom TOML filters during Read-Less shaping.
+pub struct CustomFilterContext<'a> {
+    pub store: &'a SqliteStore,
+    pub repo_scope: &'a str,
+    pub data_dir: &'a Path,
+    pub workspace_dir: &'a Path,
 }
 
 /// Exact-match fingerprint for bounded per-session tool-output deduplication (zero heap bloat).
@@ -159,6 +198,7 @@ impl SessionOutputDedup {
             || raw.len() < READ_LESS_DEDUP_MIN_BYTES
             || raw.contains("[dedup:")
             || raw.contains("[read-less:")
+            || raw.contains("[failure-tee:")
             || raw.contains("[spilled full `")
         {
             return None;
@@ -235,12 +275,36 @@ pub fn is_read_less_eligible(tool_name: &str) -> bool {
     READ_LESS_ELIGIBLE_TOOLS.contains(&tool_name) || tool_name.starts_with(MCP_TOOL_PREFIX)
 }
 
-/// Attempts deterministic structural compression (or lossless `scrub` on medium outputs) of `raw`.
-/// Returns `None` when the tool is ineligible, already compact/spilled, or savings are negligible.
+/// Convenience entry point without command args or custom filter context (`ZMode::Balanced`).
 pub fn try_compress_tool_output(
     tool_name: &str,
     raw: &str,
     min_bytes: usize,
+) -> Option<ReadLessResult> {
+    try_compress_tool_output_with_context(
+        tool_name,
+        &Value::Null,
+        raw,
+        min_bytes,
+        ZMode::Balanced,
+        false,
+        None,
+    )
+}
+
+/// Full context-aware Read-Less compressor combining:
+/// 1) Trust-gated declarative custom filters (`.zenko/filters.toml` / `~/.zenko/filters.toml`),
+/// 2) Command-aware ecosystem shapers (`cargo`, `tsc`, linters, `git`, `pkg`, `docker`, `test`),
+/// 3) Generic structural shapers (`json`, `csv`, `glob_list`, `test_output`, `build_log`, `scrub`).
+#[allow(clippy::too_many_arguments)]
+pub fn try_compress_tool_output_with_context(
+    tool_name: &str,
+    tool_args: &Value,
+    raw: &str,
+    min_bytes: usize,
+    zmode: ZMode,
+    is_error: bool,
+    custom_ctx: Option<&CustomFilterContext<'_>>,
 ) -> Option<ReadLessResult> {
     if !is_read_less_eligible(tool_name) {
         return None;
@@ -249,23 +313,52 @@ pub fn try_compress_tool_output(
     let line_count = raw.lines().count();
     if raw.contains("[read-less:")
         || raw.contains("[dedup:")
+        || raw.contains("[failure-tee:")
         || raw.contains("[spilled full `")
         || raw.contains(ARTIFACT_PATH_PREFIX)
     {
         return None;
     }
 
-    let cleaned = strip_ansi_escapes(raw);
-    let heavy_eligible = original_bytes >= min_bytes || line_count >= READ_LESS_MIN_LINES;
-    let (shape, compressed) = match heavy_eligible {
-        true => compress_by_detected_shape(tool_name, &cleaned)
-            .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s)))?,
-        false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
-            (ReadLessShape::Scrub, try_lossless_scrub(&cleaned)?)
+    let (cmd_family, cmd_str) = classify_tool_command(tool_name, tool_args);
+    let cleaned = normalize_carriage_returns(&strip_ansi_escapes(raw));
+
+    // Layer 0: Trusted custom declarative TOML filter (enabled in Balanced/High/Ultra)
+    let mut custom_filter_name: Option<String> = None;
+    let shaped_opt: Option<(ReadLessShape, String)> = if zmode != ZMode::Lite
+        && let (Some(ctx), Some(cmd)) = (custom_ctx, cmd_str.as_deref())
+        && let Some((fname, out)) = try_apply_trusted_custom_filters(
+            ctx.store,
+            ctx.repo_scope,
+            ctx.data_dir,
+            ctx.workspace_dir,
+            cmd,
+            &cleaned,
+            is_error,
+        ) {
+        custom_filter_name = Some(fname);
+        Some((ReadLessShape::CustomFilter, out))
+    } else {
+        let heavy_eligible = original_bytes >= min_bytes || line_count >= READ_LESS_MIN_LINES;
+        match heavy_eligible {
+            true => compress_command_aware(cmd_family, &cleaned, zmode)
+                .or_else(|| compress_by_detected_shape(tool_name, &cleaned))
+                .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))),
+            false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
+                // Always fold huge lockfile diffs or apply lossless scrub on medium outputs
+                if cmd_family == CommandFamily::GitDiff
+                    && let Some(diff_out) = shape_git_diff(&cleaned)
+                {
+                    Some((ReadLessShape::GitDiff, diff_out))
+                } else {
+                    try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))
+                }
+            }
+            false => None,
         }
-        false => return None,
     };
 
+    let (shape, compressed) = shaped_opt?;
     let compressed_bytes = compressed.len();
     if compressed_bytes >= original_bytes {
         return None;
@@ -273,7 +366,9 @@ pub fn try_compress_tool_output(
     let bytes_saved = original_bytes.saturating_sub(compressed_bytes);
     let pct_whole = (bytes_saved * 100) / original_bytes.max(1);
     let meets_threshold = match shape {
-        ReadLessShape::Scrub => bytes_saved >= READ_LESS_SCRUB_MIN_SAVED_BYTES,
+        ReadLessShape::Scrub | ReadLessShape::CustomFilter | ReadLessShape::GitStatus => {
+            bytes_saved >= READ_LESS_SCRUB_MIN_SAVED_BYTES
+        }
         _ => bytes_saved >= READ_LESS_MIN_SAVED_BYTES && pct_whole >= READ_LESS_MIN_SAVINGS_PCT,
     };
     if !meets_threshold {
@@ -281,10 +376,13 @@ pub fn try_compress_tool_output(
     }
     let tokens_saved = bytes_saved.div_ceil(4);
     let savings_pct = ((bytes_saved as f64 / original_bytes as f64) * 1000.0).round() / 10.0;
+    let family_label = command_family_label(tool_name, cmd_family, custom_filter_name.is_some());
 
     Some(ReadLessResult {
         compressed,
         shape,
+        command_family: family_label,
+        custom_filter_name,
         original_bytes,
         compressed_bytes,
         bytes_saved,
@@ -293,9 +391,37 @@ pub fn try_compress_tool_output(
     })
 }
 
+fn compress_command_aware(
+    family: CommandFamily,
+    text: &str,
+    zmode: ZMode,
+) -> Option<(ReadLessShape, String)> {
+    match family {
+        CommandFamily::GitDiff => shape_git_diff(text).map(|s| (ReadLessShape::GitDiff, s)),
+        CommandFamily::GitLog => shape_git_log(text).map(|s| (ReadLessShape::GitLog, s)),
+        CommandFamily::GitStatus => shape_git_status(text).map(|s| (ReadLessShape::GitStatus, s)),
+        CommandFamily::RustCompiler | CommandFamily::TypeScriptCompiler | CommandFamily::Linter => {
+            shape_compiler_or_lint(text, family, zmode).map(|s| (ReadLessShape::CompilerDiag, s))
+        }
+        CommandFamily::PackageInstall if zmode != ZMode::Lite => {
+            shape_package_install(text).map(|s| (ReadLessShape::PackageInstall, s))
+        }
+        CommandFamily::ContainerOrK8s if zmode != ZMode::Lite => {
+            shape_container_or_k8s(text).map(|s| (ReadLessShape::ContainerLog, s))
+        }
+        CommandFamily::TestRunner => {
+            try_compress_test_output(text).map(|s| (ReadLessShape::TestOutput, s))
+        }
+        _ => None,
+    }
+}
+
 fn compress_by_detected_shape(tool_name: &str, text: &str) -> Option<(ReadLessShape, String)> {
     if let Some(json_out) = try_compress_json_body(text) {
         return Some((ReadLessShape::Json, json_out));
+    }
+    if let Some(diff_out) = shape_git_diff(text) {
+        return Some((ReadLessShape::GitDiff, diff_out));
     }
     if let Some(test_out) = try_compress_test_output(text) {
         return Some((ReadLessShape::TestOutput, test_out));
@@ -420,12 +546,16 @@ fn is_passing_test_line(line: &str) -> bool {
     let t = line.trim();
     (t.starts_with("test ") && t.ends_with("... ok"))
         || t.ends_with(" PASSED")
+        || t.contains(" PASSED [")
+        || (t.starts_with("ok ") && t.contains("s)"))
         || READ_LESS_PASS_PREFIXES.iter().any(|p| t.starts_with(p))
 }
 
 fn is_failing_or_diag_line(line: &str) -> bool {
     let t = line.trim();
     if (t.starts_with("test ") && t.contains("FAILED"))
+        || t.contains(" FAILED [")
+        || t.ends_with(" FAILED")
         || READ_LESS_FAIL_PREFIXES.iter().any(|p| t.starts_with(p))
     {
         return true;
@@ -439,6 +569,7 @@ fn is_test_summary_line(line: &str) -> bool {
     READ_LESS_SUMMARY_PREFIXES.iter().any(|p| t.starts_with(p))
         || (t.starts_with("running ") && t.contains(" test"))
         || (t.starts_with("===") && (t.contains("passed") || t.contains("failed")))
+        || (t.starts_with("collected ") && t.contains(" item"))
 }
 
 fn is_build_progress_line(line: &str) -> bool {
@@ -476,7 +607,10 @@ fn try_compress_test_output(text: &str) -> Option<String> {
 
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed == "failures:" {
+        if trimmed == "failures:"
+            || trimmed.starts_with("=== FAILURES ===")
+            || trimmed.starts_with("=== short test summary")
+        {
             flush_collapsed(&mut out, &mut collapsed_pass, &mut collapsed_progress);
             in_failures_section = true;
             out.push((*line).to_string());
@@ -484,7 +618,9 @@ fn try_compress_test_output(text: &str) -> Option<String> {
         }
         if in_failures_section {
             out.push((*line).to_string());
-            if trimmed.starts_with("test result:") {
+            if trimmed.starts_with("test result:")
+                || (trimmed.starts_with("===") && (trimmed.contains("passed") || trimmed.contains("failed")))
+            {
                 in_failures_section = false;
             }
             continue;
@@ -513,7 +649,6 @@ fn try_compress_test_output(text: &str) -> Option<String> {
 }
 
 /// RFC-4180 quote-aware finite-state column counter (zero regex).
-/// Accurately counts columns when quoted fields contain embedded delimiters or `""` escapes.
 fn count_delimited_columns(line: &str, delim: u8) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut cols = 1usize;
@@ -661,9 +796,6 @@ fn hash_log_atom(h: &mut u64, atom: &str) {
 }
 
 /// Drain-style deterministic 64-bit FNV-1a structural log template fingerprinter (zero regex).
-/// Splits `key=val` pairs and collapses digit runs (`12ms`, `09:12:01`, `v1.2.3`) to `#` and
-/// hex/UUID literals (`0xdead000a`, `550e8400-e29b-...`) to `$` while preserving the exact
-/// alphabetic/punctuation skeleton so repeating log families cluster algorithmically.
 fn structural_log_template_hash(line: &str) -> u64 {
     let mut h = FNV1A_OFFSET_BASIS;
     for tok in line.split_whitespace() {
@@ -691,7 +823,6 @@ fn try_compress_build_or_log(text: &str) -> Option<String> {
         .map(|l| structural_log_template_hash(l.trim()))
         .collect();
 
-    // Pass 1: Drain-style template clustering over consecutive runs + global template frequency cap.
     let mut deduped: Vec<String> = Vec::with_capacity(lines.len());
     let mut progress_count = 0usize;
     let mut template_freq: HashMap<u64, usize> = HashMap::new();
@@ -760,7 +891,6 @@ fn try_compress_build_or_log(text: &str) -> Option<String> {
         ));
     }
 
-    // Pass 2: if still verbose, keep head + all diagnostic lines + bottom tail.
     if deduped.len() <= READ_LESS_LOG_MAX_KEPT_LINES {
         return Some(deduped.join("\n"));
     }
@@ -793,9 +923,8 @@ fn try_compress_build_or_log(text: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
-/// Lossless `scrub` tier (inspired by Chisle): trims trailing whitespace, collapses consecutive
-/// blank runs to a single blank line, and folds `>= 3` exact consecutive identical lines to `[xN]`.
-/// Preserves every unique line and every diagnostic verbatim (zero semantic loss).
+/// Lossless `scrub` tier: trims trailing whitespace, collapses consecutive blank runs to a single
+/// blank line, and folds `>= 2` exact consecutive identical lines to `[xN]`.
 fn try_lossless_scrub(text: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
     if lines.is_empty() {
@@ -836,8 +965,7 @@ fn try_lossless_scrub(text: &str) -> Option<String> {
     }
 }
 
-/// Groups repetitive `glob_find` path listings by parent directory, slashing repeated path
-/// prefixes while preserving complete directory structure and sample filenames per folder.
+/// Groups repetitive `glob_find` path listings by parent directory.
 fn try_compress_glob_list(text: &str) -> Option<String> {
     let mut header_lines: Vec<&str> = Vec::new();
     let mut grouped: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -922,13 +1050,14 @@ mod tests {
         let raw = serde_json::to_string_pretty(&Value::Array(items)).expect("json");
         let res = try_compress_tool_output("mcp__demo__list", &raw, 256).expect("compressed");
         assert_eq!(res.shape, ReadLessShape::Json);
+        assert_eq!(res.command_family, "mcp");
         assert!(res.savings_pct >= 50.0, "pct={}", res.savings_pct);
         assert!(res.compressed.contains("\"_total_items\":60"));
         assert!(res.compressed.contains("\"_item_keys\""));
     }
 
     #[test]
-    fn compresses_cargo_test_passing_noise_while_keeping_failures_verbatim() {
+    fn compresses_cargo_and_pytest_passing_noise_while_keeping_failures_verbatim() {
         let mut lines = vec![
             "exit_code: 101".to_string(),
             "   Compiling zenko-core v0.0.22".to_string(),
@@ -950,7 +1079,30 @@ mod tests {
         assert!(res.compressed.contains("+29 passing tests collapsed"));
         assert!(res.compressed.contains("broken_case ... FAILED"));
         assert!(res.compressed.contains("panicked at src/lib.rs:42"));
-        assert!(res.compressed.contains("test result: FAILED. 29 passed; 1 failed"));
+
+        // Pytest multi-ecosystem test runner
+        let mut py = vec!["collected 25 items".to_string()];
+        for i in 0..24 {
+            py.push(format!("tests/test_api.py::test_case_{i} PASSED [ {:>2}%]", (i + 1) * 4));
+        }
+        py.push("tests/test_api.py::test_auth FAILED [100%]".to_string());
+        py.push("=== short test summary info ===".to_string());
+        py.push("FAILED tests/test_api.py::test_auth - AssertionError: 401 != 200".to_string());
+        py.push("=== 1 failed, 24 passed in 0.42s ===".to_string());
+        let py_res = try_compress_tool_output_with_context(
+            TOOL_SHELL_EXEC,
+            &json!({ "command": "uv run pytest -v" }),
+            &py.join("\n"),
+            256,
+            ZMode::Balanced,
+            true,
+            None,
+        )
+        .expect("pytest compressed");
+        assert_eq!(py_res.shape, ReadLessShape::TestOutput);
+        assert_eq!(py_res.command_family, "test");
+        assert!(py_res.compressed.contains("+24 passing tests collapsed"));
+        assert!(py_res.compressed.contains("AssertionError: 401 != 200"));
     }
 
     #[test]
@@ -1005,12 +1157,10 @@ mod tests {
         let mut dedup = SessionOutputDedup::default();
         let body = "M crates/zenko-core/src/types.rs\n".repeat(25);
 
-        // Exempt tool (`read_file`) and error results are never deduped
         assert!(dedup.check_or_record(TOOL_READ_FILE, &body, false).is_none());
         assert!(dedup.check_or_record(TOOL_READ_FILE, &body, false).is_none());
         assert!(dedup.check_or_record(TOOL_SHELL_EXEC, &body, true).is_none());
 
-        // First eligible call records fingerprint; attaching artifact links future dedup hits
         assert!(dedup.check_or_record(TOOL_SHELL_EXEC, &body, false).is_none());
         dedup.attach_artifact_handle(
             TOOL_SHELL_EXEC,
@@ -1018,7 +1168,6 @@ mod tests {
             "artifact:s1/c1.txt".to_string(),
         );
 
-        // Identical second call hits dedup cleanly and cites the raw artifact handle
         let hit = dedup
             .check_or_record(TOOL_SHELL_EXEC, &body, false)
             .expect("second identical call must dedup");
@@ -1028,14 +1177,12 @@ mod tests {
         assert!(hit.replacement.contains("[dedup:"));
         assert!(hit.replacement.contains("artifact:s1/c1.txt"));
 
-        // Compaction reset clears cache so subsequent call emits fresh output
         dedup.clear();
         assert!(dedup.check_or_record(TOOL_SHELL_EXEC, &body, false).is_none());
     }
 
     #[test]
     fn lossless_scrub_and_glob_directory_grouping_compress_cleanly() {
-        // Medium output below heavy min_bytes=4096 with ANSI escapes, blank runs, and exact repeats
         let mut medium = String::new();
         for _ in 0..8 {
             medium.push_str("\x1b[32mstatus: healthy\x1b[0m   \n");
@@ -1051,7 +1198,6 @@ mod tests {
         assert!(scrubbed.compressed.contains("unique-line-5"));
         assert!(!scrubbed.compressed.contains("\x1b["));
 
-        // Verbose glob_find listing compresses cleanly by parent directory
         let mut glob_lines = vec!["Found 36 file(s):".to_string()];
         for dir in ["crates/zenko-core/src", "crates/zenko-tools/src", "webui/src/components"] {
             for i in 0..12 {
@@ -1062,6 +1208,7 @@ mod tests {
         let glob_res =
             try_compress_tool_output(TOOL_GLOB_FIND, &glob_raw, 256).expect("glob_list compressed");
         assert_eq!(glob_res.shape, ReadLessShape::GlobList);
+        assert_eq!(glob_res.command_family, "glob");
         assert!(glob_res.compressed.contains("crates/zenko-core/src/ (12):"));
         assert!(glob_res.compressed.contains("[+4 more]"));
     }

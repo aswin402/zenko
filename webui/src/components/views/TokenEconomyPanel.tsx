@@ -13,9 +13,11 @@ import {
 import { api, formatCompactTokens } from '@/lib/api'
 import type {
   CodeMinimalismMode,
+  CustomFilterVerifyReport,
   DebtScanReport,
   EconomyConfig,
   MinimalismAuditPayload,
+  MissedSavingsOpportunity,
   TokenEconomyReport,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -100,6 +102,9 @@ export function TokenEconomyPanel({
   const [auditPayload, setAuditPayload] = useState<MinimalismAuditPayload | null>(null)
   const [runningAudit, setRunningAudit] = useState(false)
   const [copiedSummary, setCopiedSummary] = useState(false)
+  const [discovered, setDiscovered] = useState<MissedSavingsOpportunity[] | null>(null)
+  const [discovering, setDiscovering] = useState(false)
+  const [filterVerify, setFilterVerify] = useState<CustomFilterVerifyReport | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -254,6 +259,68 @@ export function TokenEconomyPanel({
       toast(e?.message || 'Failed to run code minimalism audit', 'error')
     } finally {
       setRunningAudit(false)
+    }
+  }
+
+  const runDiscover = async () => {
+    setDiscovering(true)
+    try {
+      const res = await api<{ opportunities: MissedSavingsOpportunity[] }>(
+        '/api/economy/discover?limit=8',
+      )
+      setDiscovered(res.opportunities || [])
+      if ((res.opportunities || []).length === 0) {
+        toast('No large uncompressed shell/git command families found in recent sessions', 'info')
+      } else {
+        toast(
+          `Discovered ${res.opportunities.length} missed-savings command opportunit(y/ies)`,
+          'info',
+        )
+      }
+    } catch (e: any) {
+      toast(e?.message || 'Failed to scan for missed savings', 'error')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const verifyProjectFilters = async () => {
+    setBusy(true)
+    try {
+      const rep = await api<CustomFilterVerifyReport>('/api/economy/filters/verify')
+      setFilterVerify(rep)
+      toast(
+        rep.exists
+          ? `filters.toml: ${rep.valid ? 'valid' : 'invalid'} · ${rep.rule_count} rule(s) · ${rep.tests_passed}/${rep.tests_passed + rep.tests_failed} test(s)`
+          : 'No project .zenko/filters.toml found',
+        rep.valid ? 'success' : 'error',
+      )
+    } catch (e: any) {
+      toast(e?.message || 'Failed to verify project filters', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleProjectFilterTrust = async (trust: boolean) => {
+    setBusy(true)
+    try {
+      if (trust) {
+        const res = await api<{ ok: boolean; sha256: string; verify: CustomFilterVerifyReport }>(
+          '/api/economy/filters/trust',
+          { method: 'POST' },
+        )
+        setFilterVerify(res.verify)
+        toast(`Trusted .zenko/filters.toml (${res.sha256.slice(0, 12)}…)`, 'success')
+      } else {
+        await api('/api/economy/filters/trust', { method: 'DELETE' })
+        toast('Revoked .zenko/filters.toml trust', 'info')
+      }
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to update filter trust state', 'error')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -438,6 +505,147 @@ export function TokenEconomyPanel({
               <span className="font-mono text-[10px] text-[var(--muted)]">{sub}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Per-Command Savings Breakdown + Trust-Gated Custom Filters & Missed-Savings Discovery */}
+      {report && (
+        <div className="flex flex-col gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 px-3.5 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[12px] font-medium text-[var(--fg)]">
+                Command-Aware Shapers &amp; Custom Filters
+              </span>
+              {report.filter_status?.project_file_exists && (
+                <span
+                  className="rounded-full border px-2 py-0.5 font-mono text-[10px]"
+                  style={
+                    report.filter_status.trusted
+                      ? {
+                          color: 'var(--accent)',
+                          borderColor: 'color-mix(in srgb, var(--accent) 42%, transparent)',
+                          backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+                        }
+                      : {
+                          color: 'var(--muted)',
+                          borderColor: 'var(--border)',
+                          backgroundColor: 'var(--surface)',
+                        }
+                  }
+                >
+                  .zenko/filters.toml · {report.filter_status.trusted ? 'TRUSTED' : 'UNTRUSTED'} (
+                  {report.filter_status.rule_count})
+                </span>
+              )}
+              {(report.filter_status?.user_rule_count ?? 0) > 0 && (
+                <span className="font-mono text-[10px] text-[var(--muted)]">
+                  ~/.zenko/filters.toml: {report.filter_status?.user_rule_count} rule(s)
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {report.filter_status?.project_file_exists && (
+                <>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={verifyProjectFilters}
+                    className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+                  >
+                    Verify Filters
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => toggleProjectFilterTrust(!report.filter_status?.trusted)}
+                    className="z-btn z-btn-secondary z-btn-sm font-mono text-[10.5px]"
+                  >
+                    {report.filter_status.trusted ? 'Revoke Trust' : 'Trust Project Filters'}
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                disabled={discovering}
+                onClick={runDiscover}
+                className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+              >
+                <Search size={11} />
+                <span>{discovering ? 'Scanning…' : 'Discover Missed Savings'}</span>
+              </button>
+            </div>
+          </div>
+
+          {(report.by_command?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {report.by_command!.map((c) => (
+                <div
+                  key={c.command_family}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 font-mono text-[10.5px]"
+                >
+                  <span className="font-semibold text-[var(--fg)]">{c.command_family}</span>
+                  <span style={{ color: 'var(--accent)' }}>
+                    +{formatCompactTokens(c.tokens_saved)}
+                  </span>
+                  <span className="text-[var(--muted)]">
+                    {c.calls}x{c.raw_bypasses ? ` · ${c.raw_bypasses} raw` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {filterVerify && filterVerify.exists && !filterVerify.valid && (
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 font-mono text-[10.5px] text-[var(--muted)]">
+              {(filterVerify.errors || []).map((err, i) => (
+                <div key={i}>error: {err}</div>
+              ))}
+              {(filterVerify.test_failures || []).map((tf, i) => (
+                <div key={i}>
+                  FAIL [{tf.filter_name}::{tf.test_name}]
+                </div>
+              ))}
+            </div>
+          )}
+
+          {discovered && discovered.length > 0 && (
+            <div className="flex flex-col gap-1.5 border-t border-[var(--border)]/60 pt-2">
+              <div className="flex items-center justify-between font-mono text-[10.5px] text-[var(--muted)]">
+                <span>Missed-Savings Opportunities ({discovered.length})</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const snippet =
+                      'schema_version = 1\n\n' +
+                      discovered.map((d) => d.suggested_filter_toml).join('\n')
+                    try {
+                      await navigator.clipboard.writeText(snippet)
+                      toast('Copied starter .zenko/filters.toml rules', 'success')
+                    } catch {
+                      toast('Clipboard unavailable', 'error')
+                    }
+                  }}
+                  className="cursor-pointer text-[var(--accent)] hover:underline"
+                >
+                  Copy starter filters.toml
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                {discovered.map((item) => (
+                  <div
+                    key={item.command_prefix}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 font-mono text-[10.5px]"
+                  >
+                    <span className="truncate text-[var(--fg)]">{item.command_prefix}</span>
+                    <span className="shrink-0 text-[var(--muted)]">
+                      {item.calls}x · ~{formatCompactTokens(item.estimated_missed_tokens)} tok
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

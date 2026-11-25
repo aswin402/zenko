@@ -541,11 +541,19 @@ impl SqliteStore {
                     kind TEXT NOT NULL,
                     tokens_delta INTEGER NOT NULL DEFAULT 0,
                     cost_usd_delta REAL NOT NULL DEFAULT 0.0,
+                    command_family TEXT NOT NULL DEFAULT '',
                     detail TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_economy_ledger_scope
                     ON economy_ledger(repo_scope, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS trusted_filter_files (
+                    repo_scope TEXT PRIMARY KEY,
+                    file_path TEXT NOT NULL,
+                    sha256_hex TEXT NOT NULL,
+                    trusted_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS repo_code_metrics (
                     repo_scope TEXT PRIMARY KEY,
@@ -583,6 +591,7 @@ impl SqliteStore {
                 ("subagents", "worktree_base_commit", "TEXT"),
                 ("subagents", "worktree_dirty_baseline", "INTEGER NOT NULL DEFAULT 0"),
                 ("dream_runs", "skills_proposed", "INTEGER NOT NULL DEFAULT 0"),
+                ("economy_ledger", "command_family", "TEXT NOT NULL DEFAULT ''"),
             ] {
                 ensure_column(conn, table, col, def)?;
             }
@@ -594,7 +603,9 @@ impl SqliteStore {
                  CREATE INDEX IF NOT EXISTS idx_sessions_workspace
                     ON sessions(workspace_dir, updated_at DESC);
                  CREATE INDEX IF NOT EXISTS idx_sessions_parent
-                    ON sessions(parent_session_id, updated_at DESC);",
+                    ON sessions(parent_session_id, updated_at DESC);
+                 CREATE INDEX IF NOT EXISTS idx_economy_ledger_cmd
+                    ON economy_ledger(repo_scope, command_family);",
             )?;
 
             // One-time idempotent backfill of `session_events_fts` for pre-Phase-4 databases.

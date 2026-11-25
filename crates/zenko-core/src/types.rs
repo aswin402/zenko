@@ -3880,6 +3880,7 @@ pub enum EconomyLedgerKind {
     MicroSkill,
     LoopGuard,
     CcrRecovery,
+    RawBypass,
     OverheadDream,
     OverheadJudge,
 }
@@ -3893,6 +3894,7 @@ impl EconomyLedgerKind {
             Self::MicroSkill => "micro_skill",
             Self::LoopGuard => "loop_guard",
             Self::CcrRecovery => "ccr_recovery",
+            Self::RawBypass => "raw_bypass",
             Self::OverheadDream => "overhead_dream",
             Self::OverheadJudge => "overhead_judge",
         }
@@ -3906,11 +3908,70 @@ impl EconomyLedgerKind {
             "micro_skill" => Some(Self::MicroSkill),
             "loop_guard" => Some(Self::LoopGuard),
             "ccr_recovery" => Some(Self::CcrRecovery),
+            "raw_bypass" => Some(Self::RawBypass),
             "overhead_dream" => Some(Self::OverheadDream),
             "overhead_judge" => Some(Self::OverheadJudge),
             _ => None,
         }
     }
+}
+
+/// Per-command-family token savings breakdown (`cargo`, `git`, `tsc`, `lint`, `test`, `pkg`, `docker`, `custom`, `mcp`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommandSavingsStat {
+    pub command_family: String,
+    pub calls: u64,
+    pub tokens_saved: u64,
+    #[serde(default)]
+    pub raw_bypasses: u64,
+}
+
+/// Uncompressed high-volume command family discovered across recent SQLite session history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissedSavingsOpportunity {
+    pub command_prefix: String,
+    pub calls: u64,
+    pub total_bytes: u64,
+    pub estimated_missed_tokens: u64,
+    pub suggested_filter_toml: String,
+}
+
+/// Single failed inline `[[tests.<name>]]` case from a declarative `filters.toml` verification run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomFilterTestFailure {
+    pub filter_name: String,
+    pub test_name: String,
+    pub expected: String,
+    pub actual: String,
+}
+
+/// Verification summary for `~/.zenko/filters.toml` or `<workspace>/.zenko/filters.toml`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CustomFilterVerifyReport {
+    pub file_path: String,
+    pub exists: bool,
+    pub valid: bool,
+    pub rule_count: usize,
+    pub tests_passed: usize,
+    pub tests_failed: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub test_failures: Vec<CustomFilterTestFailure>,
+}
+
+/// SHA-256 trust status for project-local `<workspace>/.zenko/filters.toml` + user-global rule count.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CustomFilterTrustStatus {
+    pub project_file_path: String,
+    pub project_file_exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_sha256: Option<String>,
+    pub trusted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_sha256: Option<String>,
+    pub rule_count: usize,
+    pub user_rule_count: usize,
 }
 
 /// Aggregated per-repository net Token Economy ROI summary (gross savings minus overhead).
@@ -3924,6 +3985,8 @@ pub struct EconomyLedgerSummary {
     pub output_dedup_hits: u64,
     #[serde(default)]
     pub ccr_recoveries: u64,
+    #[serde(default)]
+    pub raw_bypasses: u64,
     pub tool_prune_tokens_saved: u64,
     pub micro_skill_injections: u64,
     pub loop_guard_interventions: u64,
@@ -3948,6 +4011,10 @@ pub struct TokenEconomyReport {
     pub summary: EconomyLedgerSummary,
     #[serde(default)]
     pub code_metrics: RepoCodeMetrics,
+    #[serde(default)]
+    pub by_command: Vec<CommandSavingsStat>,
+    #[serde(default)]
+    pub filter_status: CustomFilterTrustStatus,
     pub micro_skills: Vec<RepoMicroSkill>,
     pub tool_usage: Vec<RepoToolUsage>,
     pub pruned_tools: Vec<String>,
@@ -4207,6 +4274,8 @@ pub enum EconomyAction {
     RestoreTool,
     Reaudit,
     Ledger,
+    Discover,
+    VerifyFilters,
 }
 
 impl EconomyAction {
@@ -4220,7 +4289,9 @@ impl EconomyAction {
             "apply_prune" | "prune" => Some(Self::ApplyPrune),
             "restore_tool" | "restore" => Some(Self::RestoreTool),
             "reaudit" | "reset_prune" => Some(Self::Reaudit),
-            "ledger" | "roi" | "savings" => Some(Self::Ledger),
+            "ledger" | "roi" | "savings" | "gain" => Some(Self::Ledger),
+            "discover" | "missed" | "opportunities" => Some(Self::Discover),
+            "verify_filters" | "filters" => Some(Self::VerifyFilters),
             _ => None,
         }
     }
@@ -4228,7 +4299,12 @@ impl EconomyAction {
     pub fn is_mutating(self) -> bool {
         !matches!(
             self,
-            Self::Status | Self::MicroSkills | Self::PruneReport | Self::Ledger
+            Self::Status
+                | Self::MicroSkills
+                | Self::PruneReport
+                | Self::Ledger
+                | Self::Discover
+                | Self::VerifyFilters
         )
     }
 }

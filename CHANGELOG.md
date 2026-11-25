@@ -4,6 +4,24 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.33] - 2026-11-26
+
+Implemented four native Rust `rtk-ai/rtk`-inspired tool-output optimization and analytics upgrades (zero regex, zero external shell hooks, zero `/commands`) fully integrated with `ZMode`, `token_economy`, WebUI, and CLI.
+
+### Added
+- **Command-Aware Ecosystem Shapers (`crates/zenko-runtime/src/read_less/{mod,command_shapers}.rs`):**
+  - Replaced monolithic `read_less.rs` with a modular zero-regex pipeline classifying `shell_exec` and `git_tool` invocations (`cargo`/`rustc`/`clippy`, `tsc`, `eslint`/`biome`/`oxlint`/`ruff`/`mypy`/`golangci-lint`, `git diff/log/status`, `npm`/`pnpm`/`yarn`/`bun`/`pip`/`uv`, `docker`/`podman`/`kubectl`, and multi-ecosystem test runners including `cargo test`, `pytest`, `vitest`/`jest`, `go test`, and `playwright`).
+  - Added `ZMode`-governed compiler & linter diagnostic grouping (by severity + code/rule with exact `file:line:col` preserved), lockfile/generated `git diff` folding (`Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `dist/`, etc.), compact 1-line `git log`, carriage-return progress normalization, package-install condensing, and Docker BuildKit layer collapsing.
+- **Native Failure Tee Recovery & `raw: true` Bypass (`shell.rs`, `tool_router.rs`):**
+  - On failed (`is_error`) tool outputs, atomically persists verbatim raw bytes (`0600`) to `artifact:<session>/<call>.txt` before applying error-preserving compression (and archives raw error logs even when uncompressed above 768 B) with explicit `[failure-tee: ...]` handles.
+  - Added optional `raw: true` bypass parameter on `shell_exec` tracked honestly under `EconomyLedgerKind::RawBypass`.
+- **Zero-Regex SHA-256 Trust-Gated Declarative Filter DSL (`crates/zenko-runtime/src/read_less/custom_filters.rs`, `sqlite/economy.rs`):**
+  - Added declarative TOML filter support (`schema_version = 1`) for user-global `~/.zenko/filters.toml` and workspace `<repo>/.zenko/filters.toml` using zero-regex prefix/substring/repeat/truncation rules and inline `[[tests.<name>]]` self-verification.
+  - Enforced tamper-evident SHA-256 content-hash trust pinning in SQLite (`trusted_filter_files`) so untrusted or modified project filter files never execute until explicitly approved.
+- **Per-Command Gain Analytics, Missed-Savings `discover`, WebUI & CLI (`sqlite/economy.rs`, `economy_tool.rs`, `api/economy.rs`, `TokenEconomyPanel.tsx`, `commands/economy.rs`):**
+  - Added `command_family` tracking to `economy_ledger` (`by_command` breakdown) and `discover_missed_savings` scanning recent SQLite `session_events` for large uncompressed commands with ready-to-paste `.zenko/filters.toml` starter rules.
+  - Extended `token_economy` with `discover` and `verify_filters`, added WebUI routes (`GET /api/economy/discover`, `GET /api/economy/filters/verify`, `POST/DELETE /api/economy/filters/trust`) and 60/30/10 UI controls in `TokenEconomyPanel`, and added `zenko economy gain | discover | trust | untrust | verify-filters`.
+
 ## [0.0.32] - 2026-11-26
 
 Bundled all context-compression, code-minimalism, and token-economy systems under a single declarative **`ZMode`** (`lite`, `balanced` [default], `high`, `ultra`) engine and replaced the Chat UI Caveman button with `ZMode`.

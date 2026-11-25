@@ -710,5 +710,22 @@ impl EconomyBridge for RuntimeEconomyBridge {
         let scope = rt.resolve_repo_scope(Some(workspace_dir));
         rt.store.update_repo_debt_count(&scope, debt_count)
     }
+
+    fn discover_missed_savings(
+        &self,
+        workspace_dir: &Path,
+        limit: usize,
+    ) -> Result<Vec<zenko_core::MissedSavingsOpportunity>> {
+        let rt = self.upgrade()?;
+        rt.economy_discover_missed_savings(Some(workspace_dir), limit)
+    }
+
+    fn verify_custom_filters(
+        &self,
+        workspace_dir: &Path,
+    ) -> Result<zenko_core::CustomFilterVerifyReport> {
+        let rt = self.upgrade()?;
+        rt.economy_verify_custom_filters(Some(workspace_dir))
+    }
 }
 

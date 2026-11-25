@@ -960,6 +960,28 @@ fn main() -> Result<()> {
                 .await?;
                 Ok(EXIT_OK)
             }
+            Commands::Economy { action } => match action {
+                EconomyCmd::Gain { workspace } => {
+                    commands::run_economy_gain(&config_path, workspace, json_out).await?;
+                    Ok(EXIT_OK)
+                }
+                EconomyCmd::Discover { workspace, limit } => {
+                    commands::run_economy_discover(&config_path, workspace, limit, json_out)
+                        .await?;
+                    Ok(EXIT_OK)
+                }
+                EconomyCmd::Trust { workspace } => {
+                    commands::run_economy_trust(&config_path, workspace, json_out).await?;
+                    Ok(EXIT_OK)
+                }
+                EconomyCmd::Untrust { workspace } => {
+                    commands::run_economy_untrust(&config_path, workspace, json_out).await?;
+                    Ok(EXIT_OK)
+                }
+                EconomyCmd::VerifyFilters { workspace } => {
+                    commands::run_economy_verify_filters(&config_path, workspace, json_out).await
+                }
+            },
         }
     });
 
