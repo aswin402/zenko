@@ -770,6 +770,64 @@ pub fn find_concise_mode(mode: ConciseMode) -> &'static ConciseModeDescriptor {
         .unwrap_or(&CONCISE_MODE_REGISTRY[0])
 }
 
+/// Declarative built-in English workflow skill seeded via `SnapshotManager::ensure_defaults()`.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DefaultSkillTemplate {
+    pub filename: &'static str,
+    pub content: &'static str,
+}
+
+pub const DEFAULT_SKILL_TEMPLATES: &[DefaultSkillTemplate] = &[
+    DefaultSkillTemplate {
+        filename: "systematic-debug.md",
+        content: "---\n\
+name: Systematic Debugging\n\
+description: Reproduce, isolate root cause, apply minimal fix, and verify with tests.\n\
+enabled: true\n\
+---\n\n\
+1. Read the full error message and stack trace before editing.\n\
+2. Search relevant symbols using `code_search` and inspect lines with `read_file`.\n\
+3. Form a single falsifiable root-cause hypothesis and verify it.\n\
+4. Apply a minimal fix via `hash_edit` or `apply_patch`, then run tests via `shell_exec`.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "concise-review.md",
+        content: "---\n\
+name: Concise Code Review\n\
+description: Ultra-terse English code review returning one-line findings (`L<line>: bug|risk|nit|q: <problem>. <fix>.`) with zero filler.\n\
+enabled: true\n\
+---\n\n\
+- Format every finding strictly on one line: `path:L<line> [bug|risk|nit|q]: <problem>. <fix>.`\n\
+- Zero throat-clearing, pleasantries, or restating unchanged code.\n\
+- Preserve exact symbol names, line numbers, error codes, and file paths verbatim.\n\
+- Auto-Clarity: expand to clear full English sentences for security flaws, data-loss risks, or architectural regressions.\n\
+- End with a single verdict line (`approve`, `changes_requested`, or `blocked`) plus finding counts.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "concise-commit.md",
+        content: "---\n\
+name: Concise Commit\n\
+description: Generate crisp English Conventional Commit messages from staged diffs without blindly staging or pushing.\n\
+enabled: true\n\
+---\n\n\
+- Inspect staged changes via `git_tool(action=\"diff\", staged=true)` and `git_tool(action=\"status\")`.\n\
+- Format subject as `<type>(<scope>): <imperative lowercase summary>` (<= 72 chars, no trailing period).\n\
+- Add terse body bullets ONLY for non-obvious rationale or breaking changes (`BREAKING CHANGE:`).\n\
+- Never auto-stage, commit, or push unless explicitly requested by the user.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "concise-explore.md",
+        content: "---\n\
+name: Concise Explore\n\
+description: Fast read-only codebase reconnaissance returning exact path:line citations and dense technical facts.\n\
+enabled: true\n\
+---\n\n\
+- Use `glob_find`, `code_search`, and `read_file(mode=\"outline\")` first; read targeted line ranges only.\n\
+- Report findings strictly as `path:Lstart-Lend -- <symbol/fact>` bullets.\n\
+- Zero speculative filler; note unverified gaps explicitly in one line.\n",
+    },
+];
+
 /// Renders the Tier-2 English `<concise_mode>` directive block (returns `None` when `Off`).
 /// Enforces Verbatim Payload Protection and optional Auto-Clarity safety hatch with zero Chinese terms.
 pub fn render_concise_prompt_block(
@@ -946,5 +1004,9 @@ mod tests {
         assert!(!plan_ro.contains("script_block"));
         assert!(!plan_ro.contains("compress_doc"));
         assert!(plan_ro.is_ascii());
+
+        for tmpl in DEFAULT_SKILL_TEMPLATES {
+            assert!(tmpl.filename.ends_with(".md") && tmpl.content.is_ascii());
+        }
     }
 }

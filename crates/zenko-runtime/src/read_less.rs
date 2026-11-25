@@ -2,18 +2,33 @@
 //! Shrinks bulky ephemeral outputs (`shell_exec`, `job_read`, `git_tool`, `web_fetch`,
 //! `script_block`, and external `mcp__*` blobs) BEFORE they consume LLM context tokens,
 //! while strictly excluding `read_file` and code editors so line numbers and hash anchors
-//! remain untouched. Every compressed payload is paired with an atomic raw `artifact:` file
-//! so 100% of the original bytes stay recoverable on demand.
+//! remain untouched. Uses deterministic structural algorithms:
+//! - JSON schema/array sampler (`serde_json`)
+//! - Test-runner pass collapser preserving failures & stack traces verbatim
+//! - RFC-4180 quote-aware finite-state CSV/TSV column detector
+//! - Drain-style FNV-1a digit/hex-normalized log-template clustering
+//! Every compressed payload is paired with an atomic raw `artifact:` file so 100% of the
+//! original bytes stay recoverable on demand.
 
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
 use zenko_core::{
-    ARTIFACT_PATH_PREFIX, MCP_TOOL_PREFIX, READ_LESS_DEDUP_MIN_REPEATS, READ_LESS_ELIGIBLE_TOOLS,
+    ARTIFACT_PATH_PREFIX, MCP_TOOL_PREFIX, READ_LESS_BUILD_PROGRESS_PREFIXES,
+    READ_LESS_CSV_MIN_COLS, READ_LESS_CSV_MIN_ROWS, READ_LESS_CSV_SAMPLE_SCAN_LINES,
+    READ_LESS_DEDUP_MIN_REPEATS, READ_LESS_ELIGIBLE_TOOLS, READ_LESS_FAIL_PREFIXES,
+    READ_LESS_FAIL_SUBSTRS, READ_LESS_JSON_FULL_DEPTH, READ_LESS_JSON_PRIORITY_KEYS,
+    READ_LESS_JSON_SCHEMA_SCAN_ITEMS, READ_LESS_LOG_HEAD_KEEP, READ_LESS_LOG_MAX_KEPT_LINES,
+    READ_LESS_LOG_MAX_MIDDLE_DIAGS, READ_LESS_LOG_MAX_REPEAT_SAMPLES,
     READ_LESS_MAX_JSON_ARRAY_SAMPLE, READ_LESS_MAX_JSON_KEYS, READ_LESS_MAX_SAMPLE_ROWS,
     READ_LESS_MAX_STRING_CHARS, READ_LESS_MAX_TAIL_LINES, READ_LESS_MIN_LINES,
-    READ_LESS_MIN_SAVED_BYTES, READ_LESS_MIN_SAVINGS_PCT, READ_LESS_TAIL_ROWS,
+    READ_LESS_MIN_SAVED_BYTES, READ_LESS_MIN_SAVINGS_PCT, READ_LESS_PASS_PREFIXES,
+    READ_LESS_SUMMARY_PREFIXES, READ_LESS_TAIL_ROWS, READ_LESS_TEST_MAX_KEPT_OTHER_LINES,
+    READ_LESS_TEST_MIN_PASS_WITHOUT_SUMMARY, READ_LESS_TEST_MIN_PASS_WITH_SUMMARY,
 };
 use zenko_tools::pty::strip_ansi_escapes;
+
+const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadLessShape {
@@ -66,7 +81,10 @@ pub fn try_compress_tool_output(
     if original_bytes < min_bytes && line_count < READ_LESS_MIN_LINES {
         return None;
     }
-    if raw.contains("[read-less:") || raw.contains("[spilled full `") || raw.contains(ARTIFACT_PATH_PREFIX) {
+    if raw.contains("[read-less:")
+        || raw.contains("[spilled full `")
+        || raw.contains(ARTIFACT_PATH_PREFIX)
+    {
         return None;
     }
 
@@ -96,19 +114,15 @@ pub fn try_compress_tool_output(
 }
 
 fn compress_by_detected_shape(text: &str) -> Option<(ReadLessShape, String)> {
-    // 1. JSON payload (whole body or body right after `exit_code: N\n`).
     if let Some(json_out) = try_compress_json_body(text) {
         return Some((ReadLessShape::Json, json_out));
     }
-    // 2. Test runner output (cargo test / pytest / vitest / jest / go test).
     if let Some(test_out) = try_compress_test_output(text) {
         return Some((ReadLessShape::TestOutput, test_out));
     }
-    // 3. Delimited CSV / TSV table.
     if let Some(csv_out) = try_compress_csv(text) {
         return Some((ReadLessShape::Csv, csv_out));
     }
-    // 4. Build / compiler / git / generic bulky log deduplication.
     try_compress_build_or_log(text).map(|out| (ReadLessShape::BuildOrLog, out))
 }
 
@@ -162,7 +176,7 @@ fn compact_json_value(val: &Value, depth: usize) -> Value {
                 .map(|v| compact_json_value(v, depth + 1))
                 .collect();
             let mut schema_keys: BTreeSet<&str> = BTreeSet::new();
-            for item in items.iter().take(64) {
+            for item in items.iter().take(READ_LESS_JSON_SCHEMA_SCAN_ITEMS) {
                 if let Value::Object(map) = item {
                     for k in map.keys() {
                         if schema_keys.len() < READ_LESS_MAX_JSON_KEYS {
@@ -195,11 +209,13 @@ fn compact_json_value(val: &Value, depth: usize) -> Value {
             let mut out = Map::new();
             let mut count = 0usize;
             for (k, v) in map {
-                let is_priority = matches!(
-                    k.to_ascii_lowercase().as_str(),
-                    "error" | "errors" | "message" | "status" | "code" | "ok" | "id" | "name" | "total" | "count"
-                );
-                if depth >= 3 && !is_priority && count >= READ_LESS_MAX_JSON_KEYS {
+                let is_priority = READ_LESS_JSON_PRIORITY_KEYS
+                    .iter()
+                    .any(|pk| k.eq_ignore_ascii_case(pk));
+                if depth >= READ_LESS_JSON_FULL_DEPTH
+                    && !is_priority
+                    && count >= READ_LESS_MAX_JSON_KEYS
+                {
                     continue;
                 }
                 out.insert(k.clone(), compact_json_value(v, depth + 1));
@@ -218,68 +234,42 @@ fn compact_json_value(val: &Value, depth: usize) -> Value {
 fn is_passing_test_line(line: &str) -> bool {
     let t = line.trim();
     (t.starts_with("test ") && t.ends_with("... ok"))
-        || t.starts_with("--- PASS:")
-        || t.starts_with("PASS ")
-        || t.starts_with("✓ ")
-        || t.starts_with("ok  \t")
         || t.ends_with(" PASSED")
+        || READ_LESS_PASS_PREFIXES.iter().any(|p| t.starts_with(p))
 }
 
 fn is_failing_or_diag_line(line: &str) -> bool {
     let t = line.trim();
+    if (t.starts_with("test ") && t.contains("FAILED"))
+        || READ_LESS_FAIL_PREFIXES.iter().any(|p| t.starts_with(p))
+    {
+        return true;
+    }
     let lower = t.to_ascii_lowercase();
-    t.starts_with("test ") && (t.ends_with("FAILED") || t.contains("FAILED"))
-        || t.starts_with("--- FAIL:")
-        || t.starts_with("FAIL")
-        || t.starts_with("✗ ")
-        || t.starts_with("error[")
-        || t.starts_with("error:")
-        || t.starts_with("fatal:")
-        || t.starts_with("E   ")
-        || lower.contains("panicked at")
-        || lower.contains("assertion ")
-        || lower.contains("traceback (most recent")
-        || lower.contains("permission denied")
+    READ_LESS_FAIL_SUBSTRS.iter().any(|s| lower.contains(s))
 }
 
 fn is_test_summary_line(line: &str) -> bool {
     let t = line.trim();
-    t.starts_with("test result:")
+    READ_LESS_SUMMARY_PREFIXES.iter().any(|p| t.starts_with(p))
         || (t.starts_with("running ") && t.contains(" test"))
-        || t.starts_with("failures:")
-        || t.starts_with("Test Files")
-        || t.starts_with("Tests ")
-        || t.starts_with("Summary:")
         || (t.starts_with("===") && (t.contains("passed") || t.contains("failed")))
 }
 
 fn is_build_progress_line(line: &str) -> bool {
-    const PREFIXES: &[&str] = &[
-        "Compiling ",
-        "Checking ",
-        "Downloading ",
-        "Downloaded ",
-        "Updating ",
-        "Fresh ",
-        "Locking ",
-        "Adding ",
-        "Removing ",
-        "Installing ",
-        "Unpacking ",
-        "Resolving ",
-        "Fetching ",
-        "Building ",
-        "Doc-tests ",
-    ];
     let t = line.trim_start();
-    PREFIXES.iter().any(|p| t.starts_with(p))
+    READ_LESS_BUILD_PROGRESS_PREFIXES
+        .iter()
+        .any(|p| t.starts_with(p))
 }
 
 fn try_compress_test_output(text: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let pass_count = lines.iter().filter(|l| is_passing_test_line(l)).count();
     let summary_count = lines.iter().filter(|l| is_test_summary_line(l)).count();
-    if pass_count < 8 || (summary_count == 0 && pass_count < 16) {
+    if pass_count < READ_LESS_TEST_MIN_PASS_WITH_SUMMARY
+        || (summary_count == 0 && pass_count < READ_LESS_TEST_MIN_PASS_WITHOUT_SUMMARY)
+    {
         return None;
     }
 
@@ -327,7 +317,7 @@ fn try_compress_test_output(text: &str) -> Option<String> {
             || trimmed.starts_with("exit_code:")
             || trimmed.starts_with("Finished ")
             || trimmed.starts_with("Running ")
-            || (!trimmed.is_empty() && out.len() < 80);
+            || (!trimmed.is_empty() && out.len() < READ_LESS_TEST_MAX_KEPT_OTHER_LINES);
         if keep_line {
             flush_collapsed(&mut out, &mut collapsed_pass, &mut collapsed_progress);
             out.push((*line).to_string());
@@ -337,15 +327,57 @@ fn try_compress_test_output(text: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
-fn detect_delimited_cols(lines: &[&str], delim: char) -> Option<usize> {
-    let sample = &lines[..lines.len().min(12)];
-    let first_cols = sample.first()?.split(delim).count();
-    if first_cols < 3 {
+/// RFC-4180 quote-aware finite-state column counter (zero regex).
+/// Accurately counts columns when quoted fields contain embedded delimiters or `""` escapes.
+fn count_delimited_columns(line: &str, delim: u8) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut cols = 1usize;
+    let mut in_quotes = false;
+    let mut at_field_start = true;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        match (in_quotes, b) {
+            (true, b'"') => match bytes.get(i + 1) == Some(&b'"') {
+                true => i += 2,
+                false => {
+                    in_quotes = false;
+                    i += 1;
+                }
+            },
+            (true, _) => i += 1,
+            (false, b'"') if at_field_start => {
+                in_quotes = true;
+                at_field_start = false;
+                i += 1;
+            }
+            (false, c) if c == delim => {
+                cols += 1;
+                at_field_start = true;
+                i += 1;
+            }
+            (false, _) => {
+                at_field_start = false;
+                i += 1;
+            }
+        }
+    }
+    match in_quotes {
+        true => None,
+        false => Some(cols),
+    }
+}
+
+fn detect_delimited_cols(lines: &[&str], delim: u8) -> Option<usize> {
+    let sample = &lines[..lines.len().min(READ_LESS_CSV_SAMPLE_SCAN_LINES)];
+    let first_cols = count_delimited_columns(sample.first()?, delim)?;
+    if first_cols < READ_LESS_CSV_MIN_COLS {
         return None;
     }
     let consistent = sample
         .iter()
-        .all(|l| l.split(delim).count() == first_cols);
+        .all(|l| count_delimited_columns(l, delim) == Some(first_cols));
     match consistent {
         true => Some(first_cols),
         false => None,
@@ -359,10 +391,11 @@ fn try_compress_csv(text: &str) -> Option<String> {
         .map(str::trim_end)
         .filter(|l| !l.trim().is_empty())
         .collect();
-    if rows.len() < 16 {
+    if rows.len() < READ_LESS_CSV_MIN_ROWS {
         return None;
     }
-    let cols = detect_delimited_cols(&rows, ',').or_else(|| detect_delimited_cols(&rows, '\t'))?;
+    let cols =
+        detect_delimited_cols(&rows, b',').or_else(|| detect_delimited_cols(&rows, b'\t'))?;
     let keep_head = 1 + READ_LESS_MAX_SAMPLE_ROWS;
     let keep_tail = READ_LESS_TAIL_ROWS;
     if rows.len() <= keep_head + keep_tail + 2 {
@@ -387,16 +420,97 @@ fn try_compress_csv(text: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
+#[inline]
+fn fnv1a_byte(hash: &mut u64, b: u8) {
+    *hash ^= u64::from(b);
+    *hash = hash.wrapping_mul(FNV1A_PRIME);
+}
+
+fn is_hex_or_uuid_token(tok: &str) -> bool {
+    let body = tok
+        .strip_prefix("0x")
+        .or_else(|| tok.strip_prefix("0X"))
+        .unwrap_or(tok);
+    let is_prefixed = body.len() != tok.len();
+    let mut hex_count = 0usize;
+    let mut has_digit = false;
+    for b in body.bytes() {
+        match b {
+            b'0'..=b'9' => {
+                hex_count += 1;
+                has_digit = true;
+            }
+            b'a'..=b'f' | b'A'..=b'F' => hex_count += 1,
+            b'-' if !is_prefixed => {}
+            _ => return false,
+        }
+    }
+    match is_prefixed {
+        true => hex_count >= 2,
+        false => hex_count >= 6 && has_digit,
+    }
+}
+
+fn hash_log_atom(h: &mut u64, atom: &str) {
+    let core = atom.trim_matches(|c: char| {
+        matches!(c, '[' | ']' | '(' | ')' | ',' | ';' | '"' | '\'')
+    });
+    if is_hex_or_uuid_token(core) {
+        fnv1a_byte(h, b'$');
+        return;
+    }
+    let mut prev_digit = false;
+    for b in atom.bytes() {
+        match b.is_ascii_digit() {
+            true if prev_digit => {}
+            true => {
+                fnv1a_byte(h, b'#');
+                prev_digit = true;
+            }
+            false => {
+                fnv1a_byte(h, b.to_ascii_lowercase());
+                prev_digit = false;
+            }
+        }
+    }
+}
+
+/// Drain-style deterministic 64-bit FNV-1a structural log template fingerprinter (zero regex).
+/// Splits `key=val` pairs and collapses digit runs (`12ms`, `09:12:01`, `v1.2.3`) to `#` and
+/// hex/UUID literals (`0xdead000a`, `550e8400-e29b-...`) to `$` while preserving the exact
+/// alphabetic/punctuation skeleton so repeating log families cluster algorithmically.
+fn structural_log_template_hash(line: &str) -> u64 {
+    let mut h = FNV1A_OFFSET_BASIS;
+    for tok in line.split_whitespace() {
+        match tok.split_once('=') {
+            Some((key, val)) if !key.is_empty() && !val.is_empty() => {
+                hash_log_atom(&mut h, key);
+                fnv1a_byte(&mut h, b'=');
+                hash_log_atom(&mut h, val);
+            }
+            _ => hash_log_atom(&mut h, tok),
+        }
+        fnv1a_byte(&mut h, b' ');
+    }
+    h
+}
+
 fn try_compress_build_or_log(text: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() < READ_LESS_MIN_LINES {
         return None;
     }
 
-    // Pass 1: collapse consecutive duplicates + build progress runs, count repeated lines.
+    let hashes: Vec<u64> = lines
+        .iter()
+        .map(|l| structural_log_template_hash(l.trim()))
+        .collect();
+
+    // Pass 1: Drain-style template clustering over consecutive runs + global template frequency cap.
     let mut deduped: Vec<String> = Vec::with_capacity(lines.len());
     let mut progress_count = 0usize;
-    let mut freq: HashMap<&str, usize> = HashMap::new();
+    let mut template_freq: HashMap<u64, usize> = HashMap::new();
+    let mut suppressed_by_freq = 0usize;
     let mut idx = 0usize;
 
     while idx < lines.len() {
@@ -418,18 +532,36 @@ fn try_compress_build_or_log(text: &str) -> Option<String> {
             idx += 1;
             continue;
         }
+
+        let cur_hash = hashes[idx];
+        let is_diag = is_failing_or_diag_line(cur);
         let mut run = 1usize;
-        while idx + run < lines.len() && lines[idx + run].trim() == trimmed {
-            run += 1;
+        if !is_diag {
+            while idx + run < lines.len()
+                && !is_failing_or_diag_line(lines[idx + run])
+                && hashes[idx + run] == cur_hash
+            {
+                run += 1;
+            }
         }
+
         if run >= READ_LESS_DEDUP_MIN_REPEATS {
-            deduped.push(format!("{cur} [x{run}]"));
+            let exact_same = lines[idx..idx + run]
+                .iter()
+                .all(|l| l.trim() == trimmed);
+            let tag = match exact_same {
+                true => format!("[x{run}]"),
+                false => format!("[~x{run} similar lines]"),
+            };
+            deduped.push(format!("{cur} {tag}"));
         } else {
-            let seen = freq.entry(trimmed).or_insert(0);
+            let seen = template_freq.entry(cur_hash).or_insert(0);
             *seen += 1;
-            let keep = *seen <= 2 || is_failing_or_diag_line(cur) || idx + READ_LESS_MAX_TAIL_LINES >= lines.len();
-            if keep {
-                deduped.push(cur.to_string());
+            let in_tail = idx + READ_LESS_MAX_TAIL_LINES >= lines.len();
+            let keep = *seen <= READ_LESS_LOG_MAX_REPEAT_SAMPLES || is_diag || in_tail;
+            match keep {
+                true => deduped.push(cur.to_string()),
+                false => suppressed_by_freq += 1,
             }
         }
         idx += run;
@@ -437,34 +569,38 @@ fn try_compress_build_or_log(text: &str) -> Option<String> {
     if progress_count > 0 {
         deduped.push(format!("[+{progress_count} build/progress lines collapsed]"));
     }
+    if suppressed_by_freq > 0 {
+        deduped.push(format!(
+            "[+{suppressed_by_freq} recurring template log lines collapsed]"
+        ));
+    }
 
-    // Pass 2: if still verbose, keep head + all error/diag lines + bottom tail.
-    let max_kept_lines = 48usize;
-    if deduped.len() <= max_kept_lines {
+    // Pass 2: if still verbose, keep head + all diagnostic lines + bottom tail.
+    if deduped.len() <= READ_LESS_LOG_MAX_KEPT_LINES {
         return Some(deduped.join("\n"));
     }
-    let head_keep = 12usize;
     let tail_start = deduped.len().saturating_sub(READ_LESS_MAX_TAIL_LINES);
-    let mut out: Vec<String> = Vec::with_capacity(max_kept_lines + 8);
-    for line in &deduped[..head_keep.min(tail_start)] {
+    let head_end = READ_LESS_LOG_HEAD_KEEP.min(tail_start);
+    let mut out: Vec<String> = Vec::with_capacity(READ_LESS_LOG_MAX_KEPT_LINES + 8);
+    for line in &deduped[..head_end] {
         out.push(line.clone());
     }
     let mut middle_omitted = 0usize;
     let mut middle_diags: Vec<&str> = Vec::new();
-    for line in &deduped[head_keep.min(tail_start)..tail_start] {
-        if is_failing_or_diag_line(line) && middle_diags.len() < 16 {
+    for line in &deduped[head_end..tail_start] {
+        if is_failing_or_diag_line(line) && middle_diags.len() < READ_LESS_LOG_MAX_MIDDLE_DIAGS {
             middle_diags.push(line.as_str());
         } else {
             middle_omitted += 1;
         }
     }
-    if !middle_diags.is_empty() {
-        for d in middle_diags {
-            out.push(d.to_string());
-        }
+    for d in middle_diags {
+        out.push(d.to_string());
     }
     if middle_omitted > 0 {
-        out.push(format!("... [{middle_omitted} repetitive log lines collapsed] ..."));
+        out.push(format!(
+            "... [{middle_omitted} repetitive log lines collapsed] ..."
+        ));
     }
     for line in &deduped[tail_start..] {
         out.push(line.clone());
@@ -510,8 +646,8 @@ mod tests {
     fn compresses_cargo_test_passing_noise_while_keeping_failures_verbatim() {
         let mut lines = vec![
             "exit_code: 101".to_string(),
-            "   Compiling zenko-core v0.0.20".to_string(),
-            "   Compiling zenko-tools v0.0.20".to_string(),
+            "   Compiling zenko-core v0.0.22".to_string(),
+            "   Compiling zenko-tools v0.0.22".to_string(),
             "running 30 tests".to_string(),
         ];
         for i in 0..29 {
@@ -533,16 +669,49 @@ mod tests {
     }
 
     #[test]
-    fn compresses_large_csv_keeping_header_sample_and_tail() {
-        let mut lines = vec!["id,service,latency_ms,status".to_string()];
+    fn compresses_rfc4180_quoted_csv_with_embedded_commas() {
+        let mut lines = vec!["id,owner,service,latency_ms,status".to_string()];
         for i in 0..80 {
-            lines.push(format!("{i},api-gateway,{},ok", 10 + (i % 50)));
+            lines.push(format!(
+                "{i},\"Smith, Alice \"\"Dev\"\"\",api-gateway,{},ok",
+                10 + (i % 50)
+            ));
         }
         let raw = lines.join("\n");
         let res = try_compress_tool_output(TOOL_SHELL_EXEC, &raw, 256).expect("compressed");
         assert_eq!(res.shape, ReadLessShape::Csv);
-        assert!(res.compressed.contains("id,service,latency_ms,status"));
-        assert!(res.compressed.contains("80 data rows x 4 columns"));
-        assert!(res.compressed.contains("79,api-gateway"));
+        assert!(res.compressed.contains("id,owner,service,latency_ms,status"));
+        assert!(res.compressed.contains("80 data rows x 5 columns"));
+        assert!(res.compressed.contains("79,\"Smith, Alice"));
+    }
+
+    #[test]
+    fn clusters_timestamped_repeating_logs_via_fnv1a_templates_preserving_errors() {
+        let mut lines = vec!["exit_code: 0".to_string()];
+        for i in 0..45 {
+            lines.push(format!(
+                "[09:12:{:02}.{:03}] GET /api/health 200 {}ms req=0x{:08x}",
+                i % 60,
+                (i * 17) % 1000,
+                10 + (i % 9),
+                0xdead_0000u32 + i as u32
+            ));
+        }
+        lines.push("error: upstream socket reset on shard 3".to_string());
+        for i in 45..70 {
+            lines.push(format!(
+                "[09:13:{:02}.{:03}] GET /api/health 200 {}ms req=0x{:08x}",
+                i % 60,
+                (i * 13) % 1000,
+                12 + (i % 7),
+                0xbeef_0000u32 + i as u32
+            ));
+        }
+        let raw = lines.join("\n");
+        let res = try_compress_tool_output(TOOL_SHELL_EXEC, &raw, 256).expect("compressed");
+        assert_eq!(res.shape, ReadLessShape::BuildOrLog);
+        assert!(res.compressed.contains("[~x45 similar lines]"), "out={}", res.compressed);
+        assert!(res.compressed.contains("error: upstream socket reset on shard 3"));
+        assert!(res.compressed.contains("[~x25 similar lines]"), "out={}", res.compressed);
     }
 }

@@ -156,58 +156,9 @@ impl SnapshotManager {
              - Keep entries concise (~800 tokens target) to preserve prompt cache efficiency.\n",
         )?;
 
-        let example_skill = skills_dir.join("systematic-debug.md");
-        write_if_missing(
-            &example_skill,
-            "---\n\
-             name: Systematic Debugging\n\
-             description: Reproduce, isolate root cause, apply minimal fix, and verify with tests.\n\
-             enabled: true\n\
-             ---\n\n\
-             1. Read the full error message and stack trace before editing.\n\
-             2. Search relevant symbols using `code_search` and inspect lines with `read_file`.\n\
-             3. Form a single falsifiable root-cause hypothesis and verify it.\n\
-             4. Apply a minimal fix via `hash_edit` or `apply_patch`, then run tests via `shell_exec`.\n",
-        )?;
-
-        write_if_missing(
-            &skills_dir.join("concise-review.md"),
-            "---\n\
-             name: Concise Code Review\n\
-             description: Ultra-terse English code review returning one-line findings (`L<line>: bug|risk|nit|q: <problem>. <fix>.`) with zero filler.\n\
-             enabled: true\n\
-             ---\n\n\
-             - Format every finding strictly on one line: `path:L<line> [bug|risk|nit|q]: <problem>. <fix>.`\n\
-             - Zero throat-clearing, pleasantries, or restating unchanged code.\n\
-             - Preserve exact symbol names, line numbers, error codes, and file paths verbatim.\n\
-             - Auto-Clarity: expand to clear full English sentences for security flaws, data-loss risks, or architectural regressions.\n\
-             - End with a single verdict line (`approve`, `changes_requested`, or `blocked`) plus finding counts.\n",
-        )?;
-
-        write_if_missing(
-            &skills_dir.join("concise-commit.md"),
-            "---\n\
-             name: Concise Commit\n\
-             description: Generate crisp English Conventional Commit messages from staged diffs without blindly staging or pushing.\n\
-             enabled: true\n\
-             ---\n\n\
-             - Inspect staged changes via `git_tool(action=\"diff\", staged=true)` and `git_tool(action=\"status\")`.\n\
-             - Format subject as `<type>(<scope>): <imperative lowercase summary>` (<= 72 chars, no trailing period).\n\
-             - Add terse body bullets ONLY for non-obvious rationale or breaking changes (`BREAKING CHANGE:`).\n\
-             - Never auto-stage, commit, or push unless explicitly requested by the user.\n",
-        )?;
-
-        write_if_missing(
-            &skills_dir.join("concise-explore.md"),
-            "---\n\
-             name: Concise Explore\n\
-             description: Fast read-only codebase reconnaissance returning exact path:line citations and dense technical facts.\n\
-             enabled: true\n\
-             ---\n\n\
-             - Use `glob_find`, `code_search`, and `read_file(mode=\"outline\")` first; read targeted line ranges only.\n\
-             - Report findings strictly as `path:Lstart-Lend — <symbol/fact>` bullets.\n\
-             - Zero speculative filler; note unverified gaps explicitly in one line.\n",
-        )?;
+        for tmpl in zenko_core::DEFAULT_SKILL_TEMPLATES {
+            write_if_missing(&skills_dir.join(tmpl.filename), tmpl.content)?;
+        }
 
         Ok(())
     }
@@ -380,7 +331,8 @@ impl SnapshotManager {
             }
             false => None,
         };
-        let preview = zenko_core::compact_preview(&outcome.compressed, 420);
+        let preview =
+            zenko_core::compact_preview(&outcome.compressed, zenko_core::DOC_COMPRESS_PREVIEW_CHARS);
         Ok(zenko_core::DocCompressReport {
             doc_name: name.to_string(),
             mode,
@@ -1222,30 +1174,34 @@ fn scan_skills_dir(dir: &Path, by_slug: &mut BTreeMap<String, SkillDoc>) {
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
-        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
-            let slug = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("skill")
-                .to_string();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let doc = load_skill_doc_from_file(&slug, &path, &content);
-                by_slug.insert(slug, doc);
+        match (path.is_file(), path.is_dir()) {
+            (true, _) if path.extension().and_then(|e| e.to_str()) == Some("md") => {
+                let slug = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("skill")
+                    .to_string();
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let doc = load_skill_doc_from_file(&slug, &path, &content);
+                    by_slug.insert(slug, doc);
+                }
             }
-        } else if path.is_dir() {
-            let skill_file = path.join("SKILL.md");
-            if !skill_file.is_file() {
-                continue;
+            (_, true) => {
+                let skill_file = path.join("SKILL.md");
+                if !skill_file.is_file() {
+                    continue;
+                }
+                let slug = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("skill")
+                    .to_string();
+                if let Ok(content) = std::fs::read_to_string(&skill_file) {
+                    let doc = load_skill_doc_from_file(&slug, &skill_file, &content);
+                    by_slug.insert(slug, doc);
+                }
             }
-            let slug = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("skill")
-                .to_string();
-            if let Ok(content) = std::fs::read_to_string(&skill_file) {
-                let doc = load_skill_doc_from_file(&slug, &skill_file, &content);
-                by_slug.insert(slug, doc);
-            }
+            _ => {}
         }
     }
 }
@@ -1261,19 +1217,22 @@ fn list_skill_subfiles(skill_dir: &Path) -> Vec<String> {
         if name == "SKILL.md" || name.starts_with('.') {
             continue;
         }
-        if p.is_file() {
-            out.push(name);
-        } else if p.is_dir()
-            && let Ok(sub_rd) = std::fs::read_dir(&p) {
-                for sub in sub_rd.flatten() {
-                    if sub.path().is_file() {
-                        let sub_name = sub.file_name().to_string_lossy().to_string();
-                        if !sub_name.starts_with('.') {
-                            out.push(format!("{name}/{sub_name}"));
+        match (p.is_file(), p.is_dir()) {
+            (true, _) => out.push(name),
+            (_, true) => {
+                if let Ok(sub_rd) = std::fs::read_dir(&p) {
+                    for sub in sub_rd.flatten() {
+                        if sub.path().is_file() {
+                            let sub_name = sub.file_name().to_string_lossy().to_string();
+                            if !sub_name.starts_with('.') {
+                                out.push(format!("{name}/{sub_name}"));
+                            }
                         }
                     }
                 }
             }
+            _ => {}
+        }
     }
     out.sort();
     out

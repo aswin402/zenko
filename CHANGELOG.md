@@ -4,6 +4,24 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.22] - 2026-11-25
+
+Hardened Zenko's native English Concise, Read-Less, Markdown Compression, and Script Block subsystems after a full line-by-line audit — eliminating every scattered magic number and inline table, upgrading heuristic loops to deterministic algorithms, and fixing custom shebang execution in `script_block`.
+
+### Changed
+- **Zero-Hardcoding Centralization (`crates/zenko-core/src/constants.rs`, `registry.rs`, `snapshot.rs`):**
+  - Centralized all Read-Less thresholds & matcher tables (`READ_LESS_*`), Markdown compression tables & protected prefixes (`DOC_COMPRESS_*`), Script Block limits (`SCRIPT_BLOCK_*`, `FILE_MODE_OWNER_EXEC`), and `DEFAULT_SKILL_TEMPLATES` (`systematic-debug`, `concise-review`, `concise-commit`, `concise-explore`) into `zenko-core`.
+- **Drain-Style FNV-1a Log Template Clustering & RFC-4180 Quote-Aware CSV FSM (`crates/zenko-runtime/src/read_less.rs`):**
+  - Replaced exact-line log deduplication with deterministic 64-bit FNV-1a digit/hex-normalized template clustering (`structural_log_template_hash`), collapsing repeating timestamped/numbered/hex-tagged log families (`[~xN similar lines]`) while preserving diagnostic errors and bottom tails verbatim.
+  - Replaced naive `split(delim)` CSV detection with an RFC-4180 quote-aware finite-state column counter (`count_delimited_columns`) handling embedded commas and escaped `""` quotes cleanly without regex.
+- **Single-Pass `O(N)` Longest-Match Prose Engine + Quoted-Literal Verbatim Locking (`crates/zenko-memory/src/compress.rs`):**
+  - Replaced `O(P × N)` multi-pass string rescanning with a single-pass `O(N)` longest-match word-boundary scanner (`apply_phrase_tables_single_pass`).
+  - Extended `segment_inline_line` and `StructuralDigest` validation to lock double-quoted `"literals"` (honoring `\"` escapes) verbatim alongside inline code spans, Markdown links, headings, tables, frontmatter, and fenced code blocks.
+
+### Fixed
+- **Custom `#!` Shebang Execution in `script_block` (`crates/zenko-tools/src/blocks.rs`):**
+  - Added deterministic `#!` shebang parsing (`parse_shebang_command`) so saved script blocks with custom interpreters (e.g., `#!/usr/bin/env python3`, `#!/bin/bash -e`) execute under their declared interpreter inside the jailed workspace and Linux Landlock write sandbox instead of forcing `/bin/sh`.
+
 ## [0.0.21] - 2026-11-25
 
 Closed the final three autonomous automation gaps in Zenko's native English Concise & Read-Less Engine so background memory compression, durable savings telemetry, and concise tool/skill adoption operate automatically without user prompting.

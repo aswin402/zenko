@@ -679,9 +679,58 @@ pub const READ_LESS_MAX_SAMPLE_ROWS: usize = 5;
 pub const READ_LESS_TAIL_ROWS: usize = 2;
 pub const READ_LESS_MAX_JSON_ARRAY_SAMPLE: usize = 4;
 pub const READ_LESS_MAX_JSON_KEYS: usize = 24;
+pub const READ_LESS_JSON_SCHEMA_SCAN_ITEMS: usize = 64;
+pub const READ_LESS_JSON_FULL_DEPTH: usize = 3;
 pub const READ_LESS_MAX_STRING_CHARS: usize = 320;
 pub const READ_LESS_MAX_TAIL_LINES: usize = 28;
 pub const READ_LESS_DEDUP_MIN_REPEATS: usize = 2;
+pub const READ_LESS_TEST_MIN_PASS_WITH_SUMMARY: usize = 8;
+pub const READ_LESS_TEST_MIN_PASS_WITHOUT_SUMMARY: usize = 16;
+pub const READ_LESS_TEST_MAX_KEPT_OTHER_LINES: usize = 80;
+pub const READ_LESS_CSV_SAMPLE_SCAN_LINES: usize = 12;
+pub const READ_LESS_CSV_MIN_COLS: usize = 3;
+pub const READ_LESS_CSV_MIN_ROWS: usize = 16;
+pub const READ_LESS_LOG_MAX_REPEAT_SAMPLES: usize = 2;
+pub const READ_LESS_LOG_MAX_KEPT_LINES: usize = 48;
+pub const READ_LESS_LOG_HEAD_KEEP: usize = 12;
+pub const READ_LESS_LOG_MAX_MIDDLE_DIAGS: usize = 16;
+pub const READ_LESS_JSON_PRIORITY_KEYS: &[&str] = &[
+    "error", "errors", "message", "status", "code", "ok", "id", "name", "total", "count",
+];
+pub const READ_LESS_PASS_PREFIXES: &[&str] = &["--- PASS:", "PASS ", "✓ ", "ok  \t"];
+pub const READ_LESS_FAIL_PREFIXES: &[&str] = &[
+    "--- FAIL:", "FAIL", "✗ ", "error[", "error:", "fatal:", "E   ",
+];
+pub const READ_LESS_FAIL_SUBSTRS: &[&str] = &[
+    "panicked at",
+    "assertion ",
+    "traceback (most recent",
+    "permission denied",
+];
+pub const READ_LESS_SUMMARY_PREFIXES: &[&str] = &[
+    "test result:",
+    "failures:",
+    "Test Files",
+    "Tests ",
+    "Summary:",
+];
+pub const READ_LESS_BUILD_PROGRESS_PREFIXES: &[&str] = &[
+    "Compiling ",
+    "Checking ",
+    "Downloading ",
+    "Downloaded ",
+    "Updating ",
+    "Fresh ",
+    "Locking ",
+    "Adding ",
+    "Removing ",
+    "Installing ",
+    "Unpacking ",
+    "Resolving ",
+    "Fetching ",
+    "Building ",
+    "Doc-tests ",
+];
 /// Ephemeral/noisy tools eligible for Read-Less structural compression (strictly excludes `read_file`
 /// and code editors so exact line numbers and hash anchors are never modified).
 pub const READ_LESS_ELIGIBLE_TOOLS: &[&str] = &[
@@ -691,13 +740,102 @@ pub const READ_LESS_ELIGIBLE_TOOLS: &[&str] = &[
     TOOL_WEB_FETCH,
     TOOL_SCRIPT_BLOCK,
 ];
+pub const FILE_MODE_OWNER_EXEC: u32 = 0o700;
 pub const SCRIPT_BLOCKS_DIR_NAME: &str = "blocks";
+pub const SCRIPT_BLOCK_EXT: &str = "sh";
 pub const SCRIPT_BLOCK_ACTIONS: &[&str] = &["list", "save", "read", "run", "delete"];
 pub const SCRIPT_BLOCK_MAX_BYTES: usize = 64 * 1024;
 pub const SCRIPT_BLOCK_MAX_LIST: usize = 64;
 pub const SCRIPT_BLOCK_SLUG_MAX_CHARS: usize = 48;
+pub const SCRIPT_BLOCK_HEADER_SCAN_LINES: usize = 4;
+pub const SCRIPT_BLOCK_MAX_ARGS: usize = 32;
 pub const SCRIPT_BLOCK_DESC_PREFIX: &str = "# zenko-block:";
+pub const SCRIPT_BLOCK_DEFAULT_DESC: &str = "Reusable script block";
 pub const DOC_COMPRESS_MIN_BYTES: usize = 128;
+pub const DOC_COMPRESS_PREVIEW_CHARS: usize = 420;
+pub const DOC_COMPRESS_PROTECTED_PREFIXES: &[&str] = &[
+    "http://", "https://", "./", "../", "~/", "/", "--",
+];
+/// Declarative English phrase-to-shorthand table for `Lite` / `Full` / `Ultra` Markdown compression.
+pub const DOC_COMPRESS_LITE_PHRASES: &[(&str, &str)] = &[
+    ("it is important to note that ", ""),
+    ("it should be noted that ", ""),
+    ("please keep in mind that ", ""),
+    ("keep in mind that ", ""),
+    ("please note that ", ""),
+    ("due to the fact that ", "because "),
+    ("at this point in time", "now"),
+    ("at the present time", "now"),
+    ("in the event that ", "if "),
+    ("for the purpose of ", "for "),
+    ("in order to ", "to "),
+    ("make sure that you ", "ensure "),
+    ("please make sure to ", "ensure "),
+    ("make sure to ", "ensure "),
+    ("please be sure to ", "ensure "),
+    ("be sure to ", "ensure "),
+    ("as well as ", "and "),
+    ("a large number of ", "many "),
+    ("in addition to ", "plus "),
+    ("with respect to ", "for "),
+    ("prior to ", "before "),
+    ("subsequent to ", "after "),
+    ("in order for ", "for "),
+    ("on a regular basis", "regularly"),
+    ("at all times", "always"),
+    ("has the ability to ", "can "),
+    ("is able to ", "can "),
+];
+/// Additional telegraphic English connector shorthands applied in `Ultra` Markdown compression.
+pub const DOC_COMPRESS_ULTRA_PHRASES: &[(&str, &str)] = &[
+    ("results in ", "-> "),
+    ("leads to ", "-> "),
+    ("therefore ", "-> "),
+    ("instead of ", "vs "),
+    ("rather than ", "vs "),
+    ("for example ", "e.g. "),
+    ("such as ", "e.g. "),
+];
+/// Strictly ASCII-sorted English filler words dropped in `Lite` Markdown compression (zero negations).
+pub const DOC_COMPRESS_LITE_FILLERS: &[&str] = &[
+    "actually",
+    "basically",
+    "essentially",
+    "generally",
+    "just",
+    "kindly",
+    "literally",
+    "obviously",
+    "please",
+    "really",
+    "simply",
+    "typically",
+    "usually",
+    "very",
+];
+/// Strictly ASCII-sorted English filler/article words dropped in `Full`/`Ultra` Markdown compression
+/// (never includes negations like `no`, `not`, `never`, `without`, `must`, `only`).
+pub const DOC_COMPRESS_TELEGRAPHIC_STOPWORDS: &[&str] = &[
+    "a",
+    "actually",
+    "an",
+    "basically",
+    "currently",
+    "essentially",
+    "generally",
+    "just",
+    "kindly",
+    "literally",
+    "obviously",
+    "please",
+    "really",
+    "simply",
+    "that",
+    "the",
+    "typically",
+    "usually",
+    "very",
+];
 pub const DREAM_AUTO_COMPRESS_THRESHOLD_NUM: usize = 65;
 pub const DREAM_AUTO_COMPRESS_THRESHOLD_DEN: usize = 100;
 pub const DREAM_AUTO_COMPRESS_MIN_SAVED_BYTES: usize = 64;

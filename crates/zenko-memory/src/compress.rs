@@ -1,96 +1,16 @@
 //! Pure-Rust, zero-regex Markdown-aware English document compressor.
 //! Replaces Python `compress.py` scripts natively inside Zenko: compresses prose in
-//! `MEMORY.md`, `USER.md`, `PROJECT_MEMORY.md`, and `ZENKO.md` while strictly locking
-//! YAML frontmatter, headings, fenced code blocks, Markdown tables, inline code spans,
-//! URLs, file paths, CLI flags, and uppercase identifiers verbatim, followed by a
-//! structural integrity validator before any bytes are written.
+//! `MEMORY.md`, `USER.md`, `PROJECT_MEMORY.md`, and `ZENKO.md` using a single-pass O(N)
+//! longest-match phrase engine while strictly locking YAML frontmatter, headings,
+//! fenced code blocks, Markdown tables, inline code spans, Markdown links, double-quoted
+//! literals, URLs, file paths, CLI flags, and uppercase identifiers verbatim, followed by
+//! a structural integrity validator before any bytes are written.
 
-use zenko_core::{ConciseMode, Result, ZenkoError};
-
-/// Declarative English phrase-to-shorthand replacement table (applied case-insensitively on
-/// word boundaries inside plain prose spans only — zero regex).
-const LITE_PHRASE_SHORTHANDS: &[(&str, &str)] = &[
-    ("it is important to note that ", ""),
-    ("it should be noted that ", ""),
-    ("please keep in mind that ", ""),
-    ("keep in mind that ", ""),
-    ("please note that ", ""),
-    ("due to the fact that ", "because "),
-    ("at this point in time", "now"),
-    ("at the present time", "now"),
-    ("in the event that ", "if "),
-    ("for the purpose of ", "for "),
-    ("in order to ", "to "),
-    ("make sure that you ", "ensure "),
-    ("please make sure to ", "ensure "),
-    ("make sure to ", "ensure "),
-    ("please be sure to ", "ensure "),
-    ("be sure to ", "ensure "),
-    ("as well as ", "and "),
-    ("a large number of ", "many "),
-    ("in addition to ", "plus "),
-    ("with respect to ", "for "),
-    ("prior to ", "before "),
-    ("subsequent to ", "after "),
-    ("in order for ", "for "),
-    ("on a regular basis", "regularly"),
-    ("at all times", "always"),
-    ("has the ability to ", "can "),
-    ("is able to ", "can "),
-];
-
-/// Additional telegraphic English connectors compacted in `Full` / `Ultra` modes.
-const ULTRA_PHRASE_SHORTHANDS: &[(&str, &str)] = &[
-    ("results in ", "-> "),
-    ("leads to ", "-> "),
-    ("therefore ", "-> "),
-    ("instead of ", "vs "),
-    ("rather than ", "vs "),
-    ("for example ", "e.g. "),
-    ("such as ", "e.g. "),
-];
-
-/// Single-word filler tokens removed in `Lite` mode (sorted for binary search; never negations).
-const LITE_FILLER_WORDS: &[&str] = &[
-    "actually",
-    "basically",
-    "essentially",
-    "generally",
-    "just",
-    "kindly",
-    "literally",
-    "obviously",
-    "please",
-    "really",
-    "simply",
-    "typically",
-    "usually",
-    "very",
-];
-
-/// Additional non-essential English articles/auxiliaries removed in `Full`/`Ultra` prose
-/// (strictly sorted; NEVER contains negations like `no`, `not`, `never`, `without`, `must`, `only`).
-const TELEGRAPHIC_STOPWORDS: &[&str] = &[
-    "a",
-    "actually",
-    "an",
-    "basically",
-    "currently",
-    "essentially",
-    "generally",
-    "just",
-    "kindly",
-    "literally",
-    "obviously",
-    "please",
-    "really",
-    "simply",
-    "that",
-    "the",
-    "typically",
-    "usually",
-    "very",
-];
+use zenko_core::{
+    ConciseMode, DOC_COMPRESS_LITE_FILLERS, DOC_COMPRESS_LITE_PHRASES,
+    DOC_COMPRESS_PROTECTED_PREFIXES, DOC_COMPRESS_TELEGRAPHIC_STOPWORDS,
+    DOC_COMPRESS_ULTRA_PHRASES, Result, ZenkoError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MdBlockState {
@@ -196,7 +116,7 @@ enum InlineSegment<'a> {
 }
 
 /// Deterministic finite-state inline tokenizer protecting `` `code` ``, `[label](url)`,
-/// bare URLs, file paths, CLI flags, and quoted literals verbatim.
+/// and double-quoted `"literals"` (honoring `\"` escapes) verbatim.
 fn segment_inline_line(body: &str) -> Vec<InlineSegment<'_>> {
     let bytes = body.as_bytes();
     let mut segments: Vec<InlineSegment<'_>> = Vec::new();
@@ -241,6 +161,34 @@ fn segment_inline_line(body: &str) -> Vec<InlineSegment<'_>> {
                     }
                 }
             }
+            b'"' => {
+                let quote_start = i;
+                let mut scan = i + 1;
+                let mut found_end = None;
+                while scan < bytes.len() {
+                    match bytes[scan] {
+                        b'\\' if scan + 1 < bytes.len() => scan += 2,
+                        b'"' => {
+                            found_end = Some(scan + 1);
+                            break;
+                        }
+                        _ => scan += 1,
+                    }
+                }
+                match found_end {
+                    Some(end) if end > quote_start + 1 => {
+                        if quote_start > prose_start {
+                            segments.push(InlineSegment::Prose(&body[prose_start..quote_start]));
+                        }
+                        segments.push(InlineSegment::Verbatim(&body[quote_start..end]));
+                        i = end;
+                        prose_start = i;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
             b'[' => {
                 if let Some(close_bracket) = body[i + 1..].find(']') {
                     let after_bracket = i + 1 + close_bracket + 1;
@@ -275,13 +223,9 @@ fn is_protected_token(tok: &str) -> bool {
     if trimmed.is_empty() {
         return true;
     }
-    trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("./")
-        || trimmed.starts_with("../")
-        || trimmed.starts_with("~/")
-        || trimmed.starts_with('/')
-        || trimmed.starts_with("--")
+    DOC_COMPRESS_PROTECTED_PREFIXES
+        .iter()
+        .any(|p| trimmed.starts_with(p))
         || trimmed.contains('/')
         || trimmed.contains("::")
         || trimmed.contains('_')
@@ -299,44 +243,59 @@ fn is_word_boundary_byte(b: Option<u8>) -> bool {
     }
 }
 
-fn apply_phrase_table(input: &str, table: &[(&str, &str)]) -> String {
-    let mut cur = input.to_string();
-    for &(needle, replacement) in table {
-        let lower = cur.to_ascii_lowercase();
-        let n_len = needle.len();
-        if n_len == 0 || lower.len() < n_len {
-            continue;
-        }
-        let mut out = String::with_capacity(cur.len());
-        let mut pos = 0usize;
-        let bytes = lower.as_bytes();
-        let mut changed = false;
-        while pos + n_len <= lower.len() {
-            if &lower[pos..pos + n_len] == needle
-                && is_word_boundary_byte(pos.checked_sub(1).and_then(|p| bytes.get(p).copied()))
-            {
-                let end = pos + n_len;
-                let end_ok = needle.ends_with(' ')
-                    || is_word_boundary_byte(bytes.get(end).copied());
-                if end_ok && cur.is_char_boundary(pos) && cur.is_char_boundary(end) {
-                    out.push_str(replacement);
-                    pos = end;
-                    changed = true;
-                    continue;
+/// Single-pass O(N) longest-match phrase replacer across one or more declarative phrase tables.
+/// Allocates a single lowercase shadow buffer and resolves overlapping phrases deterministically
+/// by longest needle match at each word boundary (zero multi-pass rescanning, zero regex).
+fn apply_phrase_tables_single_pass(input: &str, tables: &[&[(&str, &str)]]) -> String {
+    let lower = input.to_ascii_lowercase();
+    let lower_bytes = lower.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut pos = 0usize;
+
+    while pos < lower.len() {
+        let at_boundary = is_word_boundary_byte(
+            pos.checked_sub(1)
+                .and_then(|p| lower_bytes.get(p).copied()),
+        );
+        let best_match = match at_boundary && input.is_char_boundary(pos) {
+            true => {
+                let tail = &lower[pos..];
+                let mut best: Option<(usize, &str)> = None;
+                for &table in tables {
+                    for &(needle, replacement) in table {
+                        let n_len = needle.len();
+                        if n_len == 0 || !tail.starts_with(needle) {
+                            continue;
+                        }
+                        let end = pos + n_len;
+                        let end_ok = needle.ends_with(' ')
+                            || is_word_boundary_byte(lower_bytes.get(end).copied());
+                        if end_ok && input.is_char_boundary(end) {
+                            let is_longer = best.is_none_or(|(prev_len, _)| n_len > prev_len);
+                            if is_longer {
+                                best = Some((n_len, replacement));
+                            }
+                        }
+                    }
                 }
+                best
             }
-            let ch_len = cur[pos..].chars().next().map_or(1, char::len_utf8);
-            out.push_str(&cur[pos..pos + ch_len]);
-            pos += ch_len;
-        }
-        if pos < cur.len() {
-            out.push_str(&cur[pos..]);
-        }
-        if changed {
-            cur = out;
+            false => None,
+        };
+
+        match best_match {
+            Some((len, replacement)) => {
+                out.push_str(replacement);
+                pos += len;
+            }
+            None => {
+                let ch_len = input[pos..].chars().next().map_or(1, char::len_utf8);
+                out.push_str(&input[pos..pos + ch_len]);
+                pos += ch_len;
+            }
         }
     }
-    cur
+    out
 }
 
 fn compress_prose_segment(seg: &str, mode: ConciseMode) -> String {
@@ -346,15 +305,17 @@ fn compress_prose_segment(seg: &str, mode: ConciseMode) -> String {
     let lead_space = seg.starts_with(char::is_whitespace);
     let trail_space = seg.ends_with(char::is_whitespace);
 
-    let mut work = apply_phrase_table(seg, LITE_PHRASE_SHORTHANDS);
-    if matches!(mode, ConciseMode::Ultra) {
-        work = apply_phrase_table(&work, ULTRA_PHRASE_SHORTHANDS);
-    }
+    let tables: &[&[(&str, &str)]] = match mode {
+        ConciseMode::Off => &[],
+        ConciseMode::Lite | ConciseMode::Full => &[DOC_COMPRESS_LITE_PHRASES],
+        ConciseMode::Ultra => &[DOC_COMPRESS_LITE_PHRASES, DOC_COMPRESS_ULTRA_PHRASES],
+    };
+    let work = apply_phrase_tables_single_pass(seg, tables);
 
     let stopwords = match mode {
         ConciseMode::Off => &[][..],
-        ConciseMode::Lite => LITE_FILLER_WORDS,
-        ConciseMode::Full | ConciseMode::Ultra => TELEGRAPHIC_STOPWORDS,
+        ConciseMode::Lite => DOC_COMPRESS_LITE_FILLERS,
+        ConciseMode::Full | ConciseMode::Ultra => DOC_COMPRESS_TELEGRAPHIC_STOPWORDS,
     };
 
     let mut kept: Vec<&str> = Vec::new();
@@ -366,7 +327,8 @@ fn compress_prose_segment(seg: &str, mode: ConciseMode) -> String {
         let core = raw_tok
             .trim_matches(|c: char| matches!(c, ',' | ';' | ':' | '(' | ')'))
             .to_ascii_lowercase();
-        let has_terminal_punct = raw_tok.ends_with('.') || raw_tok.ends_with('?') || raw_tok.ends_with('!');
+        let has_terminal_punct =
+            raw_tok.ends_with('.') || raw_tok.ends_with('?') || raw_tok.ends_with('!');
         let drop_word = !has_terminal_punct
             && !raw_tok.starts_with("**")
             && !raw_tok.ends_with("**")
@@ -401,7 +363,6 @@ fn compress_prose_line(line: &str, mode: ConciseMode) -> String {
             InlineSegment::Prose(p) => out.push_str(&compress_prose_segment(p, mode)),
         }
     }
-    // Clean up double spaces created around verbatim boundaries without touching indentation.
     let tail = out[prefix.len()..].trim_end();
     let mut collapsed = String::with_capacity(prefix.len() + tail.len());
     collapsed.push_str(prefix);
@@ -425,14 +386,14 @@ fn compress_prose_line(line: &str, mode: ConciseMode) -> String {
 struct StructuralDigest {
     headings: Vec<String>,
     code_blocks: Vec<String>,
-    inline_codes: Vec<String>,
+    verbatim_spans: Vec<String>,
     urls: Vec<String>,
 }
 
 fn extract_structural_digest(doc: &str) -> StructuralDigest {
     let mut headings = Vec::new();
     let mut code_blocks = Vec::new();
-    let mut inline_codes = Vec::new();
+    let mut verbatim_spans = Vec::new();
     let mut urls = Vec::new();
     let mut state = MdBlockState::Normal;
     let mut current_code = String::new();
@@ -457,11 +418,13 @@ fn extract_structural_digest(doc: &str) -> StructuralDigest {
                 }
                 for seg in segment_inline_line(line) {
                     if let InlineSegment::Verbatim(v) = seg {
-                        inline_codes.push(v.to_string());
+                        verbatim_spans.push(v.to_string());
                     }
                 }
                 for tok in line.split_whitespace() {
-                    let clean = tok.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | '.' | ';' | '<' | '>'));
+                    let clean = tok.trim_matches(|c: char| {
+                        matches!(c, '(' | ')' | ',' | '.' | ';' | '<' | '>' | '"')
+                    });
                     if clean.starts_with("http://") || clean.starts_with("https://") {
                         urls.push(clean.to_string());
                     }
@@ -489,13 +452,13 @@ fn extract_structural_digest(doc: &str) -> StructuralDigest {
     StructuralDigest {
         headings,
         code_blocks,
-        inline_codes,
+        verbatim_spans,
         urls,
     }
 }
 
 /// Compresses an English Markdown document deterministically while preserving all code blocks,
-/// headings, tables, frontmatter, inline code spans, paths, and URLs byte-for-byte.
+/// headings, tables, frontmatter, inline code spans, quoted literals, paths, and URLs verbatim.
 pub fn compress_markdown_doc(input: &str, mode: ConciseMode) -> Result<MarkdownCompressionOutcome> {
     let original_bytes = input.len();
     if !mode.is_active() || input.trim().is_empty() {
@@ -570,11 +533,11 @@ pub fn compress_markdown_doc(input: &str, mode: ConciseMode) -> Result<MarkdownC
     }
 
     // Strict structural integrity gate: refuse to return a transform that alters any heading,
-    // fenced code block, inline code span, or URL.
+    // fenced code block, inline code span, quoted literal, link, or URL.
     let after_digest = extract_structural_digest(&compressed);
     if before_digest.headings != after_digest.headings
         || before_digest.code_blocks != after_digest.code_blocks
-        || before_digest.inline_codes != after_digest.inline_codes
+        || before_digest.verbatim_spans != after_digest.verbatim_spans
         || before_digest.urls != after_digest.urls
     {
         return Err(ZenkoError::Tool(
@@ -609,16 +572,20 @@ mod tests {
 
     #[test]
     fn stopword_tables_are_strictly_sorted() {
-        assert!(LITE_FILLER_WORDS.windows(2).all(|w| w[0] < w[1]));
-        assert!(TELEGRAPHIC_STOPWORDS.windows(2).all(|w| w[0] < w[1]));
-        assert!(!TELEGRAPHIC_STOPWORDS.contains(&"not"));
-        assert!(!TELEGRAPHIC_STOPWORDS.contains(&"never"));
-        assert!(!TELEGRAPHIC_STOPWORDS.contains(&"no"));
+        assert!(DOC_COMPRESS_LITE_FILLERS.windows(2).all(|w| w[0] < w[1]));
+        assert!(
+            DOC_COMPRESS_TELEGRAPHIC_STOPWORDS
+                .windows(2)
+                .all(|w| w[0] < w[1])
+        );
+        assert!(!DOC_COMPRESS_TELEGRAPHIC_STOPWORDS.contains(&"not"));
+        assert!(!DOC_COMPRESS_TELEGRAPHIC_STOPWORDS.contains(&"never"));
+        assert!(!DOC_COMPRESS_TELEGRAPHIC_STOPWORDS.contains(&"no"));
     }
 
     #[test]
-    fn compresses_prose_while_preserving_code_headings_urls_and_paths() {
-        let doc = "---\nname: Project Rules\n---\n\n# Architecture Notes\n\n\n- Please make sure to run `cargo test --workspace` in order to verify the build prior to committing.\n- It is important to note that the config lives at `./crates/zenko-core/src/config.rs` and docs at https://github.com/aswin402/zenko.\n- Never drop negations when the tests do not pass.\n\n```rust\nfn main() {\n    println!(\"please note that the code stays verbatim\");\n}\n```\n";
+    fn compresses_prose_while_preserving_code_headings_urls_quotes_and_paths() {
+        let doc = "---\nname: Project Rules\n---\n\n# Architecture Notes\n\n\n- Please make sure to run `cargo test --workspace` in order to verify the build prior to committing.\n- It is important to note that the config lives at `./crates/zenko-core/src/config.rs` and docs at https://github.com/aswin402/zenko.\n- Exact error message: \"Please note that the cache must not be altered in order to pass\".\n- Never drop negations when the tests do not pass.\n\n```rust\nfn main() {\n    println!(\"please note that the code stays verbatim\");\n}\n```\n";
         let res = compress_markdown_doc(doc, ConciseMode::Full).expect("compress");
         assert!(res.bytes_saved > 50, "saved={}", res.bytes_saved);
         assert_eq!(res.headings_preserved, 1);
@@ -627,6 +594,10 @@ mod tests {
         assert!(res.compressed.contains("`cargo test --workspace`"));
         assert!(res.compressed.contains("./crates/zenko-core/src/config.rs"));
         assert!(res.compressed.contains("https://github.com/aswin402/zenko"));
+        assert!(
+            res.compressed
+                .contains("\"Please note that the cache must not be altered in order to pass\"")
+        );
         assert!(res.compressed.contains("println!(\"please note that the code stays verbatim\")"));
         assert!(res.compressed.contains("Never"));
         assert!(res.compressed.contains("not pass."));

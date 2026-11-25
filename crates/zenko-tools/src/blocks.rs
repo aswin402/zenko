@@ -1,7 +1,8 @@
 //! Pure-Rust Reusable Script Blocks (`script_block`) — zero JS/QuickJS engine overhead.
-//! Stores reusable automation scripts atomically (`0600`) inside `<hub_dir>/blocks/<slug>.sh`
+//! Stores reusable automation scripts atomically (`0700`) inside `<hub_dir>/blocks/<slug>.sh`
 //! so agents can save recurring verification/audit/transform scripts once and re-run them
-//! cleanly across turns inside Zenko's jailed workspace + Linux Landlock write sandbox.
+//! cleanly across turns inside Zenko's jailed workspace + Linux Landlock write sandbox,
+//! honoring custom `#!` shebangs (e.g., `#!/usr/bin/env python3`, `#!/usr/bin/env bash`).
 
 use crate::jail::resolve_workspace_or_hub_path;
 use crate::sandbox::{ShellSandboxPolicy, install_sandbox_on_command};
@@ -15,11 +16,12 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    FILE_MODE_OWNER_ONLY, Result, RiskLevel, SAFE_SHELL_ENV_KEYS, SCRIPT_BLOCK_ACTIONS,
-    SCRIPT_BLOCK_MAX_BYTES, SCRIPT_BLOCK_MAX_LIST, SCRIPT_BLOCK_SLUG_MAX_CHARS,
-    SCRIPT_BLOCKS_DIR_NAME, SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SCRIPT_BLOCK_DESC_PREFIX,
-    ScriptBlockAction, TOOL_SCRIPT_BLOCK, Tool, ToolConcurrency, ToolContext, ToolExposure,
-    ToolOutput, ToolSet, ToolSpec, ZenkoError, write_owner_only_atomic,
+    FILE_MODE_OWNER_EXEC, Result, RiskLevel, SAFE_SHELL_ENV_KEYS, SCRIPT_BLOCK_ACTIONS,
+    SCRIPT_BLOCK_DEFAULT_DESC, SCRIPT_BLOCK_DESC_PREFIX, SCRIPT_BLOCK_EXT,
+    SCRIPT_BLOCK_HEADER_SCAN_LINES, SCRIPT_BLOCK_MAX_ARGS, SCRIPT_BLOCK_MAX_BYTES,
+    SCRIPT_BLOCK_MAX_LIST, SCRIPT_BLOCK_SLUG_MAX_CHARS, SCRIPT_BLOCKS_DIR_NAME, SHELL_BIN_UNIX,
+    SHELL_MAX_TIMEOUT_SECS, ScriptBlockAction, TOOL_SCRIPT_BLOCK, Tool, ToolConcurrency,
+    ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec, ZenkoError, write_owner_only_atomic,
 };
 
 pub struct ScriptBlockTool {
@@ -67,24 +69,50 @@ fn blocks_dir(hub_dir: &Path) -> PathBuf {
 }
 
 fn block_path(hub_dir: &Path, slug: &str) -> PathBuf {
-    blocks_dir(hub_dir).join(format!("{slug}.sh"))
+    blocks_dir(hub_dir).join(format!("{slug}.{SCRIPT_BLOCK_EXT}"))
 }
 
 fn extract_block_description(content: &str) -> String {
     content
         .lines()
-        .take(4)
+        .take(SCRIPT_BLOCK_HEADER_SCAN_LINES)
         .find_map(|line| {
             line.trim()
                 .strip_prefix(SCRIPT_BLOCK_DESC_PREFIX)
                 .map(|rest| rest.trim().to_string())
         })
-        .unwrap_or_else(|| "Reusable script block".into())
+        .unwrap_or_else(|| SCRIPT_BLOCK_DEFAULT_DESC.to_string())
+}
+
+/// Deterministic Unix `#!` shebang parser (zero regex).
+/// Supports `#!/usr/bin/env python3`, `#!/bin/bash -e`, and defaults cleanly to `SHELL_BIN_UNIX`.
+fn parse_shebang_command(script_content: &str) -> (String, Option<String>) {
+    let Some(first_line) = script_content.lines().next() else {
+        return (SHELL_BIN_UNIX.to_string(), None);
+    };
+    let Some(rest) = first_line.strip_prefix("#!") else {
+        return (SHELL_BIN_UNIX.to_string(), None);
+    };
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return (SHELL_BIN_UNIX.to_string(), None);
+    }
+    match trimmed.split_once(char::is_whitespace) {
+        Some((prog, arg)) => {
+            let opt_arg = arg.trim();
+            match opt_arg.is_empty() {
+                true => (prog.to_string(), None),
+                false => (prog.to_string(), Some(opt_arg.to_string())),
+            }
+        }
+        None => (trimmed.to_string(), None),
+    }
 }
 
 fn render_block_script(description: Option<&str>, script: &str) -> String {
     let body = script.trim_start_matches('\u{feff}');
     let has_shebang = body.starts_with("#!");
+    let default_shebang = format!("#!{SHELL_BIN_UNIX}\n");
     let desc_line = description
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -105,12 +133,12 @@ fn render_block_script(description: Option<&str>, script: &str) -> String {
         },
         (true, None) => out.push_str(body),
         (false, Some(dl)) => {
-            out.push_str("#!/bin/sh\n");
+            out.push_str(&default_shebang);
             out.push_str(&dl);
             out.push_str(body);
         }
         (false, None) => {
-            out.push_str("#!/bin/sh\n");
+            out.push_str(&default_shebang);
             out.push_str(body);
         }
     }
@@ -144,7 +172,7 @@ impl Tool for ScriptBlockTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_SCRIPT_BLOCK.into(),
-            description: "Save, list, inspect, delete, and re-run reusable shell script blocks stored under `hub:blocks/` inside the jailed workspace and Linux Landlock write sandbox — saves tokens by avoiding repeated boilerplate script generation across turns.".into(),
+            description: "Save, list, inspect, delete, and re-run reusable script blocks (honoring custom `#!` shebangs) stored under `hub:blocks/` inside the jailed workspace and Linux Landlock write sandbox — saves tokens by avoiding repeated boilerplate script generation across turns.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -163,12 +191,12 @@ impl Tool for ScriptBlockTool {
                     },
                     "script": {
                         "type": "string",
-                        "description": "Shell script body to persist on `save`."
+                        "description": "Script body to persist on `save` (defaults to POSIX sh; custom `#!` shebangs like `#!/usr/bin/env python3` are honored)."
                     },
                     "args": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional positional arguments (`$1`, `$2`, ...) passed to the script on `run`."
+                        "description": "Optional positional arguments passed to the script on `run`."
                     },
                     "cwd": {
                         "type": "string",
@@ -211,7 +239,7 @@ impl Tool for ScriptBlockTool {
                 let mut rows: Vec<(String, String, u64)> = Vec::new();
                 while let Ok(Some(ent)) = rd.next_entry().await {
                     let path = ent.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("sh") {
+                    if path.extension().and_then(|e| e.to_str()) != Some(SCRIPT_BLOCK_EXT) {
                         continue;
                     }
                     let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -221,7 +249,7 @@ impl Tool for ScriptBlockTool {
                     let desc = tokio::fs::read_to_string(&path)
                         .await
                         .map(|s| extract_block_description(&s))
-                        .unwrap_or_else(|_| "Reusable script block".into());
+                        .unwrap_or_else(|_| SCRIPT_BLOCK_DEFAULT_DESC.to_string());
                     rows.push((stem.to_string(), desc, bytes));
                     if rows.len() >= SCRIPT_BLOCK_MAX_LIST {
                         break;
@@ -273,7 +301,7 @@ impl Tool for ScriptBlockTool {
                         use std::os::unix::fs::PermissionsExt;
                         let _ = std::fs::set_permissions(
                             &path_clone,
-                            std::fs::Permissions::from_mode(FILE_MODE_OWNER_ONLY | 0o100),
+                            std::fs::Permissions::from_mode(FILE_MODE_OWNER_EXEC),
                         );
                     }
                     Ok(())
@@ -281,7 +309,7 @@ impl Tool for ScriptBlockTool {
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("save block worker failed: {e}")))??;
                 Ok(ToolOutput::ok(format!(
-                    "Saved script block `{slug}` ({bytes_len} bytes) -> `hub:{SCRIPT_BLOCKS_DIR_NAME}/{slug}.sh`. Re-run via `script_block(action=\"run\", name=\"{slug}\")`."
+                    "Saved script block `{slug}` ({bytes_len} bytes) -> `hub:{SCRIPT_BLOCKS_DIR_NAME}/{slug}.{SCRIPT_BLOCK_EXT}`. Re-run via `script_block(action=\"run\", name=\"{slug}\")`."
                 )))
             }
             ScriptBlockAction::Read => {
@@ -315,11 +343,11 @@ impl Tool for ScriptBlockTool {
                     .ok_or_else(|| ZenkoError::Tool("`name` is required for `run`".into()))?;
                 let slug = normalize_block_slug(name)?;
                 let path = block_path(&ctx.hub_dir, &slug);
-                if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+                let Ok(script_content) = tokio::fs::read_to_string(&path).await else {
                     return Ok(ToolOutput::err(format!(
                         "Script block `{slug}` not found. Use `script_block(action=\"list\")` or `save` first."
                     )));
-                }
+                };
 
                 let exec_dir = match args
                     .get("cwd")
@@ -352,7 +380,7 @@ impl Tool for ScriptBlockTool {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|v| v.as_str().map(String::from))
-                            .take(32)
+                            .take(SCRIPT_BLOCK_MAX_ARGS)
                             .collect()
                     })
                     .unwrap_or_default();
@@ -363,7 +391,11 @@ impl Tool for ScriptBlockTool {
                     .unwrap_or(ctx.shell_timeout_secs)
                     .clamp(1, SHELL_MAX_TIMEOUT_SECS);
 
-                let mut cmd = Command::new(SHELL_BIN_UNIX);
+                let (interpreter, interp_arg) = parse_shebang_command(&script_content);
+                let mut cmd = Command::new(&interpreter);
+                if let Some(arg) = interp_arg {
+                    cmd.arg(arg);
+                }
                 cmd.arg(&path);
                 for a in &script_args {
                     cmd.arg(a);
@@ -387,9 +419,11 @@ impl Tool for ScriptBlockTool {
                 );
                 install_sandbox_on_command(&mut cmd, &policy);
 
-                let child = cmd
-                    .spawn()
-                    .map_err(|e| ZenkoError::Tool(format!("failed to execute block `{slug}`: {e}")))?;
+                let child = cmd.spawn().map_err(|e| {
+                    ZenkoError::Tool(format!(
+                        "failed to execute block `{slug}` via `{interpreter}`: {e}"
+                    ))
+                })?;
 
                 let output = tokio::select! {
                     _ = cancel.cancelled() => return Err(ZenkoError::Cancelled),
@@ -426,8 +460,24 @@ mod tests {
     use super::*;
     use tokio::sync::Notify;
 
+    #[test]
+    fn parses_custom_shebangs_deterministically() {
+        assert_eq!(
+            parse_shebang_command("#!/usr/bin/env python3\nprint('ok')\n"),
+            ("/usr/bin/env".into(), Some("python3".into()))
+        );
+        assert_eq!(
+            parse_shebang_command("#!/bin/bash -e\necho ok\n"),
+            ("/bin/bash".into(), Some("-e".into()))
+        );
+        assert_eq!(
+            parse_shebang_command("echo plain\n"),
+            (SHELL_BIN_UNIX.into(), None)
+        );
+    }
+
     #[tokio::test]
-    async fn script_block_save_list_read_run_and_delete_roundtrip() {
+    async fn script_block_save_list_read_run_custom_shebang_and_delete_roundtrip() {
         let dir = std::env::temp_dir().join(format!("zenko_blocks_{}", zenko_core::new_id()));
         let ws = dir.join("ws");
         let hub = dir.join("hub");
@@ -480,6 +530,32 @@ mod tests {
             .expect("run");
         assert!(!ran.is_error, "{}", ran.content);
         assert!(ran.content.contains("hello:zenko:ws"), "out={}", ran.content);
+
+        // Verify custom `#!/usr/bin/env python3` shebang actually executes via Python!
+        let py_saved = tool
+            .execute(
+                &ctx,
+                json!({
+                    "action": "save",
+                    "name": "py-sum",
+                    "description": "Sum args via Python shebang",
+                    "script": "#!/usr/bin/env python3\nimport sys\nprint('py-sum:' + str(sum(int(x) for x in sys.argv[1:])))"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("py save");
+        assert!(!py_saved.is_error, "{}", py_saved.content);
+        let py_ran = tool
+            .execute(
+                &ctx,
+                json!({ "action": "run", "name": "py-sum", "args": ["19", "23"] }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("py run");
+        assert!(!py_ran.is_error, "{}", py_ran.content);
+        assert!(py_ran.content.contains("py-sum:42"), "out={}", py_ran.content);
 
         let deleted = tool
             .execute(
