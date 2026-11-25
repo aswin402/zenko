@@ -987,6 +987,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     TOOL_SESSION_SEARCH,
     TOOL_AGENT_LIST,
     TOOL_AGENT_WAIT,
+    TOOL_CODE_MINIMALISM,
 ];
 pub const PLANNING_TOOLS: &[&str] = &[
     TOOL_RECORD_BRAINSTORM,
@@ -1388,6 +1389,7 @@ pub const ECONOMY_PROTECTED_CORE_TOOLS: &[&str] = &[
     TOOL_ASK_CLARIFICATION,
     TOOL_ORCHESTRATE_CONTROL,
     TOOL_TOKEN_ECONOMY,
+    TOOL_CODE_MINIMALISM,
 ];
 
 /// Declarative shell wrapper prefixes skipped when extracting the primary executable command.
@@ -1420,4 +1422,86 @@ pub const ECONOMY_CONTRADICTION_MARKERS: &[&str] = &[
     "unknown subcommand",
     "no such subcommand",
     "exit_code: 127",
+];
+
+// Native Rust Code Minimalism Engine constants (inspired by DietrichGebert/ponytail; zero /commands, zero regex)
+pub const TOOL_CODE_MINIMALISM: &str = "code_minimalism";
+pub const ORCH_STAGE_MINIMALISM: &str = "minimalism";
+pub const NOTE_KIND_MINIMALISM_MODE: &str = "minimalism_mode";
+pub const CODE_MINIMALISM_MODES: &[&str] = &["off", "lite", "full", "ultra"];
+pub const MINIMALISM_AUDIT_MAX_FILES: usize = 600;
+pub const MINIMALISM_AUDIT_MAX_FILE_BYTES: u64 = 262_144;
+pub const MINIMALISM_LARGE_FILE_LINES: usize = 450;
+pub const MINIMALISM_LONG_FN_LINES: usize = 80;
+pub const MINIMALISM_AUDIT_TOP_N: usize = 12;
+pub const MINIMALISM_DEBT_MAX_ITEMS: usize = 80;
+pub const MINIMALISM_DEBT_TEXT_MAX_CHARS: usize = 160;
+pub const MINIMALISM_DIFF_LARGE_HUNK_LOC: usize = 60;
+pub const MINIMALISM_WRAPPER_MAX_LINES: usize = 14;
+pub const MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS: usize = 6;
+pub const MINIMALISM_BLOAT_HINT_NET_LOC_LITE: u64 = 300;
+pub const MINIMALISM_BLOAT_HINT_NET_LOC_FULL: u64 = 140;
+pub const MINIMALISM_BLOAT_HINT_NET_LOC_ULTRA: u64 = 70;
+pub const MINIMALISM_BLOAT_HINT_NEW_FILES_LITE: usize = 4;
+pub const MINIMALISM_BLOAT_HINT_NEW_FILES_FULL: usize = 3;
+pub const MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA: usize = 2;
+
+/// Declarative shortcut/debt comment markers scanned strictly inside comment spans (zero regex).
+pub const MINIMALISM_DEBT_MARKERS: &[&str] = &[
+    "DEBT:",
+    "SHORTCUT:",
+    "HACK:",
+    "FIXME(debt):",
+    "TODO(debt):",
+    "PONYTAIL:",
+];
+
+/// Declarative source file extensions included in minimalism audits and debt scans.
+pub const MINIMALISM_SOURCE_EXTS: &[&str] = &[
+    "rs", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "pyi", "go", "c", "h", "cc",
+    "cpp", "cxx", "hpp", "java", "kt", "kts", "swift", "cs",
+];
+
+/// Dependency manifests flagged during `audit_diff` so new dependencies pass the Simplicity Ladder.
+pub const MINIMALISM_MANIFEST_FILES: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "go.mod",
+    "requirements.txt",
+];
+
+/// Suffixes signaling potential speculative thin wrapper types when span <= `MINIMALISM_WRAPPER_MAX_LINES`.
+pub const MINIMALISM_WRAPPER_SUFFIXES: &[&str] = &[
+    "Wrapper", "Adapter", "Facade", "Proxy", "Factory", "Helper", "Delegate",
+];
+
+/// Strictly ASCII-sorted common lifecycle/trait method names excluded from duplicate-symbol findings
+/// (queried via O(log K) `binary_search`).
+pub const MINIMALISM_IGNORED_DUP_SYMBOLS: &[&str] = &[
+    "as_str",
+    "build",
+    "cleanup",
+    "close",
+    "default",
+    "default_true",
+    "delete",
+    "execute",
+    "exposure",
+    "format",
+    "from_str_loose",
+    "handle",
+    "is_available",
+    "is_empty",
+    "is_mutating",
+    "parse",
+    "render",
+    "reset",
+    "resolve",
+    "shutdown",
+    "status",
+    "toolset",
+    "update",
+    "upgrade",
+    "validate",
 ];

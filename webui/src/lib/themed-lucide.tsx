@@ -52,6 +52,7 @@ import FilePenRaw from 'lucide-react/dist/esm/icons/file-pen.js'
 import FileRaw from 'lucide-react/dist/esm/icons/file.js'
 import FileTextRaw from 'lucide-react/dist/esm/icons/file-text.js'
 import FlameRaw from 'lucide-react/dist/esm/icons/flame.js'
+import ScissorsRaw from 'lucide-react/dist/esm/icons/scissors.js'
 import FolderRaw from 'lucide-react/dist/esm/icons/folder.js'
 import FolderSearchRaw from 'lucide-react/dist/esm/icons/folder-search.js'
 import GitBranchRaw from 'lucide-react/dist/esm/icons/git-branch.js'
@@ -207,6 +208,7 @@ export const FilePen = createThemedIcon('edit', FilePenRaw)
 export const FileIcon = createThemedIcon('file', FileRaw)
 export const FileText = createThemedIcon('fileText', FileTextRaw)
 export const Flame = createThemedIcon('zap', FlameRaw)
+export const Scissors = createThemedIcon('edit', ScissorsRaw)
 export const FolderIcon = createThemedIcon('folder', FolderRaw)
 export const FolderSearch = createThemedIcon('folderSearch', FolderSearchRaw)
 export const GitBranch = createThemedIcon('branch', GitBranchRaw)

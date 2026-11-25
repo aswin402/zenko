@@ -3,14 +3,18 @@
 //! from each provider's `/models` API and hydrated via the live metadata registry.
 
 use crate::{
-    ConciseMode, SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_KILL, TOOL_AGENT_LIST, TOOL_AGENT_MESSAGE,
-    TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH, TOOL_ASK_CLARIFICATION,
-    TOOL_BATCH_TOOLS, TOOL_CODE_SEARCH, TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND,
-    TOOL_GOAL_LOOP, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY,
-    TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM,
-    TOOL_SCRIPT_BLOCK, TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH,
-    TOOL_WEB_SEARCH, TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
+    CodeMinimalismMode, ConciseMode, MINIMALISM_BLOAT_HINT_NET_LOC_FULL,
+    MINIMALISM_BLOAT_HINT_NET_LOC_LITE, MINIMALISM_BLOAT_HINT_NET_LOC_ULTRA,
+    MINIMALISM_BLOAT_HINT_NEW_FILES_FULL, MINIMALISM_BLOAT_HINT_NEW_FILES_LITE,
+    MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA, SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_KILL, TOOL_AGENT_LIST,
+    TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH,
+    TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM, TOOL_CODE_SEARCH,
+    TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND, TOOL_GOAL_LOOP, TOOL_HASH_EDIT,
+    TOOL_INVOKE_TOOL, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL,
+    TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM, TOOL_SCRIPT_BLOCK,
+    TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW,
+    TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH,
+    TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
     VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI, VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI,
     VAULT_KEY_OPENROUTER, VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
 };
@@ -227,6 +231,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SKILL_VIEW,
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
+            TOOL_CODE_MINIMALISM,
             TOOL_SESSION_TASK,
             TOOL_AGENT_LIST,
             TOOL_AGENT_MESSAGE,
@@ -271,6 +276,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
             TOOL_TOKEN_ECONOMY,
+            TOOL_CODE_MINIMALISM,
             TOOL_RECORD_BRAINSTORM,
             TOOL_PLAN_UPDATE,
             TOOL_SESSION_TASK,
@@ -362,6 +368,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
             TOOL_TOKEN_ECONOMY,
+            TOOL_CODE_MINIMALISM,
             TOOL_RECORD_BRAINSTORM,
             TOOL_SESSION_TASK,
             TOOL_AGENT_LIST,
@@ -404,6 +411,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_INVOKE_TOOL,
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
+            TOOL_CODE_MINIMALISM,
             TOOL_AGENT_LIST,
             TOOL_AGENT_MESSAGE,
         ],
@@ -840,7 +848,148 @@ enabled: true\n\
 - Soft-demote persistently unused non-core tools via `apply_prune` (still reachable via `invoke_tool`) or pin/restore required tools via `restore_tool`.\n\
 - Report net ROI honestly: gross savings (Read-Less + Tool Pruning + Micro-Skills + Loop Guard) minus background Dream/Judge overhead.\n",
     },
+    DefaultSkillTemplate {
+        filename: "minimal-review.md",
+        content: "---\n\
+name: Minimalist Code Review\n\
+description: Review diffs for correctness, safety, and over-engineering -- flagging stdlib reinventions, speculative abstractions, and deletable code.\n\
+enabled: true\n\
+---\n\n\
+- Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_diff\"})` and `git_tool(action=\"diff\")` before reviewing.\n\
+- Check correctness, security, error handling, trust-boundary validation, and race conditions first -- never trade away safety for brevity.\n\
+- Apply the 7-rung Simplicity Ladder to every added block: YAGNI -> Reuse existing helper -> Stdlib -> Native platform -> Installed dep -> One-liner -> Minimum viable code.\n\
+- Flag single-use wrappers, duplicated utilities, reinvented stdlib helpers, and unnecessary new dependencies with concrete delete/merge suggestions (`path:Lline: <issue> -> <minimal fix>`).\n",
+    },
+    DefaultSkillTemplate {
+        filename: "minimal-audit.md",
+        content: "---\n\
+name: Minimalist Repo Audit\n\
+description: Scan a repository for structural bloat, oversized files/functions, duplicate helpers, and thin wrappers to produce a ranked simplification plan.\n\
+enabled: true\n\
+---\n\n\
+- Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_repo\"})` and `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"gain\"})`.\n\
+- Inspect top flagged files via `read_file(mode=\"outline\")` and targeted line ranges only.\n\
+- Rank candidate deletions/consolidations by net LOC removed and risk; verify callers via `code_search` before recommending removal.\n\
+- Preserve all security checks, error paths, accessibility, and public API contracts.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "debt-harvest.md",
+        content: "---\n\
+name: Shortcut Debt Harvest\n\
+description: Harvest explicit DEBT/SHORTCUT/HACK/PONYTAIL comment markers into an actionable prioritized ledger or session task DAG.\n\
+enabled: true\n\
+---\n\n\
+- Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"debt_scan\"})` to list all comment-scoped shortcut markers with exact `path:line` locations.\n\
+- Group items by blast radius (safety/correctness first, structural duplication second, cosmetic last) and verify each marker is still relevant by reading its surrounding lines.\n\
+- Convert verified high-priority items into concrete `session_task` DAG steps when the user asks to pay down debt; never silently delete unresolved safety warnings.\n",
+    },
 ];
+
+/// Declarative 7-rung Simplicity Ladder (inspired by DietrichGebert/ponytail; stop at first rung that works).
+pub const SIMPLICITY_LADDER_RUNGS: &[(&str, &str)] = &[
+    ("1. YAGNI", "Does this code or abstraction need to exist now? If not, skip it."),
+    ("2. Reuse", "Search existing workspace helpers/modules first (`code_search`) and reuse them."),
+    ("3. Stdlib", "Use the language standard library before writing custom utilities."),
+    ("4. Native Platform", "Use OS, browser, SQL, or runtime primitives over custom layers."),
+    ("5. Installed Dep", "Use a dependency already in the project manifest before adding a new one."),
+    ("6. One-Liner", "Prefer a clear, idiomatic direct expression over ceremonial wrapper types."),
+    ("7. Minimum Viable", "Write only the minimal, readable code required -- zero speculative hooks."),
+];
+
+/// Declarative Code Minimalism intensity profile descriptor (shared by prompt builder, runtime, CLI, and WebUI).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct CodeMinimalismDescriptor {
+    pub mode: CodeMinimalismMode,
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub directive: &'static str,
+    pub bloat_hint_net_loc: u64,
+    pub bloat_hint_new_files: usize,
+}
+
+pub const CODE_MINIMALISM_REGISTRY: &[CodeMinimalismDescriptor] = &[
+    CodeMinimalismDescriptor {
+        mode: CodeMinimalismMode::Off,
+        id: "off",
+        label: "Off",
+        description: "No Simplicity Ladder constraint or automatic diff-bloat nudges",
+        directive: "",
+        bloat_hint_net_loc: 0,
+        bloat_hint_new_files: 0,
+    },
+    CodeMinimalismDescriptor {
+        mode: CodeMinimalismMode::Lite,
+        id: "lite",
+        label: "Lite",
+        description: "Pragmatic senior-dev minimalism: reuse existing helpers and avoid speculative wrappers",
+        directive: "Prefer reusing existing codebase helpers and stdlib primitives over adding speculative abstractions or duplicate utilities.",
+        bloat_hint_net_loc: MINIMALISM_BLOAT_HINT_NET_LOC_LITE,
+        bloat_hint_new_files: MINIMALISM_BLOAT_HINT_NEW_FILES_LITE,
+    },
+    CodeMinimalismDescriptor {
+        mode: CodeMinimalismMode::Full,
+        id: "full",
+        label: "Full",
+        description: "Strict 7-rung Simplicity Ladder: minimal diffs, zero unnecessary deps, auto diff-bloat guard",
+        directive: "Enforce the 7-rung Simplicity Ladder strictly: stop at the lowest rung that solves the problem, delete dead code when refactoring, and avoid introducing single-use traits/wrappers or redundant dependencies.",
+        bloat_hint_net_loc: MINIMALISM_BLOAT_HINT_NET_LOC_FULL,
+        bloat_hint_new_files: MINIMALISM_BLOAT_HINT_NEW_FILES_FULL,
+    },
+    CodeMinimalismDescriptor {
+        mode: CodeMinimalismMode::Ultra,
+        id: "ultra",
+        label: "Ultra",
+        description: "Ruthless deletion & consolidation: shortest idiomatic implementation, tightest bloat guard",
+        directive: "Maximize code deletion and consolidation: challenge every new file, struct, or dependency; collapse redundant layers into direct, readable logic while preserving every safety invariant.",
+        bloat_hint_net_loc: MINIMALISM_BLOAT_HINT_NET_LOC_ULTRA,
+        bloat_hint_new_files: MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA,
+    },
+];
+
+pub fn find_minimalism_mode(mode: CodeMinimalismMode) -> &'static CodeMinimalismDescriptor {
+    CODE_MINIMALISM_REGISTRY
+        .iter()
+        .find(|d| d.mode == mode)
+        .unwrap_or(&CODE_MINIMALISM_REGISTRY[0])
+}
+
+/// Renders the KV-cache-safe Tier-2 `<code_minimalism>` directive block (returns `None` when `Off`).
+/// Instructs the orchestrator to apply the 7-rung Simplicity Ladder and autonomously use
+/// `code_minimalism` (`audit_diff`, `audit_repo`, `debt_scan`, `gain`) and `minimal-*` skills.
+pub fn render_minimalism_prompt_block(
+    mode: CodeMinimalismMode,
+    can_use_tool: bool,
+    read_only_plan: bool,
+) -> Option<String> {
+    if !mode.is_active() {
+        return None;
+    }
+    let desc = find_minimalism_mode(mode);
+    let ladder: String = SIMPLICITY_LADDER_RUNGS
+        .iter()
+        .map(|(k, _)| *k)
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    let tool_clause = match (can_use_tool, read_only_plan) {
+        (true, true) => format!(
+            "\n- Autonomous audit tools: run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})` or load `minimal-review`, `minimal-audit`, or `debt-harvest` via `{TOOL_SKILL_VIEW}` when planning refactors, reviewing diffs, or auditing bloat."
+        ),
+        (true, false) => format!(
+            "\n- Autonomous audit tools: before finalizing multi-file or large edits, run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"}})` (or load `minimal-review` via `{TOOL_SKILL_VIEW}`) to verify nothing can be reused or deleted; use `audit_repo` / `minimal-audit` for codebase simplification and annotate deliberate temporary shortcuts with `DEBT: <reason>` (harvested via `debt_scan` / `debt-harvest`)."
+        ),
+        (false, _) => String::new(),
+    };
+    Some(format!(
+        "<code_minimalism level=\"{}\">\n\
+         - {}\n\
+         - Simplicity Ladder (stop at first rung that fits): {ladder}.\n\
+         - Safety invariant (minimal != careless): NEVER omit security checks, trust-boundary input validation, error handling, data-loss guards, or accessibility.{tool_clause}\n\
+         - Live control (zero /commands): adjust via `{TOOL_ORCHESTRATE_CONTROL}(minimalism_mode=\"off|lite|full|ultra\")` if task complexity requires it.\n\
+         </code_minimalism>",
+        desc.id, desc.directive
+    ))
+}
 
 /// Renders corroborated active repository micro-skills into a compact Tier-2 XML block.
 /// Returns `None` when no active corroborated skills exist (zero prompt bloat).
@@ -877,11 +1026,11 @@ pub fn render_economy_prompt_block(
     let body = match read_only_plan {
         true => format!(
             "- Background micro-skills, soft tool pruning, Read-Less compression, and 1.25x P90 loop guard are active for this repository.\n\
-             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or load `token-economy-audit` via `{TOOL_SKILL_VIEW}` when auditing token efficiency."
+             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
         false => format!(
-            "- Background micro-skill mining, soft tool pruning, Read-Less compression, and 1.25x P90 loop guard run automatically for this repository.\n\
-             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` entries via `retire_micro_skill`, or load `token-economy-audit` via `{TOOL_SKILL_VIEW}` when auditing token waste or restoring/pruning tools."
+            "- Background micro-skill mining, soft tool pruning, Read-Less compression, diff-LOC tracking, and 1.25x P90 loop guard run automatically for this repository.\n\
+             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` via `retire_micro_skill`, audit code bloat/debt via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"}})`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
     };
     Some(format!("<token_economy>\n{body}\n</token_economy>"))
@@ -1089,5 +1238,43 @@ mod tests {
         let critic = find_subagent_role("critic").expect("critic");
         assert!(architect.permits_tool(TOOL_TOKEN_ECONOMY));
         assert!(critic.permits_tool(TOOL_TOKEN_ECONOMY));
+        assert!(architect.permits_tool(TOOL_CODE_MINIMALISM));
+        assert!(critic.permits_tool(TOOL_CODE_MINIMALISM));
+    }
+
+    #[test]
+    fn minimalism_registry_ladder_sorted_table_and_skills_are_valid() {
+        assert_eq!(SIMPLICITY_LADDER_RUNGS.len(), 7);
+        for pair in crate::MINIMALISM_IGNORED_DUP_SYMBOLS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "MINIMALISM_IGNORED_DUP_SYMBOLS must be strictly sorted: {} >= {}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for desc in CODE_MINIMALISM_REGISTRY {
+            assert_eq!(CodeMinimalismMode::parse(desc.id), Some(desc.mode));
+            assert_eq!(desc.mode.as_str(), desc.id);
+            assert!(desc.directive.is_ascii() && desc.description.is_ascii());
+        }
+        assert!(render_minimalism_prompt_block(CodeMinimalismMode::Off, true, false).is_none());
+        let full = render_minimalism_prompt_block(CodeMinimalismMode::Full, true, false)
+            .expect("full minimalism block");
+        assert!(full.contains("level=\"full\""));
+        assert!(full.contains("1. YAGNI"));
+        assert!(full.contains("Safety invariant"));
+        assert!(full.contains(TOOL_CODE_MINIMALISM));
+        assert!(full.contains("minimal-review"));
+        assert!(!full.contains("/ponytail"), "Zenko must remain zero /commands");
+
+        for req_skill in ["minimal-review.md", "minimal-audit.md", "debt-harvest.md"] {
+            assert!(
+                DEFAULT_SKILL_TEMPLATES
+                    .iter()
+                    .any(|t| t.filename == req_skill),
+                "missing built-in skill `{req_skill}`"
+            );
+        }
     }
 }

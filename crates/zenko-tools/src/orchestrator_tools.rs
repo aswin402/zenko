@@ -11,11 +11,11 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    BRAINSTORM_STAGES, BrainstormOption, BrainstormSpec, BrainstormStage, CONCISE_MODES,
-    ClarificationOption, ConciseMode, ExecutionPlan, MODEL_ROUTING_ROLES, ModelRoutingRole,
-    ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_DEFAULT_OPTION_SCORE, ORCH_PLAN_MAX_STEPS,
-    OrchestrateControlRequest, OrchestratorBridge, PlanStep, PlanStepStatus, REASONING_EFFORTS,
-    ReasoningEffort, ResourceLockKey, Result, RiskLevel, SESSION_TASK_ACTIONS,
+    BRAINSTORM_STAGES, BrainstormOption, BrainstormSpec, BrainstormStage, CODE_MINIMALISM_MODES,
+    CONCISE_MODES, ClarificationOption, CodeMinimalismMode, ConciseMode, ExecutionPlan,
+    MODEL_ROUTING_ROLES, ModelRoutingRole, ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_DEFAULT_OPTION_SCORE,
+    ORCH_PLAN_MAX_STEPS, OrchestrateControlRequest, OrchestratorBridge, PlanStep, PlanStepStatus,
+    REASONING_EFFORTS, ReasoningEffort, ResourceLockKey, Result, RiskLevel, SESSION_TASK_ACTIONS,
     SESSION_TASK_DAG_LOCK_KEY, SESSION_TASK_STATUSES, SessionTask, SessionTaskAction,
     SessionTaskPatch, SessionTaskStatus, TOOL_ASK_CLARIFICATION, TOOL_ORCHESTRATE_CONTROL,
     TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TURN_POSTURES, Tool,
@@ -476,9 +476,13 @@ impl Tool for OrchestrateControlTool {
             .iter()
             .map(|&m| Value::String(m.to_string()))
             .collect();
+        let minimalism_enum: Vec<Value> = CODE_MINIMALISM_MODES
+            .iter()
+            .map(|&m| Value::String(m.to_string()))
+            .collect();
         ToolSpec {
             name: TOOL_ORCHESTRATE_CONTROL.into(),
-            description: "Exercise sovereign control over your own turn orchestration (zero /commands): declare or transition your turn posture, dynamically shift cognitive gear (configured model tier & reasoning effort), adjust live English concise mode (`off`, `lite`, `full`, `ultra`), or refresh live 5-way parallel workspace/git/memory/DAG recon on demand.".into(),
+            description: "Exercise sovereign control over your own turn orchestration (zero /commands): declare or transition your turn posture, dynamically shift cognitive gear (configured model tier & reasoning effort), adjust live English concise mode (`off`, `lite`, `full`, `ultra`), adjust live 7-rung code minimalism mode (`off`, `lite`, `full`, `ultra`), or refresh live 5-way parallel workspace/git/memory/DAG recon on demand.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -501,6 +505,11 @@ impl Tool for OrchestrateControlTool {
                         "type": "string",
                         "enum": concise_enum,
                         "description": "Live English output conciseness tier for this session (`off`, `lite`, `full`, `ultra`)."
+                    },
+                    "minimalism_mode": {
+                        "type": "string",
+                        "enum": minimalism_enum,
+                        "description": "Live 7-rung Code Minimalism tier for this session (`off`, `lite`, `full`, `ultra`)."
                     },
                     "refresh_recon": {
                         "type": "boolean",
@@ -562,6 +571,15 @@ impl Tool for OrchestrateControlTool {
             })?),
             None => None,
         };
+        let minimalism_mode = match args.get("minimalism_mode").and_then(Value::as_str) {
+            Some(raw) => Some(CodeMinimalismMode::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Unknown `minimalism_mode` `{raw}`. Valid values: {}.",
+                    CODE_MINIMALISM_MODES.join(", ")
+                ))
+            })?),
+            None => None,
+        };
         let refresh_recon = args
             .get("refresh_recon")
             .and_then(Value::as_bool)
@@ -589,6 +607,7 @@ impl Tool for OrchestrateControlTool {
                     cognitive_tier,
                     reasoning_effort,
                     concise_mode,
+                    minimalism_mode,
                     refresh_recon,
                     recon_query,
                     rationale,
@@ -613,6 +632,9 @@ impl Tool for OrchestrateControlTool {
         }
         if let Some(cm) = receipt.concise_mode {
             parts.push(format!("concise_mode={}", cm.as_str()));
+        }
+        if let Some(mm) = receipt.minimalism_mode {
+            parts.push(format!("minimalism_mode={}", mm.as_str()));
         }
         let header = match parts.is_empty() {
             true => "Orchestration state inspected.".to_string(),

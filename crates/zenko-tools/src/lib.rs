@@ -15,6 +15,7 @@ pub mod jobs;
 pub mod lsp;
 pub mod mcp_client;
 pub mod memory_cron;
+pub mod minimalism;
 pub mod orchestrator_tools;
 pub mod outline;
 pub mod pty;
@@ -146,9 +147,10 @@ impl ToolRegistry {
         self.register(Arc::new(context_tools::ContextInspectTool::new(bridge)));
     }
 
-    /// Registers the deferred `token_economy` tool backed by `EconomyBridge`.
+    /// Registers the deferred `token_economy` and `code_minimalism` tools backed by `EconomyBridge`.
     pub fn register_economy_tool(&self, bridge: Arc<dyn EconomyBridge>) {
-        self.register(Arc::new(economy_tool::TokenEconomyTool::new(bridge)));
+        self.register(Arc::new(economy_tool::TokenEconomyTool::new(bridge.clone())));
+        self.register(Arc::new(minimalism::CodeMinimalismTool::new(bridge)));
     }
 
     /// Registers wave-aware `batch_tools` and KV-cache-safe `invoke_tool` backed by `ToolBatchBridge`.

@@ -12,9 +12,10 @@ use micro_skills::{
 use serde_json::Value;
 use std::collections::BTreeSet;
 use zenko_core::{
-    ECONOMY_PROTECTED_CORE_TOOLS, ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS, EconomyConfig,
-    EconomyLedgerKind, MicroSkillStatus, RepoMicroSkill, Result, TOOL_BATCH_TOOLS, TOOL_SHELL_EXEC,
-    TokenEconomyReport, ToolOutput,
+    CodeMinimalismMode, ECONOMY_PROTECTED_CORE_TOOLS, ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS,
+    EconomyConfig, EconomyLedgerKind, MicroSkillStatus, RepoMicroSkill, Result, TOOL_BATCH_TOOLS,
+    TOOL_CODE_MINIMALISM, TOOL_INVOKE_TOOL, TOOL_SHELL_EXEC, TokenEconomyReport, ToolOutput,
+    find_minimalism_mode,
 };
 use zenko_memory::SqliteStore;
 
@@ -29,6 +30,11 @@ pub struct TurnEconomyTrace {
     pub iters_executed: usize,
     pub read_less_tokens_saved: usize,
     pub loop_guard_interventions: usize,
+    pub lines_added: u64,
+    pub lines_deleted: u64,
+    pub new_files_created: usize,
+    pub bloat_hints_issued: usize,
+    pub bloat_hint_emitted: bool,
 }
 
 impl TurnEconomyTrace {
@@ -65,6 +71,15 @@ pub fn record_tool_outcome_in_economy_trace(
     output: &ToolOutput,
 ) {
     trace.record_tool_use(eff_tool_name);
+    if !output.is_error
+        && let Some(ref diff) = output.diff
+    {
+        let (added, deleted, new_files) =
+            zenko_tools::minimalism::parse_unified_diff_counts(diff);
+        trace.lines_added = trace.lines_added.saturating_add(added);
+        trace.lines_deleted = trace.lines_deleted.saturating_add(deleted);
+        trace.new_files_created = trace.new_files_created.saturating_add(new_files);
+    }
     if eff_tool_name == TOOL_BATCH_TOOLS {
         if let Some(steps) = output
             .metadata
@@ -115,6 +130,37 @@ pub fn record_tool_outcome_in_economy_trace(
     }
 }
 
+/// Deterministic 1-shot advisory minimalism guard driven purely by `CODE_MINIMALISM_REGISTRY`.
+/// Fires at most once per turn when additive code churn or new-file creation crosses the active
+/// mode's declared threshold, nudging the orchestrator to run `code_minimalism(action="audit_diff")`.
+pub fn maybe_emit_bloat_hint(
+    mode: CodeMinimalismMode,
+    trace: &mut TurnEconomyTrace,
+) -> Option<String> {
+    if trace.bloat_hint_emitted || !mode.is_active() {
+        return None;
+    }
+    let desc = find_minimalism_mode(mode);
+    let net_loc = trace.lines_added.saturating_sub(trace.lines_deleted);
+    let heavy_net_addition = desc.bloat_hint_net_loc > 0
+        && net_loc >= desc.bloat_hint_net_loc
+        && trace.lines_deleted.saturating_mul(4) < trace.lines_added;
+    let heavy_new_files =
+        desc.bloat_hint_new_files > 0 && trace.new_files_created >= desc.bloat_hint_new_files;
+
+    match heavy_net_addition || heavy_new_files {
+        false => None,
+        true => {
+            trace.bloat_hint_emitted = true;
+            trace.bloat_hints_issued = trace.bloat_hints_issued.saturating_add(1);
+            Some(format!(
+                "Code Minimalism ({}) check: this turn added +{} / -{} LOC ({} new file(s)). Before finalizing, run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"}})` (or review against the 7-rung Simplicity Ladder) to confirm no helper was duplicated, no speculative wrapper was added, and all safety checks remain intact.",
+                desc.id, trace.lines_added, trace.lines_deleted, trace.new_files_created
+            ))
+        }
+    }
+}
+
 /// Summary of deterministic post-turn economy updates emitted as telemetry when non-empty.
 #[derive(Debug, Default)]
 pub struct EconomyTurnUpdate {
@@ -123,6 +169,8 @@ pub struct EconomyTurnUpdate {
     pub mined_micro_skills: usize,
     pub retired_micro_skills: usize,
     pub net_tokens_delta: i64,
+    pub lines_added: u64,
+    pub lines_deleted: u64,
 }
 
 impl EconomyTurnUpdate {
@@ -145,6 +193,9 @@ impl EconomyTurnUpdate {
         }
         if self.net_tokens_delta > 0 {
             parts.push(format!("~{} tok saved", self.net_tokens_delta));
+        }
+        if self.lines_added > 0 || self.lines_deleted > 0 {
+            parts.push(format!("+{} / -{} LOC", self.lines_added, self.lines_deleted));
         }
         match parts.is_empty() {
             true => None,
@@ -272,6 +323,23 @@ pub fn after_turn_update(
         );
     }
 
+    // 5. Real per-repository code churn & minimalism metrics (zero synthetic estimates)
+    if trace.lines_added > 0
+        || trace.lines_deleted > 0
+        || trace.new_files_created > 0
+        || trace.bloat_hints_issued > 0
+    {
+        let _ = store.record_turn_code_metrics(
+            scope,
+            trace.lines_added,
+            trace.lines_deleted,
+            trace.new_files_created,
+            trace.bloat_hints_issued,
+        );
+        update.lines_added = trace.lines_added;
+        update.lines_deleted = trace.lines_deleted;
+    }
+
     update
 }
 
@@ -282,6 +350,7 @@ pub fn build_economy_report(
     repo_scope: &str,
 ) -> Result<TokenEconomyReport> {
     let summary = store.summarize_economy_ledger(repo_scope, cfg.p90_multiplier)?;
+    let code_metrics = store.get_repo_code_metrics(repo_scope)?;
     let micro_skills = store.list_repo_micro_skills(repo_scope, true)?;
     let tool_usage = store.list_repo_tool_usage(repo_scope)?;
     let pruned_tools: Vec<String> = tool_usage
@@ -305,6 +374,7 @@ pub fn build_economy_report(
         repo_scope: repo_scope.to_string(),
         config: cfg.clone(),
         summary,
+        code_metrics,
         micro_skills,
         tool_usage,
         pruned_tools,
@@ -406,5 +476,36 @@ mod tests {
         let mined = mine_turn_shell_micro_skills(&trace.shell_traces);
         assert_eq!(mined.len(), 1);
         assert!(mined[0].fact.contains("uv run pytest"));
+    }
+
+    #[test]
+    fn diff_loc_tracking_and_one_shot_bloat_hint_respect_minimalism_mode() {
+        let mut trace = TurnEconomyTrace::new("project:test".into());
+        let mut big_diff = String::from("diff --git a/src/a.rs b/src/a.rs\n--- /dev/null\n+++ b/src/a.rs\n@@ -0,0 +1,80 @@\n");
+        for i in 0..80 {
+            big_diff.push_str(&format!("+let line_{i} = {i};\n"));
+        }
+        let edit_out = ToolOutput {
+            content: "wrote src/a.rs".into(),
+            is_error: false,
+            diff: Some(big_diff),
+            metadata: None,
+        };
+        record_tool_outcome_in_economy_trace(&mut trace, "write_file", &json!({}), &edit_out);
+        assert_eq!(trace.lines_added, 80);
+        assert_eq!(trace.lines_deleted, 0);
+        assert_eq!(trace.new_files_created, 1);
+
+        // Off and Full (threshold 140) stay silent at +80 LOC; Ultra (threshold 70) fires once!
+        assert!(maybe_emit_bloat_hint(CodeMinimalismMode::Off, &mut trace).is_none());
+        assert!(maybe_emit_bloat_hint(CodeMinimalismMode::Full, &mut trace).is_none());
+        let first = maybe_emit_bloat_hint(CodeMinimalismMode::Ultra, &mut trace).expect("ultra hint");
+        assert!(first.contains(TOOL_CODE_MINIMALISM));
+        assert!(first.contains("+80 / -0 LOC"));
+        assert_eq!(trace.bloat_hints_issued, 1);
+        assert!(
+            maybe_emit_bloat_hint(CodeMinimalismMode::Ultra, &mut trace).is_none(),
+            "bloat hint must be strictly 1-shot per turn"
+        );
     }
 }

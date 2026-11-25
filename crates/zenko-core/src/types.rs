@@ -553,6 +553,12 @@ pub struct ContextBreakdown {
     pub economy_pruned_tools_count: usize,
     #[serde(default)]
     pub economy_p90_turn_calls: usize,
+    #[serde(default)]
+    pub minimalism_mode: CodeMinimalismMode,
+    #[serde(default)]
+    pub economy_lines_added: u64,
+    #[serde(default)]
+    pub economy_lines_deleted: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1859,6 +1865,8 @@ pub struct OrchestrateControlRequest {
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concise_mode: Option<ConciseMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimalism_mode: Option<CodeMinimalismMode>,
     #[serde(default)]
     pub refresh_recon: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1880,6 +1888,8 @@ pub struct OrchestrateControlReceipt {
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concise_mode: Option<ConciseMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimalism_mode: Option<CodeMinimalismMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3912,10 +3922,180 @@ pub struct TokenEconomyReport {
     pub repo_scope: String,
     pub config: crate::config::EconomyConfig,
     pub summary: EconomyLedgerSummary,
+    #[serde(default)]
+    pub code_metrics: RepoCodeMetrics,
     pub micro_skills: Vec<RepoMicroSkill>,
     pub tool_usage: Vec<RepoToolUsage>,
     pub pruned_tools: Vec<String>,
     pub prune_candidates: Vec<String>,
+}
+
+/// Declarative Code Minimalism intensity profile (inspired by DietrichGebert/ponytail; zero /commands).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeMinimalismMode {
+    Off,
+    #[default]
+    Lite,
+    Full,
+    Ultra,
+}
+
+impl CodeMinimalismMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lite => "lite",
+            Self::Full => "full",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "disabled" => Some(Self::Off),
+            "lite" | "light" => Some(Self::Lite),
+            "full" | "default" | "standard" => Some(Self::Full),
+            "ultra" | "strict" | "max" => Some(Self::Ultra),
+            _ => None,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+/// Declarative action enum for the deferred read-only `code_minimalism` tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeMinimalismAction {
+    AuditDiff,
+    AuditRepo,
+    DebtScan,
+    Gain,
+}
+
+impl CodeMinimalismAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "audit_diff" | "diff" | "review" => Some(Self::AuditDiff),
+            "audit_repo" | "audit" | "repo" => Some(Self::AuditRepo),
+            "debt_scan" | "debt" | "shortcuts" => Some(Self::DebtScan),
+            "gain" | "metrics" | "scoreboard" => Some(Self::Gain),
+            _ => None,
+        }
+    }
+}
+
+/// Real per-repository code churn, bloat-hint, and shortcut-debt metrics persisted in SQLite.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepoCodeMetrics {
+    pub repo_scope: String,
+    pub lines_added: u64,
+    pub lines_deleted: u64,
+    pub net_loc_delta: i64,
+    pub turns_with_edits: u64,
+    pub new_files_created: u64,
+    pub bloat_hints_issued: u64,
+    pub debt_markers_last_seen: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Ranked large-file entry returned by `code_minimalism(action="audit_repo")`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LargeFileFinding {
+    pub path: String,
+    pub lines: usize,
+}
+
+/// Ranked long-function entry returned by `code_minimalism(action="audit_repo")`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LongFunctionFinding {
+    pub path: String,
+    pub line: usize,
+    pub span_lines: usize,
+    pub signature: String,
+}
+
+/// Cross-file duplicate helper symbol candidate returned by `audit_repo` and `audit_diff`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicateSymbolFinding {
+    pub symbol: String,
+    pub locations: Vec<String>,
+}
+
+/// Thin wrapper type candidate (possible speculative abstraction) returned by `audit_repo`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinWrapperFinding {
+    pub path: String,
+    pub line: usize,
+    pub span_lines: usize,
+    pub kind: String,
+    pub name: String,
+}
+
+/// Oversized single-hunk addition detected inside a git diff.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OversizedHunkFinding {
+    pub path: String,
+    pub start_line: usize,
+    pub added_lines: usize,
+}
+
+/// Single comment-scoped shortcut/debt marker found by `debt_scan`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebtItem {
+    pub path: String,
+    pub line: usize,
+    pub marker: String,
+    pub text: String,
+}
+
+/// Structured output of `code_minimalism(action="debt_scan")`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DebtScanReport {
+    pub files_scanned: usize,
+    pub total_found: usize,
+    pub truncated: bool,
+    pub items: Vec<DebtItem>,
+}
+
+/// Structured output of `code_minimalism(action="audit_diff")`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiffAuditReport {
+    pub files_changed: Vec<String>,
+    pub new_files: Vec<String>,
+    pub lines_added: u64,
+    pub lines_deleted: u64,
+    pub net_loc_delta: i64,
+    pub manifest_changes: Vec<String>,
+    pub oversized_hunks: Vec<OversizedHunkFinding>,
+    pub duplicate_symbols: Vec<DuplicateSymbolFinding>,
+    pub findings: Vec<String>,
+}
+
+/// Structured output of `code_minimalism(action="audit_repo")`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepoAuditReport {
+    pub files_scanned: usize,
+    pub total_lines: usize,
+    pub large_files: Vec<LargeFileFinding>,
+    pub long_functions: Vec<LongFunctionFinding>,
+    pub duplicate_symbols: Vec<DuplicateSymbolFinding>,
+    pub thin_wrappers: Vec<ThinWrapperFinding>,
+    pub debt_count: usize,
+}
+
+/// Structured output of `code_minimalism(action="gain")`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinimalismGainReport {
+    pub repo_scope: String,
+    pub mode: CodeMinimalismMode,
+    pub metrics: RepoCodeMetrics,
+    pub economy_summary: EconomyLedgerSummary,
+    pub deletion_ratio_pct: f64,
 }
 
 /// Declarative action enum for the deferred `token_economy` tool.

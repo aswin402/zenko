@@ -400,7 +400,7 @@ pub trait GoalLoopBridge: Send + Sync {
     fn delete_goal(&self, id: &str) -> Result<bool>;
 }
 
-/// Bridge connecting the deferred `token_economy` tool in `zenko-tools` to `AgentRuntime`.
+/// Bridge connecting the deferred `token_economy` and `code_minimalism` tools in `zenko-tools` to `AgentRuntime`.
 pub trait EconomyBridge: Send + Sync {
     fn economy_report(&self, workspace_dir: &Path) -> Result<TokenEconomyReport>;
     fn add_micro_skill(
@@ -414,6 +414,8 @@ pub trait EconomyBridge: Send + Sync {
     fn apply_tool_prune(&self, workspace_dir: &Path, tool_name: &str) -> Result<bool>;
     fn restore_tool(&self, workspace_dir: &Path, tool_name: &str, pin: bool) -> Result<bool>;
     fn reaudit_pruned_tools(&self, workspace_dir: &Path) -> Result<usize>;
+    fn session_minimalism_mode(&self, session_id: &str) -> crate::types::CodeMinimalismMode;
+    fn update_repo_debt_count(&self, workspace_dir: &Path, debt_count: usize) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy)]

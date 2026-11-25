@@ -272,6 +272,7 @@
                     cognitive_tier: Some(ModelRoutingRole::Advisor),
                     reasoning_effort: Some(ReasoningEffort::High),
                     concise_mode: None,
+                    minimalism_mode: Some(CodeMinimalismMode::Full),
                     refresh_recon: true,
                     recon_query: Some("Cargo.toml".into()),
                     rationale: Some("Deep architecture comparison".into()),
@@ -311,6 +312,7 @@
                     cognitive_tier: Some(ModelRoutingRole::Fast),
                     reasoning_effort: Some(ReasoningEffort::Low),
                     concise_mode: None,
+                    minimalism_mode: None,
                     refresh_recon: false,
                     recon_query: None,
                     rationale: None,
@@ -1250,6 +1252,94 @@
         assert_eq!(trace.shell_traces.len(), 1);
         assert_eq!(trace.shell_traces[0].command, "echo econ-batch-ok");
         assert!(trace.shell_traces[0].output_preview.contains("econ-batch-ok"));
+
+        // 16. Native Rust Code Minimalism Engine: read-only Plan Mode access, live `orchestrate_control`
+        // switching (zero /commands), debt scanning, and live ContextBreakdown churn telemetry.
+        std::fs::write(
+            dir.join("src/debt_sample.rs"),
+            "pub fn sample_helper() {\n    // DEBT: replace temporary linear lookup\n}\n",
+        )
+        .expect("write debt_sample");
+        let plan_debt = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t16a".into(),
+                    name: TOOL_INVOKE_TOOL.into(),
+                    arguments: json!({
+                        "tool": TOOL_CODE_MINIMALISM,
+                        "args": { "action": "debt_scan" }
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_debt");
+        assert!(
+            !plan_debt.output.is_error,
+            "Plan Mode must permit read-only code_minimalism: {}",
+            plan_debt.output.content
+        );
+        assert!(plan_debt.output.content.contains("DEBT:"));
+        assert!(plan_debt.output.content.contains("debt_sample.rs"));
+
+        let shift_min = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t16b".into(),
+                    name: TOOL_ORCHESTRATE_CONTROL.into(),
+                    arguments: json!({ "minimalism_mode": "ultra" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("shift_min");
+        assert!(!shift_min.output.is_error);
+        assert!(shift_min.output.content.contains("minimalism_mode=ultra"));
+
+        let repo_scope = project_scope_for_workspace(&dir);
+        rt.store
+            .record_turn_code_metrics(&repo_scope, 42, 18, 1, 0)
+            .expect("record metrics");
+        let min_ctx = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("min_ctx");
+        assert_eq!(min_ctx.minimalism_mode, CodeMinimalismMode::Ultra);
+        assert_eq!(min_ctx.economy_lines_added, 42);
+        assert_eq!(min_ctx.economy_lines_deleted, 18);
+
+        let gain_out = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t16c".into(),
+                    name: TOOL_INVOKE_TOOL.into(),
+                    arguments: json!({
+                        "tool": TOOL_CODE_MINIMALISM,
+                        "args": { "action": "gain" }
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("gain_out");
+        assert!(!gain_out.output.is_error);
+        assert!(gain_out.output.content.contains("mode=ultra"));
+        assert!(gain_out.output.content.contains("+42 / -18 LOC"));
 
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);

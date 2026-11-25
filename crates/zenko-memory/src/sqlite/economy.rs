@@ -11,8 +11,8 @@ use zenko_core::{
     ECONOMY_LOOP_P90_MIN_SAMPLES, ECONOMY_MICRO_SKILL_MAX_CHARS,
     ECONOMY_MICRO_SKILL_MAX_CONTRADICTIONS, ECONOMY_MICRO_SKILL_MIN_EXPOSURES_FOR_RATE,
     ECONOMY_MICRO_SKILL_MIN_NEED_RATE, ECONOMY_PROTECTED_CORE_TOOLS, EconomyConfig,
-    EconomyLedgerKind, EconomyLedgerSummary, MicroSkillStatus, RepoMicroSkill, RepoToolUsage,
-    Result, new_id,
+    EconomyLedgerKind, EconomyLedgerSummary, MicroSkillStatus, RepoCodeMetrics, RepoMicroSkill,
+    RepoToolUsage, Result, new_id,
 };
 
 fn truncate_utf8_chars(s: &str, max_chars: usize) -> String {
@@ -867,6 +867,102 @@ impl SqliteStore {
             Ok(summary)
         })
     }
+
+    /// Accumulates real per-turn code churn (`+lines_added`, `-lines_deleted`, new files, bloat hints).
+    pub fn record_turn_code_metrics(
+        &self,
+        repo_scope: &str,
+        lines_added: u64,
+        lines_deleted: u64,
+        new_files_created: usize,
+        bloat_hints_issued: usize,
+    ) -> Result<()> {
+        if lines_added == 0 && lines_deleted == 0 && new_files_created == 0 && bloat_hints_issued == 0 {
+            return Ok(());
+        }
+        let now_str = Utc::now().to_rfc3339();
+        let edit_inc: i64 = match lines_added > 0 || lines_deleted > 0 || new_files_created > 0 {
+            true => 1,
+            false => 0,
+        };
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO repo_code_metrics
+                 (repo_scope, lines_added, lines_deleted, turns_with_edits, new_files_created,
+                  bloat_hints_issued, debt_markers_last_seen, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)
+                 ON CONFLICT(repo_scope) DO UPDATE SET
+                   lines_added = lines_added + excluded.lines_added,
+                   lines_deleted = lines_deleted + excluded.lines_deleted,
+                   turns_with_edits = turns_with_edits + excluded.turns_with_edits,
+                   new_files_created = new_files_created + excluded.new_files_created,
+                   bloat_hints_issued = bloat_hints_issued + excluded.bloat_hints_issued,
+                   updated_at = excluded.updated_at",
+                params![
+                    repo_scope,
+                    lines_added as i64,
+                    lines_deleted as i64,
+                    edit_inc,
+                    new_files_created as i64,
+                    bloat_hints_issued as i64,
+                    now_str
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Updates the latest observed comment-scoped shortcut debt marker count for `repo_scope`.
+    pub fn update_repo_debt_count(&self, repo_scope: &str, debt_count: usize) -> Result<()> {
+        let now_str = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO repo_code_metrics
+                 (repo_scope, lines_added, lines_deleted, turns_with_edits, new_files_created,
+                  bloat_hints_issued, debt_markers_last_seen, updated_at)
+                 VALUES (?1, 0, 0, 0, 0, 0, ?2, ?3)
+                 ON CONFLICT(repo_scope) DO UPDATE SET
+                   debt_markers_last_seen = excluded.debt_markers_last_seen,
+                   updated_at = excluded.updated_at",
+                params![repo_scope, debt_count as i64, now_str],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Loads durable per-repository code churn & minimalism metrics.
+    pub fn get_repo_code_metrics(&self, repo_scope: &str) -> Result<RepoCodeMetrics> {
+        self.with_conn(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT lines_added, lines_deleted, turns_with_edits, new_files_created,
+                            bloat_hints_issued, debt_markers_last_seen, updated_at
+                     FROM repo_code_metrics
+                     WHERE repo_scope = ?1",
+                    params![repo_scope],
+                    |r| {
+                        let added = r.get::<_, i64>(0)?.max(0) as u64;
+                        let deleted = r.get::<_, i64>(1)?.max(0) as u64;
+                        Ok(RepoCodeMetrics {
+                            repo_scope: repo_scope.to_string(),
+                            lines_added: added,
+                            lines_deleted: deleted,
+                            net_loc_delta: (added as i64).saturating_sub(deleted as i64),
+                            turns_with_edits: r.get::<_, i64>(2)?.max(0) as u64,
+                            new_files_created: r.get::<_, i64>(3)?.max(0) as u64,
+                            bloat_hints_issued: r.get::<_, i64>(4)?.max(0) as u64,
+                            debt_markers_last_seen: r.get::<_, i64>(5)?.max(0) as usize,
+                            updated_at: Some(parse_dt(&r.get::<_, String>(6)?)),
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row.unwrap_or_else(|| RepoCodeMetrics {
+                repo_scope: repo_scope.to_string(),
+                ..RepoCodeMetrics::default()
+            }))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1026,6 +1122,30 @@ mod tests {
         assert_eq!(sum.tool_prune_tokens_saved, 1_500);
         assert_eq!(sum.overhead_tokens, 500);
         assert_eq!(sum.net_tokens_saved, 5_000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn code_metrics_and_debt_count_accumulate_in_sqlite() {
+        let (store, dir) = temp_store();
+        let scope = "project:min";
+        store
+            .record_turn_code_metrics(scope, 100, 40, 2, 1)
+            .expect("turn1");
+        store
+            .record_turn_code_metrics(scope, 20, 50, 0, 0)
+            .expect("turn2");
+        store.update_repo_debt_count(scope, 7).expect("debt");
+
+        let m = store.get_repo_code_metrics(scope).expect("load");
+        assert_eq!(m.lines_added, 120);
+        assert_eq!(m.lines_deleted, 90);
+        assert_eq!(m.net_loc_delta, 30);
+        assert_eq!(m.turns_with_edits, 2);
+        assert_eq!(m.new_files_created, 2);
+        assert_eq!(m.bloat_hints_issued, 1);
+        assert_eq!(m.debt_markers_last_seen, 7);
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }

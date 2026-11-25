@@ -649,5 +649,20 @@ impl EconomyBridge for RuntimeEconomyBridge {
         let rt = self.upgrade()?;
         rt.economy_reaudit_tools(Some(workspace_dir))
     }
+
+    fn session_minimalism_mode(&self, session_id: &str) -> CodeMinimalismMode {
+        let Ok(rt) = self.upgrade() else {
+            return CodeMinimalismMode::default();
+        };
+        let cfg = rt.config();
+        let branch = rt.store.get_active_branch(session_id).unwrap_or_default();
+        rt.effective_minimalism_mode(session_id, &cfg, &branch)
+    }
+
+    fn update_repo_debt_count(&self, workspace_dir: &Path, debt_count: usize) -> Result<()> {
+        let rt = self.upgrade()?;
+        let scope = rt.resolve_repo_scope(Some(workspace_dir));
+        rt.store.update_repo_debt_count(&scope, debt_count)
+    }
 }
 

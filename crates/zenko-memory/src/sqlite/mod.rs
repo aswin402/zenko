@@ -546,6 +546,17 @@ impl SqliteStore {
                 );
                 CREATE INDEX IF NOT EXISTS idx_economy_ledger_scope
                     ON economy_ledger(repo_scope, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS repo_code_metrics (
+                    repo_scope TEXT PRIMARY KEY,
+                    lines_added INTEGER NOT NULL DEFAULT 0,
+                    lines_deleted INTEGER NOT NULL DEFAULT 0,
+                    turns_with_edits INTEGER NOT NULL DEFAULT 0,
+                    new_files_created INTEGER NOT NULL DEFAULT 0,
+                    bloat_hints_issued INTEGER NOT NULL DEFAULT 0,
+                    debt_markers_last_seen INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
                 "#,
             )?;
 

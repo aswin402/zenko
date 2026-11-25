@@ -1128,6 +1128,47 @@ export interface ContextBreakdown {
   economy_active_micro_skills?: number
   economy_pruned_tools_count?: number
   economy_p90_turn_calls?: number
+  minimalism_mode?: CodeMinimalismMode
+  economy_lines_added?: number
+  economy_lines_deleted?: number
+}
+
+export type CodeMinimalismMode = 'off' | 'lite' | 'full' | 'ultra'
+
+export interface CodeMinimalismDescriptor {
+  mode: CodeMinimalismMode
+  id: CodeMinimalismMode
+  label: string
+  description: string
+  directive: string
+  bloat_hint_net_loc: number
+  bloat_hint_new_files: number
+}
+
+export interface RepoCodeMetrics {
+  repo_scope: string
+  lines_added: number
+  lines_deleted: number
+  net_loc_delta: number
+  turns_with_edits: number
+  new_files_created: number
+  bloat_hints_issued: number
+  debt_markers_last_seen: number
+  updated_at?: string | null
+}
+
+export interface DebtItem {
+  path: string
+  line: number
+  marker: string
+  text: string
+}
+
+export interface DebtScanReport {
+  files_scanned: number
+  total_found: number
+  truncated: boolean
+  items: DebtItem[]
 }
 
 export interface EconomyConfig {
@@ -1141,6 +1182,8 @@ export interface EconomyConfig {
   tool_prune_min_sessions: number
   tool_prune_reaudit_tasks: number
   p90_multiplier: number
+  minimalism_mode: CodeMinimalismMode
+  auto_bloat_hint: boolean
 }
 
 export interface RepoMicroSkill {
@@ -1196,6 +1239,8 @@ export interface TokenEconomyReport {
   repo_scope: string
   config: EconomyConfig
   summary: EconomyLedgerSummary
+  code_metrics?: RepoCodeMetrics
+  minimalism_modes?: CodeMinimalismDescriptor[]
   micro_skills: RepoMicroSkill[]
   tool_usage: RepoToolUsage[]
   pruned_tools: string[]

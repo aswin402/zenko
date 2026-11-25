@@ -702,6 +702,7 @@ impl OrchestratorBridge for ClarificationHub {
                 resolved_model: None,
                 reasoning_effort: req.reasoning_effort,
                 concise_mode: req.concise_mode,
+                minimalism_mode: req.minimalism_mode,
                 recon_summary: None,
                 rationale: req.rationale.clone(),
                 model_locked_by_override: false,

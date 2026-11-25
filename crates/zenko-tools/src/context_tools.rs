@@ -391,6 +391,7 @@ impl Tool for ContextInspectTool {
              - Tool schemas: {} tok (eager={}, deferred_active={}/{})\n\
              - History: {} tok (microcompacted={} tools, ~{} tok saved)\n\
              - Concise Mode: `{}` (auto_clarity={}) · Read-Less: {} ({} outputs compressed, {} B / ~{} tok saved)\n\
+             - Code Minimalism: `{}` (repo churn +{} / -{} LOC)\n\
              - Checkpoints: {} (active={ckpt}) · Spilled artifacts: {}",
             info.session_id,
             info.model,
@@ -417,6 +418,9 @@ impl Tool for ContextInspectTool {
             info.read_less_calls_compressed,
             info.read_less_bytes_saved,
             info.read_less_tokens_saved,
+            info.minimalism_mode.as_str(),
+            info.economy_lines_added,
+            info.economy_lines_deleted,
             info.checkpoints_count,
             info.spilled_artifacts_count,
         );

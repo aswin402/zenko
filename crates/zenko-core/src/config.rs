@@ -1012,6 +1012,10 @@ pub struct EconomyConfig {
     pub tool_prune_reaudit_tasks: u32,
     #[serde(default = "default_economy_p90_multiplier")]
     pub p90_multiplier: f64,
+    #[serde(default)]
+    pub minimalism_mode: crate::types::CodeMinimalismMode,
+    #[serde(default = "default_true")]
+    pub auto_bloat_hint: bool,
 }
 
 impl Default for EconomyConfig {
@@ -1027,6 +1031,8 @@ impl Default for EconomyConfig {
             tool_prune_min_sessions: default_economy_tool_prune_min_sessions(),
             tool_prune_reaudit_tasks: default_economy_tool_prune_reaudit_tasks(),
             p90_multiplier: default_economy_p90_multiplier(),
+            minimalism_mode: crate::types::CodeMinimalismMode::default(),
+            auto_bloat_hint: true,
         }
     }
 }

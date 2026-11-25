@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, Plus, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { Activity, Plus, RefreshCw, RotateCcw, Scissors, Trash2 } from 'lucide-react'
 import { api, formatCompactTokens } from '@/lib/api'
-import type { EconomyConfig, TokenEconomyReport } from '@/lib/types'
+import type {
+  CodeMinimalismMode,
+  DebtScanReport,
+  EconomyConfig,
+  TokenEconomyReport,
+} from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 interface EconomyToggleMeta {
-  key: 'auto_micro_skills' | 'auto_tool_prune' | 'p90_loop_guard' | 'optional_fast_judge'
+  key:
+    | 'auto_micro_skills'
+    | 'auto_tool_prune'
+    | 'p90_loop_guard'
+    | 'optional_fast_judge'
+    | 'auto_bloat_hint'
   label: string
   hint: string
 }
@@ -27,10 +37,26 @@ const ECONOMY_TOGGLES: readonly EconomyToggleMeta[] = [
     hint: 'Tracks empirical repo turn baselines (1.25x P90) and redirects subtle arg-varying error oscillations.',
   },
   {
+    key: 'auto_bloat_hint',
+    label: 'Auto Diff Bloat Guard',
+    hint: 'Issues a single 1-shot minimalism check when additive turn diffs or new files cross the active mode threshold.',
+  },
+  {
     key: 'optional_fast_judge',
     label: 'Fast-Model Loop Judge (Opt-in)',
     hint: 'Uses fast_model for semantic loop diagnosis when P90 breaches; logs exact overhead in the Net ROI Ledger.',
   },
+]
+
+const MINIMALISM_LEVELS: readonly {
+  id: CodeMinimalismMode
+  label: string
+  hint: string
+}[] = [
+  { id: 'off', label: 'Off', hint: 'No ladder constraints' },
+  { id: 'lite', label: 'Lite', hint: 'Reuse & stdlib first' },
+  { id: 'full', label: 'Full', hint: 'Strict 7-rung ladder' },
+  { id: 'ultra', label: 'Ultra', hint: 'Ruthless consolidation' },
 ]
 
 const STATUS_BADGE_LABEL: Record<string, string> = {
@@ -54,6 +80,8 @@ export function TokenEconomyPanel({
   const [newFact, setNewFact] = useState('')
   const [newFixedCmd, setNewFixedCmd] = useState('')
   const [showDetails, setShowDetails] = useState(false)
+  const [debtReport, setDebtReport] = useState<DebtScanReport | null>(null)
+  const [scanningDebt, setScanningDebt] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -171,9 +199,37 @@ export function TokenEconomyPanel({
     }
   }
 
+  const scanDebt = async () => {
+    setScanningDebt(true)
+    try {
+      const data = await api<DebtScanReport>('/api/economy/minimalism/debt')
+      setDebtReport(data)
+      setShowDetails(true)
+      toast(
+        `Scanned ${data.files_scanned} source file(s): ${data.total_found} shortcut debt marker(s)`,
+        'info',
+      )
+      await refresh()
+    } catch (e: any) {
+      toast(e?.message || 'Failed to scan shortcut debt', 'error')
+    } finally {
+      setScanningDebt(false)
+    }
+  }
+
   const cfg = report?.config
   const sum = report?.summary
+  const codeMetrics = report?.code_metrics
+  const minimalismLevels =
+    report?.minimalism_modes && report.minimalism_modes.length > 0
+      ? report.minimalism_modes.map((m) => ({
+          id: m.id,
+          label: m.label,
+          hint: m.description,
+        }))
+      : MINIMALISM_LEVELS
   const enabled = cfg?.enabled ?? true
+  const activeMinMode: CodeMinimalismMode = cfg?.minimalism_mode ?? 'lite'
 
   return (
     <div className="z-surface-card flex flex-col gap-3.5 md:col-span-2">
@@ -261,7 +317,7 @@ export function TokenEconomyPanel({
 
       {/* Live Net ROI Telemetry Strip */}
       {sum && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {[
             [
               'Read-Less + Prune',
@@ -285,6 +341,15 @@ export function TokenEconomyPanel({
                 ? `P90=${sum.p90_turn_calls} (${sum.baseline_samples} runs)`
                 : 'Needs 5 completed runs',
             ],
+            [
+              'Code Minimalism',
+              codeMetrics
+                ? `+${codeMetrics.lines_added} / -${codeMetrics.lines_deleted}`
+                : activeMinMode.toUpperCase(),
+              codeMetrics
+                ? `${codeMetrics.debt_markers_last_seen} debt · ${codeMetrics.bloat_hints_issued} hints`
+                : '7-rung Simplicity Ladder',
+            ],
           ].map(([label, val, sub]) => (
             <div
               key={label}
@@ -295,6 +360,61 @@ export function TokenEconomyPanel({
               <span className="font-mono text-[10px] text-[var(--muted)]">{sub}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Native Code Minimalism (7-Rung Simplicity Ladder) Selector */}
+      {cfg && (
+        <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 px-3.5 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Scissors size={13} style={{ color: activeMinMode !== 'off' ? 'var(--accent)' : 'var(--muted)' }} />
+              <span className="text-[12.5px] font-medium text-[var(--fg)]">
+                Code Minimalism (7-Rung Simplicity Ladder)
+              </span>
+            </div>
+            <button
+              type="button"
+              disabled={scanningDebt}
+              onClick={scanDebt}
+              className="z-btn z-btn-ghost z-btn-sm font-mono text-[10.5px]"
+            >
+              {scanningDebt ? 'Scanning…' : 'Scan Shortcut Debt'}
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            {minimalismLevels.map((lvl) => {
+              const selected = activeMinMode === lvl.id
+              return (
+                <button
+                  key={lvl.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => updateEconomyCfg({ minimalism_mode: lvl.id })}
+                  className="flex cursor-pointer flex-col items-start rounded-lg border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50"
+                  style={
+                    selected
+                      ? {
+                          borderColor: 'color-mix(in srgb, var(--accent) 55%, var(--border))',
+                          backgroundColor: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+                        }
+                      : {
+                          borderColor: 'var(--border)',
+                          backgroundColor: 'var(--surface)',
+                        }
+                  }
+                >
+                  <span
+                    className="font-mono text-[11.5px] font-semibold"
+                    style={{ color: selected ? 'var(--accent)' : 'var(--fg)' }}
+                  >
+                    {lvl.label}
+                  </span>
+                  <span className="text-[10px] text-[var(--muted)]">{lvl.hint}</span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
 
@@ -506,6 +626,34 @@ export function TokenEconomyPanel({
                 )}
               </div>
             </div>
+            {debtReport && (
+              <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 p-3 md:col-span-2">
+                <span className="text-[12px] font-semibold text-[var(--fg)]">
+                  Tracked Shortcut Debt ({debtReport.total_found} across {debtReport.files_scanned}{' '}
+                  files)
+                </span>
+                <div className="flex max-h-44 flex-col gap-1 overflow-y-auto font-mono text-[10.5px]">
+                  {debtReport.items.length === 0 ? (
+                    <span className="text-[var(--muted)]">
+                      Zero shortcut debt markers found in source comments.
+                    </span>
+                  ) : (
+                    debtReport.items.slice(0, 30).map((d, idx) => (
+                      <div
+                        key={`${d.path}:${d.line}:${idx}`}
+                        className="flex items-baseline gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1"
+                      >
+                        <span style={{ color: 'var(--accent)' }}>{d.marker}</span>
+                        <span className="shrink-0 text-[var(--muted)]">
+                          {d.path}:L{d.line}
+                        </span>
+                        <span className="truncate text-[var(--fg)]">{d.text}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

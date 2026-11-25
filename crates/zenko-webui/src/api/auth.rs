@@ -222,6 +222,7 @@ pub async fn api_bootstrap(State(state): State<WebState>, headers: HeaderMap) ->
         "studio_schema": STUDIO_SCHEMA,
         "providers": PROVIDER_REGISTRY,
         "concise_modes": CONCISE_MODE_REGISTRY,
+        "minimalism_modes": CODE_MINIMALISM_REGISTRY,
         "configured_providers": configured_providers,
         "pending_approvals": pending_approvals,
         "pending_clarifications": pending_clarifications,

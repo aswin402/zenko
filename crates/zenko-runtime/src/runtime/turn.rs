@@ -606,6 +606,8 @@ impl AgentRuntime {
             false => None,
         };
         let active_concise_mode = self.effective_concise_mode(&session_id, cfg, &initial_branch);
+        let mut active_minimalism_mode =
+            self.effective_minimalism_mode(&session_id, cfg, &initial_branch);
         let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
         if let Some(concise_block) = render_concise_prompt_block(
             active_concise_mode,
@@ -622,6 +624,14 @@ impl AgentRuntime {
         ) {
             effective_system_prompt.push_str("\n\n");
             effective_system_prompt.push_str(&econ_block);
+        }
+        if let Some(min_block) = render_minimalism_prompt_block(
+            active_minimalism_mode,
+            self.can_scope_use_minimalism_tool(&session_scope),
+            session_scope.availability.read_only,
+        ) {
+            effective_system_prompt.push_str("\n\n");
+            effective_system_prompt.push_str(&min_block);
         }
         if let Some(ms_block) = render_repo_micro_skills_block(&active_micro_skills) {
             effective_system_prompt.push_str("\n\n");
@@ -735,6 +745,18 @@ impl AgentRuntime {
                                 desc.id, desc.directive
                             ),
                             false => "Live Concise Mode disabled (`off`): respond in standard clear English prose.".to_string(),
+                        };
+                        pending_orch_hints.push(hint);
+                    }
+                    if let Some(mm) = shift.minimalism_mode {
+                        active_minimalism_mode = mm;
+                        let desc = find_minimalism_mode(mm);
+                        let hint = match mm.is_active() {
+                            true => format!(
+                                "Live Code Minimalism updated to `{}`: {} Preserve all security, validation, and error handling.",
+                                desc.id, desc.directive
+                            ),
+                            false => "Live Code Minimalism disabled (`off`).".to_string(),
                         };
                         pending_orch_hints.push(hint);
                     }
@@ -1659,6 +1681,27 @@ impl AgentRuntime {
                         eff_tool_args,
                         &done.output,
                     );
+                    if cfg.economy.enabled
+                        && cfg.economy.auto_bloat_hint
+                        && let Some(min_hint) = crate::economy::maybe_emit_bloat_hint(
+                            active_minimalism_mode,
+                            &mut economy_trace,
+                        )
+                    {
+                        self.emit(AgentEvent::OrchestratorUpdated {
+                            session_id: session_id.clone(),
+                            stage: ORCH_STAGE_MINIMALISM.into(),
+                            tier: orch.triage.tier,
+                            detail: format!(
+                                "Diff minimalism check (+{} / -{} LOC, {} new file(s))",
+                                economy_trace.lines_added,
+                                economy_trace.lines_deleted,
+                                economy_trace.new_files_created
+                            ),
+                            model: None,
+                        });
+                        pending_orch_hints.push(min_hint);
+                    }
                 }
 
                 if !was_phase_redirect

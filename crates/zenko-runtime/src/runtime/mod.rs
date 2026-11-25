@@ -47,8 +47,8 @@ use zenko_core::{
     ATTACH_DEFAULT_REPLAY_EVENTS, AgentEvent, ApprovalDecision, ApprovalRecord, ApprovalStatus,
     BackgroundJobRecord, BackgroundJobStatus, BatchToolRequest, BatchToolStepOutcome,
     CHECKPOINT_LABEL_MAX_CHARS, CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS,
-    ChatMessage, ChatRequest, ClarificationOption, CompactionCheckpointPayload, ConciseMode,
-    ContextBreakdown, ContextBridge, CronJob,
+    ChatMessage, ChatRequest, ClarificationOption, CodeMinimalismMode,
+    CompactionCheckpointPayload, ConciseMode, ContextBreakdown, ContextBridge, CronJob,
     CronKind, DEFAULT_APPROVAL_TIMEOUT_SECS, DEFAULT_CONTEXT_WINDOW_FALLBACK,
     DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_PAIRING_TTL_MINS,
     DaemonTelemetry, DreamRunRecord, DreamStatus, ESCALATION_OPT_PIVOT, ESCALATION_OPT_STOP,
@@ -95,12 +95,13 @@ use zenko_core::{
     MODEL_KV_PROVIDER_PREFIX, MODEL_KV_REGISTRY_KEY, MUTATING_FILE_TOOLS, McpServerConfig,
     McpServerStatus, ModelInfo, ModelRoutingRole, NOTE_KIND_BRAINSTORM_SPEC,
     NOTE_KIND_CLARIFICATION_DECISION, NOTE_KIND_CONCISE_MODE, NOTE_KIND_DEFERRED_TOOLS,
-    NOTE_KIND_EXECUTION_PLAN, NOTE_KIND_MEMORY_RECALL, NOTE_KIND_ORCHESTRATE_CONTROL,
-    NOTE_KIND_PLAN_APPROVED, NOTE_KIND_REWIND_SUMMARY, ORCH_MAX_TRUNCATION_RETRIES,
-    ORCH_MONITORING_TOOLS, ORCH_REASONING_MAX_OUTPUT_CAP, ORCH_REASONING_MIN_MAX_TOKENS,
-    ORCH_STAGE_BUDGET_GUARD, ORCH_STAGE_CHECKPOINT, ORCH_STAGE_CIRCUIT_BREAKER,
-    ORCH_STAGE_COMPACTION, ORCH_STAGE_CONCISE, ORCH_STAGE_ECONOMY, ORCH_STAGE_ESCALATED,
-    ORCH_STAGE_GEAR_SHIFT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT, ORCH_STAGE_PACING,
+    NOTE_KIND_EXECUTION_PLAN, NOTE_KIND_MEMORY_RECALL, NOTE_KIND_MINIMALISM_MODE,
+    NOTE_KIND_ORCHESTRATE_CONTROL, NOTE_KIND_PLAN_APPROVED, NOTE_KIND_REWIND_SUMMARY,
+    ORCH_MAX_TRUNCATION_RETRIES, ORCH_MONITORING_TOOLS, ORCH_REASONING_MAX_OUTPUT_CAP,
+    ORCH_REASONING_MIN_MAX_TOKENS, ORCH_STAGE_BUDGET_GUARD, ORCH_STAGE_CHECKPOINT,
+    ORCH_STAGE_CIRCUIT_BREAKER, ORCH_STAGE_COMPACTION, ORCH_STAGE_CONCISE, ORCH_STAGE_ECONOMY,
+    ORCH_STAGE_ESCALATED, ORCH_STAGE_GEAR_SHIFT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT,
+    ORCH_STAGE_MINIMALISM, ORCH_STAGE_PACING,
     ORCH_STAGE_PHASE_GATE, ORCH_STAGE_PLAN_MODE, ORCH_STAGE_POSTURE, ORCH_STAGE_RECON,
     ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TOOL_ACTIVATED, ORCH_STAGE_TRIAGED,
     ORCH_STAGE_TRUNCATION_RECOVERY, ORCH_STAGE_VERIFICATION_GATE, OrchestrateControlReceipt,
@@ -112,18 +113,20 @@ use zenko_core::{
     SessionTask, AutoDispatchDecision, resolve_auto_send_mode,
     SessionTaskPatch, SessionTaskStatus, SkillAuthor, SkillManageAction, SkillStatus, SkillsConfig,
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
-    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_INVOKE_TOOL,
-    TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM,
-    TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH,
-    TaskKind, ToolAvailabilityContext, ToolBatchBridge, ToolCall, ToolConcurrency, ToolContext,
-    ToolOutput, ToolSet, ToolSetSummary, ToolSpec, TriageReport, TriggerRateLimiter,
-    TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
-    ECONOMY_FAST_JUDGE_MAX_TOKENS, ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS, EconomyBridge,
-    EconomyLedgerKind, RepoMicroSkill, TokenEconomyReport, WorktreeAction, WorktreeDiffReport,
-    WorktreePruneReport, ZenkoConfig, ZenkoError, compact_preview, find_concise_mode,
+    TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM, TOOL_GIT,
+    TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE,
+    TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SPAWN_AGENT,
+    TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
+    ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
+    TriageReport, TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
+    DebtScanReport, DiffAuditReport, ECONOMY_FAST_JUDGE_MAX_TOKENS,
+    ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS, EconomyBridge, EconomyLedgerKind, RepoAuditReport,
+    RepoMicroSkill, TokenEconomyReport, WorktreeAction, WorktreeDiffReport, WorktreePruneReport,
+    ZenkoConfig, ZenkoError, compact_preview, find_concise_mode, find_minimalism_mode,
     find_provider, find_subagent_role, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
     is_memory_mutating_action, new_goal_loop_id, new_id, new_session_task_id,
-    render_concise_prompt_block, render_economy_prompt_block, render_repo_micro_skills_block,
+    render_concise_prompt_block, render_economy_prompt_block, render_minimalism_prompt_block,
+    render_repo_micro_skills_block,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
@@ -177,6 +180,7 @@ pub(crate) struct PendingControlShift {
     pub cognitive_tier: Option<ModelRoutingRole>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub concise_mode: Option<ConciseMode>,
+    pub minimalism_mode: Option<CodeMinimalismMode>,
     pub rationale: Option<String>,
 }
 
@@ -307,6 +311,7 @@ pub(crate) struct SessionControl {
     explicit_model_locked: AtomicBool,
     active_scope: Mutex<Option<SessionToolScope>>,
     concise_mode_override: Mutex<Option<ConciseMode>>,
+    minimalism_mode_override: Mutex<Option<CodeMinimalismMode>>,
     read_less_stats: Mutex<ReadLessSessionStats>,
 }
 
@@ -1494,6 +1499,7 @@ impl AgentRuntime {
             false => None,
         };
         let active_concise_mode = self.effective_concise_mode(session_id, &cfg, &branch);
+        let active_minimalism_mode = self.effective_minimalism_mode(session_id, &cfg, &branch);
         let mut effective_sys = snapshot.compose_system_prompt(deferred_catalog.as_deref());
         if let Some(concise_block) = render_concise_prompt_block(
             active_concise_mode,
@@ -1510,6 +1516,14 @@ impl AgentRuntime {
         ) {
             effective_sys.push_str("\n\n");
             effective_sys.push_str(&econ_block);
+        }
+        if let Some(min_block) = render_minimalism_prompt_block(
+            active_minimalism_mode,
+            self.can_scope_use_minimalism_tool(&scope),
+            scope.availability.read_only,
+        ) {
+            effective_sys.push_str("\n\n");
+            effective_sys.push_str(&min_block);
         }
         if let Some(ms_block) = render_repo_micro_skills_block(&active_micro_skills) {
             effective_sys.push_str("\n\n");
@@ -1562,6 +1576,10 @@ impl AgentRuntime {
             .store
             .summarize_economy_ledger(&repo_scope, cfg.economy.p90_multiplier)
             .unwrap_or_default();
+        let code_metrics = self
+            .store
+            .get_repo_code_metrics(&repo_scope)
+            .unwrap_or_default();
 
         Ok(ContextBreakdown {
             session_id: session_id.to_string(),
@@ -1594,6 +1612,9 @@ impl AgentRuntime {
             economy_active_micro_skills: econ_sum.active_micro_skills,
             economy_pruned_tools_count: econ_sum.pruned_tools_count,
             economy_p90_turn_calls: econ_sum.p90_turn_calls,
+            minimalism_mode: active_minimalism_mode,
+            economy_lines_added: code_metrics.lines_added,
+            economy_lines_deleted: code_metrics.lines_deleted,
         })
     }
 
@@ -1634,6 +1655,48 @@ impl AgentRuntime {
         self.tools.get(TOOL_TOKEN_ECONOMY).is_some_and(|tool| {
             tool.is_available(&scope.availability) && scope.permits_spec(&tool.spec())
         })
+    }
+
+    pub(crate) fn can_scope_use_minimalism_tool(&self, scope: &SessionToolScope) -> bool {
+        self.tools.get(TOOL_CODE_MINIMALISM).is_some_and(|tool| {
+            tool.is_available(&scope.availability) && scope.permits_spec(&tool.spec())
+        })
+    }
+
+    pub async fn minimalism_debt_scan(&self, workspace_dir: Option<&Path>) -> Result<DebtScanReport> {
+        let cfg = self.config();
+        let ws = workspace_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let scope = project_scope_for_workspace(&ws);
+        let report = tokio::task::spawn_blocking(move || {
+            zenko_tools::minimalism::scan_workspace_debt(&ws)
+        })
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("debt scan failed: {e}")))?;
+        let _ = self.store.update_repo_debt_count(&scope, report.total_found);
+        Ok(report)
+    }
+
+    pub async fn minimalism_audit_workspace(
+        &self,
+        workspace_dir: Option<&Path>,
+        staged: bool,
+    ) -> Result<(DiffAuditReport, RepoAuditReport)> {
+        let cfg = self.config();
+        let ws = workspace_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let scope = project_scope_for_workspace(&ws);
+        let (diff_rep, repo_rep) = tokio::task::spawn_blocking(move || {
+            let d = zenko_tools::minimalism::audit_git_diff_minimalism(&ws, staged);
+            let r = zenko_tools::minimalism::audit_workspace_minimalism(&ws);
+            (d, r)
+        })
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("minimalism audit failed: {e}")))?;
+        let _ = self.store.update_repo_debt_count(&scope, repo_rep.debt_count);
+        Ok((diff_rep, repo_rep))
     }
 
     pub fn economy_report(&self, workspace_dir: Option<&Path>) -> Result<TokenEconomyReport> {
@@ -1983,7 +2046,8 @@ impl AgentRuntime {
         let has_shift = req.posture.is_some()
             || req.cognitive_tier.is_some()
             || req.reasoning_effort.is_some()
-            || req.concise_mode.is_some();
+            || req.concise_mode.is_some()
+            || req.minimalism_mode.is_some();
         if has_shift && let Ok(mut slot) = ctrl.pending_control.lock() {
             let entry = slot.get_or_insert_with(PendingControlShift::default);
             if req.posture.is_some() {
@@ -1998,6 +2062,9 @@ impl AgentRuntime {
             if req.concise_mode.is_some() {
                 entry.concise_mode = req.concise_mode;
             }
+            if req.minimalism_mode.is_some() {
+                entry.minimalism_mode = req.minimalism_mode;
+            }
             if req.rationale.is_some() {
                 entry.rationale = req.rationale.clone();
             }
@@ -2009,6 +2076,16 @@ impl AgentRuntime {
                 stage: ORCH_STAGE_CONCISE.into(),
                 tier: zenko_core::ExecutionTier::Standard,
                 detail: format!("Concise mode -> `{}`", cm.as_str()),
+                model: None,
+            });
+        }
+        if let Some(mm) = req.minimalism_mode {
+            self.set_session_minimalism_mode(session_id, mm);
+            self.emit(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: ORCH_STAGE_MINIMALISM.into(),
+                tier: zenko_core::ExecutionTier::Standard,
+                detail: format!("Code minimalism -> `{}`", mm.as_str()),
                 model: None,
             });
         }
@@ -2053,6 +2130,7 @@ impl AgentRuntime {
             resolved_model,
             reasoning_effort: req.reasoning_effort,
             concise_mode: req.concise_mode,
+            minimalism_mode: req.minimalism_mode,
             recon_summary: None,
             rationale: req.rationale.clone(),
             model_locked_by_override: model_locked,
@@ -2132,6 +2210,53 @@ impl AgentRuntime {
             }
         }
         cfg.context.concise_mode
+    }
+
+    pub fn set_session_minimalism_mode(&self, session_id: &str, mode: CodeMinimalismMode) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut slot) = ctrl.minimalism_mode_override.lock() {
+            *slot = Some(mode);
+        }
+    }
+
+    /// Resolves the active `CodeMinimalismMode` for a session: live session override ->
+    /// latest persisted branch `orchestrate_control` / `minimalism_mode` note -> global config.
+    pub fn effective_minimalism_mode(
+        &self,
+        session_id: &str,
+        cfg: &ZenkoConfig,
+        branch: &[SessionEvent],
+    ) -> CodeMinimalismMode {
+        let ctrl = self.session_control(session_id);
+        if let Ok(slot) = ctrl.minimalism_mode_override.lock()
+            && let Some(mode) = *slot
+        {
+            return mode;
+        }
+        for ev in branch.iter().rev() {
+            if ev.role != EventRole::System || ev.kind != EventKind::SystemNote {
+                continue;
+            }
+            let nk = ev.content_json.get("note_kind").and_then(Value::as_str);
+            let parsed = match nk {
+                Some(NOTE_KIND_MINIMALISM_MODE) => ev
+                    .content_json
+                    .get("minimalism_mode")
+                    .and_then(Value::as_str)
+                    .and_then(CodeMinimalismMode::parse),
+                Some(NOTE_KIND_ORCHESTRATE_CONTROL) => ev
+                    .content_json
+                    .get("control")
+                    .and_then(|c| c.get("minimalism_mode"))
+                    .and_then(Value::as_str)
+                    .and_then(CodeMinimalismMode::parse),
+                _ => None,
+            };
+            if let Some(mode) = parsed {
+                return mode;
+            }
+        }
+        cfg.economy.minimalism_mode
     }
 
     fn take_pending_control(&self, session_id: &str) -> Option<PendingControlShift> {

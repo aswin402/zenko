@@ -273,6 +273,14 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/economy/tools/restore", post(api::api_restore_tool))
         .route("/api/economy/tools/reaudit", post(api::api_reaudit_tools))
         .route(
+            "/api/economy/minimalism/debt",
+            get(api::api_economy_minimalism_debt),
+        )
+        .route(
+            "/api/economy/minimalism/audit",
+            get(api::api_economy_minimalism_audit),
+        )
+        .route(
             "/api/setup/verify-provider",
             post(api::api_verify_provider),
         )

@@ -643,6 +643,10 @@ export const PromptComposer = memo(function PromptComposer({
                     'Token Economy',
                     `${(contextData.economy_net_tokens_saved ?? 0) >= 0 ? '+' : '-'}${formatCompactTokens(Math.abs(contextData.economy_net_tokens_saved ?? 0))} net · ${contextData.economy_active_micro_skills ?? 0} ms · ${contextData.economy_pruned_tools_count ?? 0} pruned`,
                   ],
+                  [
+                    'Code Minimalism',
+                    `${contextData.minimalism_mode ?? 'lite'} · +${contextData.economy_lines_added ?? 0} / -${contextData.economy_lines_deleted ?? 0} LOC`,
+                  ],
                   ['Checkpoints', `${contextData.checkpoints_count}`],
                   ['Spilled Artifacts', `${contextData.spilled_artifacts_count}`],
                 ].map(([label, val]) => (

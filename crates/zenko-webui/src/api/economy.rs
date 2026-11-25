@@ -4,7 +4,16 @@ use super::*;
 
 pub async fn api_get_economy(State(state): State<WebState>) -> Response {
     match state.runtime.economy_report(None) {
-        Ok(report) => Json(report).into_response(),
+        Ok(report) => {
+            let mut val = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert(
+                    "minimalism_modes".into(),
+                    serde_json::to_value(CODE_MINIMALISM_REGISTRY).unwrap_or(Value::Null),
+                );
+            }
+            Json(val).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
@@ -25,12 +34,31 @@ pub struct UpdateEconomyConfigReq {
     p90_loop_guard: Option<bool>,
     #[serde(default)]
     optional_fast_judge: Option<bool>,
+    #[serde(default)]
+    minimalism_mode: Option<String>,
+    #[serde(default)]
+    auto_bloat_hint: Option<bool>,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 pub async fn api_update_economy_config(
     State(state): State<WebState>,
     Json(req): Json<UpdateEconomyConfigReq>,
 ) -> Response {
+    let parsed_min = match req.minimalism_mode.as_deref() {
+        Some(raw) => match CodeMinimalismMode::parse(raw) {
+            Some(m) => Some(m),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("Invalid minimalism_mode `{raw}` (expected off, lite, full, or ultra)")})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
     let res = state.runtime.update_config(|c| {
         if let Some(v) = req.enabled {
             c.economy.enabled = v;
@@ -47,7 +75,19 @@ pub async fn api_update_economy_config(
         if let Some(v) = req.optional_fast_judge {
             c.economy.optional_fast_judge = v;
         }
+        if let Some(m) = parsed_min {
+            c.economy.minimalism_mode = m;
+        }
+        if let Some(v) = req.auto_bloat_hint {
+            c.economy.auto_bloat_hint = v;
+        }
     });
+    if let (Some(sid), Some(mode)) = (
+        req.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        parsed_min,
+    ) {
+        state.runtime.set_session_minimalism_mode(sid, mode);
+    }
     match res {
         Ok(cfg) => Json(json!({"ok": true, "economy": cfg.economy})).into_response(),
         Err(e) => (
@@ -154,6 +194,37 @@ pub async fn api_restore_tool(
 pub async fn api_reaudit_tools(State(state): State<WebState>) -> Response {
     match state.runtime.economy_reaudit_tools(None) {
         Ok(restored) => Json(json!({"ok": true, "restored": restored})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn api_economy_minimalism_debt(State(state): State<WebState>) -> Response {
+    match state.runtime.minimalism_debt_scan(None).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct MinimalismAuditQuery {
+    #[serde(default)]
+    staged: bool,
+}
+
+pub async fn api_economy_minimalism_audit(
+    State(state): State<WebState>,
+    Query(q): Query<MinimalismAuditQuery>,
+) -> Response {
+    match state.runtime.minimalism_audit_workspace(None, q.staged).await {
+        Ok((diff, repo)) => Json(json!({ "diff": diff, "repo": repo })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

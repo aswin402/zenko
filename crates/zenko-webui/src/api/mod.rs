@@ -16,7 +16,8 @@ use zeroize::Zeroizing;
 use axum::body::Bytes;
 use zenko_core::{
     AgentEvent, AgentMessageOptions, ApprovalDecision, CHECKPOINT_LIST_DEFAULT_LIMIT,
-    CONCISE_MODE_REGISTRY, ConciseMode, CronJob, CronKind, DEFAULT_PAIRING_TTL_MINS,
+    CODE_MINIMALISM_REGISTRY, CONCISE_MODE_REGISTRY, CodeMinimalismMode, ConciseMode, CronJob,
+    CronKind, DEFAULT_PAIRING_TTL_MINS,
     DEFAULT_SSE_KEEPALIVE_SECS, DashboardAnalytics,
     ExportFormat, ExportOptions, GOAL_LOOP_LIST_DEFAULT_LIMIT, GOAL_LOOP_RUNS_DEFAULT_LIMIT,
     GoalLoopCreateRequest, GoalLoopPatch, HUB_CATEGORIES, JOB_DEFAULT_LIST_LIMIT,

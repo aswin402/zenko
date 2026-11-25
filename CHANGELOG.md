@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.27] - 2026-11-25
+
+Implemented Zenko's **Native Rust Code Minimalism Engine** (inspired by `DietrichGebert/ponytail`; 100% pure Rust, zero `/commands`, zero regex, zero hardcoding) — adding the 7-rung Simplicity Ladder, deterministic diff/repo bloat & duplicate-helper analysis, comment-scoped shortcut debt scanning, real SQLite net-LOC telemetry, 1-shot orchestrator diff-bloat guards, deferred `code_minimalism` tool, 3 native English skills, and 60/30/10 WebUI controls.
+
+### Added
+- **Declarative Code Minimalism Profiles & 7-Rung Simplicity Ladder (`crates/zenko-core/src/{constants,types,config,registry}.rs`):**
+  - Added `CodeMinimalismMode` (`off`, `lite`, `full`, `ultra`), `CODE_MINIMALISM_REGISTRY`, `SIMPLICITY_LADDER_RUNGS`, and `render_minimalism_prompt_block` injected into Tier-2 (KV-cache-safe, zero `/commands`, hard safety boundary invariant).
+  - Wired live LLM-sovereign switching into `orchestrate_control(minimalism_mode="off|lite|full|ultra")` and persisted session resolution across turns.
+  - Seeded 3 built-in English workflow skills in `DEFAULT_SKILL_TEMPLATES`: `minimal-review.md`, `minimal-audit.md`, and `debt-harvest.md`.
+- **Zero-Regex Pure-Rust Diff, Bloat & Comment-Scoped Debt Engine (`crates/zenko-tools/src/minimalism.rs`):**
+  - Implemented single-pass unified-diff LOC/new-file/manifest/oversized-hunk parser (`parse_unified_diff_counts` & `analyze_unified_diff`) cross-checked against workspace symbols via `outline::extract_outline` and O(log K) binary-searched `MINIMALISM_IGNORED_DUP_SYMBOLS`.
+  - Implemented a 5-state comment-scoped byte FSM (`scan_file_debt_markers` / `scan_workspace_debt`) that scans `DEBT:`, `SHORTCUT:`, `HACK:`, `FIXME(debt):`, `TODO(debt):`, and `PONYTAIL:` markers strictly inside comments (zero false positives in string literals or constant tables).
+  - Registered the deferred read-only `code_minimalism` tool (`ToolSet::CodeIntel`, actions `audit_diff`, `audit_repo`, `debt_scan`, `gain`) permitted in Read-Only Plan Mode and `explorer`/`architect`/`critic`/`researcher` subagents.
+- **Automatic Orchestrator Diff-Bloat Guard & Real SQLite Net-LOC Ledger (`sqlite/economy.rs`, `economy/mod.rs`, `runtime/turn.rs`):**
+  - Added SQLite `repo_code_metrics` table recording exact per-repo `+lines_added`, `-lines_deleted`, `new_files_created`, `bloat_hints_issued`, and `debt_markers_last_seen` from every mutating edit/patch/batch diff.
+  - Added deterministic 1-shot `maybe_emit_bloat_hint` driven purely by `CODE_MINIMALISM_REGISTRY` thresholds, nudging the orchestrator to run `code_minimalism(action="audit_diff")` when additive churn or new files spike.
+- **API & 60/30/10 WebUI Controls (`api/economy.rs`, `api/auth.rs`, `TokenEconomyPanel.tsx`, `PromptComposer.tsx`):**
+  - Added `GET /api/economy/minimalism/debt`, `GET /api/economy/minimalism/audit`, and `minimalism_mode` / `auto_bloat_hint` support on `PATCH /api/economy/config`.
+  - Integrated the 4-level Code Minimalism selector, Auto Diff Bloat Guard toggle, Net LOC telemetry card, and on-demand Shortcut Debt scanner cleanly into the existing Token Economy panel and Context Breakdown popover.
+
 ## [0.0.26] - 2026-11-25
 
 Completed end-to-end Token Economy wiring across `tool_search`, Read-Only Plan Mode & subagents, live Context Breakdown, proactive Tier-2 prompt guidance, and `batch_tools` step telemetry.
