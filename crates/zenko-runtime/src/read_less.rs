@@ -11,20 +11,22 @@
 //! original bytes stay recoverable on demand.
 
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use zenko_core::{
     ARTIFACT_PATH_PREFIX, FNV1A_OFFSET_BASIS, FNV1A_PRIME, MCP_TOOL_PREFIX,
-    READ_LESS_BUILD_PROGRESS_PREFIXES,
-    READ_LESS_CSV_MIN_COLS, READ_LESS_CSV_MIN_ROWS, READ_LESS_CSV_SAMPLE_SCAN_LINES,
+    READ_LESS_BUILD_PROGRESS_PREFIXES, READ_LESS_CSV_MIN_COLS, READ_LESS_CSV_MIN_ROWS,
+    READ_LESS_CSV_SAMPLE_SCAN_LINES, READ_LESS_DEDUP_MAX_CALL_GAP,
+    READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION, READ_LESS_DEDUP_MIN_BYTES,
     READ_LESS_DEDUP_MIN_REPEATS, READ_LESS_ELIGIBLE_TOOLS, READ_LESS_FAIL_PREFIXES,
-    READ_LESS_FAIL_SUBSTRS, READ_LESS_JSON_FULL_DEPTH, READ_LESS_JSON_PRIORITY_KEYS,
-    READ_LESS_JSON_SCHEMA_SCAN_ITEMS, READ_LESS_LOG_HEAD_KEEP, READ_LESS_LOG_MAX_KEPT_LINES,
-    READ_LESS_LOG_MAX_MIDDLE_DIAGS, READ_LESS_LOG_MAX_REPEAT_SAMPLES,
-    READ_LESS_MAX_JSON_ARRAY_SAMPLE, READ_LESS_MAX_JSON_KEYS, READ_LESS_MAX_SAMPLE_ROWS,
-    READ_LESS_MAX_STRING_CHARS, READ_LESS_MAX_TAIL_LINES, READ_LESS_MIN_LINES,
-    READ_LESS_MIN_SAVED_BYTES, READ_LESS_MIN_SAVINGS_PCT, READ_LESS_PASS_PREFIXES,
+    READ_LESS_FAIL_SUBSTRS, READ_LESS_GLOB_MAX_PER_DIR, READ_LESS_GLOB_MIN_LINES,
+    READ_LESS_JSON_FULL_DEPTH, READ_LESS_JSON_PRIORITY_KEYS, READ_LESS_JSON_SCHEMA_SCAN_ITEMS,
+    READ_LESS_LOG_HEAD_KEEP, READ_LESS_LOG_MAX_KEPT_LINES, READ_LESS_LOG_MAX_MIDDLE_DIAGS,
+    READ_LESS_LOG_MAX_REPEAT_SAMPLES, READ_LESS_MAX_JSON_ARRAY_SAMPLE, READ_LESS_MAX_JSON_KEYS,
+    READ_LESS_MAX_SAMPLE_ROWS, READ_LESS_MAX_STRING_CHARS, READ_LESS_MAX_TAIL_LINES,
+    READ_LESS_MIN_LINES, READ_LESS_MIN_SAVED_BYTES, READ_LESS_MIN_SAVINGS_PCT,
+    READ_LESS_PASS_PREFIXES, READ_LESS_SCRUB_MIN_BYTES, READ_LESS_SCRUB_MIN_SAVED_BYTES,
     READ_LESS_SUMMARY_PREFIXES, READ_LESS_TAIL_ROWS, READ_LESS_TEST_MAX_KEPT_OTHER_LINES,
-    READ_LESS_TEST_MIN_PASS_WITHOUT_SUMMARY, READ_LESS_TEST_MIN_PASS_WITH_SUMMARY,
+    READ_LESS_TEST_MIN_PASS_WITHOUT_SUMMARY, READ_LESS_TEST_MIN_PASS_WITH_SUMMARY, TOOL_GLOB_FIND,
 };
 use zenko_tools::pty::strip_ansi_escapes;
 
@@ -32,8 +34,10 @@ use zenko_tools::pty::strip_ansi_escapes;
 pub enum ReadLessShape {
     Json,
     Csv,
+    GlobList,
     TestOutput,
     BuildOrLog,
+    Scrub,
 }
 
 impl ReadLessShape {
@@ -41,8 +45,10 @@ impl ReadLessShape {
         match self {
             Self::Json => "json",
             Self::Csv => "csv",
+            Self::GlobList => "glob_list",
             Self::TestOutput => "test_output",
             Self::BuildOrLog => "build_log",
+            Self::Scrub => "scrub",
         }
     }
 }
@@ -58,14 +64,179 @@ pub struct ReadLessResult {
     pub savings_pct: f64,
 }
 
-/// Returns `true` strictly for noisy/ephemeral tools eligible for Read-Less compression.
+/// Exact-match fingerprint for bounded per-session tool-output deduplication (zero heap bloat).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OutputFingerprint {
+    tool: String,
+    fnv1a: u64,
+    len: usize,
+    head: [u8; 32],
+    tail: [u8; 32],
+}
+
+impl OutputFingerprint {
+    fn compute(tool_name: &str, bytes: &[u8]) -> Self {
+        let mut h = FNV1A_OFFSET_BASIS;
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(FNV1A_PRIME);
+        }
+        let mut head = [0u8; 32];
+        let head_n = bytes.len().min(32);
+        head[..head_n].copy_from_slice(&bytes[..head_n]);
+        let mut tail = [0u8; 32];
+        let tail_start = bytes.len().saturating_sub(32);
+        let tail_n = bytes.len() - tail_start;
+        tail[..tail_n].copy_from_slice(&bytes[tail_start..]);
+        Self {
+            tool: tool_name.to_string(),
+            fnv1a: h,
+            len: bytes.len(),
+            head,
+            tail,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DedupRecord {
+    last_seq: u64,
+    prior_handle: Option<String>,
+}
+
+/// Result returned when an eligible tool emits byte-identical output already active in context.
+#[derive(Debug, Clone)]
+pub struct OutputDedupHit {
+    pub calls_ago: u64,
+    pub original_bytes: usize,
+    pub compressed_bytes: usize,
+    pub bytes_saved: usize,
+    pub tokens_saved: usize,
+    pub prior_handle: Option<String>,
+    pub replacement: String,
+}
+
+/// Bounded, compaction-aware per-session LRU deduplicator for allowlisted ephemeral tool outputs.
+/// Strictly excludes `read_file`, `code_search`, `lsp_tool`, and all file mutation tools.
+#[derive(Debug, Default)]
+pub struct SessionOutputDedup {
+    call_seq: u64,
+    entries: HashMap<OutputFingerprint, DedupRecord>,
+    lru: VecDeque<OutputFingerprint>,
+}
+
+impl SessionOutputDedup {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.lru.clear();
+        self.call_seq = 0;
+    }
+
+    fn touch_lru(&mut self, key: &OutputFingerprint) {
+        if let Some(pos) = self.lru.iter().position(|k| k == key) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(key.clone());
+        while self.entries.len() > READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION {
+            let Some(oldest) = self.lru.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+
+    /// Checks whether `raw` matches a recent identical output from `tool_name` in this session.
+    /// Records the fingerprint when unseen/stale; returns `Some(OutputDedupHit)` on an active hit.
+    pub fn check_or_record(
+        &mut self,
+        tool_name: &str,
+        raw: &str,
+        is_error: bool,
+    ) -> Option<OutputDedupHit> {
+        self.call_seq = self.call_seq.saturating_add(1);
+        if is_error
+            || !is_read_less_eligible(tool_name)
+            || raw.len() < READ_LESS_DEDUP_MIN_BYTES
+            || raw.contains("[dedup:")
+            || raw.contains("[read-less:")
+            || raw.contains("[spilled full `")
+        {
+            return None;
+        }
+        let cleaned = strip_ansi_escapes(raw);
+        let trimmed = cleaned.trim();
+        if trimmed.len() < READ_LESS_DEDUP_MIN_BYTES {
+            return None;
+        }
+        let key = OutputFingerprint::compute(tool_name, trimmed.as_bytes());
+        let now_seq = self.call_seq;
+
+        if let Some(existing) = self.entries.get_mut(&key) {
+            let gap = now_seq.saturating_sub(existing.last_seq);
+            existing.last_seq = now_seq;
+            let prior_handle = existing.prior_handle.clone();
+            self.touch_lru(&key);
+            if gap > 0 && gap <= READ_LESS_DEDUP_MAX_CALL_GAP {
+                let original_bytes = raw.len();
+                let handle_note = match &prior_handle {
+                    Some(h) => format!(" · raw at `{h}`"),
+                    None => String::new(),
+                };
+                let draft_saved = original_bytes.saturating_sub(96);
+                let replacement = format!(
+                    "[dedup: identical to prior `{tool_name}` output from {gap} tool call(s) ago ({original_bytes} B, ~{} tok saved){handle_note}]",
+                    draft_saved.div_ceil(4)
+                );
+                if replacement.len() < original_bytes {
+                    let bytes_saved = original_bytes.saturating_sub(replacement.len());
+                    let tokens_saved = bytes_saved.div_ceil(4);
+                    return Some(OutputDedupHit {
+                        calls_ago: gap,
+                        original_bytes,
+                        compressed_bytes: replacement.len(),
+                        bytes_saved,
+                        tokens_saved,
+                        prior_handle,
+                        replacement,
+                    });
+                }
+            }
+            return None;
+        }
+
+        self.entries.insert(
+            key.clone(),
+            DedupRecord {
+                last_seq: now_seq,
+                prior_handle: None,
+            },
+        );
+        self.touch_lru(&key);
+        None
+    }
+
+    /// Associates a persisted `artifact:` handle with an already-recorded raw output fingerprint.
+    pub fn attach_artifact_handle(&mut self, tool_name: &str, raw: &str, handle: String) {
+        if !is_read_less_eligible(tool_name) || raw.len() < READ_LESS_DEDUP_MIN_BYTES {
+            return;
+        }
+        let cleaned = strip_ansi_escapes(raw);
+        let trimmed = cleaned.trim();
+        let key = OutputFingerprint::compute(tool_name, trimmed.as_bytes());
+        if let Some(rec) = self.entries.get_mut(&key) {
+            rec.prior_handle = Some(handle);
+        }
+    }
+}
+
+/// Returns `true` strictly for noisy/ephemeral tools eligible for Read-Less compression & dedup.
 /// Never matches `read_file`, `hash_edit`, `apply_patch`, `write_file`, `code_search`, or `lsp_tool`.
 pub fn is_read_less_eligible(tool_name: &str) -> bool {
     READ_LESS_ELIGIBLE_TOOLS.contains(&tool_name) || tool_name.starts_with(MCP_TOOL_PREFIX)
 }
 
-/// Attempts deterministic structural compression of `raw`. Returns `None` when the tool is
-/// ineligible, the payload is already compact/spilled, or compression yields insufficient savings.
+/// Attempts deterministic structural compression (or lossless `scrub` on medium outputs) of `raw`.
+/// Returns `None` when the tool is ineligible, already compact/spilled, or savings are negligible.
 pub fn try_compress_tool_output(
     tool_name: &str,
     raw: &str,
@@ -76,10 +247,8 @@ pub fn try_compress_tool_output(
     }
     let original_bytes = raw.len();
     let line_count = raw.lines().count();
-    if original_bytes < min_bytes && line_count < READ_LESS_MIN_LINES {
-        return None;
-    }
     if raw.contains("[read-less:")
+        || raw.contains("[dedup:")
         || raw.contains("[spilled full `")
         || raw.contains(ARTIFACT_PATH_PREFIX)
     {
@@ -87,14 +256,27 @@ pub fn try_compress_tool_output(
     }
 
     let cleaned = strip_ansi_escapes(raw);
-    let (shape, compressed) = compress_by_detected_shape(&cleaned)?;
+    let heavy_eligible = original_bytes >= min_bytes || line_count >= READ_LESS_MIN_LINES;
+    let (shape, compressed) = match heavy_eligible {
+        true => compress_by_detected_shape(tool_name, &cleaned)
+            .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s)))?,
+        false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
+            (ReadLessShape::Scrub, try_lossless_scrub(&cleaned)?)
+        }
+        false => return None,
+    };
+
     let compressed_bytes = compressed.len();
     if compressed_bytes >= original_bytes {
         return None;
     }
     let bytes_saved = original_bytes.saturating_sub(compressed_bytes);
     let pct_whole = (bytes_saved * 100) / original_bytes.max(1);
-    if bytes_saved < READ_LESS_MIN_SAVED_BYTES || pct_whole < READ_LESS_MIN_SAVINGS_PCT {
+    let meets_threshold = match shape {
+        ReadLessShape::Scrub => bytes_saved >= READ_LESS_SCRUB_MIN_SAVED_BYTES,
+        _ => bytes_saved >= READ_LESS_MIN_SAVED_BYTES && pct_whole >= READ_LESS_MIN_SAVINGS_PCT,
+    };
+    if !meets_threshold {
         return None;
     }
     let tokens_saved = bytes_saved.div_ceil(4);
@@ -111,7 +293,7 @@ pub fn try_compress_tool_output(
     })
 }
 
-fn compress_by_detected_shape(text: &str) -> Option<(ReadLessShape, String)> {
+fn compress_by_detected_shape(tool_name: &str, text: &str) -> Option<(ReadLessShape, String)> {
     if let Some(json_out) = try_compress_json_body(text) {
         return Some((ReadLessShape::Json, json_out));
     }
@@ -120,6 +302,11 @@ fn compress_by_detected_shape(text: &str) -> Option<(ReadLessShape, String)> {
     }
     if let Some(csv_out) = try_compress_csv(text) {
         return Some((ReadLessShape::Csv, csv_out));
+    }
+    if tool_name == TOOL_GLOB_FIND
+        && let Some(glob_out) = try_compress_glob_list(text)
+    {
+        return Some((ReadLessShape::GlobList, glob_out));
     }
     try_compress_build_or_log(text).map(|out| (ReadLessShape::BuildOrLog, out))
 }
@@ -606,6 +793,105 @@ fn try_compress_build_or_log(text: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
+/// Lossless `scrub` tier (inspired by Chisle): trims trailing whitespace, collapses consecutive
+/// blank runs to a single blank line, and folds `>= 3` exact consecutive identical lines to `[xN]`.
+/// Preserves every unique line and every diagnostic verbatim (zero semantic loss).
+fn try_lossless_scrub(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        let cur = lines[idx];
+        if cur.is_empty() {
+            if out.last().is_some_and(|prev| !prev.is_empty()) {
+                out.push(String::new());
+            }
+            idx += 1;
+            continue;
+        }
+        let mut run = 1usize;
+        while idx + run < lines.len() && lines[idx + run] == cur {
+            run += 1;
+        }
+        match run >= READ_LESS_DEDUP_MIN_REPEATS {
+            true => out.push(format!("{cur} [x{run}]")),
+            false => {
+                for _ in 0..run {
+                    out.push(cur.to_string());
+                }
+            }
+        }
+        idx += run;
+    }
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    let scrubbed = out.join("\n");
+    match scrubbed.len() < text.len() {
+        true => Some(scrubbed),
+        false => None,
+    }
+}
+
+/// Groups repetitive `glob_find` path listings by parent directory, slashing repeated path
+/// prefixes while preserving complete directory structure and sample filenames per folder.
+fn try_compress_glob_list(text: &str) -> Option<String> {
+    let mut header_lines: Vec<&str> = Vec::new();
+    let mut grouped: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut path_count = 0usize;
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("Found ") || line.starts_with('[') || line.contains(" file(s)") {
+            header_lines.push(line);
+            continue;
+        }
+        let candidate = line.split_whitespace().next().unwrap_or(line);
+        if candidate.contains('/') {
+            if let Some((dir, file)) = candidate.rsplit_once('/') {
+                let dir_key = match dir.is_empty() {
+                    true => "/",
+                    false => dir,
+                };
+                grouped.entry(dir_key).or_default().push(file);
+                path_count += 1;
+            }
+        } else if candidate.contains('.') {
+            grouped.entry(".").or_default().push(candidate);
+            path_count += 1;
+        }
+    }
+
+    if path_count < READ_LESS_GLOB_MIN_LINES || grouped.is_empty() {
+        return None;
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(grouped.len() + header_lines.len() + 2);
+    for h in header_lines {
+        out.push(h.to_string());
+    }
+    out.push(format!(
+        "Grouped {path_count} paths across {} director(y/ies):",
+        grouped.len()
+    ));
+    for (dir, files) in grouped {
+        let shown = files.len().min(READ_LESS_GLOB_MAX_PER_DIR);
+        let joined = files[..shown].join(", ");
+        let extra = files.len().saturating_sub(shown);
+        match extra > 0 {
+            true => out.push(format!("  {dir}/ ({}): {joined}, [+{extra} more]", files.len())),
+            false => out.push(format!("  {dir}/ ({}): {joined}", files.len())),
+        }
+    }
+    Some(out.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,5 +997,71 @@ mod tests {
         assert!(res.compressed.contains("[~x45 similar lines]"), "out={}", res.compressed);
         assert!(res.compressed.contains("error: upstream socket reset on shard 3"));
         assert!(res.compressed.contains("[~x25 similar lines]"), "out={}", res.compressed);
+    }
+
+    #[test]
+    fn session_output_dedup_collapses_exact_repeats_and_respects_clear_and_exemptions() {
+        let mut dedup = SessionOutputDedup::default();
+        let body = "M crates/zenko-core/src/types.rs\n".repeat(25);
+
+        // Exempt tool (`read_file`) and error results are never deduped
+        assert!(dedup.check_or_record(TOOL_READ_FILE, &body, false).is_none());
+        assert!(dedup.check_or_record(TOOL_READ_FILE, &body, false).is_none());
+        assert!(dedup.check_or_record(TOOL_SHELL_EXEC, &body, true).is_none());
+
+        // First eligible call records fingerprint; attaching artifact links future dedup hits
+        assert!(dedup.check_or_record(TOOL_SHELL_EXEC, &body, false).is_none());
+        dedup.attach_artifact_handle(
+            TOOL_SHELL_EXEC,
+            &body,
+            "artifact:s1/c1.txt".to_string(),
+        );
+
+        // Identical second call hits dedup cleanly and cites the raw artifact handle
+        let hit = dedup
+            .check_or_record(TOOL_SHELL_EXEC, &body, false)
+            .expect("second identical call must dedup");
+        assert_eq!(hit.calls_ago, 1);
+        assert!(hit.bytes_saved > 500);
+        assert!(hit.tokens_saved > 100);
+        assert!(hit.replacement.contains("[dedup:"));
+        assert!(hit.replacement.contains("artifact:s1/c1.txt"));
+
+        // Compaction reset clears cache so subsequent call emits fresh output
+        dedup.clear();
+        assert!(dedup.check_or_record(TOOL_SHELL_EXEC, &body, false).is_none());
+    }
+
+    #[test]
+    fn lossless_scrub_and_glob_directory_grouping_compress_cleanly() {
+        // Medium output below heavy min_bytes=4096 with ANSI escapes, blank runs, and exact repeats
+        let mut medium = String::new();
+        for _ in 0..8 {
+            medium.push_str("\x1b[32mstatus: healthy\x1b[0m   \n");
+        }
+        medium.push_str("\n\n\n\n");
+        for i in 0..6 {
+            medium.push_str(&format!("\x1b[33munique-line-{i}\x1b[0m     \n"));
+        }
+        let scrubbed =
+            try_compress_tool_output(TOOL_SHELL_EXEC, &medium, 4096).expect("lossless scrub");
+        assert_eq!(scrubbed.shape, ReadLessShape::Scrub);
+        assert!(scrubbed.compressed.contains("status: healthy [x8]"));
+        assert!(scrubbed.compressed.contains("unique-line-5"));
+        assert!(!scrubbed.compressed.contains("\x1b["));
+
+        // Verbose glob_find listing compresses cleanly by parent directory
+        let mut glob_lines = vec!["Found 36 file(s):".to_string()];
+        for dir in ["crates/zenko-core/src", "crates/zenko-tools/src", "webui/src/components"] {
+            for i in 0..12 {
+                glob_lines.push(format!("{dir}/module_{i:02}.rs"));
+            }
+        }
+        let glob_raw = glob_lines.join("\n");
+        let glob_res =
+            try_compress_tool_output(TOOL_GLOB_FIND, &glob_raw, 256).expect("glob_list compressed");
+        assert_eq!(glob_res.shape, ReadLessShape::GlobList);
+        assert!(glob_res.compressed.contains("crates/zenko-core/src/ (12):"));
+        assert!(glob_res.compressed.contains("[+4 more]"));
     }
 }

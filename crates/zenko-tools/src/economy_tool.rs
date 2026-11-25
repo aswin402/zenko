@@ -118,7 +118,8 @@ impl Tool for TokenEconomyTool {
                 let s = &rep.summary;
                 let text = format!(
                     "Token Economy ({scope}) · enabled={enabled}\n\
-                     - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Tool-Prune +{tp} · Overhead -{oh}]\n\
+                     - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · Tool-Prune +{tp} · Overhead -{oh}]\n\
+                     - Compression Health: {ccr} CCR artifact recovery read(s)\n\
                      - Micro-Skills: {active} active, {cand} candidate, {ret} retired ({inj} injections)\n\
                      - Tool Pruning: {pruned} soft-demoted to deferred ({cands} candidates)\n\
                      - Loop Guard Baseline: P90={p90} calls, envelope={env} calls ({samples} samples, {lg} redirects)",
@@ -127,8 +128,11 @@ impl Tool for TokenEconomyTool {
                     net = s.net_tokens_saved,
                     usd = s.estimated_usd_saved,
                     rl = s.read_less_tokens_saved,
+                    od = s.output_dedup_tokens_saved,
+                    od_hits = s.output_dedup_hits,
                     tp = s.tool_prune_tokens_saved,
                     oh = s.overhead_tokens,
+                    ccr = s.ccr_recoveries,
                     active = s.active_micro_skills,
                     cand = s.candidate_micro_skills,
                     ret = s.retired_micro_skills,

@@ -3863,9 +3863,11 @@ pub struct RepoToolUsage {
 #[serde(rename_all = "snake_case")]
 pub enum EconomyLedgerKind {
     ReadLess,
+    OutputDedup,
     ToolPrune,
     MicroSkill,
     LoopGuard,
+    CcrRecovery,
     OverheadDream,
     OverheadJudge,
 }
@@ -3874,9 +3876,11 @@ impl EconomyLedgerKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReadLess => "read_less",
+            Self::OutputDedup => "output_dedup",
             Self::ToolPrune => "tool_prune",
             Self::MicroSkill => "micro_skill",
             Self::LoopGuard => "loop_guard",
+            Self::CcrRecovery => "ccr_recovery",
             Self::OverheadDream => "overhead_dream",
             Self::OverheadJudge => "overhead_judge",
         }
@@ -3885,9 +3889,11 @@ impl EconomyLedgerKind {
     pub fn from_str_loose(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "read_less" => Some(Self::ReadLess),
+            "output_dedup" => Some(Self::OutputDedup),
             "tool_prune" => Some(Self::ToolPrune),
             "micro_skill" => Some(Self::MicroSkill),
             "loop_guard" => Some(Self::LoopGuard),
+            "ccr_recovery" => Some(Self::CcrRecovery),
             "overhead_dream" => Some(Self::OverheadDream),
             "overhead_judge" => Some(Self::OverheadJudge),
             _ => None,
@@ -3900,6 +3906,12 @@ impl EconomyLedgerKind {
 pub struct EconomyLedgerSummary {
     pub repo_scope: String,
     pub read_less_tokens_saved: u64,
+    #[serde(default)]
+    pub output_dedup_tokens_saved: u64,
+    #[serde(default)]
+    pub output_dedup_hits: u64,
+    #[serde(default)]
+    pub ccr_recoveries: u64,
     pub tool_prune_tokens_saved: u64,
     pub micro_skill_injections: u64,
     pub loop_guard_interventions: u64,
@@ -4070,6 +4082,10 @@ pub struct DiffAuditReport {
     pub lines_added: u64,
     pub lines_deleted: u64,
     pub net_loc_delta: i64,
+    #[serde(default)]
+    pub added_comment_lines: u64,
+    #[serde(default)]
+    pub added_code_lines: u64,
     pub manifest_changes: Vec<String>,
     pub oversized_hunks: Vec<OversizedHunkFinding>,
     pub duplicate_symbols: Vec<DuplicateSymbolFinding>,
@@ -4083,6 +4099,27 @@ pub struct DormantDependencyFinding {
     pub package: String,
 }
 
+/// Behavioral trait / interface / abstract class with <= 1 concrete implementation in the workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SingleImplAbstractionFinding {
+    pub path: String,
+    pub line: usize,
+    pub kind: String,
+    pub name: String,
+    pub impl_count: usize,
+}
+
+/// Source file exhibiting heavy comment/docstring prose bloat or long narrative comment blocks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommentBloatFinding {
+    pub path: String,
+    pub comment_lines: usize,
+    pub code_lines: usize,
+    pub comment_ratio_pct: usize,
+    pub longest_block_lines: usize,
+    pub longest_block_line: usize,
+}
+
 /// Structured output of `code_minimalism(action="audit_repo")`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoAuditReport {
@@ -4092,6 +4129,10 @@ pub struct RepoAuditReport {
     pub long_functions: Vec<LongFunctionFinding>,
     pub duplicate_symbols: Vec<DuplicateSymbolFinding>,
     pub thin_wrappers: Vec<ThinWrapperFinding>,
+    #[serde(default)]
+    pub single_impl_abstractions: Vec<SingleImplAbstractionFinding>,
+    #[serde(default)]
+    pub comment_bloat: Vec<CommentBloatFinding>,
     #[serde(default)]
     pub dormant_dependencies: Vec<DormantDependencyFinding>,
     pub debt_count: usize,

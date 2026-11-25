@@ -1219,6 +1219,23 @@ export interface DiffAuditReport {
   findings: string[]
 }
 
+export interface SingleImplAbstractionFinding {
+  path: string
+  line: number
+  kind: string
+  name: string
+  impl_count: number
+}
+
+export interface CommentBloatFinding {
+  path: string
+  comment_lines: number
+  code_lines: number
+  comment_ratio_pct: number
+  longest_block_lines: number
+  longest_block_line: number
+}
+
 export interface RepoAuditReport {
   files_scanned: number
   total_lines: number
@@ -1226,6 +1243,8 @@ export interface RepoAuditReport {
   long_functions: LongFunctionFinding[]
   duplicate_symbols: DuplicateSymbolFinding[]
   thin_wrappers: ThinWrapperFinding[]
+  single_impl_abstractions?: SingleImplAbstractionFinding[]
+  comment_bloat?: CommentBloatFinding[]
   dormant_dependencies: DormantDependencyFinding[]
   debt_count: number
 }
@@ -1283,6 +1302,9 @@ export interface RepoToolUsage {
 export interface EconomyLedgerSummary {
   repo_scope: string
   read_less_tokens_saved: number
+  output_dedup_tokens_saved?: number
+  output_dedup_hits?: number
+  ccr_recoveries?: number
   tool_prune_tokens_saved: number
   micro_skill_injections: number
   loop_guard_interventions: number

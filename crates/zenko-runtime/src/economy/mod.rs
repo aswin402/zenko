@@ -29,6 +29,9 @@ pub struct TurnEconomyTrace {
     pub pruned_tokens_saved_per_iter: usize,
     pub iters_executed: usize,
     pub read_less_tokens_saved: usize,
+    pub output_dedup_hits: usize,
+    pub output_dedup_tokens_saved: usize,
+    pub ccr_recoveries: usize,
     pub loop_guard_interventions: usize,
     pub lines_added: u64,
     pub lines_deleted: u64,
@@ -118,7 +121,27 @@ pub fn record_tool_outcome_in_economy_trace(
     {
         trace.record_shell_outcome(cmd, output.is_error, &output.content);
     }
-    if let Some(saved_tok) = output
+    if output
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("ccr_recovery"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        trace.ccr_recoveries = trace.ccr_recoveries.saturating_add(1);
+    }
+    if let Some(dedup_tok) = output
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("output_dedup"))
+        .and_then(|od| od.get("tokens_saved"))
+        .and_then(Value::as_u64)
+    {
+        trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
+        trace.output_dedup_tokens_saved = trace
+            .output_dedup_tokens_saved
+            .saturating_add(dedup_tok as usize);
+    } else if let Some(saved_tok) = output
         .metadata
         .as_ref()
         .and_then(|m| m.get("read_less"))
@@ -283,7 +306,7 @@ pub fn after_turn_update(
         }
     }
 
-    // 4. Net Economy Ledger accounting (Read-Less + Tool-Prune schema savings + Loop-Guard saves)
+    // 4. Net Economy Ledger accounting (Read-Less + Output-Dedup + Tool-Prune + Loop-Guard + CCR Backfire)
     if trace.read_less_tokens_saved > 0 {
         let _ = store.record_economy_ledger_event(
             scope,
@@ -293,6 +316,33 @@ pub fn after_turn_update(
             "Read-Less tool output compression",
         );
         update.net_tokens_delta += trace.read_less_tokens_saved as i64;
+    }
+    if trace.output_dedup_hits > 0 {
+        for idx in 0..trace.output_dedup_hits {
+            let delta = match idx == 0 {
+                true => trace.output_dedup_tokens_saved as i64,
+                false => 0,
+            };
+            let _ = store.record_economy_ledger_event(
+                scope,
+                EconomyLedgerKind::OutputDedup,
+                delta,
+                0.0,
+                "Session tool output deduplication",
+            );
+        }
+        update.net_tokens_delta += trace.output_dedup_tokens_saved as i64;
+    }
+    if trace.ccr_recoveries > 0 {
+        for _ in 0..trace.ccr_recoveries {
+            let _ = store.record_economy_ledger_event(
+                scope,
+                EconomyLedgerKind::CcrRecovery,
+                0,
+                0.0,
+                "CCR artifact recovery read",
+            );
+        }
     }
     let total_prune_saved = trace
         .pruned_tokens_saved_per_iter
@@ -507,5 +557,50 @@ mod tests {
             maybe_emit_bloat_hint(CodeMinimalismMode::Ultra, &mut trace).is_none(),
             "bloat hint must be strictly 1-shot per turn"
         );
+    }
+
+    #[test]
+    fn output_dedup_and_ccr_recovery_telemetry_persists_in_sqlite_ledger() {
+        let db_path = std::env::temp_dir().join(format!("zenko_econ_chisle_{}.db", zenko_core::new_id()));
+        let store = SqliteStore::open(&db_path).expect("open db");
+        let cfg = EconomyConfig::default();
+        let mut trace = TurnEconomyTrace::new("project:chisle".into());
+
+        let dedup_out = ToolOutput {
+            content: "[dedup: identical]".into(),
+            is_error: false,
+            diff: None,
+            metadata: Some(json!({
+                "output_dedup": { "calls_ago": 2, "tokens_saved": 420 },
+                "read_less": { "shape": "dedup", "tokens_saved": 420 }
+            })),
+        };
+        record_tool_outcome_in_economy_trace(&mut trace, TOOL_SHELL_EXEC, &json!({}), &dedup_out);
+
+        let ccr_out = ToolOutput {
+            content: "1:aaaa| raw artifact slice".into(),
+            is_error: false,
+            diff: None,
+            metadata: Some(json!({ "ccr_recovery": true })),
+        };
+        record_tool_outcome_in_economy_trace(&mut trace, "read_file", &json!({}), &ccr_out);
+
+        assert_eq!(trace.output_dedup_hits, 1);
+        assert_eq!(trace.output_dedup_tokens_saved, 420);
+        assert_eq!(trace.read_less_tokens_saved, 0, "must not double-count dedup into read_less");
+        assert_eq!(trace.ccr_recoveries, 1);
+
+        let upd = after_turn_update(&store, &cfg, "sess_c1", &[], &trace, 2, true);
+        assert_eq!(upd.net_tokens_delta, 420);
+
+        let sum = store
+            .summarize_economy_ledger("project:chisle", cfg.p90_multiplier)
+            .expect("summary");
+        assert_eq!(sum.output_dedup_hits, 1);
+        assert_eq!(sum.output_dedup_tokens_saved, 420);
+        assert_eq!(sum.ccr_recoveries, 1);
+        assert_eq!(sum.net_tokens_saved, 420);
+
+        let _ = std::fs::remove_file(&db_path);
     }
 }

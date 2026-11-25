@@ -238,7 +238,7 @@ export function TokenEconomyPanel({
       setAuditPayload(data)
       setShowDetails(true)
       toast(
-        `Audited ${data.repo.files_scanned} files · ${data.repo.dormant_dependencies.length} dormant dep(s) · ${data.repo.duplicate_symbols.length} duplicate(s)`,
+        `Audited ${data.repo.files_scanned} files · ${(data.repo.single_impl_abstractions ?? []).length} 1-impl trait/iface · ${(data.repo.comment_bloat ?? []).length} comment-bloat · ${data.repo.dormant_dependencies.length} dormant dep(s)`,
         'info',
       )
       await refresh()
@@ -257,7 +257,7 @@ export function TokenEconomyPanel({
     const delRatio = churnTotal > 0 ? (((m?.lines_deleted ?? 0) / churnTotal) * 100).toFixed(1) : '0.0'
     const md = [
       `### Zenko Efficiency Report (\`${report.repo_scope}\`)`,
-      `- **Net Token ROI:** ${s.net_tokens_saved >= 0 ? '+' : ''}${s.net_tokens_saved} tok (~$${s.estimated_usd_saved.toFixed(4)}) [Read-Less +${s.read_less_tokens_saved} · Tool-Prune +${s.tool_prune_tokens_saved} · Overhead -${s.overhead_tokens}]`,
+      `- **Net Token ROI:** ${s.net_tokens_saved >= 0 ? '+' : ''}${s.net_tokens_saved} tok (~$${s.estimated_usd_saved.toFixed(4)}) [Read-Less +${s.read_less_tokens_saved} · Output-Dedup +${s.output_dedup_tokens_saved ?? 0} (${s.output_dedup_hits ?? 0} hits) · Tool-Prune +${s.tool_prune_tokens_saved} · Overhead -${s.overhead_tokens} · CCR Recoveries ${s.ccr_recoveries ?? 0}]`,
       `- **Micro-Skills:** ${s.active_micro_skills} active, ${s.candidate_micro_skills} candidate, ${s.retired_micro_skills} retired (${s.micro_skill_injections} injections)`,
       `- **Tool Pruning & Loop Guard:** ${s.pruned_tools_count} soft-deferred · P90=${s.p90_turn_calls} (envelope ${s.envelope_calls}, ${s.loop_guard_interventions} redirects)`,
       `- **Code Minimalism (\`${report.config.minimalism_mode}\`):** +${m?.lines_added ?? 0} / -${m?.lines_deleted ?? 0} LOC (deletion ratio ${delRatio}%, ${m?.new_files_created ?? 0} new files, ${m?.bloat_hints_issued ?? 0} hints, ${m?.debt_markers_last_seen ?? 0} debt markers)`,
@@ -386,9 +386,13 @@ export function TokenEconomyPanel({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {[
             [
-              'Read-Less + Prune',
-              `${formatCompactTokens(sum.read_less_tokens_saved + sum.tool_prune_tokens_saved)} tok`,
-              `Overhead -${formatCompactTokens(sum.overhead_tokens)} tok`,
+              'Read-Less + Dedup',
+              `${formatCompactTokens(
+                sum.read_less_tokens_saved +
+                  (sum.output_dedup_tokens_saved ?? 0) +
+                  sum.tool_prune_tokens_saved,
+              )} tok`,
+              `${sum.output_dedup_hits ?? 0} dedup · ${sum.ccr_recoveries ?? 0} CCR · -${formatCompactTokens(sum.overhead_tokens)} oh`,
             ],
             [
               'Micro-Skills',
@@ -770,6 +774,43 @@ export function TokenEconomyPanel({
                           </span>
                         ))}
                       </>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[10.5px]">
+                    <span className="text-[var(--muted)]">
+                      Single-Impl Abstractions (
+                      {(auditPayload.repo.single_impl_abstractions ?? []).length})
+                    </span>
+                    {(auditPayload.repo.single_impl_abstractions ?? []).length === 0 ? (
+                      <span className="text-[var(--muted)]">None detected.</span>
+                    ) : (
+                      (auditPayload.repo.single_impl_abstractions ?? [])
+                        .slice(0, 6)
+                        .map((abs, i) => (
+                          <span key={`a-${i}`} className="truncate text-[var(--fg)]">
+                            {abs.kind}{' '}
+                            <span style={{ color: 'var(--accent)' }}>{abs.name}</span> ·{' '}
+                            {abs.path}:L{abs.line} ({abs.impl_count} impl)
+                          </span>
+                        ))
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[10.5px]">
+                    <span className="text-[var(--muted)]">
+                      Comment / Docstring Bloat (
+                      {(auditPayload.repo.comment_bloat ?? []).length})
+                    </span>
+                    {(auditPayload.repo.comment_bloat ?? []).length === 0 ? (
+                      <span className="text-[var(--muted)]">None detected.</span>
+                    ) : (
+                      (auditPayload.repo.comment_bloat ?? []).slice(0, 6).map((cb, i) => (
+                        <span key={`c-${i}`} className="truncate text-[var(--fg)]">
+                          <span style={{ color: 'var(--accent)' }}>{cb.comment_ratio_pct}%</span> ·{' '}
+                          {cb.path}:L{Math.max(1, cb.longest_block_line)} (max {cb.longest_block_lines}L)
+                        </span>
+                      ))
                     )}
                   </div>
                 </div>

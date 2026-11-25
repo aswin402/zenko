@@ -4,12 +4,14 @@
 //! addressable `artifact:<session_id>/<call_id>.txt` handle readable via `read_file` / `code_search`.
 //! Zero regex, zero `if/else` ladders, 100% async `tokio::fs` I/O.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use zenko_core::{
     ARTIFACT_HEAD_RATIO_DEN, ARTIFACT_HEAD_RATIO_NUM, ARTIFACT_MAX_AGE_SECS,
-    ARTIFACT_MAX_PER_SESSION, ARTIFACT_PATH_PREFIX, ARTIFACTS_DIR_NAME, ArtifactSpillRecord,
-    FILE_MODE_OWNER_ONLY, SHELL_MIN_OUTPUT_BYTES,
+    ARTIFACT_MAX_PER_SESSION, ARTIFACT_PATH_PREFIX, ARTIFACT_SALVAGE_MAX_LINE_CHARS,
+    ARTIFACT_SALVAGE_MAX_LINES, ARTIFACTS_DIR_NAME, ArtifactSpillRecord, FILE_MODE_OWNER_ONLY,
+    READ_LESS_FAIL_PREFIXES, READ_LESS_FAIL_SUBSTRS, SHELL_MIN_OUTPUT_BYTES,
 };
 
 fn sanitize_segment(raw: &str) -> String {
@@ -24,8 +26,54 @@ fn sanitize_segment(raw: &str) -> String {
     }
 }
 
-/// Computes a UTF-8-safe, line-boundary-aligned Head (35%) + Tail (65%) preview so both the
-/// command/file header AND bottom compiler errors / stack traces survive truncation cleanly.
+fn is_salvageable_diagnostic_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if (trimmed.starts_with("test ") && trimmed.contains("FAILED"))
+        || READ_LESS_FAIL_PREFIXES
+            .iter()
+            .any(|p| trimmed.starts_with(p))
+    {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    READ_LESS_FAIL_SUBSTRS.iter().any(|s| lower.contains(s))
+}
+
+/// Zero-regex single-pass scanner salvaging unique error/panic/failure lines from an omitted
+/// middle slice so Head+Tail truncation never drops root-cause compiler or test diagnostics.
+fn salvage_middle_diagnostics(omitted_slice: &str, start_line: usize) -> Vec<String> {
+    let mut salvaged = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+
+    for (offset, raw_line) in omitted_slice.lines().enumerate() {
+        if salvaged.len() >= ARTIFACT_SALVAGE_MAX_LINES {
+            break;
+        }
+        let trimmed = raw_line.trim();
+        if !is_salvageable_diagnostic_line(trimmed) || !seen.insert(trimmed) {
+            continue;
+        }
+        let clipped: String = match trimmed.chars().count() > ARTIFACT_SALVAGE_MAX_LINE_CHARS {
+            true => format!(
+                "{}...",
+                trimmed
+                    .chars()
+                    .take(ARTIFACT_SALVAGE_MAX_LINE_CHARS)
+                    .collect::<String>()
+            ),
+            false => trimmed.to_string(),
+        };
+        salvaged.push(format!("  L{}: {clipped}", start_line + offset));
+    }
+    salvaged
+}
+
+/// Computes a UTF-8-safe, line-boundary-aligned Head (35%) + Tail (65%) preview with
+/// middle diagnostic salvage so both the command/file header, cut middle errors/panics,
+/// and bottom stack traces survive truncation cleanly.
 pub fn format_head_tail_preview(content: &str, max_bytes: usize) -> (String, usize, usize) {
     let total_bytes = content.len();
     let total_lines = content.lines().count();
@@ -62,12 +110,27 @@ pub fn format_head_tail_preview(content: &str, max_bytes: usize) -> (String, usi
     let omitted_slice = &content[head_end..tail_start];
     let omitted_bytes = omitted_slice.len();
     let omitted_lines = omitted_slice.lines().count();
+    let middle_start_line = content[..head_end]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
+        + 1;
+    let salvaged = salvage_middle_diagnostics(omitted_slice, middle_start_line);
     let head = content[..head_end].trim_end_matches('\n');
     let tail = content[tail_start..].trim_start_matches('\n');
 
-    let preview = format!(
-        "{head}\n\n... [{omitted_lines} lines / {omitted_bytes} bytes omitted from middle] ...\n\n{tail}"
-    );
+    let middle_banner = match salvaged.is_empty() {
+        true => format!(
+            "... [{omitted_lines} lines / {omitted_bytes} bytes omitted from middle] ..."
+        ),
+        false => format!(
+            "... [{omitted_lines} lines / {omitted_bytes} bytes omitted from middle; salvaged {} diagnostic line(s):]\n{}\n...",
+            salvaged.len(),
+            salvaged.join("\n")
+        ),
+    };
+
+    let preview = format!("{head}\n\n{middle_banner}\n\n{tail}");
     (preview, total_lines, omitted_bytes)
 }
 
@@ -267,5 +330,30 @@ mod tests {
         assert_eq!(count_session_artifacts(&base, "sess_1").await, 1);
 
         let _ = tokio::fs::remove_dir_all(&base).await;
+    }
+
+    #[test]
+    fn format_head_tail_preview_salvages_middle_error_and_panic_lines() {
+        let mut raw = String::from("HEADER: workspace test run\n");
+        for i in 0..180 {
+            raw.push_str(&format!("info: compiling module alpha_{i:03} ok\n"));
+        }
+        raw.push_str("error[E0308]: mismatched types in crates/zenko-runtime/src/tool_router.rs:42\n");
+        raw.push_str("thread 'runtime::tests::dedup' panicked at assertion failed\n");
+        for i in 0..220 {
+            raw.push_str(&format!("info: post-failure downstream chatter line_{i:03}\n"));
+        }
+        raw.push_str("TAIL: finished with non-zero exit\n");
+
+        let (preview, _, omitted) = format_head_tail_preview(&raw, 1600);
+        assert!(omitted > 0);
+        assert!(preview.contains("HEADER: workspace test run"));
+        assert!(preview.contains("TAIL: finished with non-zero exit"));
+        assert!(
+            preview.contains("salvaged 2 diagnostic line(s)"),
+            "expected middle salvage banner in:\n{preview}"
+        );
+        assert!(preview.contains("error[E0308]: mismatched types"));
+        assert!(preview.contains("panicked at assertion failed"));
     }
 }

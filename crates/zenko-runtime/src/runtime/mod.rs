@@ -313,6 +313,7 @@ pub(crate) struct SessionControl {
     concise_mode_override: Mutex<Option<ConciseMode>>,
     minimalism_mode_override: Mutex<Option<CodeMinimalismMode>>,
     read_less_stats: Mutex<ReadLessSessionStats>,
+    output_dedup: Mutex<crate::read_less::SessionOutputDedup>,
 }
 
 /// RAII guard binding the live `SessionToolScope` while a turn executes (restores previous scope on drop).
@@ -2148,6 +2149,40 @@ impl AgentRuntime {
             st.calls = st.calls.saturating_add(1);
             st.bytes_saved = st.bytes_saved.saturating_add(bytes_saved);
             st.tokens_saved = st.tokens_saved.saturating_add(tokens_saved);
+        }
+    }
+
+    pub(crate) fn check_or_record_output_dedup(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        raw: &str,
+        is_error: bool,
+    ) -> Option<crate::read_less::OutputDedupHit> {
+        let ctrl = self.session_control(session_id);
+        ctrl.output_dedup
+            .lock()
+            .ok()
+            .and_then(|mut dedup| dedup.check_or_record(tool_name, raw, is_error))
+    }
+
+    pub(crate) fn attach_output_dedup_handle(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        raw: &str,
+        handle: String,
+    ) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut dedup) = ctrl.output_dedup.lock() {
+            dedup.attach_artifact_handle(tool_name, raw, handle);
+        }
+    }
+
+    pub(crate) fn clear_session_output_dedup(&self, session_id: &str) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut dedup) = ctrl.output_dedup.lock() {
+            dedup.clear();
         }
     }
 

@@ -731,15 +731,28 @@ pub const READ_LESS_BUILD_PROGRESS_PREFIXES: &[&str] = &[
     "Building ",
     "Doc-tests ",
 ];
-/// Ephemeral/noisy tools eligible for Read-Less structural compression (strictly excludes `read_file`
-/// and code editors so exact line numbers and hash anchors are never modified).
+/// Ephemeral/noisy tools eligible for Read-Less structural compression & session dedup
+/// (strictly excludes `read_file`, `code_search`, `lsp_tool`, and file editors so exact
+/// line numbers and hash anchors are never modified).
 pub const READ_LESS_ELIGIBLE_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
     TOOL_JOB_READ,
     TOOL_GIT,
     TOOL_WEB_FETCH,
+    TOOL_WEB_SEARCH,
+    TOOL_GLOB_FIND,
     TOOL_SCRIPT_BLOCK,
+    TOOL_SPAWN_AGENT,
 ];
+pub const READ_LESS_SCRUB_MIN_BYTES: usize = 256;
+pub const READ_LESS_SCRUB_MIN_SAVED_BYTES: usize = 64;
+pub const READ_LESS_GLOB_MIN_LINES: usize = 24;
+pub const READ_LESS_GLOB_MAX_PER_DIR: usize = 8;
+pub const READ_LESS_DEDUP_MIN_BYTES: usize = 384;
+pub const READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION: usize = 48;
+pub const READ_LESS_DEDUP_MAX_CALL_GAP: u64 = 16;
+pub const ARTIFACT_SALVAGE_MAX_LINES: usize = 12;
+pub const ARTIFACT_SALVAGE_MAX_LINE_CHARS: usize = 180;
 pub const FILE_MODE_OWNER_EXEC: u32 = 0o700;
 pub const SCRIPT_BLOCKS_DIR_NAME: &str = "blocks";
 pub const SCRIPT_BLOCK_EXT: &str = "sh";
@@ -1439,6 +1452,12 @@ pub const MINIMALISM_DEBT_TEXT_MAX_CHARS: usize = 160;
 pub const MINIMALISM_DIFF_LARGE_HUNK_LOC: usize = 60;
 pub const MINIMALISM_WRAPPER_MAX_LINES: usize = 14;
 pub const MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS: usize = 6;
+pub const MINIMALISM_ABSTRACTION_MIN_NAME_CHARS: usize = 5;
+pub const MINIMALISM_COMMENT_BLOAT_MIN_LINES: usize = 40;
+pub const MINIMALISM_COMMENT_BLOAT_MIN_RATIO_PCT: usize = 35;
+pub const MINIMALISM_COMMENT_BLOCK_MAX_LINES: usize = 14;
+pub const MINIMALISM_DIFF_COMMENT_BLOAT_MIN_ADDED: u64 = 30;
+pub const MINIMALISM_DIFF_COMMENT_BLOAT_RATIO_PCT: u64 = 35;
 pub const MINIMALISM_BLOAT_HINT_NET_LOC_LITE: u64 = 300;
 pub const MINIMALISM_BLOAT_HINT_NET_LOC_FULL: u64 = 140;
 pub const MINIMALISM_BLOAT_HINT_NET_LOC_ULTRA: u64 = 70;

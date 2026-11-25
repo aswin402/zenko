@@ -852,24 +852,24 @@ enabled: true\n\
         filename: "minimal-review.md",
         content: "---\n\
 name: Minimalist Code Review\n\
-description: Review diffs for correctness, safety, and over-engineering -- flagging stdlib reinventions, speculative abstractions, and deletable code.\n\
+description: Review diffs for correctness, safety, and over-engineering -- flagging stdlib reinventions, single-impl abstractions, comment padding, and deletable code.\n\
 enabled: true\n\
 ---\n\n\
-- Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_diff\"})` and `git_tool(action=\"diff\")` before reviewing.\n\
+- Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_diff\"})` and `git_tool(action=\"diff\")` before reviewing; follow Context Diet (`code_search` / `read_file(mode=\"outline\")` + targeted slices only).\n\
 - Check correctness, security, error handling, trust-boundary validation, and race conditions first -- never trade away safety for brevity.\n\
 - Apply the 7-rung Simplicity Ladder to every added block: YAGNI -> Reuse existing helper -> Stdlib -> Native platform -> Installed dep -> One-liner -> Minimum viable code.\n\
-- Flag single-use wrappers, duplicated utilities, reinvented stdlib helpers, and unnecessary new dependencies with concrete delete/merge suggestions (`path:Lline: <issue> -> <minimal fix>`).\n",
+- Report strictly one finding per line with zero praise or recap (`path:Lline [kind]: <issue> -> <delete/inline/reuse fix>`), flagging single-impl traits/interfaces, thin wrappers, duplicated helpers, bloated prose comments, and unnecessary dependencies.\n",
     },
     DefaultSkillTemplate {
         filename: "minimal-audit.md",
         content: "---\n\
 name: Minimalist Repo Audit\n\
-description: Scan a repository for structural bloat, oversized files/functions, duplicate helpers, and thin wrappers to produce a ranked simplification plan.\n\
+description: Scan a repository for structural bloat, single-impl abstractions, comment/docstring padding, duplicate helpers, dormant deps, and thin wrappers in one ranked report.\n\
 enabled: true\n\
 ---\n\n\
 - Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_repo\"})` and `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"gain\"})`.\n\
-- Inspect top flagged files via `read_file(mode=\"outline\")` and targeted line ranges only.\n\
-- Rank candidate deletions/consolidations by net LOC removed and risk; verify callers via `code_search` before recommending removal.\n\
+- Follow Context Diet: inspect top flagged files via `read_file(mode=\"outline\")` and targeted line slices instead of dumping whole files.\n\
+- Rank candidate deletions/consolidations by net LOC removed and blast radius (single-impl abstractions, duplicate helpers, dormant deps, thin wrappers, and bloated narrative comments); verify callers via `code_search` before recommending removal.\n\
 - Preserve all security checks, error paths, accessibility, and public API contracts.\n",
     },
     DefaultSkillTemplate {
@@ -984,6 +984,7 @@ pub fn render_minimalism_prompt_block(
         "<code_minimalism level=\"{}\">\n\
          - {}\n\
          - Simplicity Ladder (stop at first rung that fits): {ladder}.\n\
+         - Context Diet: locate symbols via `code_search` / `read_file(mode=\"outline\")` and read targeted line ranges before opening full files; avoid bloated narrative comments that restate code.\n\
          - Safety invariant (minimal != careless): NEVER omit security checks, trust-boundary input validation, error handling, data-loss guards, or accessibility.{tool_clause}\n\
          - Live control (zero /commands): adjust via `{TOOL_ORCHESTRATE_CONTROL}(minimalism_mode=\"off|lite|full|ultra\")` if task complexity requires it.\n\
          </code_minimalism>",

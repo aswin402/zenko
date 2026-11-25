@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    AgentEvent, ApprovalDecision, HookEvent, MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS,
-    ORCH_STAGE_TOOL_ACTIVATED, PermissionMode, Result, ScriptBlockAction, SkillManageAction,
-    TOOL_APPLY_PATCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_SCRIPT_BLOCK,
+    ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, HookEvent, MUTATING_FILE_TOOLS,
+    ORCH_STAGE_READ_LESS, ORCH_STAGE_TOOL_ACTIVATED, PermissionMode, Result, ScriptBlockAction,
+    SkillManageAction, TOOL_APPLY_PATCH, TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT,
+    TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_READ_FILE, TOOL_SCRIPT_BLOCK,
     TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH,
     TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec,
     ZenkoConfig, ZenkoError, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
@@ -423,7 +424,87 @@ pub(crate) async fn dispatch_tool_call(
         }
     }
 
+    // Backfire / CCR recovery telemetry: track whenever `read_file` or `code_search` explicitly
+    // inspects an `artifact:` handle created by Read-Less compression or oversized spilling.
+    let is_ccr_recovery = !tool_output.is_error
+        && matches!(tc.name.as_str(), TOOL_READ_FILE | TOOL_CODE_SEARCH)
+        && tc
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|p| p.trim().starts_with(ARTIFACT_PATH_PREFIX));
+    if is_ccr_recovery {
+        tool_output.metadata = match tool_output.metadata {
+            Some(Value::Object(mut map)) => {
+                map.insert("ccr_recovery".into(), Value::Bool(true));
+                Some(Value::Object(map))
+            }
+            Some(other) => Some(json!({ "data": other, "ccr_recovery": true })),
+            None => Some(json!({ "ccr_recovery": true })),
+        };
+    }
+
+    // Tier 1 (Session Output Dedup) -> Tier 2 (Read-Less Structural + Lossless Scrub) -> Tier 3 (Error-Salvaging Spill)
+    let raw_for_dedup_handle = match cfg.context.read_less
+        && !tool_output.is_error
+        && read_less::is_read_less_eligible(&tc.name)
+    {
+        true => Some(tool_output.content.clone()),
+        false => None,
+    };
+
+    let mut deduped_this_call = false;
     if cfg.context.read_less
+        && let Some(hit) = rt.check_or_record_output_dedup(
+            session_id,
+            &tc.name,
+            &tool_output.content,
+            tool_output.is_error,
+        )
+    {
+        deduped_this_call = true;
+        tool_output.content = hit.replacement;
+        rt.record_read_less_savings(session_id, hit.bytes_saved as u64, hit.tokens_saved);
+        rt.emit(AgentEvent::OrchestratorUpdated {
+            session_id: session_id.to_string(),
+            stage: ORCH_STAGE_READ_LESS.into(),
+            tier: zenko_core::ExecutionTier::Standard,
+            detail: format!(
+                "Dedup `{}` (-{} calls): {} -> {} B (~{} tok saved)",
+                tc.name, hit.calls_ago, hit.original_bytes, hit.compressed_bytes, hit.tokens_saved,
+            ),
+            model: None,
+        });
+        let dedup_meta = json!({
+            "calls_ago": hit.calls_ago,
+            "original_bytes": hit.original_bytes,
+            "compressed_bytes": hit.compressed_bytes,
+            "bytes_saved": hit.bytes_saved,
+            "tokens_saved": hit.tokens_saved,
+            "prior_handle": hit.prior_handle,
+        });
+        let rl_meta = json!({
+            "shape": "dedup",
+            "original_bytes": hit.original_bytes,
+            "compressed_bytes": hit.compressed_bytes,
+            "bytes_saved": hit.bytes_saved,
+            "tokens_saved": hit.tokens_saved,
+        });
+        tool_output.metadata = match tool_output.metadata {
+            Some(Value::Object(mut map)) => {
+                map.insert("output_dedup".into(), dedup_meta);
+                map.insert("read_less".into(), rl_meta);
+                Some(Value::Object(map))
+            }
+            Some(other) => {
+                Some(json!({ "data": other, "output_dedup": dedup_meta, "read_less": rl_meta }))
+            }
+            None => Some(json!({ "output_dedup": dedup_meta, "read_less": rl_meta })),
+        };
+    }
+
+    if !deduped_this_call
+        && cfg.context.read_less
         && let Some(rl) = read_less::try_compress_tool_output(
             &tc.name,
             &tool_output.content,
@@ -437,6 +518,9 @@ pub(crate) async fn dispatch_tool_call(
             &tool_output.content,
         )
         .await;
+        if let (Some(rec), Some(raw_src)) = (&raw_ccr, raw_for_dedup_handle.as_deref()) {
+            rt.attach_output_dedup_handle(session_id, &tc.name, raw_src, rec.handle.clone());
+        }
         let ccr_footer = match &raw_ccr {
             Some(rec) => format!(
                 "\n\n[read-less: {}, {} -> {} bytes (-{:.1}%, ~{} tok saved) · raw saved at `{}`; inspect slices via `read_file` or `code_search`]",
@@ -510,6 +594,9 @@ pub(crate) async fn dispatch_tool_call(
         .await;
         tool_output.content = spilled_content;
         if let Some(rec) = spill_rec {
+            if let Some(raw_src) = raw_for_dedup_handle.as_deref() {
+                rt.attach_output_dedup_handle(session_id, &tc.name, raw_src, rec.handle.clone());
+            }
             let art_val = serde_json::to_value(&rec).unwrap_or(Value::Null);
             tool_output.metadata = match tool_output.metadata {
                 Some(Value::Object(mut map)) => {

@@ -799,6 +799,13 @@ impl SqliteStore {
                         summary.read_less_tokens_saved =
                             summary.read_less_tokens_saved.saturating_add(tok_sum.max(0) as u64);
                     }
+                    Some(EconomyLedgerKind::OutputDedup) => {
+                        summary.output_dedup_hits =
+                            summary.output_dedup_hits.saturating_add(count);
+                        summary.output_dedup_tokens_saved = summary
+                            .output_dedup_tokens_saved
+                            .saturating_add(tok_sum.max(0) as u64);
+                    }
                     Some(EconomyLedgerKind::ToolPrune) => {
                         summary.tool_prune_tokens_saved =
                             summary.tool_prune_tokens_saved.saturating_add(tok_sum.max(0) as u64);
@@ -811,6 +818,10 @@ impl SqliteStore {
                         summary.loop_guard_interventions =
                             summary.loop_guard_interventions.saturating_add(count);
                     }
+                    Some(EconomyLedgerKind::CcrRecovery) => {
+                        summary.ccr_recoveries =
+                            summary.ccr_recoveries.saturating_add(count);
+                    }
                     Some(EconomyLedgerKind::OverheadDream | EconomyLedgerKind::OverheadJudge) => {
                         summary.overhead_tokens =
                             summary.overhead_tokens.saturating_add(tok_sum.unsigned_abs());
@@ -822,6 +833,7 @@ impl SqliteStore {
 
             let gross_saved = summary
                 .read_less_tokens_saved
+                .saturating_add(summary.output_dedup_tokens_saved)
                 .saturating_add(summary.tool_prune_tokens_saved);
             summary.net_tokens_saved = (gross_saved as i64) - (summary.overhead_tokens as i64);
             let heuristic_usd = ((summary.net_tokens_saved as f64) / 1_000_000.0)

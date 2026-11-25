@@ -4,6 +4,22 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.30] - 2026-11-25
+
+Implemented five native Rust Chisle-inspired minicode and context-efficiency upgrades (zero `/commands`, zero Node hooks, zero regex): single-implementation abstraction & comment-bloat auditing, session-level exact tool-output deduplication, lossless `scrub` & `glob_find` directory grouping, error-salvaging middle elision, and CCR backfire telemetry.
+
+### Added
+- **Single-Implementation Abstraction & Comment Bloat Analyzers (`crates/zenko-tools/src/minimalism.rs`, `zenko-core/src/{constants,types,registry}.rs`):**
+  - Extended `code_minimalism(action="audit_repo")` with a zero-regex behavioral abstraction checker (`single_impl_abstractions`) flagging Rust `trait`s, `abstract class`es, and method-bearing TS/JS/Java/Kotlin/C# `interface`s with `<= 1` concrete implementation (excluding pure DTO/data interfaces).
+  - Extended our single-pass 5-state comment byte FSM to compute file comment ratios and longest narrative comment blocks (`comment_bloat`) plus diff-level added comment-vs-code ratios in `audit_diff`.
+  - Updated built-in English skills (`minimal-review.md`, `minimal-audit.md`) and Tier-2 `<code_minimalism>` directives with Context Diet rules and strict one-finding-per-line zero-praise reviews.
+- **3-Tier Deterministic Tool-Output Compression (`crates/zenko-runtime/src/{read_less,artifacts,tool_router}.rs`):**
+  - **Tier 1 (`SessionOutputDedup`):** Bounded per-session LRU deduplicator (`READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION`, auto-cleared on Stage-B compaction and session reset) replacing exact repeated outputs from allowlisted ephemeral tools with a 1-line marker citing the raw `artifact:` handle.
+  - **Tier 2 (`ReadLessShape::Scrub` & `ReadLessShape::GlobList`):** Expanded `READ_LESS_ELIGIBLE_TOOLS` to `web_search`, `glob_find`, and `spawn_agent` (strictly keeping `read_file`, `code_search`, `lsp_tool`, and editors exempt), added always-on lossless `scrub` for medium outputs, and added directory-grouped compression for verbose `glob_find` listings.
+  - **Tier 3 (Error-Salvaging Middle Elision):** Upgraded `format_head_tail_preview` in `artifacts.rs` to salvage up to 12 unique compiler/panic/failure lines with line numbers from the omitted middle slice before dropping middle noise.
+- **Honest Backfire Telemetry & WebUI Visibility (`sqlite/economy.rs`, `economy/mod.rs`, `economy_tool.rs`, `TokenEconomyPanel.tsx`):**
+  - Added `EconomyLedgerKind::OutputDedup` and `EconomyLedgerKind::CcrRecovery` tracking exact dedup hits/savings and how often `read_file` / `code_search` explicitly recovers a compressed `artifact:` handle, surfaced in `token_economy(action="status")`, Copy Summary Markdown, and the 60/30/10 WebUI Token Economy & Bloat Audit panel.
+
 ## [0.0.29] - 2026-11-25
 
 Fixed stuck/glitchy Cargo build progress animations during `just dev` (and `just build` / `just check` / `just test`) by replacing the buggy external `cargo-pretty` (`nobubbles-0.1.1`) default with a native, tear-free Obsidian Vermilion Cargo progress renderer.

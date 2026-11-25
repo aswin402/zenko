@@ -17,17 +17,20 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    CodeMinimalismAction, DebtItem, DebtScanReport, DiffAuditReport, DormantDependencyFinding,
-    DuplicateSymbolFinding, EconomyBridge, LargeFileFinding, LongFunctionFinding,
-    MINIMALISM_AUDIT_MAX_FILE_BYTES, MINIMALISM_AUDIT_MAX_FILES, MINIMALISM_AUDIT_TOP_N,
+    CodeMinimalismAction, CommentBloatFinding, DebtItem, DebtScanReport, DiffAuditReport,
+    DormantDependencyFinding, DuplicateSymbolFinding, EconomyBridge, LargeFileFinding,
+    LongFunctionFinding, MINIMALISM_ABSTRACTION_MIN_NAME_CHARS, MINIMALISM_AUDIT_MAX_FILE_BYTES,
+    MINIMALISM_AUDIT_MAX_FILES, MINIMALISM_AUDIT_TOP_N, MINIMALISM_COMMENT_BLOAT_MIN_LINES,
+    MINIMALISM_COMMENT_BLOAT_MIN_RATIO_PCT, MINIMALISM_COMMENT_BLOCK_MAX_LINES,
     MINIMALISM_DEBT_MARKERS, MINIMALISM_DEBT_MAX_ITEMS, MINIMALISM_DEBT_TEXT_MAX_CHARS,
+    MINIMALISM_DIFF_COMMENT_BLOAT_MIN_ADDED, MINIMALISM_DIFF_COMMENT_BLOAT_RATIO_PCT,
     MINIMALISM_DIFF_LARGE_HUNK_LOC, MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS,
     MINIMALISM_IGNORED_DORMANT_DEPS, MINIMALISM_IGNORED_DUP_SYMBOLS, MINIMALISM_LARGE_FILE_LINES,
     MINIMALISM_LONG_FN_LINES, MINIMALISM_MANIFEST_FILES, MINIMALISM_SOURCE_EXTS,
     MINIMALISM_WRAPPER_MAX_LINES, MINIMALISM_WRAPPER_SUFFIXES, MinimalismGainReport,
-    OversizedHunkFinding, RepoAuditReport, Result, RiskLevel, TOOL_CODE_MINIMALISM,
-    ThinWrapperFinding, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet,
-    ToolSpec, ZenkoError,
+    OversizedHunkFinding, RepoAuditReport, Result, RiskLevel, SingleImplAbstractionFinding,
+    TOOL_CODE_MINIMALISM, ThinWrapperFinding, Tool, ToolConcurrency, ToolContext, ToolExposure,
+    ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,20 +182,33 @@ fn extract_symbol_name(kind: &str, sig: &str) -> Option<String> {
     }
 }
 
-/// Deterministic comment-scoped byte/char FSM extracting shortcut/debt markers without regex.
-/// String literals and constant tables outside comments are skipped so marker definitions never self-trigger.
-pub fn scan_file_debt_markers(
+#[derive(Debug, Clone, Copy, Default)]
+struct FileCommentStats {
+    comment_lines: usize,
+    code_lines: usize,
+    longest_block_lines: usize,
+    longest_block_line: usize,
+}
+
+/// Deterministic comment-scoped byte/char FSM extracting shortcut/debt markers AND
+/// single-pass comment-vs-code line/block metrics without regex.
+fn scan_file_comments_and_debt(
     rel_path: &str,
     content: &str,
     ext: &str,
     out: &mut Vec<DebtItem>,
     max_items: usize,
-) -> usize {
+) -> (usize, FileCommentStats) {
     let style = comment_style_for_ext(ext);
     let bytes = content.as_bytes();
     let mut i = 0usize;
     let mut line = 1usize;
     let mut found = 0usize;
+    let mut stats = FileCommentStats::default();
+    let mut line_has_code = false;
+    let mut line_has_comment = false;
+    let mut cur_comment_run = 0usize;
+    let mut cur_comment_run_start = 1usize;
 
     #[derive(Clone, Copy)]
     enum State {
@@ -206,6 +222,36 @@ pub fn scan_file_debt_markers(
     let mut state = State::Code;
     let mut comment_start = 0usize;
     let mut comment_line = 1usize;
+
+    let finalize_line = |line_num: usize,
+                         has_code: &mut bool,
+                         has_comment: &mut bool,
+                         run: &mut usize,
+                         run_start: &mut usize,
+                         st: &mut FileCommentStats| {
+        match (*has_code, *has_comment) {
+            (true, _) => {
+                st.code_lines += 1;
+                *run = 0;
+            }
+            (false, true) => {
+                st.comment_lines += 1;
+                if *run == 0 {
+                    *run_start = line_num;
+                }
+                *run += 1;
+                if *run > st.longest_block_lines {
+                    st.longest_block_lines = *run;
+                    st.longest_block_line = *run_start;
+                }
+            }
+            (false, false) => {
+                *run = 0;
+            }
+        }
+        *has_code = false;
+        *has_comment = false;
+    };
 
     let mut check_comment = |slice: &str, start_line: usize| {
         let mut cur_line = start_line;
@@ -230,18 +276,29 @@ pub fn scan_file_debt_markers(
         match state {
             State::Code => match (style, b, bytes.get(i + 1).copied()) {
                 (_, b'\n', _) => {
+                    finalize_line(
+                        line,
+                        &mut line_has_code,
+                        &mut line_has_comment,
+                        &mut cur_comment_run,
+                        &mut cur_comment_run_start,
+                        &mut stats,
+                    );
                     line += 1;
                     i += 1;
                 }
                 (_, b'"', _) => {
+                    line_has_code = true;
                     state = State::DoubleQuote;
                     i += 1;
                 }
                 (CommentStyle::Hash, b'\'', _) => {
+                    line_has_code = true;
                     state = State::SingleQuote;
                     i += 1;
                 }
                 (CommentStyle::Slash, b'\'', _) => {
+                    line_has_code = true;
                     // Distinguish Rust lifetime `'a` from char literal `'x'` / `'\n'`
                     let is_char_lit = bytes.get(i + 2) == Some(&b'\'')
                         || (bytes.get(i + 1) == Some(&b'\\') && bytes.get(i + 3) == Some(&b'\''));
@@ -251,76 +308,140 @@ pub fn scan_file_debt_markers(
                     i += 1;
                 }
                 (CommentStyle::Slash, b'/', Some(b'/')) => {
+                    line_has_comment = true;
                     state = State::LineComment;
                     comment_start = i + 2;
                     comment_line = line;
                     i += 2;
                 }
                 (CommentStyle::Slash, b'/', Some(b'*')) => {
+                    line_has_comment = true;
                     state = State::BlockComment;
                     comment_start = i + 2;
                     comment_line = line;
                     i += 2;
                 }
                 (CommentStyle::Hash, b'#', _) => {
+                    line_has_comment = true;
                     state = State::LineComment;
                     comment_start = i + 1;
                     comment_line = line;
                     i += 1;
                 }
                 _ => {
+                    if !b.is_ascii_whitespace() {
+                        line_has_code = true;
+                    }
                     i += 1;
                 }
             },
             State::DoubleQuote => match b {
                 b'\\' if i + 1 < bytes.len() => {
+                    line_has_code = true;
                     if bytes[i + 1] == b'\n' {
+                        finalize_line(
+                            line,
+                            &mut line_has_code,
+                            &mut line_has_comment,
+                            &mut cur_comment_run,
+                            &mut cur_comment_run_start,
+                            &mut stats,
+                        );
                         line += 1;
                     }
                     i += 2;
                 }
                 b'"' => {
+                    line_has_code = true;
                     state = State::Code;
                     i += 1;
                 }
                 b'\n' => {
+                    finalize_line(
+                        line,
+                        &mut line_has_code,
+                        &mut line_has_comment,
+                        &mut cur_comment_run,
+                        &mut cur_comment_run_start,
+                        &mut stats,
+                    );
                     line += 1;
                     state = State::Code;
                     i += 1;
                 }
-                _ => i += 1,
+                _ => {
+                    if !b.is_ascii_whitespace() {
+                        line_has_code = true;
+                    }
+                    i += 1;
+                }
             },
             State::SingleQuote => match b {
                 b'\\' if i + 1 < bytes.len() => {
+                    line_has_code = true;
                     if bytes[i + 1] == b'\n' {
+                        finalize_line(
+                            line,
+                            &mut line_has_code,
+                            &mut line_has_comment,
+                            &mut cur_comment_run,
+                            &mut cur_comment_run_start,
+                            &mut stats,
+                        );
                         line += 1;
                     }
                     i += 2;
                 }
                 b'\'' => {
+                    line_has_code = true;
                     state = State::Code;
                     i += 1;
                 }
                 b'\n' => {
+                    finalize_line(
+                        line,
+                        &mut line_has_code,
+                        &mut line_has_comment,
+                        &mut cur_comment_run,
+                        &mut cur_comment_run_start,
+                        &mut stats,
+                    );
                     line += 1;
                     state = State::Code;
                     i += 1;
                 }
-                _ => i += 1,
+                _ => {
+                    if !b.is_ascii_whitespace() {
+                        line_has_code = true;
+                    }
+                    i += 1;
+                }
             },
             State::LineComment => match b {
                 b'\n' => {
                     if let Some(slice) = content.get(comment_start..i) {
                         check_comment(slice, comment_line);
                     }
+                    finalize_line(
+                        line,
+                        &mut line_has_code,
+                        &mut line_has_comment,
+                        &mut cur_comment_run,
+                        &mut cur_comment_run_start,
+                        &mut stats,
+                    );
                     line += 1;
                     state = State::Code;
                     i += 1;
                 }
-                _ => i += 1,
+                _ => {
+                    line_has_comment = true;
+                    i += 1;
+                }
             },
             State::BlockComment => match (b, bytes.get(i + 1).copied()) {
                 (b'*', Some(b'/')) => {
+                    line_has_comment = true;
                     if let Some(slice) = content.get(comment_start..i) {
                         check_comment(slice, comment_line);
                     }
@@ -328,10 +449,24 @@ pub fn scan_file_debt_markers(
                     i += 2;
                 }
                 (b'\n', _) => {
+                    line_has_comment = true;
+                    finalize_line(
+                        line,
+                        &mut line_has_code,
+                        &mut line_has_comment,
+                        &mut cur_comment_run,
+                        &mut cur_comment_run_start,
+                        &mut stats,
+                    );
                     line += 1;
                     i += 1;
                 }
-                _ => i += 1,
+                _ => {
+                    if !b.is_ascii_whitespace() {
+                        line_has_comment = true;
+                    }
+                    i += 1;
+                }
             },
         }
     }
@@ -340,7 +475,29 @@ pub fn scan_file_debt_markers(
     {
         check_comment(slice, comment_line);
     }
-    found
+    if line_has_code || line_has_comment {
+        finalize_line(
+            line,
+            &mut line_has_code,
+            &mut line_has_comment,
+            &mut cur_comment_run,
+            &mut cur_comment_run_start,
+            &mut stats,
+        );
+    }
+    (found, stats)
+}
+
+/// Deterministic comment-scoped byte/char FSM extracting shortcut/debt markers without regex.
+/// String literals and constant tables outside comments are skipped so marker definitions never self-trigger.
+pub fn scan_file_debt_markers(
+    rel_path: &str,
+    content: &str,
+    ext: &str,
+    out: &mut Vec<DebtItem>,
+    max_items: usize,
+) -> usize {
+    scan_file_comments_and_debt(rel_path, content, ext, out, max_items).0
 }
 
 fn find_debt_marker_in_segment(seg: &str) -> Option<(&'static str, &str)> {
@@ -425,6 +582,154 @@ pub fn scan_workspace_debt(workspace_dir: &Path) -> DebtScanReport {
     }
 }
 
+/// Returns `true` when an interface span declares at least one behavioral method signature (`foo(`)
+/// rather than acting as a pure data/DTO shape (`interface Props { ... }`).
+fn interface_declares_methods(lines: &[&str], start_line: usize, end_line: usize) -> bool {
+    let from = start_line.saturating_sub(1).min(lines.len());
+    let to = end_line.min(lines.len());
+    for raw in &lines[from..to] {
+        let t = raw.trim();
+        if t.is_empty()
+            || t.starts_with("//")
+            || t.starts_with("/*")
+            || t.starts_with('*')
+            || t.contains("interface ")
+        {
+            continue;
+        }
+        let bytes = t.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() && (is_ident_byte(bytes[i]) || bytes[i] == b'?') {
+            i += 1;
+        }
+        if i > 0 {
+            let rest = t[i..].trim_start();
+            if rest.starts_with('(') || rest.starts_with('<') {
+                return true;
+            }
+            if let Some(after_colon) = rest.strip_prefix(':') {
+                let rhs = after_colon.trim_start();
+                if rhs.starts_with('(') && rhs.contains("=>") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Skips balanced `<...>` generic parameters starting at `idx`, returning the index after `>`.
+fn skip_angle_generics(bytes: &[u8], start: usize) -> usize {
+    if bytes.get(start) != Some(&b'<') {
+        return start;
+    }
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' => depth += 1,
+            b'>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
+/// Extracts the trailing identifier from a qualified type path (`foo::Bar<T>` or `pkg.Bar<T>` -> `Bar`).
+fn trailing_type_ident(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let without_generics = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    let tail = without_generics
+        .rsplit("::")
+        .next()
+        .unwrap_or(without_generics)
+        .rsplit('.')
+        .next()
+        .unwrap_or(without_generics)
+        .trim();
+    let ident: String = tail
+        .bytes()
+        .take_while(|&b| is_ident_byte(b))
+        .map(char::from)
+        .collect();
+    match ident.len() >= MINIMALISM_ABSTRACTION_MIN_NAME_CHARS {
+        true => Some(ident),
+        false => None,
+    }
+}
+
+/// Zero-regex concrete implementation collector for Rust `impl Trait for Type` and
+/// TS/JS/Java/Kotlin/C# `implements Foo, Bar` / `extends Base`.
+fn collect_abstraction_impls(content: &str, ext: &str, counts: &mut BTreeMap<String, usize>) {
+    match ext {
+        "rs" => {
+            for raw in content.lines() {
+                let t = raw.trim();
+                if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                    continue;
+                }
+                let after_impl = t
+                    .strip_prefix("unsafe impl")
+                    .or_else(|| t.strip_prefix("impl"));
+                let Some(rest) = after_impl else {
+                    continue;
+                };
+                if !rest.starts_with(|c: char| c.is_ascii_whitespace() || c == '<') {
+                    continue;
+                }
+                let rest = rest.trim_start();
+                let bytes = rest.as_bytes();
+                let after_gen = skip_angle_generics(bytes, 0);
+                let body = rest.get(after_gen..).unwrap_or("").trim_start();
+                if let Some(for_pos) = body.find(" for ")
+                    && let Some(trait_name) = trailing_type_ident(&body[..for_pos])
+                {
+                    *counts.entry(trait_name).or_insert(0) += 1;
+                }
+            }
+        }
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "java" | "kt" | "kts"
+        | "cs" => {
+            for raw in content.lines() {
+                let t = raw.trim();
+                if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                    continue;
+                }
+                for kw in [" implements ", " extends "] {
+                    if let Some(pos) = t.find(kw) {
+                        let tail = &t[pos + kw.len()..];
+                        let clause = tail.split('{').next().unwrap_or(tail);
+                        let clause = clause.split(" implements ").next().unwrap_or(clause);
+                        for seg in clause.split(',') {
+                            if let Some(name) = trailing_type_ident(seg) {
+                                *counts.entry(name).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_diff_comment_line(ext: &str, code: &str) -> bool {
+    let t = code.trim();
+    if t.is_empty() {
+        return false;
+    }
+    match comment_style_for_ext(ext) {
+        CommentStyle::Hash => t.starts_with('#'),
+        CommentStyle::Slash => t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'),
+    }
+}
+
 fn collect_workspace_symbol_map(
     workspace_dir: &Path,
 ) -> (RepoAuditReport, BTreeMap<String, Vec<String>>) {
@@ -433,6 +738,9 @@ fn collect_workspace_symbol_map(
     let mut large_files: Vec<LargeFileFinding> = Vec::new();
     let mut long_functions: Vec<LongFunctionFinding> = Vec::new();
     let mut thin_wrappers: Vec<ThinWrapperFinding> = Vec::new();
+    let mut comment_bloat: Vec<CommentBloatFinding> = Vec::new();
+    let mut declared_abstractions: Vec<(String, usize, String, String)> = Vec::new();
+    let mut impl_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut sym_locations: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut debt_count = 0usize;
     let mut scratch_debt = Vec::new();
@@ -474,9 +782,30 @@ fn collect_workspace_symbol_map(
 
         files_scanned += 1;
         scratch_debt.clear();
-        debt_count += scan_file_debt_markers(&rel, &content, &ext, &mut scratch_debt, 0);
+        let (file_debt, c_stats) =
+            scan_file_comments_and_debt(&rel, &content, &ext, &mut scratch_debt, 0);
+        debt_count += file_debt;
+        collect_abstraction_impls(&content, &ext, &mut impl_counts);
+
+        let non_blank = c_stats.comment_lines.saturating_add(c_stats.code_lines);
+        if non_blank >= MINIMALISM_COMMENT_BLOAT_MIN_LINES {
+            let ratio_pct = (c_stats.comment_lines.saturating_mul(100)) / non_blank.max(1);
+            if ratio_pct >= MINIMALISM_COMMENT_BLOAT_MIN_RATIO_PCT
+                || c_stats.longest_block_lines >= MINIMALISM_COMMENT_BLOCK_MAX_LINES
+            {
+                comment_bloat.push(CommentBloatFinding {
+                    path: rel.clone(),
+                    comment_lines: c_stats.comment_lines,
+                    code_lines: c_stats.code_lines,
+                    comment_ratio_pct: ratio_pct,
+                    longest_block_lines: c_stats.longest_block_lines,
+                    longest_block_line: c_stats.longest_block_line,
+                });
+            }
+        }
 
         let outline = extract_outline(path, &content, 240);
+        let content_lines: Vec<&str> = content.lines().collect();
         total_lines += outline.total_lines;
         if outline.total_lines >= MINIMALISM_LARGE_FILE_LINES {
             large_files.push(LargeFileFinding {
@@ -499,6 +828,24 @@ fn collect_workspace_symbol_map(
             let Some(name) = extract_symbol_name(item.kind, &item.signature) else {
                 continue;
             };
+            if name.len() >= MINIMALISM_ABSTRACTION_MIN_NAME_CHARS {
+                let is_behavioral_abstraction = match item.kind {
+                    "trait" => true,
+                    "class" => item.signature.contains("abstract "),
+                    "interface" => {
+                        interface_declares_methods(&content_lines, item.line, item.end_line)
+                    }
+                    _ => false,
+                };
+                if is_behavioral_abstraction {
+                    declared_abstractions.push((
+                        rel.clone(),
+                        item.line,
+                        item.kind.to_string(),
+                        name.clone(),
+                    ));
+                }
+            }
             if matches!(item.kind, "struct" | "class" | "trait" | "interface")
                 && span <= MINIMALISM_WRAPPER_MAX_LINES
                 && MINIMALISM_WRAPPER_SUFFIXES
@@ -545,6 +892,38 @@ fn collect_workspace_symbol_map(
     });
     thin_wrappers.truncate(MINIMALISM_AUDIT_TOP_N);
 
+    let mut single_impl_abstractions: Vec<SingleImplAbstractionFinding> = declared_abstractions
+        .into_iter()
+        .filter_map(|(path, line, kind, name)| {
+            let impl_count = impl_counts.get(&name).copied().unwrap_or(0);
+            match impl_count <= 1 {
+                true => Some(SingleImplAbstractionFinding {
+                    path,
+                    line,
+                    kind,
+                    name,
+                    impl_count,
+                }),
+                false => None,
+            }
+        })
+        .collect();
+    single_impl_abstractions.sort_by(|a, b| {
+        a.impl_count
+            .cmp(&b.impl_count)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+    single_impl_abstractions.truncate(MINIMALISM_AUDIT_TOP_N);
+
+    comment_bloat.sort_by(|a, b| {
+        b.comment_ratio_pct
+            .cmp(&a.comment_ratio_pct)
+            .then_with(|| b.longest_block_lines.cmp(&a.longest_block_lines))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    comment_bloat.truncate(MINIMALISM_AUDIT_TOP_N);
+
     let mut duplicate_symbols: Vec<DuplicateSymbolFinding> = sym_locations
         .iter()
         .filter(|(_, locs)| locs.len() >= 2)
@@ -570,6 +949,8 @@ fn collect_workspace_symbol_map(
         long_functions,
         duplicate_symbols,
         thin_wrappers,
+        single_impl_abstractions,
+        comment_bloat,
         dormant_dependencies,
         debt_count,
     };
@@ -963,11 +1344,14 @@ fn analyze_unified_diff_with_untracked(
     let mut added_fn_names: BTreeSet<String> = BTreeSet::new();
 
     let mut cur_file = String::new();
+    let mut cur_ext = String::new();
     let mut prev_dev_null = false;
     let mut hunk_start = 1usize;
     let mut hunk_added = 0usize;
     let mut lines_added = 0u64;
     let mut lines_deleted = 0u64;
+    let mut added_comment_lines = 0u64;
+    let mut added_code_lines = 0u64;
 
     let flush_hunk = |file: &str,
                       start: usize,
@@ -1000,6 +1384,11 @@ fn analyze_unified_diff_with_untracked(
                 let cleaned = raw.strip_prefix("b/").unwrap_or(raw);
                 if cleaned != "/dev/null" && !cleaned.is_empty() {
                     cur_file = cleaned.to_string();
+                    cur_ext = Path::new(&cur_file)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_ascii_lowercase())
+                        .unwrap_or_default();
                     files_changed.insert(cur_file.clone());
                     if prev_dev_null {
                         new_files.insert(cur_file.clone());
@@ -1023,6 +1412,13 @@ fn analyze_unified_diff_with_untracked(
                 lines_added = lines_added.saturating_add(1);
                 hunk_added += 1;
                 let code = &l[1..];
+                if MINIMALISM_SOURCE_EXTS.contains(&cur_ext.as_str()) {
+                    if is_diff_comment_line(&cur_ext, code) {
+                        added_comment_lines = added_comment_lines.saturating_add(1);
+                    } else if !code.trim().is_empty() {
+                        added_code_lines = added_code_lines.saturating_add(1);
+                    }
+                }
                 if let Some(sym) = extract_symbol_name("fn", code)
                     && sym.len() >= MINIMALISM_DUPLICATE_SYMBOL_MIN_CHARS
                     && MINIMALISM_IGNORED_DUP_SYMBOLS
@@ -1040,6 +1436,7 @@ fn analyze_unified_diff_with_untracked(
     }
     flush_hunk(&cur_file, hunk_start, hunk_added, &mut oversized_hunks);
 
+    let mut scratch_untracked_debt = Vec::new();
     for rel in untracked_files {
         if files_changed.contains(rel) {
             continue;
@@ -1069,6 +1466,16 @@ fn analyze_unified_diff_with_untracked(
             });
         }
         if is_source_file(&full) {
+            let ext = full
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            scratch_untracked_debt.clear();
+            let (_, c_stats) =
+                scan_file_comments_and_debt(rel, &content, &ext, &mut scratch_untracked_debt, 0);
+            added_comment_lines = added_comment_lines.saturating_add(c_stats.comment_lines as u64);
+            added_code_lines = added_code_lines.saturating_add(c_stats.code_lines as u64);
             let outline = extract_outline(&full, &content, 120);
             for item in &outline.entries {
                 if item.kind == "fn"
@@ -1125,6 +1532,15 @@ fn analyze_unified_diff_with_untracked(
             names.join(", ")
         ));
     }
+    let total_added_src = added_comment_lines.saturating_add(added_code_lines);
+    if total_added_src >= MINIMALISM_DIFF_COMMENT_BLOAT_MIN_ADDED {
+        let ratio = (added_comment_lines.saturating_mul(100)) / total_added_src.max(1);
+        if ratio >= MINIMALISM_DIFF_COMMENT_BLOAT_RATIO_PCT {
+            findings.push(format!(
+                "Heavy comment/docstring ratio in added source lines ({ratio}%: {added_comment_lines} comment vs {added_code_lines} code) — trim prose that merely restates code."
+            ));
+        }
+    }
     if new_files.len() >= 2 {
         findings.push(format!(
             "{} new file(s) created — verify each file earns its own module boundary.",
@@ -1143,6 +1559,8 @@ fn analyze_unified_diff_with_untracked(
         lines_added,
         lines_deleted,
         net_loc_delta,
+        added_comment_lines,
+        added_code_lines,
         manifest_changes: manifest_changes.into_iter().collect(),
         oversized_hunks,
         duplicate_symbols,
@@ -1314,6 +1732,29 @@ impl Tool for CodeMinimalismTool {
                         lines.push(format!(
                             "  - {}:L{} [{} `{}` · {} lines]",
                             w.path, w.line, w.kind, w.name, w.span_lines
+                        ));
+                    }
+                }
+                if !report.single_impl_abstractions.is_empty() {
+                    lines.push("Single-impl abstraction candidates:".into());
+                    for abs in report.single_impl_abstractions.iter().take(6) {
+                        lines.push(format!(
+                            "  - {}:L{} [{} `{}` · {} impl(s)]",
+                            abs.path, abs.line, abs.kind, abs.name, abs.impl_count
+                        ));
+                    }
+                }
+                if !report.comment_bloat.is_empty() {
+                    lines.push("Comment/docstring bloat candidates:".into());
+                    for cb in report.comment_bloat.iter().take(6) {
+                        lines.push(format!(
+                            "  - {}:L{} [{}% comments ({}/{}L) · max block {}L]",
+                            cb.path,
+                            cb.longest_block_line.max(1),
+                            cb.comment_ratio_pct,
+                            cb.comment_lines,
+                            cb.comment_lines + cb.code_lines,
+                            cb.longest_block_lines
                         ));
                     }
                 }
@@ -1588,6 +2029,84 @@ fn run() {
         assert!(!flagged.contains(&"react"));
         assert!(!flagged.contains(&"@scope/used"));
         assert!(!flagged.contains(&"tailwindcss"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_impl_abstractions_and_comment_bloat_are_detected_without_false_positives() {
+        let dir = std::env::temp_dir().join(format!("zenko_min_chisle_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+
+        std::fs::write(
+            dir.join("src/traits.rs"),
+            "pub trait SingleRunner {\n    fn run(&self);\n}\n\
+             pub struct OnlyOne;\n\
+             impl SingleRunner for OnlyOne {\n    fn run(&self) {}\n}\n\
+             pub trait MultiRunner {\n    fn run(&self);\n}\n\
+             pub struct Alpha;\n\
+             pub struct Beta;\n\
+             impl MultiRunner for Alpha {\n    fn run(&self) {}\n}\n\
+             impl MultiRunner for Beta {\n    fn run(&self) {}\n}\n",
+        )
+        .expect("traits.rs");
+
+        std::fs::write(
+            dir.join("src/ui.ts"),
+            "export interface PureDtoProps {\n  id: string;\n  label: string;\n}\n\
+             export interface BehavioralPort {\n  execute(id: string): Promise<void>;\n}\n",
+        )
+        .expect("ui.ts");
+
+        // Heavily over-commented source file (>= 40 lines, > 50% comments, 16-line prose block)
+        let mut padded = String::new();
+        for i in 0..18 {
+            padded.push_str(&format!("// verbose narrative comment line {i} restating obvious code\n"));
+        }
+        for i in 0..24 {
+            padded.push_str(&format!("pub fn step_{i}() -> usize {{ {i} }}\n"));
+        }
+        std::fs::write(dir.join("src/padded.rs"), padded).expect("padded.rs");
+
+        let audit = audit_workspace_minimalism(&dir);
+        let abs_names: Vec<&str> = audit
+            .single_impl_abstractions
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(abs_names.contains(&"SingleRunner"), "got {abs_names:?}");
+        assert!(abs_names.contains(&"BehavioralPort"), "got {abs_names:?}");
+        assert!(!abs_names.contains(&"MultiRunner"), "2-impl trait must not trigger");
+        assert!(!abs_names.contains(&"PureDtoProps"), "pure DTO interface must not trigger");
+
+        assert!(
+            audit
+                .comment_bloat
+                .iter()
+                .any(|c| c.path.ends_with("padded.rs") && c.longest_block_lines >= 18),
+            "expected padded.rs comment bloat in {:?}",
+            audit.comment_bloat
+        );
+
+        // Diff-level comment bloat check
+        let mut diff = String::from("diff --git a/src/new.rs b/src/new.rs\n--- /dev/null\n+++ b/src/new.rs\n@@ -0,0 +1,36 @@\n");
+        for i in 0..20 {
+            diff.push_str(&format!("+// explanatory prose line {i}\n"));
+        }
+        for i in 0..16 {
+            diff.push_str(&format!("+let v_{i} = {i};\n"));
+        }
+        let diff_rep = analyze_unified_diff(&dir, &diff);
+        assert_eq!(diff_rep.added_comment_lines, 20);
+        assert_eq!(diff_rep.added_code_lines, 16);
+        assert!(
+            diff_rep
+                .findings
+                .iter()
+                .any(|f| f.contains("Heavy comment/docstring ratio")),
+            "expected comment bloat diff finding in {:?}",
+            diff_rep.findings
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
