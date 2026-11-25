@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Zenko low-disk build, test, and sweep driver.
-# Keeps `target/` compact by disabling incremental bloat, stamping builds with `cargo-sweep`
-# to evict previous-version artifacts, pruning large test binaries after runs, and cleaning
+# Keeps `target/` compact by disabling incremental bloat, enforcing age + maxsize bounds
+# via `cargo-sweep` (relatime-safe), pruning large test binaries after runs, and cleaning
 # leftover `/tmp/zenko_*` test directories.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,9 +29,12 @@ cargo_run() {
   if [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" && -z "${CI:-}" && -z "${ANTIGRAVITY_SOURCE_METADATA:-}" ]]; then
     interactive_tty=1
   fi
+  # cargo-pretty only supports `build` and `test` reliably in virtual Cargo workspaces
+  # (`cargo pretty run` queries Metadata::root_package(), which is None in virtual workspaces,
+  # and intercepts stdin/stdout needed by WebUI daemon logs and the ratatui setup TUI).
   if [[ "${ZENKO_PRETTY:-auto}" != "0" && "${interactive_tty}" == "1" ]] \
      && has_cmd cargo-pretty \
-     && [[ "${subcmd}" == "build" || "${subcmd}" == "run" || "${subcmd}" == "test" ]]; then
+     && [[ "${subcmd}" == "build" || "${subcmd}" == "test" ]]; then
     cargo pretty "$@"
   else
     cargo "$@"
@@ -71,21 +74,18 @@ prune_test_binaries() {
 }
 
 sweep_stale_artifacts() {
-  local use_stamp="${1:-0}"
   prune_incremental_dirs
   clean_tmp_tests
+  rm -f "${ROOT_DIR}/sweep.timestamp" 2>/dev/null || true
 
   if [[ ! -d "${TARGET_DIR}" ]]; then
     return 0
   fi
 
+  # Avoid `cargo sweep --stamp/--file` on Linux `relatime` mounts: warm `.rlib` reads within 24h
+  # do not bump atime, causing stamp mode to evict active dependencies and trigger cold rebuilds.
   if has_cmd cargo-sweep; then
-    if [[ "${use_stamp}" == "1" && -f "${ROOT_DIR}/sweep.timestamp" ]]; then
-      cargo sweep --file "${ROOT_DIR}" >/dev/null 2>&1 || true
-      rm -f "${ROOT_DIR}/sweep.timestamp"
-    else
-      cargo sweep --time "${ZENKO_SWEEP_DAYS}" "${ROOT_DIR}" >/dev/null 2>&1 || true
-    fi
+    cargo sweep --time "${ZENKO_SWEEP_DAYS}" "${ROOT_DIR}" >/dev/null 2>&1 || true
     cargo sweep --maxsize "${ZENKO_TARGET_MAX_MB}MB" "${ROOT_DIR}" >/dev/null 2>&1 || true
   else
     # Pure-POSIX fallback when cargo-sweep is unavailable: evict artifacts older than ZENKO_SWEEP_DAYS.
@@ -100,25 +100,19 @@ preflight_disk_guard() {
 
   if [[ "${target_mb}" -gt "${ZENKO_TARGET_MAX_MB}" ]]; then
     echo "[zenko-build] target/ is ${target_mb} MB (> ${ZENKO_TARGET_MAX_MB} MB cap); sweeping stale artifacts first..."
-    sweep_stale_artifacts 0
+    sweep_stale_artifacts
   fi
 
   free_mb="$(free_space_mb)"
   if [[ "${free_mb}" -lt "${ZENKO_MIN_FREE_MB}" ]]; then
     echo "[zenko-build] Low free disk space (${free_mb} MB < ${ZENKO_MIN_FREE_MB} MB); running aggressive target sweep..."
     prune_test_binaries
-    sweep_stale_artifacts 0
+    sweep_stale_artifacts
     free_mb="$(free_space_mb)"
     if [[ "${free_mb}" -lt 1024 ]]; then
       echo "[zenko-build] ERROR: Critically low free disk space (${free_mb} MB). Run 'just clean' or free space before compiling." >&2
       exit 1
     fi
-  fi
-}
-
-stamp_before_cargo() {
-  if has_cmd cargo-sweep; then
-    cargo sweep --stamp "${ROOT_DIR}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -150,57 +144,57 @@ case "${cmd}" in
     ;;
   check)
     preflight_disk_guard
-    stamp_before_cargo
     cargo_run check --workspace --tests "$@"
-    sweep_stale_artifacts 1
+    sweep_stale_artifacts
     ;;
   test)
     preflight_disk_guard
-    stamp_before_cargo
     cargo_run test --workspace "$@"
     prune_test_binaries
-    sweep_stale_artifacts 1
+    sweep_stale_artifacts
     ;;
   build)
     preflight_disk_guard
     build_webui
-    stamp_before_cargo
     cargo_run build "$@"
-    sweep_stale_artifacts 1
+    sweep_stale_artifacts
     ;;
   --release|release)
     preflight_disk_guard
     build_webui
-    stamp_before_cargo
     cargo_run build --release "$@"
     # Reclaim debug artifacts after producing a release build to keep storage minimal.
     rm -rf "${TARGET_DIR}/debug" 2>/dev/null || true
-    sweep_stale_artifacts 1
+    sweep_stale_artifacts
     if [[ -f "${TARGET_DIR}/release/zenko" ]]; then
       echo "[zenko-build] Release binary: ${TARGET_DIR}/release/zenko ($(du -sh "${TARGET_DIR}/release/zenko" | awk '{print $1}'))"
     fi
     ;;
   dev)
     preflight_disk_guard
-    cargo_run run -p zenko-cli -- web "$@"
+    if [[ ! -f "${ROOT_DIR}/webui/dist/index.html" ]]; then
+      build_webui
+    fi
+    cargo_run build -p zenko-cli --bin zenko
+    exec "${TARGET_DIR}/debug/zenko" web "$@"
     ;;
   setup)
     preflight_disk_guard
-    cargo_run run -p zenko-cli -- setup "$@"
+    cargo_run build -p zenko-cli --bin zenko
+    exec "${TARGET_DIR}/debug/zenko" setup "$@"
     ;;
   verify)
     preflight_disk_guard
     build_webui
-    stamp_before_cargo
     cargo_run check --workspace --tests
     cargo_run test --workspace
     prune_test_binaries
-    sweep_stale_artifacts 1
+    sweep_stale_artifacts
     disk_report
     ;;
   sweep)
     prune_test_binaries
-    sweep_stale_artifacts 0
+    sweep_stale_artifacts
     disk_report
     ;;
   clean)

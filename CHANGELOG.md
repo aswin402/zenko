@@ -4,6 +4,17 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.23] - 2026-11-25
+
+Fixed `just dev` / `just setup` workspace invocation under `cargo-pretty` and eliminated cold dependency rebuilds on Linux `relatime` filesystems.
+
+### Fixed
+- **Virtual Workspace Launch (`scripts/build.sh`):**
+  - Scoped `cargo-pretty` strictly to `build` and `test` subcommands (`cargo pretty run` calls `Metadata::root_package()`, which is `None` in virtual Cargo workspaces and fails with `error: a bin target must be available for cargo run`).
+  - Updated `just dev` and `just setup` to build via `cargo_run build -p zenko-cli --bin zenko` (auto-building `webui/dist` if missing for `dev`) and then `exec target/debug/zenko web|setup "$@"` directly so the daemon and setup TUI own the TTY cleanly.
+- **`relatime`-Safe `cargo-sweep` Retention (`scripts/build.sh`):**
+  - Removed `cargo sweep --stamp/--file` (which evicted warm cached `.rlib`s on Linux `relatime` mounts where reads within 24h do not bump `atime`), retaining time-based (`--time`) + hard size-cap (`--maxsize`) sweeping and post-test binary pruning.
+
 ## [0.0.22] - 2026-11-25
 
 Hardened Zenko's native English Concise, Read-Less, Markdown Compression, and Script Block subsystems after a full line-by-line audit — eliminating every scattered magic number and inline table, upgrading heuristic loops to deterministic algorithms, and fixing custom shebang execution in `script_block`.
