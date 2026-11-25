@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Check,
+  Flame,
   Globe,
   Layers,
+  Palette,
   Plus,
   RefreshCw,
-  Search,
   Sliders,
   Trash2,
   X,
 } from 'lucide-react'
 import { api, formatCompactTokens } from '@/lib/api'
 import type {
+  ConciseMode,
+  ConciseModeDescriptor,
   LspServerDescriptor,
   LspServerRuntimeStatus,
   McpServerStatus,
@@ -19,6 +22,11 @@ import type {
   ProviderDescriptor,
   WebSearchProviderDescriptor,
 } from '@/lib/types'
+import { cn } from '@/lib/utils'
+import {
+  FALLBACK_CONCISE_MODES,
+  type ConciseUpdatePatch,
+} from '@/components/chat/CavemanModeControl'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { ZenkoSelect } from '@/components/ui/ZenkoSelect'
 import { Tabs, TabsList, TabsTrigger } from '@/components/motion/tabs'
@@ -30,6 +38,12 @@ export function SetupView({
   config,
   providers,
   configuredProviders,
+  conciseModes = [],
+  conciseMode = 'lite',
+  autoClarityEnabled = true,
+  readLessEnabled = true,
+  onUpdateConcise,
+  onCustomizeConciseButton,
   hasTelegram,
   webSearchProviders = [],
   hasBraveSearchKey = false,
@@ -48,6 +62,12 @@ export function SetupView({
   config: any
   providers: ProviderDescriptor[]
   configuredProviders: Record<string, boolean>
+  conciseModes?: ConciseModeDescriptor[]
+  conciseMode?: ConciseMode
+  autoClarityEnabled?: boolean
+  readLessEnabled?: boolean
+  onUpdateConcise?: (patch: ConciseUpdatePatch) => Promise<void> | void
+  onCustomizeConciseButton?: () => void
   hasTelegram: boolean
   webSearchProviders?: WebSearchProviderDescriptor[]
   hasBraveSearchKey?: boolean
@@ -87,6 +107,28 @@ export function SetupView({
   const [providerStatus, setProviderStatus] = useState('')
   const [tgStatus, setTgStatus] = useState('')
   const [saving, setSaving] = useState(false)
+  const [savingConcise, setSavingConcise] = useState(false)
+  const lastActiveConciseRef = useRef<ConciseMode>(conciseMode !== 'off' ? conciseMode : 'lite')
+
+  useEffect(() => {
+    if (conciseMode !== 'off') {
+      lastActiveConciseRef.current = conciseMode
+    }
+  }, [conciseMode])
+
+  const effectiveConciseModes =
+    conciseModes.length > 0 ? conciseModes : FALLBACK_CONCISE_MODES
+  const cavemanOn = conciseMode !== 'off'
+
+  const applyConcisePatch = async (patch: ConciseUpdatePatch) => {
+    if (!onUpdateConcise) return
+    setSavingConcise(true)
+    try {
+      await onUpdateConcise(patch)
+    } finally {
+      setSavingConcise(false)
+    }
+  }
 
   // Phase 7: Pluggable Web Search + External MCP Client Servers + Pooled LSP
   const [searchEnabled, setSearchEnabled] = useState(config?.web_search?.enabled ?? true)
@@ -181,6 +223,9 @@ export function SetupView({
           workspace_dir: workspaceDir.trim(),
           daily_spend_limit_usd: Number(budget || 5),
           policy_mode: policyMode,
+          concise_mode: conciseMode,
+          auto_clarity: autoClarityEnabled,
+          read_less: readLessEnabled,
         }),
       })
       toast(`Saved ${activeDesc?.label || providerKind} to ~/.zenko/zenko.toml & vault.enc`, 'success')
@@ -428,6 +473,200 @@ export function SetupView({
             <button type="button" disabled={saving} onClick={save} className="z-btn z-btn-primary mt-auto w-full py-2.5">
               <Check size={14} /> {saving ? 'Saving...' : 'Save Configuration'}
             </button>
+          </div>
+
+          {/* Caveman Mode & Output Efficiency (Live Synced with Chat Input & Runtime) */}
+          <div className="z-surface-card flex flex-col gap-3.5 md:col-span-2">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <div
+                  className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border"
+                  style={
+                    cavemanOn
+                      ? {
+                          borderColor: 'color-mix(in srgb, var(--accent) 45%, var(--border))',
+                          backgroundColor: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+                          color: 'var(--accent)',
+                        }
+                      : {
+                          borderColor: 'var(--border)',
+                          backgroundColor: 'var(--surface)',
+                          color: 'var(--muted)',
+                        }
+                  }
+                >
+                  <Flame size={15} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <strong className="text-[14px]">Caveman Mode &amp; Output Efficiency</strong>
+                    <span
+                      className="rounded-full border px-2 py-0.5 font-mono text-[10.5px]"
+                      style={
+                        cavemanOn
+                          ? {
+                              color: 'var(--accent)',
+                              borderColor: 'color-mix(in srgb, var(--accent) 42%, transparent)',
+                              backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+                            }
+                          : {
+                              color: 'var(--muted)',
+                              borderColor: 'var(--border)',
+                              backgroundColor: 'var(--surface)',
+                            }
+                      }
+                    >
+                      {cavemanOn ? `ON · ${conciseMode.toUpperCase()}` : 'OFF'}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[12px] text-[var(--muted)]">
+                    Pure-English token compression synced live with the chat input bar and persisted to{' '}
+                    <code className="font-mono">zenko.toml</code>. Code blocks, paths, and errors stay verbatim.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                {onCustomizeConciseButton && (
+                  <button
+                    type="button"
+                    onClick={onCustomizeConciseButton}
+                    className="z-btn z-btn-secondary z-btn-sm"
+                  >
+                    <Palette size={12} />
+                    <span>Customize Chat Button</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="Toggle Caveman Mode"
+                  aria-checked={cavemanOn}
+                  disabled={savingConcise}
+                  onClick={() =>
+                    applyConcisePatch({
+                      concise_mode: cavemanOn ? 'off' : lastActiveConciseRef.current,
+                    })
+                  }
+                  className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors disabled:opacity-50"
+                  style={{
+                    backgroundColor: cavemanOn ? 'var(--accent)' : 'var(--bg)',
+                    borderColor: cavemanOn ? 'var(--accent)' : 'var(--border)',
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'inline-block h-4 w-4 rounded-full bg-white shadow-xs transition-transform',
+                      cavemanOn ? 'translate-x-5.5' : 'translate-x-1',
+                    )}
+                  />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {effectiveConciseModes.map((m) => {
+                const selected = conciseMode === m.id
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    disabled={savingConcise}
+                    onClick={() => applyConcisePatch({ concise_mode: m.id })}
+                    className={cn(
+                      'flex cursor-pointer flex-col gap-1 rounded-xl border p-3 text-left transition-all disabled:opacity-60',
+                      selected
+                        ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--fg)]'
+                        : 'border-[var(--border)] bg-[var(--bg)]/60 text-[var(--fg)]/85 hover:border-[var(--muted)]/55',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12.5px] font-semibold">{m.label}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-[10px] text-[var(--muted)]">
+                          {m.target_reduction_pct > 0 ? `-${m.target_reduction_pct}% tok` : 'Default'}
+                        </span>
+                        {selected && (
+                          <span
+                            className="flex h-4 w-4 items-center justify-center rounded-full text-[var(--primary-fg)]"
+                            style={{ backgroundColor: 'var(--accent)' }}
+                          >
+                            <Check size={10} strokeWidth={2.8} />
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[11px] leading-snug text-[var(--muted)]">
+                      {m.description}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)]/70 pt-3 sm:grid-cols-2">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 px-3.5 py-2.5">
+                <div>
+                  <div className="text-[12.5px] font-medium text-[var(--fg)]">
+                    Auto-Clarity Safety Hatch
+                  </div>
+                  <div className="text-[11px] text-[var(--muted)]">
+                    Automatically expands to full clear English for security warnings or irreversible ops.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="Toggle Auto-Clarity"
+                  aria-checked={autoClarityEnabled}
+                  disabled={savingConcise}
+                  onClick={() => applyConcisePatch({ auto_clarity: !autoClarityEnabled })}
+                  className="relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-full border transition-colors"
+                  style={{
+                    backgroundColor: autoClarityEnabled ? 'var(--accent)' : 'var(--bg)',
+                    borderColor: autoClarityEnabled ? 'var(--accent)' : 'var(--border)',
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'inline-block h-3.5 w-3.5 rounded-full bg-white shadow-xs transition-transform',
+                      autoClarityEnabled ? 'translate-x-5' : 'translate-x-1',
+                    )}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)]/50 px-3.5 py-2.5">
+                <div>
+                  <div className="text-[12.5px] font-medium text-[var(--fg)]">
+                    Read-Less Tool Compression
+                  </div>
+                  <div className="text-[11px] text-[var(--muted)]">
+                    Compresses verbose JSON, CSV, test logs, and build output before LLM context (never alters <code className="font-mono">read_file</code>).
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="Toggle Read-Less Tool Compression"
+                  aria-checked={readLessEnabled}
+                  disabled={savingConcise}
+                  onClick={() => applyConcisePatch({ read_less: !readLessEnabled })}
+                  className="relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-full border transition-colors"
+                  style={{
+                    backgroundColor: readLessEnabled ? 'var(--accent)' : 'var(--bg)',
+                    borderColor: readLessEnabled ? 'var(--accent)' : 'var(--border)',
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'inline-block h-3.5 w-3.5 rounded-full bg-white shadow-xs transition-transform',
+                      readLessEnabled ? 'translate-x-5' : 'translate-x-1',
+                    )}
+                  />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         )}

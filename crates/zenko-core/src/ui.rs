@@ -702,6 +702,16 @@ pub struct ComposerSlotConfig {
     pub show_policy: bool,
     #[serde(default = "default_true_ui")]
     pub show_streaming_toggle: bool,
+    #[serde(default = "default_true_ui")]
+    pub show_concise_toggle: bool,
+    #[serde(default = "default_concise_button_style")]
+    pub concise_button_style: String,
+    #[serde(default = "default_concise_button_shape")]
+    pub concise_button_shape: String,
+    #[serde(default = "default_concise_button_chrome")]
+    pub concise_button_chrome: String,
+    #[serde(default)]
+    pub concise_button_accent: String,
 }
 
 impl Default for ComposerSlotConfig {
@@ -722,6 +732,11 @@ impl Default for ComposerSlotConfig {
             show_attach: true,
             show_policy: true,
             show_streaming_toggle: true,
+            show_concise_toggle: true,
+            concise_button_style: default_concise_button_style(),
+            concise_button_shape: default_concise_button_shape(),
+            concise_button_chrome: default_concise_button_chrome(),
+            concise_button_accent: String::new(),
         }
     }
 }
@@ -738,6 +753,9 @@ fn default_border_animation() -> String { "border_beam_md".into() }
 fn default_animation_trigger() -> String { "while_working".into() }
 fn default_beam_color_variant() -> String { "theme_accent".into() }
 fn default_beam_strength() -> f32 { 0.7 }
+fn default_concise_button_style() -> String { "split_pill".into() }
+fn default_concise_button_shape() -> String { "pill".into() }
+fn default_concise_button_chrome() -> String { "bordered_filled".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftMenubarSlotConfig {
@@ -1471,6 +1489,11 @@ mod tests {
         assert_eq!(parsed.components.composer.border_animation, "border_beam_md");
         assert_eq!(parsed.components.composer.animation_trigger, "while_working");
         assert_eq!(parsed.components.composer.beam_color_variant, "theme_accent");
+        assert!(parsed.components.composer.show_concise_toggle);
+        assert_eq!(parsed.components.composer.concise_button_style, "split_pill");
+        assert_eq!(parsed.components.composer.concise_button_shape, "pill");
+        assert_eq!(parsed.components.composer.concise_button_chrome, "bordered_filled");
+        assert_eq!(parsed.components.composer.concise_button_accent, "");
         assert_eq!(parsed.components.chat_page.error_state_style, "aui_error_card");
         assert_eq!(parsed.components.chat_page.stopped_run_style, "aui_stopped_run");
         assert_eq!(parsed.components.chat_page.file_tree_style, "aui_file_tree");

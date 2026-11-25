@@ -22,6 +22,11 @@ export const DEFAULT_COMPONENT_SLOTS: ComponentSlots = {
     show_attach: true,
     show_policy: true,
     show_streaming_toggle: true,
+    show_concise_toggle: true,
+    concise_button_style: 'split_pill',
+    concise_button_shape: 'pill',
+    concise_button_chrome: 'bordered_filled',
+    concise_button_accent: '',
   },
   left_menubar: {
     frame_style: 'flush_border',

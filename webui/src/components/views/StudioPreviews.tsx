@@ -4,6 +4,8 @@ import { splitIntoStreamingSegments } from '@/lib/elements'
 import { ICON_PACK_META_MAP } from '@/lib/icon-packs'
 import type {
   ActiveView,
+  ConciseMode,
+  ConciseModeDescriptor,
   ModelInfo,
   ProviderDescriptor,
   Session,
@@ -42,6 +44,7 @@ import {
 } from '@/components/vengeanceui/line-hover-link'
 import { LiquidButton } from '@/components/vengeanceui/liquid-button'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
+import { CavemanModeControl } from '@/components/chat/CavemanModeControl'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { Sidebar } from '@/components/chat/Sidebar'
@@ -89,6 +92,7 @@ import { DashboardMiniPreview } from '@/components/views/DashboardView'
 export interface StudioPreviewContext {
   ui: UiCustomization
   providers: ProviderDescriptor[]
+  conciseModes?: ConciseModeDescriptor[]
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   activeProvider: string
@@ -479,6 +483,9 @@ function ComposerAnimationPreview({ ctx }: { ctx: StudioPreviewContext }) {
         activeProvider={ctx.activeProvider}
         activeModel={activeModel}
         providers={ctx.providers}
+        conciseModes={ctx.conciseModes}
+        conciseMode="full"
+        onUpdateConcise={() => {}}
         configuredProviders={ctx.configuredProviders}
         models={ctx.models}
         onSelectProviderModel={() => {}}
@@ -490,6 +497,92 @@ function ComposerAnimationPreview({ ctx }: { ctx: StudioPreviewContext }) {
         branchEditBanner={false}
         onCancelBranchEdit={() => {}}
         composerStyle={ui.components.composer}
+        popoverStyle={ui.surface.popover_style || 'gooey'}
+      />
+    </div>
+  )
+}
+
+function ConciseButtonPreview({ ctx }: { ctx: StudioPreviewContext }) {
+  const { ui, activeModel, activeMode } = ctx
+  const [simMode, setSimMode] = useState<ConciseMode>('full')
+  const [simReadLess, setSimReadLess] = useState(true)
+  const [simAutoClarity, setSimAutoClarity] = useState(true)
+  const [popoverOpen, setPopoverOpen] = useState(false)
+
+  const handlePatch = (patch: {
+    concise_mode?: ConciseMode
+    read_less?: boolean
+    auto_clarity?: boolean
+  }) => {
+    if (patch.concise_mode !== undefined) setSimMode(patch.concise_mode)
+    if (patch.read_less !== undefined) setSimReadLess(patch.read_less)
+    if (patch.auto_clarity !== undefined) setSimAutoClarity(patch.auto_clarity)
+  }
+
+  const c = ui.components.composer
+  const styleLabel = c.concise_button_style || 'split_pill'
+  const shapeLabel = c.concise_button_shape || 'pill'
+  const chromeLabel = c.concise_button_chrome || 'bordered_filled'
+
+  return (
+    <div className="flex w-full max-w-[660px] flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)]/75 px-4 py-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[12px] font-medium text-[var(--fg)]">
+            Interactive Caveman Button Preview
+          </span>
+          <span className="font-mono text-[10.5px] text-[var(--muted)]">
+            {styleLabel} · {shapeLabel} · {chromeLabel}
+            {c.concise_button_accent ? ` · ${c.concise_button_accent}` : ' · theme accent'}
+          </span>
+        </div>
+        {c.show_concise_toggle === false ? (
+          <span className="font-mono text-[11px] text-[var(--muted)]">
+            Hidden in Chat Input (enable toggle below)
+          </span>
+        ) : (
+          <CavemanModeControl
+            conciseModes={ctx.conciseModes || []}
+            conciseMode={simMode}
+            readLessEnabled={simReadLess}
+            autoClarityEnabled={simAutoClarity}
+            onUpdateConcise={handlePatch}
+            composerStyle={c}
+            popoverStyle={ui.surface.popover_style || 'gooey'}
+            open={popoverOpen}
+            onOpenChange={setPopoverOpen}
+          />
+        )}
+      </div>
+
+      <PromptComposer
+        compactWrapper
+        value={ctx.previewPrompt}
+        onChange={ctx.setPreviewPrompt}
+        onSend={() => {}}
+        onStop={() => {}}
+        isRunning={false}
+        themeMode={activeMode}
+        activeProvider={ctx.activeProvider}
+        activeModel={activeModel}
+        providers={ctx.providers}
+        conciseModes={ctx.conciseModes}
+        conciseMode={simMode}
+        readLessEnabled={simReadLess}
+        autoClarityEnabled={simAutoClarity}
+        onUpdateConcise={handlePatch}
+        configuredProviders={ctx.configuredProviders}
+        models={ctx.models}
+        onSelectProviderModel={() => {}}
+        permissionMode="autonomous"
+        onChangePermission={() => {}}
+        streamingEnabled={true}
+        onToggleStreaming={() => {}}
+        totalTokens={10300}
+        branchEditBanner={false}
+        onCancelBranchEdit={() => {}}
+        composerStyle={c}
         popoverStyle={ui.surface.popover_style || 'gooey'}
       />
     </div>
@@ -1267,6 +1360,9 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
           activeProvider={ctx.activeProvider}
           activeModel={activeModel}
           providers={ctx.providers}
+          conciseModes={ctx.conciseModes}
+          conciseMode="lite"
+          onUpdateConcise={() => {}}
           configuredProviders={ctx.configuredProviders}
           models={ctx.models}
           onSelectProviderModel={() => {}}
@@ -1282,6 +1378,8 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
         />
       </div>
     ),
+
+    concise_button: () => <ConciseButtonPreview ctx={ctx} />,
 
     composer_animation: () => <ComposerAnimationPreview ctx={ctx} />,
 

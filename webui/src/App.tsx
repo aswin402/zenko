@@ -824,6 +824,43 @@ export default function App() {
     }
   }
 
+  const activeConciseMode = (config?.context?.concise_mode as ConciseMode) || 'lite'
+  const readLessEnabled = config?.context?.read_less !== false
+  const autoClarityEnabled = config?.context?.auto_clarity !== false
+
+  const updateConciseSettings = async (patch: {
+    concise_mode?: ConciseMode
+    read_less?: boolean
+    auto_clarity?: boolean
+  }) => {
+    try {
+      const res = await api<{ ok: boolean; context?: any }>('/api/context/concise', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...patch,
+          session_id: activeSessionId || undefined,
+        }),
+      })
+      if (res.context) {
+        setConfig((prev: any) => (prev ? { ...prev, context: res.context } : prev))
+      }
+      if (patch.concise_mode !== undefined) {
+        const label =
+          conciseModes.find((m) => m.id === patch.concise_mode)?.label || patch.concise_mode
+        toast(
+          patch.concise_mode === 'off' ? 'Caveman Mode OFF' : `Caveman Mode ON · ${label}`,
+          'info',
+        )
+      } else if (patch.read_less !== undefined) {
+        toast(`Read-Less Compression ${patch.read_less ? 'ON' : 'OFF'}`, 'info')
+      } else if (patch.auto_clarity !== undefined) {
+        toast(`Auto-Clarity ${patch.auto_clarity ? 'ON' : 'OFF'}`, 'info')
+      }
+    } catch (e: any) {
+      toast(e?.message || 'Failed to update Caveman mode settings', 'error')
+    }
+  }
+
   const runningJobsCount = jobs.filter((j) => j.status === 'running').length
   const runningSubagentsCount = subagents.filter((a) => a.status === 'running').length
   const activeBgCount = runningJobsCount + runningSubagentsCount
@@ -1133,24 +1170,10 @@ export default function App() {
               activeModel={activeModel}
               providers={providers}
               conciseModes={conciseModes}
-              conciseMode={(config?.context?.concise_mode as ConciseMode) || 'lite'}
-              readLessEnabled={config?.context?.read_less !== false}
-              onUpdateConcise={async (patch) => {
-                try {
-                  const res = await api<{ ok: boolean; context?: any }>('/api/context/concise', {
-                    method: 'PATCH',
-                    body: JSON.stringify({
-                      ...patch,
-                      session_id: activeSessionId || undefined,
-                    }),
-                  })
-                  if (res.context) {
-                    setConfig((prev: any) => (prev ? { ...prev, context: res.context } : prev))
-                  }
-                } catch (e: any) {
-                  toast(e?.message || 'Failed to update concise settings', 'error')
-                }
-              }}
+              conciseMode={activeConciseMode}
+              readLessEnabled={readLessEnabled}
+              autoClarityEnabled={autoClarityEnabled}
+              onUpdateConcise={updateConciseSettings}
               configuredProviders={configuredProviders}
               models={models}
               onSelectProviderModel={async (providerId, modelId) => {
@@ -1293,6 +1316,7 @@ export default function App() {
             presets={presets}
             studioSchema={studioSchema}
             providers={providers}
+            conciseModes={conciseModes}
             configuredProviders={configuredProviders}
             models={models}
             activeProvider={activeProvider}
@@ -1483,6 +1507,15 @@ export default function App() {
             config={config}
             providers={providers}
             configuredProviders={configuredProviders}
+            conciseModes={conciseModes}
+            conciseMode={activeConciseMode}
+            autoClarityEnabled={autoClarityEnabled}
+            readLessEnabled={readLessEnabled}
+            onUpdateConcise={updateConciseSettings}
+            onCustomizeConciseButton={() => {
+              setStudioJumpTarget({ categoryId: 'chat_input', subId: 'concise_button' })
+              setActiveView('appearance')
+            }}
             hasTelegram={hasTelegram}
             webSearchProviders={webSearchProviders}
             hasBraveSearchKey={hasBraveSearchKey}

@@ -723,6 +723,28 @@ const OPT_SURFACE_CARD: &[StudioOption] = &[
     StudioOption { value: "spotlight", label: "Accent Edge", hint: "Subtle global accent gradient wash & hairline" },
 ];
 
+const OPT_CONCISE_BUTTON_STYLE: &[StudioOption] = &[
+    StudioOption { value: "split_pill", label: "Split On/Off + Mode", hint: "Dual-segment control: 1-click Caveman On/Off toggle + separate mode selector (Default)" },
+    StudioOption { value: "accent_solid", label: "Accent Solid", hint: "High-contrast filled accent control when Caveman Mode is active" },
+    StudioOption { value: "soft_tint", label: "Soft Accent Tint", hint: "Subtle translucent accent wash and hairline border while active" },
+    StudioOption { value: "outline_mono", label: "Mono Terminal", hint: "Crisp monospace badge with glowing status dot and precision outline" },
+    StudioOption { value: "minimal_ghost", label: "Minimal Ghost", hint: "Ultra-quiet borderless toolbar control highlighting only active state" },
+    StudioOption { value: "segmented_bar", label: "Inline Mode Bar", hint: "On/Off switch plus inline Lite / Full / Ultra pills directly in chat input" },
+];
+
+const OPT_CONCISE_BUTTON_SHAPE: &[StudioOption] = &[
+    StudioOption { value: "pill", label: "Full Pill", hint: "Smooth capsule silhouette matching composer pills (Default)" },
+    StudioOption { value: "rounded", label: "Rounded Chip", hint: "Compact 8px rounded architectural corners" },
+    StudioOption { value: "square", label: "Crisp Square", hint: "Sharp 5px technical developer corners" },
+];
+
+const OPT_CONCISE_BUTTON_CHROME: &[StudioOption] = &[
+    StudioOption { value: "bordered_filled", label: "Border + Surface", hint: "Crisp 1px border with subtle card background (Default)" },
+    StudioOption { value: "border_only", label: "Border Only", hint: "Transparent interior with crisp 1px structural border" },
+    StudioOption { value: "background_only", label: "Surface Only", hint: "Borderless soft background tint" },
+    StudioOption { value: "minimal_bare", label: "Bare Minimal", hint: "Hide both border and background for pure icon + label" },
+];
+
 pub const STUDIO_SCHEMA: &[StudioCategory] = &[
     StudioCategory {
         id: "icons",
@@ -1452,6 +1474,81 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                         label: "Streaming Toggle Pill",
                         description: "Interactive Streaming ON/OFF control inside composer.",
                         kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.show_concise_toggle",
+                        label: "Caveman Mode Button",
+                        description: "Show 1-click Caveman On/Off toggle and Lite/Full/Ultra mode selector inside chat input.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                ],
+            },
+            StudioSubComponent {
+                id: "concise_button",
+                group: "",
+                label: "Caveman Mode Button",
+                description: "Customize layout, shape, border/background chrome, and active tint for the Chat Input Caveman On/Off & Mode selector.",
+                preview: "concise_button",
+                controls: &[
+                    StudioControl {
+                        path: "components.composer.show_concise_toggle",
+                        label: "Show Caveman Button in Chat Input",
+                        description: "Display the Caveman On/Off toggle and compression level switcher inside the prompt toolbar.",
+                        kind: ControlKind::Toggle,
+                        options: &[],
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.concise_button_style",
+                        label: "Button Layout & Style",
+                        description: "Choose split On/Off + Mode pill, solid accent, soft tint, mono terminal, minimal ghost, or inline segmented level bar.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CONCISE_BUTTON_STYLE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.concise_button_shape",
+                        label: "Button Shape",
+                        description: "Corner radius silhouette for the Caveman On/Off & Mode control.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CONCISE_BUTTON_SHAPE,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.concise_button_chrome",
+                        label: "Border & Background Chrome",
+                        description: "Fine-tune border and surface visibility for the Caveman control.",
+                        kind: ControlKind::Cards,
+                        options: OPT_CONCISE_BUTTON_CHROME,
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: "",
+                    },
+                    StudioControl {
+                        path: "components.composer.concise_button_accent",
+                        label: "Active Accent Color Override",
+                        description: "Leave on Theme Default to strictly inherit your 10% global accent, or pick a custom active highlight for Caveman Mode.",
+                        kind: ControlKind::Color,
                         options: &[],
                         min: None,
                         max: None,

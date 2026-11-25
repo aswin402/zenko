@@ -25,6 +25,10 @@ import { cn } from '@/lib/utils'
 import { ProgressRing } from '@/components/beui/ProgressRing'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
 import { CHAT_WIDTH_CLASS } from '@/components/chat/ChatStream'
+import {
+  CavemanModeControl,
+  type ConciseUpdatePatch,
+} from '@/components/chat/CavemanModeControl'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { KokonutContextMeter } from '@/components/kokonutui/ai-context-meter'
 import { PromptInput as MotionBrewPromptInput } from '@/components/motion-brew/prompt-input'
@@ -149,6 +153,7 @@ export const PromptComposer = memo(function PromptComposer({
   conciseModes = [],
   conciseMode = 'lite',
   readLessEnabled = true,
+  autoClarityEnabled = true,
   onUpdateConcise,
   configuredProviders,
   models,
@@ -184,7 +189,8 @@ export const PromptComposer = memo(function PromptComposer({
   conciseModes?: ConciseModeDescriptor[]
   conciseMode?: ConciseMode
   readLessEnabled?: boolean
-  onUpdateConcise?: (patch: { concise_mode?: ConciseMode; read_less?: boolean }) => Promise<void>
+  autoClarityEnabled?: boolean
+  onUpdateConcise?: (patch: ConciseUpdatePatch) => Promise<void> | void
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   onSelectProviderModel: (providerId: string, modelId: string) => void
@@ -208,6 +214,7 @@ export const PromptComposer = memo(function PromptComposer({
   const [composerFocused, setComposerFocused] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
+  const [conciseOpen, setConciseOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
   const [contextData, setContextData] = useState<ContextBreakdown | null>(null)
   const [loadingContext, setLoadingContext] = useState(false)
@@ -283,7 +290,11 @@ export const PromptComposer = memo(function PromptComposer({
         open={modelOpen}
         onOpenChange={(next) => {
           setModelOpen(next)
-          if (next) setPolicyOpen(false)
+          if (next) {
+            setPolicyOpen(false)
+            setConciseOpen(false)
+            setContextOpen(false)
+          }
         }}
         onSelectProviderModel={onSelectProviderModel}
         onOpenSettings={onOpenSettings}
@@ -298,6 +309,7 @@ export const PromptComposer = memo(function PromptComposer({
               setPolicyOpen(next)
               if (next) {
                 setModelOpen(false)
+                setConciseOpen(false)
                 setContextOpen(false)
               }
             }}
@@ -366,6 +378,28 @@ export const PromptComposer = memo(function PromptComposer({
             </span>
           </button>
         </ZenkoTooltip>
+      )}
+
+      {/* Customizable Caveman Mode On/Off + Compression Level Control */}
+      {composerStyle.show_concise_toggle !== false && (
+        <CavemanModeControl
+          conciseModes={conciseModes}
+          conciseMode={conciseMode}
+          readLessEnabled={readLessEnabled}
+          autoClarityEnabled={autoClarityEnabled}
+          onUpdateConcise={onUpdateConcise}
+          composerStyle={composerStyle}
+          popoverStyle={popoverStyle}
+          open={conciseOpen}
+          onOpenChange={(next) => {
+            setConciseOpen(next)
+            if (next) {
+              setModelOpen(false)
+              setPolicyOpen(false)
+              setContextOpen(false)
+            }
+          }}
+        />
       )}
     </>
   )
@@ -483,6 +517,7 @@ export const PromptComposer = memo(function PromptComposer({
           if (next) {
             setModelOpen(false)
             setPolicyOpen(false)
+            setConciseOpen(false)
             if (activeSessionId) refreshContextBreakdown(activeSessionId)
           }
         }}

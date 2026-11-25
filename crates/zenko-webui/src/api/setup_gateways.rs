@@ -19,6 +19,12 @@ pub struct SetupSaveReq {
     workspace_dir: String,
     daily_spend_limit_usd: f64,
     policy_mode: String,
+    #[serde(default)]
+    concise_mode: Option<String>,
+    #[serde(default)]
+    auto_clarity: Option<bool>,
+    #[serde(default)]
+    read_less: Option<bool>,
 }
 
 pub async fn api_save_setup(
@@ -78,6 +84,17 @@ pub async fn api_save_setup(
         c.provider.fallbacks = req.fallbacks.clone();
         c.telegram.enabled = req.telegram_enabled;
         c.policy.mode = PermissionMode::from_str_loose(&req.policy_mode);
+        if let Some(raw) = req.concise_mode.as_deref()
+            && let Some(mode) = ConciseMode::parse(raw)
+        {
+            c.context.concise_mode = mode;
+        }
+        if let Some(ac) = req.auto_clarity {
+            c.context.auto_clarity = ac;
+        }
+        if let Some(rl) = req.read_less {
+            c.context.read_less = rl;
+        }
     });
 
     state.telegram_reload.notify_one();

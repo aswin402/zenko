@@ -526,6 +526,17 @@ export interface ComponentSlots {
     show_attach: boolean
     show_policy: boolean
     show_streaming_toggle: boolean
+    show_concise_toggle?: boolean
+    concise_button_style?:
+      | 'split_pill'
+      | 'accent_solid'
+      | 'soft_tint'
+      | 'outline_mono'
+      | 'minimal_ghost'
+      | 'segmented_bar'
+    concise_button_shape?: 'pill' | 'rounded' | 'square'
+    concise_button_chrome?: 'bordered_filled' | 'border_only' | 'background_only' | 'minimal_bare'
+    concise_button_accent?: string
   }
   left_menubar: {
     frame_style:

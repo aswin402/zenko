@@ -4,6 +4,20 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.24] - 2026-11-25
+
+Added 1-click Caveman Mode ON/OFF & compression level controls directly in the Chat Input bar and Settings view, plus full Theme Studio button style customization.
+
+### Added
+- **Chat Input Caveman Mode ON/OFF & Mode Button (`webui/src/components/chat/CavemanModeControl.tsx`, `PromptComposer.tsx`):**
+  - Added a reusable dual-action Caveman Mode control inside the Chat Input toolbar featuring a 1-click ON/OFF toggle (remembering the last active level) and a Mode selector (`Off`, `Lite`, `Full`, `Ultra` from `CONCISE_MODE_REGISTRY`) with live Read-Less CCR & Auto-Clarity toggles.
+- **Settings View Caveman Mode & Output Efficiency Card (`webui/src/components/views/SetupView.tsx`, `crates/zenko-webui/src/api/setup_gateways.rs`):**
+  - Added a live-synced Caveman Mode ON/OFF switch, compression level cards showing target token savings, Auto-Clarity and Read-Less toggles, and a direct "Customize Chat Button" shortcut into Appearance Studio.
+  - Extended `SetupSaveReq` (`POST /api/setup`) to accept optional `concise_mode`, `auto_clarity`, and `read_less` fields alongside immediate `PATCH /api/context/concise` syncing.
+- **Appearance Studio Theme Customization (`crates/zenko-core/src/ui.rs`, `studio_schema.rs`, `StudioPreviews.tsx`, `AppearanceStudio.tsx`):**
+  - Extended `ComposerSlotConfig` with `show_concise_toggle`, `concise_button_style` (`split_pill`, `accent_solid`, `soft_tint`, `outline_mono`, `minimal_ghost`, `segmented_bar`), `concise_button_shape` (`pill`, `rounded`, `square`), `concise_button_chrome` (`bordered_filled`, `border_only`, `background_only`, `minimal_bare`), and optional `concise_button_accent` override (defaulting strictly to the active 60/30/10 theme accent).
+  - Added a dedicated **Chat Input Box -> Caveman Mode Button** studio page with an interactive live preview stage.
+
 ## [0.0.23] - 2026-11-25
 
 Fixed `just dev` / `just setup` workspace invocation under `cargo-pretty` and eliminated cold dependency rebuilds on Linux `relatime` filesystems.

@@ -19,6 +19,7 @@ import { ICON_PACK_META_MAP } from '@/lib/icon-packs'
 import type {
   ActiveView,
   ColorTokens,
+  ConciseModeDescriptor,
   ModelInfo,
   ProviderDescriptor,
   StudioCategory,
@@ -173,6 +174,7 @@ export function AppearanceStudio({
   presets,
   studioSchema,
   providers,
+  conciseModes = [],
   configuredProviders,
   models,
   activeProvider,
@@ -188,6 +190,7 @@ export function AppearanceStudio({
   presets: ThemePresetMeta[]
   studioSchema: StudioCategory[]
   providers: ProviderDescriptor[]
+  conciseModes?: ConciseModeDescriptor[]
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   activeProvider: string
@@ -1112,6 +1115,7 @@ export function AppearanceStudio({
                   {renderStudioPreview(activeSub.preview, {
                     ui,
                     providers,
+                    conciseModes,
                     configuredProviders,
                     models,
                     activeProvider,
