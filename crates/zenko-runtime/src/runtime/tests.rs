@@ -1109,6 +1109,148 @@
         assert_eq!(after_restart.read_less_bytes_saved, 4096);
         assert_eq!(after_restart.read_less_tokens_saved, 1024);
 
+        // 15. End-to-end Token Economy wiring: demoted tools searchable via `tool_search`,
+        // live ContextBreakdown accuracy, Plan Mode read-only gating, and `batch_tools` shell tracing.
+        let before_econ = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("before_econ");
+        assert!(
+            rt.economy_apply_tool_prune(Some(&dir), TOOL_SPAWN_AGENT)
+                .expect("apply_prune"),
+            "non-core eager tool `spawn_agent` should soft-prune cleanly"
+        );
+        let _ = rt
+            .economy_add_micro_skill(
+                Some(&dir),
+                "Run `just verify` instead of bare `cargo test` in this repo.",
+                Some("cargo test"),
+                Some("just verify"),
+            )
+            .expect("add_micro_skill");
+
+        let after_econ = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("after_econ");
+        assert_eq!(after_econ.eager_tools_count + 1, before_econ.eager_tools_count);
+        assert_eq!(
+            after_econ.deferred_available_count,
+            before_econ.deferred_available_count + 1
+        );
+        assert!(after_econ.tool_schema_tokens < before_econ.tool_schema_tokens);
+        assert!(after_econ.tier2_tokens > before_econ.tier2_tokens);
+        assert_eq!(after_econ.economy_pruned_tools_count, 1);
+        assert_eq!(after_econ.economy_active_micro_skills, 1);
+
+        // Soft-demoted `spawn_agent` is now discoverable via `tool_search`!
+        let found_demoted = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t15a".into(),
+                    name: TOOL_TOOL_SEARCH.into(),
+                    arguments: json!({ "names": [TOOL_SPAWN_AGENT] }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("tool_search demoted");
+        assert!(!found_demoted.output.is_error);
+        assert!(
+            found_demoted.output.content.contains(TOOL_SPAWN_AGENT),
+            "tool_search must return soft-demoted tool schema: {}",
+            found_demoted.output.content
+        );
+
+        // Plan Mode permits read-only `token_economy(action="status")` via `invoke_tool`
+        // while denying mutating `add_micro_skill`.
+        let plan_econ_ro = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t15b".into(),
+                    name: TOOL_INVOKE_TOOL.into(),
+                    arguments: json!({
+                        "tool": TOOL_TOKEN_ECONOMY,
+                        "args": { "action": "status" }
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_econ_ro");
+        assert!(
+            !plan_econ_ro.output.is_error,
+            "Plan Mode must permit read-only token_economy: {}",
+            plan_econ_ro.output.content
+        );
+        assert!(plan_econ_ro.output.content.contains("Token Economy"));
+
+        let plan_econ_mut = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t15c".into(),
+                    name: TOOL_INVOKE_TOOL.into(),
+                    arguments: json!({
+                        "tool": TOOL_TOKEN_ECONOMY,
+                        "args": { "action": "add_micro_skill", "fact": "should block" }
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_econ_mut");
+        assert!(plan_econ_mut.output.is_error);
+        assert!(plan_econ_mut.output.content.contains("Denied by execpolicy"));
+
+        // `batch_tools` shell steps carry `shell_command` + `output_preview` metadata for economy tracing.
+        let batch_shell = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t15d".into(),
+                    name: TOOL_BATCH_TOOLS.into(),
+                    arguments: json!({
+                        "calls": [
+                            { "tool": TOOL_SHELL_EXEC, "args": { "command": "echo econ-batch-ok" } }
+                        ]
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("batch_shell");
+        assert!(!batch_shell.output.is_error);
+        let mut trace = crate::economy::TurnEconomyTrace::new("project:test".into());
+        crate::economy::record_tool_outcome_in_economy_trace(
+            &mut trace,
+            TOOL_BATCH_TOOLS,
+            &json!({}),
+            &batch_shell.output,
+        );
+        assert!(trace.used_tools.contains(TOOL_SHELL_EXEC));
+        assert_eq!(trace.shell_traces.len(), 1);
+        assert_eq!(trace.shell_traces[0].command, "echo econ-batch-ok");
+        assert!(trace.shell_traces[0].output_preview.contains("econ-batch-ok"));
+
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);
     }

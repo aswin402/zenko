@@ -14,10 +14,10 @@ use zenko_core::{
     PLAN_MODE_SCOPED_TOOLS, PLANNING_TOOLS, PROTECTED_DATA_SEGMENTS, PermissionMode, PolicyConfig,
     READ_ONLY_TOOLS, RiskLevel, SUBAGENT_ROLE_CUSTOM, ScriptBlockAction, TOOL_AGENT_WORKTREE,
     TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_MEMORY,
-    TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, ToolSpec,
-    VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role, is_git_tool_args_mutating,
-    is_goal_loop_args_mutating, is_lsp_tool_args_mutating, is_memory_mutating_action,
-    is_skill_manage_args_mutating,
+    TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY,
+    ToolSpec, VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role,
+    is_economy_args_mutating, is_git_tool_args_mutating, is_goal_loop_args_mutating,
+    is_lsp_tool_args_mutating, is_memory_mutating_action, is_skill_manage_args_mutating,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -880,6 +880,13 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
                     .into(),
             ),
         },
+        TOOL_TOKEN_ECONOMY => match is_economy_args_mutating(args) {
+            false => PolicyVerdict::Allow,
+            true => PolicyVerdict::Deny(
+                "Read-only Plan Mode only permits read-only `token_economy` actions (`status`, `micro_skills`, `prune_report`, `ledger`). Approve the plan before adding/retiring micro-skills or mutating tool pruning."
+                    .into(),
+            ),
+        },
         n if n.starts_with(MCP_TOOL_PREFIX) => match spec.risk {
             RiskLevel::Safe => PolicyVerdict::Allow,
             _ => PolicyVerdict::Deny(format!(
@@ -1550,5 +1557,43 @@ mod tests {
         assert!(evaluate_verify_command_safety(&policy, &["bash".into(), "-lc".into(), "echo ok && rm -r -f /".into()]).is_err());
         assert!(evaluate_verify_command_safety(&policy, &["bash".into(), "-c".into(), "cat ~/.zenko/vault.key".into()]).is_err());
         assert!(evaluate_verify_command_safety(&policy, &["sh".into(), "--command=chmod -R 777 /".into()]).is_err());
+
+        // Token Economy Plan Mode gating: allow read-only inspections, deny mutations & missing action
+        let econ_spec = ToolSpec {
+            name: TOOL_TOKEN_ECONOMY.into(),
+            description: String::new(),
+            parameters: json!({}),
+            risk: RiskLevel::Safe,
+        };
+        assert!(is_tool_allowed_in_plan_schema(&econ_spec));
+        for ro_act in ["status", "micro_skills", "prune_report", "ledger"] {
+            assert_eq!(
+                evaluate_policy(
+                    PermissionMode::Plan,
+                    &policy,
+                    &econ_spec,
+                    &json!({"action": ro_act}),
+                    &always
+                ),
+                PolicyVerdict::Allow,
+                "Plan Mode should permit read-only token_economy action `{ro_act}`"
+            );
+        }
+        for mut_args in [
+            json!({"action": "add_micro_skill", "fact": "x"}),
+            json!({"action": "retire_micro_skill", "id": "ms_1"}),
+            json!({"action": "apply_prune", "tool_name": "web_search"}),
+            json!({"action": "restore_tool", "tool_name": "web_search"}),
+            json!({"action": "reaudit"}),
+            json!({}),
+        ] {
+            assert!(
+                matches!(
+                    evaluate_policy(PermissionMode::Plan, &policy, &econ_spec, &mut_args, &always),
+                    PolicyVerdict::Deny(_)
+                ),
+                "Plan Mode must deny mutating/unknown token_economy args `{mut_args}`"
+            );
+        }
     }
 }

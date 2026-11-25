@@ -114,17 +114,16 @@ use zenko_core::{
     SubagentBridge, SubagentRecord, SubagentSpawnRequest, SubagentWorkspaceMode,
     TOOL_AGENT_WORKTREE, TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_INVOKE_TOOL,
     TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM,
-    TOOL_SESSION_TASK, TOOL_SHELL_EXEC,
-    TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TaskKind, ToolAvailabilityContext, ToolBatchBridge,
-    ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSet, ToolSetSummary, ToolSpec,
-    TriageReport,
-    TriggerRateLimiter, TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
-    ECONOMY_FAST_JUDGE_MAX_TOKENS, EconomyBridge, EconomyLedgerKind, RepoMicroSkill,
-    TokenEconomyReport, WorktreeAction, WorktreeDiffReport, WorktreePruneReport, ZenkoConfig,
-    ZenkoError, compact_preview, find_concise_mode, find_provider, find_subagent_role,
-    is_git_tool_args_mutating, is_lsp_tool_args_mutating, is_memory_mutating_action,
-    new_goal_loop_id, new_id, new_session_task_id, render_concise_prompt_block,
-    render_repo_micro_skills_block,
+    TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH,
+    TaskKind, ToolAvailabilityContext, ToolBatchBridge, ToolCall, ToolConcurrency, ToolContext,
+    ToolOutput, ToolSet, ToolSetSummary, ToolSpec, TriageReport, TriggerRateLimiter,
+    TriggerStatusEntry, TurnPosture, UsageStats, WebSearchConfig,
+    ECONOMY_FAST_JUDGE_MAX_TOKENS, ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS, EconomyBridge,
+    EconomyLedgerKind, RepoMicroSkill, TokenEconomyReport, WorktreeAction, WorktreeDiffReport,
+    WorktreePruneReport, ZenkoConfig, ZenkoError, compact_preview, find_concise_mode,
+    find_provider, find_subagent_role, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
+    is_memory_mutating_action, new_goal_loop_id, new_id, new_session_task_id,
+    render_concise_prompt_block, render_economy_prompt_block, render_repo_micro_skills_block,
 };
 use zenko_memory::{
     SnapshotManager, SqliteStore, WorkspaceSnapshot, filter_query_terms, parse_since_window,
@@ -1286,6 +1285,7 @@ impl AgentRuntime {
         session_id: &str,
         branch_events: &[SessionEvent],
     ) -> BTreeSet<String> {
+        let demoted = self.economy_demoted_tools_for_session(session_id);
         let mut set = BTreeSet::new();
         for ev in branch_events {
             if ev.role == EventRole::System
@@ -1294,7 +1294,7 @@ impl AgentRuntime {
                     == Some(NOTE_KIND_DEFERRED_TOOLS)
                 && let Some(arr) = ev.content_json.get("tools").and_then(Value::as_array) {
                     for name in arr.iter().filter_map(Value::as_str) {
-                        if self.tools.is_deferred(name) {
+                        if self.tools.is_deferred_or_demoted(name, &demoted) {
                             set.insert(name.to_string());
                         }
                     }
@@ -1309,11 +1309,12 @@ impl AgentRuntime {
     }
 
     pub(crate) fn activate_deferred_tools(&self, session_id: &str, names: &[String]) -> Vec<String> {
+        let demoted = self.economy_demoted_tools_for_session(session_id);
         let mut newly = Vec::new();
         if let Ok(mut map) = self.activated_deferred.lock() {
             let entry = map.entry(session_id.to_string()).or_default();
             for name in names {
-                if self.tools.is_deferred(name) && entry.insert(name.clone()) {
+                if self.tools.is_deferred_or_demoted(name, &demoted) && entry.insert(name.clone()) {
                     newly.push(name.clone());
                 }
             }
@@ -1435,9 +1436,15 @@ impl AgentRuntime {
             .get_session(session_id)?
             .ok_or_else(|| ZenkoError::NotFound(format!("session `{session_id}` not found")))?;
         let branch = self.store.get_active_branch(session_id)?;
-        let snapshot = self
-            .snapshots
-            .load_snapshot_with_options(cfg.context.auto_repo_rules)?;
+        let workspace_dir = session
+            .workspace_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let repo_scope = project_scope_for_workspace(&workspace_dir);
+        let snapshot = self.frozen_snapshot_for_session(session_id, &workspace_dir, &cfg)?;
 
         let active_model = session
             .model_override
@@ -1456,22 +1463,34 @@ impl AgentRuntime {
         let context_window = self.resolve_context_window(&active_model);
 
         let scope = self.effective_session_scope(session_id);
+        let economy_pruned_tools = match cfg.economy.enabled && cfg.economy.auto_tool_prune {
+            true => self.store.list_pruned_tools(&repo_scope).unwrap_or_default(),
+            false => BTreeSet::new(),
+        };
+        let active_micro_skills = match cfg.economy.enabled && cfg.economy.auto_micro_skills {
+            true => crate::economy::active_micro_skills_for_repo(&self.store, &repo_scope),
+            false => Vec::new(),
+        };
         let activated = self.hydrate_activated_deferred(session_id, &branch);
-        let active_specs = self.tools.specs_for_session_filtered(
+        let active_specs = self.tools.specs_for_session_with_demotions(
             cfg.context.deferred_tool_loading,
             &activated,
+            &economy_pruned_tools,
             &scope.availability,
             |spec| scope.permits_spec(spec),
         );
-        let (eager_tools_count, deferred_available_count) = self
-            .tools
-            .exposure_counts_filtered(&scope.availability, |spec| scope.permits_spec(spec));
+        let (eager_tools_count, deferred_available_count) =
+            self.tools.exposure_counts_with_demotions(
+                &economy_pruned_tools,
+                &scope.availability,
+                |spec| scope.permits_spec(spec),
+            );
         let deferred_catalog = match cfg.context.deferred_tool_loading {
-            true => self
-                .tools
-                .deferred_catalog_text_filtered(&scope.availability, |spec| {
-                    scope.permits_spec(spec)
-                }),
+            true => self.tools.deferred_catalog_text_with_demotions(
+                &economy_pruned_tools,
+                &scope.availability,
+                |spec| scope.permits_spec(spec),
+            ),
             false => None,
         };
         let active_concise_mode = self.effective_concise_mode(session_id, &cfg, &branch);
@@ -1483,6 +1502,18 @@ impl AgentRuntime {
         ) {
             effective_sys.push_str("\n\n");
             effective_sys.push_str(&concise_block);
+        }
+        if let Some(econ_block) = render_economy_prompt_block(
+            cfg.economy.enabled,
+            self.can_scope_use_economy_tool(&scope),
+            scope.availability.read_only,
+        ) {
+            effective_sys.push_str("\n\n");
+            effective_sys.push_str(&econ_block);
+        }
+        if let Some(ms_block) = render_repo_micro_skills_block(&active_micro_skills) {
+            effective_sys.push_str("\n\n");
+            effective_sys.push_str(&ms_block);
         }
         let sys_tokens = estimate_text_tokens(&effective_sys);
         let tool_schema_tokens = estimate_tool_specs_tokens(&active_specs);
@@ -1527,7 +1558,6 @@ impl AgentRuntime {
         let read_less_bytes_saved = persisted_rl_bytes.max(live_rl_bytes);
         let read_less_tokens_saved = persisted_rl_tokens.max(live_rl_tokens);
 
-        let repo_scope = self.resolve_repo_scope(None);
         let econ_sum = self
             .store
             .summarize_economy_ledger(&repo_scope, cfg.economy.p90_multiplier)
@@ -1540,9 +1570,9 @@ impl AgentRuntime {
             total_tokens,
             utilization_pct,
             tier1_tokens: snapshot.tier1_tokens,
-            tier1_hash: snapshot.tier1_hash,
+            tier1_hash: snapshot.tier1_hash.clone(),
             tier2_tokens: sys_tokens.saturating_sub(snapshot.tier1_tokens),
-            repo_rules_loaded: snapshot.repo_rules_loaded,
+            repo_rules_loaded: snapshot.repo_rules_loaded.clone(),
             tool_schema_tokens,
             eager_tools_count,
             deferred_active_count: activated.len(),
@@ -1573,6 +1603,37 @@ impl AgentRuntime {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| cfg.resolved_workspace_dir());
         project_scope_for_workspace(&ws)
+    }
+
+    pub(crate) fn session_workspace_dir(&self, session_id: &str) -> PathBuf {
+        let cfg = self.config();
+        self.store
+            .get_session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.workspace_dir)
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir())
+    }
+
+    pub(crate) fn economy_demoted_tools_for_session(&self, session_id: &str) -> BTreeSet<String> {
+        let cfg = self.config();
+        match cfg.economy.enabled && cfg.economy.auto_tool_prune {
+            true => {
+                let ws = self.session_workspace_dir(session_id);
+                let scope = project_scope_for_workspace(&ws);
+                self.store.list_pruned_tools(&scope).unwrap_or_default()
+            }
+            false => BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn can_scope_use_economy_tool(&self, scope: &SessionToolScope) -> bool {
+        self.tools.get(TOOL_TOKEN_ECONOMY).is_some_and(|tool| {
+            tool.is_available(&scope.availability) && scope.permits_spec(&tool.spec())
+        })
     }
 
     pub fn economy_report(&self, workspace_dir: Option<&Path>) -> Result<TokenEconomyReport> {

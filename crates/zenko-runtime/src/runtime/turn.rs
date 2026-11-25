@@ -615,6 +615,14 @@ impl AgentRuntime {
             effective_system_prompt.push_str("\n\n");
             effective_system_prompt.push_str(&concise_block);
         }
+        if let Some(econ_block) = render_economy_prompt_block(
+            cfg.economy.enabled,
+            self.can_scope_use_economy_tool(&session_scope),
+            session_scope.availability.read_only,
+        ) {
+            effective_system_prompt.push_str("\n\n");
+            effective_system_prompt.push_str(&econ_block);
+        }
         if let Some(ms_block) = render_repo_micro_skills_block(&active_micro_skills) {
             effective_system_prompt.push_str("\n\n");
             effective_system_prompt.push_str(&ms_block);
@@ -1645,32 +1653,12 @@ impl AgentRuntime {
                         }
 
                 if !was_phase_redirect {
-                    economy_trace.record_tool_use(eff_tool_name);
-                    if eff_tool_name == TOOL_SHELL_EXEC
-                        && let Some(cmd) = done
-                            .arguments
-                            .get("command")
-                            .or_else(|| done.arguments.get("args").and_then(|a| a.get("command")))
-                            .and_then(Value::as_str)
-                    {
-                        economy_trace.record_shell_outcome(
-                            cmd,
-                            done.output.is_error,
-                            &done.output.content,
-                        );
-                    }
-                    if let Some(saved_tok) = done
-                        .output
-                        .metadata
-                        .as_ref()
-                        .and_then(|m| m.get("read_less"))
-                        .and_then(|rl| rl.get("tokens_saved"))
-                        .and_then(Value::as_u64)
-                    {
-                        economy_trace.read_less_tokens_saved = economy_trace
-                            .read_less_tokens_saved
-                            .saturating_add(saved_tok as usize);
-                    }
+                    crate::economy::record_tool_outcome_in_economy_trace(
+                        &mut economy_trace,
+                        eff_tool_name,
+                        eff_tool_args,
+                        &done.output,
+                    );
                 }
 
                 if !was_phase_redirect

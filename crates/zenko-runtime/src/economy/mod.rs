@@ -9,10 +9,12 @@ use micro_skills::{
     ShellTraceEntry, detect_contradicted_micro_skills, detect_hit_micro_skills,
     micro_skill_signature, mine_turn_shell_micro_skills,
 };
+use serde_json::Value;
 use std::collections::BTreeSet;
 use zenko_core::{
-    ECONOMY_PROTECTED_CORE_TOOLS, EconomyConfig, EconomyLedgerKind, MicroSkillStatus,
-    RepoMicroSkill, Result, TokenEconomyReport,
+    ECONOMY_PROTECTED_CORE_TOOLS, ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS, EconomyConfig,
+    EconomyLedgerKind, MicroSkillStatus, RepoMicroSkill, Result, TOOL_BATCH_TOOLS, TOOL_SHELL_EXEC,
+    TokenEconomyReport, ToolOutput,
 };
 use zenko_memory::SqliteStore;
 
@@ -45,12 +47,71 @@ impl TurnEconomyTrace {
         if self.shell_traces.len() >= 48 {
             return;
         }
-        let preview: String = output.chars().take(280).collect();
+        let preview: String = output.chars().take(ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS).collect();
         self.shell_traces.push(ShellTraceEntry {
             command: command.to_string(),
             is_error,
             output_preview: preview,
         });
+    }
+}
+
+/// Deterministically extracts tool utilization, shell fail->fix traces, and Read-Less savings
+/// from any completed tool call (including unwrapped `invoke_tool` calls and `batch_tools` inner steps).
+pub fn record_tool_outcome_in_economy_trace(
+    trace: &mut TurnEconomyTrace,
+    eff_tool_name: &str,
+    eff_tool_args: &Value,
+    output: &ToolOutput,
+) {
+    trace.record_tool_use(eff_tool_name);
+    if eff_tool_name == TOOL_BATCH_TOOLS {
+        if let Some(steps) = output
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("steps"))
+            .and_then(Value::as_array)
+        {
+            for step in steps {
+                let status = step.get("status").and_then(Value::as_str).unwrap_or("");
+                if status == "skipped" {
+                    continue;
+                }
+                if let Some(inner_tool) = step.get("tool").and_then(Value::as_str) {
+                    trace.record_tool_use(inner_tool);
+                    if inner_tool == TOOL_SHELL_EXEC
+                        && let Some(cmd) = step.get("shell_command").and_then(Value::as_str)
+                    {
+                        let preview = step
+                            .get("output_preview")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        trace.record_shell_outcome(cmd, status == "error", preview);
+                    }
+                }
+                if let Some(saved_tok) = step.get("read_less_tokens_saved").and_then(Value::as_u64)
+                {
+                    trace.read_less_tokens_saved =
+                        trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
+                }
+            }
+        }
+        return;
+    }
+    if eff_tool_name == TOOL_SHELL_EXEC
+        && let Some(cmd) = eff_tool_args.get("command").and_then(Value::as_str)
+    {
+        trace.record_shell_outcome(cmd, output.is_error, &output.content);
+    }
+    if let Some(saved_tok) = output
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("read_less"))
+        .and_then(|rl| rl.get("tokens_saved"))
+        .and_then(Value::as_u64)
+    {
+        trace.read_less_tokens_saved =
+            trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
     }
 }
 
@@ -280,4 +341,70 @@ pub fn active_micro_skills_for_repo(
         .into_iter()
         .filter(|s| s.status == MicroSkillStatus::Active)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn record_tool_outcome_unwraps_batch_tools_and_shell_fail_fix() {
+        let mut trace = TurnEconomyTrace::new("project:test".into());
+        let batch_out = ToolOutput {
+            content: "Batch completed".into(),
+            is_error: false,
+            diff: None,
+            metadata: Some(json!({
+                "total": 4,
+                "steps": [
+                    {
+                        "index": 0,
+                        "tool": "web_search",
+                        "status": "ok",
+                        "duration_ms": 12,
+                        "quiet": false
+                    },
+                    {
+                        "index": 1,
+                        "tool": "shell_exec",
+                        "status": "error",
+                        "duration_ms": 8,
+                        "quiet": true,
+                        "shell_command": "pytest -q",
+                        "output_preview": "bash: pytest: command not found (exit_code: 127)"
+                    },
+                    {
+                        "index": 2,
+                        "tool": "shell_exec",
+                        "status": "ok",
+                        "duration_ms": 42,
+                        "quiet": true,
+                        "shell_command": "uv run pytest -q",
+                        "output_preview": "12 passed in 0.4s",
+                        "read_less_tokens_saved": 350
+                    },
+                    {
+                        "index": 3,
+                        "tool": "git_tool",
+                        "status": "skipped",
+                        "duration_ms": 0,
+                        "quiet": false
+                    }
+                ]
+            })),
+        };
+
+        record_tool_outcome_in_economy_trace(&mut trace, TOOL_BATCH_TOOLS, &json!({}), &batch_out);
+
+        assert!(trace.used_tools.contains("web_search"));
+        assert!(trace.used_tools.contains("shell_exec"));
+        assert!(!trace.used_tools.contains("git_tool"), "skipped step must not count as used");
+        assert_eq!(trace.read_less_tokens_saved, 350);
+        assert_eq!(trace.shell_traces.len(), 2);
+
+        let mined = mine_turn_shell_micro_skills(&trace.shell_traces);
+        assert_eq!(mined.len(), 1);
+        assert!(mined[0].fact.contains("uv run pytest"));
+    }
 }

@@ -9,8 +9,8 @@ use crate::{
     TOOL_GOAL_LOOP, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY,
     TOOL_ORCHESTRATE_CONTROL, TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM,
     TOOL_SCRIPT_BLOCK, TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH,
-    TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
+    TOOL_SKILL_VIEW, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH,
+    TOOL_WEB_SEARCH, TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
     VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI, VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI,
     VAULT_KEY_OPENROUTER, VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
 };
@@ -270,6 +270,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SKILL_VIEW,
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
+            TOOL_TOKEN_ECONOMY,
             TOOL_RECORD_BRAINSTORM,
             TOOL_PLAN_UPDATE,
             TOOL_SESSION_TASK,
@@ -360,6 +361,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SKILL_VIEW,
             TOOL_TOOL_SEARCH,
             TOOL_CONTEXT_INSPECT,
+            TOOL_TOKEN_ECONOMY,
             TOOL_RECORD_BRAINSTORM,
             TOOL_SESSION_TASK,
             TOOL_AGENT_LIST,
@@ -861,6 +863,30 @@ pub fn render_repo_micro_skills_block(skills: &[crate::types::RepoMicroSkill]) -
     Some(lines.join("\n"))
 }
 
+/// Renders a compact, KV-cache-safe Tier-2 directive informing the orchestrator of Zenko's active
+/// Token Economy engine and deferred `token_economy` tool (even when Caveman Mode is `Off`).
+/// Returns `None` when the economy engine is disabled or the active role cannot access `token_economy`.
+pub fn render_economy_prompt_block(
+    enabled: bool,
+    can_use_tool: bool,
+    read_only_plan: bool,
+) -> Option<String> {
+    if !enabled || !can_use_tool {
+        return None;
+    }
+    let body = match read_only_plan {
+        true => format!(
+            "- Background micro-skills, soft tool pruning, Read-Less compression, and 1.25x P90 loop guard are active for this repository.\n\
+             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or load `token-economy-audit` via `{TOOL_SKILL_VIEW}` when auditing token efficiency."
+        ),
+        false => format!(
+            "- Background micro-skill mining, soft tool pruning, Read-Less compression, and 1.25x P90 loop guard run automatically for this repository.\n\
+             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` entries via `retire_micro_skill`, or load `token-economy-audit` via `{TOOL_SKILL_VIEW}` when auditing token waste or restoring/pruning tools."
+        ),
+    };
+    Some(format!("<token_economy>\n{body}\n</token_economy>"))
+}
+
 /// Renders the Tier-2 English `<concise_mode>` directive block (returns `None` when `Off`).
 /// Enforces Verbatim Payload Protection and optional Auto-Clarity safety hatch with zero Chinese terms.
 pub fn render_concise_prompt_block(
@@ -1041,5 +1067,27 @@ mod tests {
         for tmpl in DEFAULT_SKILL_TEMPLATES {
             assert!(tmpl.filename.ends_with(".md") && tmpl.content.is_ascii());
         }
+    }
+
+    #[test]
+    fn economy_prompt_block_respects_flags_and_read_only_mode() {
+        assert!(render_economy_prompt_block(false, true, false).is_none());
+        assert!(render_economy_prompt_block(true, false, false).is_none());
+
+        let full = render_economy_prompt_block(true, true, false).expect("full");
+        assert!(full.contains("<token_economy>"));
+        assert!(full.contains(TOOL_TOKEN_ECONOMY));
+        assert!(full.contains("add_micro_skill"));
+        assert!(full.contains("token-economy-audit"));
+
+        let ro = render_economy_prompt_block(true, true, true).expect("ro");
+        assert!(ro.contains("Read-only inspection"));
+        assert!(!ro.contains("add_micro_skill"));
+        assert!(ro.contains("token-economy-audit"));
+
+        let architect = find_subagent_role("architect").expect("architect");
+        let critic = find_subagent_role("critic").expect("critic");
+        assert!(architect.permits_tool(TOOL_TOKEN_ECONOMY));
+        assert!(critic.permits_tool(TOOL_TOKEN_ECONOMY));
     }
 }

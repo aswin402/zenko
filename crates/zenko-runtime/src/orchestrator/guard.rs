@@ -18,15 +18,14 @@ use zenko_core::{
     ScriptBlockAction, TOOL_AGENT_KILL, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_CRON, TOOL_GIT,
     TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE,
     TOOL_RECORD_BRAINSTORM, TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_SPAWN_AGENT, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS,
-    VERIFICATION_SPOOF_FLAGS_CI,
-    VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
-    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
-    is_memory_mutating_action, is_skill_manage_args_mutating,
+    TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS,
+    VERIFICATION_SPOOF_FLAGS_CI, VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview,
+    find_subagent_role, is_economy_args_mutating, is_git_tool_args_mutating,
+    is_goal_loop_args_mutating, is_lsp_tool_args_mutating, is_memory_mutating_action,
+    is_skill_manage_args_mutating,
 };
 
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+use zenko_core::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCategory {
@@ -69,6 +68,7 @@ fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
         TOOL_LSP => is_lsp_tool_args_mutating(arguments),
         TOOL_SKILL_MANAGE => is_skill_manage_args_mutating(arguments),
         TOOL_GOAL_LOOP => is_goal_loop_args_mutating(arguments),
+        TOOL_TOKEN_ECONOMY => is_economy_args_mutating(arguments),
         TOOL_MEMORY => {
             let action = arguments.get("action").and_then(Value::as_str).unwrap_or("");
             let dry_run_compress = action == "compress_doc"
@@ -156,7 +156,8 @@ pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategor
         MUTATING_FILE_TOOLS.contains(&tool_name) || is_mutating_scoped_tool_call(tool_name, arguments),
         PLANNING_TOOLS.contains(&tool_name),
         READ_ONLY_TOOLS.contains(&tool_name)
-            || (tool_name == TOOL_LSP && !is_lsp_tool_args_mutating(arguments)),
+            || (tool_name == TOOL_LSP && !is_lsp_tool_args_mutating(arguments))
+            || (tool_name == TOOL_TOKEN_ECONOMY && !is_economy_args_mutating(arguments)),
         VERIFICATION_SHELL_TOOLS.contains(&tool_name),
     ) {
         (true, _, _, _) => ToolCategory::Mutation,

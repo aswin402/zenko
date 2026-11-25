@@ -439,13 +439,28 @@ impl Tool for BatchToolsTool {
             {
                 combined_diffs.push(d.clone());
             }
-            step_meta.push(json!({
+            let mut step_obj = json!({
                 "index": step.index,
                 "tool": step.tool,
                 "status": status_tag.to_ascii_lowercase(),
                 "duration_ms": step.duration_ms,
                 "quiet": step.quiet,
-            }));
+            });
+            if let Some(obj) = step_obj.as_object_mut() {
+                if let Some(ref cmd) = step.shell_command {
+                    obj.insert("shell_command".into(), Value::String(cmd.clone()));
+                }
+                if let Some(ref preview) = step.raw_output_preview {
+                    obj.insert("output_preview".into(), Value::String(preview.clone()));
+                }
+                if step.read_less_tokens_saved > 0 {
+                    obj.insert(
+                        "read_less_tokens_saved".into(),
+                        Value::Number(step.read_less_tokens_saved.into()),
+                    );
+                }
+            }
+            step_meta.push(step_obj);
         }
 
         let diff = match combined_diffs.is_empty() {
@@ -583,6 +598,9 @@ mod tests {
                     duration_ms: 1,
                     content: format!("ran {}", item.args),
                     diff: None,
+                    shell_command: None,
+                    raw_output_preview: None,
+                    read_less_tokens_saved: 0,
                 })
                 .collect())
         }

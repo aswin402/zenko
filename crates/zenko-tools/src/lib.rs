@@ -209,6 +209,17 @@ impl ToolRegistry {
             .unwrap_or(false)
     }
 
+    pub fn is_deferred_or_demoted(&self, name: &str, demoted_tools: &BTreeSet<String>) -> bool {
+        self.tools
+            .read()
+            .ok()
+            .and_then(|map| {
+                map.get(name)
+                    .map(|t| effective_exposure(t.as_ref(), name, demoted_tools) == ToolExposure::Deferred)
+            })
+            .unwrap_or(false)
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools
             .read()
@@ -275,10 +286,7 @@ impl ToolRegistry {
                 if !allow(&spec) {
                     continue;
                 }
-                let eff_exposure = match (tool.exposure(), demoted_tools.contains(name)) {
-                    (ToolExposure::Eager, true) => ToolExposure::Deferred,
-                    (other, _) => other,
-                };
+                let eff_exposure = effective_exposure(tool.as_ref(), name, demoted_tools);
                 match (deferred_enabled, eff_exposure, activated_deferred.contains(name)) {
                     (false, _, _) | (true, ToolExposure::Eager, _) => eager.push(spec),
                     (true, ToolExposure::Deferred, true) => active_def.push(spec),
@@ -312,14 +320,27 @@ impl ToolRegistry {
     where
         F: Fn(&ToolSpec) -> bool,
     {
+        self.exposure_counts_with_demotions(&BTreeSet::new(), avail, allow)
+    }
+
+    /// Like `exposure_counts_filtered`, counting Token-Economy soft-demoted tools under `deferred`.
+    pub fn exposure_counts_with_demotions<F>(
+        &self,
+        demoted_tools: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> (usize, usize)
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut eager = 0usize;
         let mut deferred = 0usize;
         if let Ok(map) = self.tools.read() {
-            for tool in map.values() {
+            for (name, tool) in map.iter() {
                 if !tool.is_available(avail) || !allow(&tool.spec()) {
                     continue;
                 }
-                match tool.exposure() {
+                match effective_exposure(tool.as_ref(), name, demoted_tools) {
                     ToolExposure::Eager => eager += 1,
                     ToolExposure::Deferred => deferred += 1,
                 }
@@ -368,9 +389,9 @@ impl ToolRegistry {
         let mut grouped: BTreeMap<ToolSet, Vec<String>> = BTreeMap::new();
         if let Ok(map) = self.tools.read() {
             for (name, tool) in map.iter() {
-                let is_deferred_or_demoted =
-                    tool.exposure() == ToolExposure::Deferred || demoted_tools.contains(name);
-                if !is_deferred_or_demoted || !tool.is_available(avail) {
+                if effective_exposure(tool.as_ref(), name, demoted_tools) != ToolExposure::Deferred
+                    || !tool.is_available(avail)
+                {
                     continue;
                 }
                 let spec = tool.spec();
@@ -415,6 +436,19 @@ impl ToolRegistry {
     where
         F: Fn(&ToolSpec) -> bool,
     {
+        self.list_toolsets_with_demotions(&BTreeSet::new(), avail, allow)
+    }
+
+    /// Like `list_toolsets_filtered`, classifying Token-Economy soft-demoted tools under `deferred_tools`.
+    pub fn list_toolsets_with_demotions<F>(
+        &self,
+        demoted_tools: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSetSummary>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut by_set: BTreeMap<ToolSet, (Vec<String>, Vec<String>)> = BTreeMap::new();
         if let Ok(map) = self.tools.read() {
             for (name, tool) in map.iter() {
@@ -426,7 +460,7 @@ impl ToolRegistry {
                     continue;
                 }
                 let entry = by_set.entry(tool.toolset()).or_default();
-                match tool.exposure() {
+                match effective_exposure(tool.as_ref(), name, demoted_tools) {
                     ToolExposure::Eager => entry.0.push(name.clone()),
                     ToolExposure::Deferred => entry.1.push(name.clone()),
                 }
@@ -501,6 +535,21 @@ impl ToolRegistry {
     where
         F: Fn(&ToolSpec) -> bool,
     {
+        self.search_deferred_bm25_with_demotions(query, limit, &BTreeSet::new(), avail, allow)
+    }
+
+    /// Like `search_deferred_bm25_filtered`, also searching Token-Economy soft-demoted tools.
+    pub fn search_deferred_bm25_with_demotions<F>(
+        &self,
+        query: &str,
+        limit: usize,
+        demoted_tools: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSpec>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let query_tokens = tokenize_ascii_terms(query);
         if query_tokens.is_empty() || limit == 0 {
             return Vec::new();
@@ -510,9 +559,12 @@ impl ToolRegistry {
             .tools
             .read()
             .map(|map| {
-                map.values()
-                    .filter(|t| t.exposure() == ToolExposure::Deferred && t.is_available(avail))
-                    .filter_map(|t| {
+                map.iter()
+                    .filter(|(name, t)| {
+                        effective_exposure(t.as_ref(), name, demoted_tools) == ToolExposure::Deferred
+                            && t.is_available(avail)
+                    })
+                    .filter_map(|(_, t)| {
                         let spec = t.spec();
                         if !allow(&spec) {
                             return None;
@@ -608,10 +660,41 @@ impl ToolRegistry {
     where
         F: Fn(&ToolSpec) -> bool,
     {
+        self.select_deferred_by_scope_with_demotions(
+            toolset,
+            activate_all,
+            names,
+            query,
+            limit,
+            &BTreeSet::new(),
+            avail,
+            allow,
+        )
+    }
+
+    /// Like `select_deferred_by_scope`, including Token-Economy soft-demoted tools so `tool_search`
+    /// can inspect their full schemas before calling them via `invoke_tool`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_deferred_by_scope_with_demotions<F>(
+        &self,
+        toolset: Option<ToolSet>,
+        activate_all: bool,
+        names: &[String],
+        query: Option<&str>,
+        limit: usize,
+        demoted_tools: &BTreeSet<String>,
+        avail: &ToolAvailabilityContext,
+        allow: F,
+    ) -> Vec<ToolSpec>
+    where
+        F: Fn(&ToolSpec) -> bool,
+    {
         let mut selected: BTreeMap<String, ToolSpec> = BTreeMap::new();
         if let Ok(map) = self.tools.read() {
             for (name, tool) in map.iter() {
-                if tool.exposure() != ToolExposure::Deferred || !tool.is_available(avail) {
+                if effective_exposure(tool.as_ref(), name, demoted_tools) != ToolExposure::Deferred
+                    || !tool.is_available(avail)
+                {
                     continue;
                 }
                 let matches_set = activate_all || toolset.is_some_and(|ts| tool.toolset() == ts);
@@ -626,11 +709,22 @@ impl ToolRegistry {
             }
         }
         if let Some(q) = query {
-            for spec in self.search_deferred_bm25_filtered(q, limit, avail, &allow) {
+            for spec in self.search_deferred_bm25_with_demotions(q, limit, demoted_tools, avail, &allow) {
                 selected.entry(spec.name.clone()).or_insert(spec);
             }
         }
         selected.into_values().collect()
+    }
+}
+
+fn effective_exposure(
+    tool: &dyn Tool,
+    name: &str,
+    demoted_tools: &BTreeSet<String>,
+) -> ToolExposure {
+    match (tool.exposure(), demoted_tools.contains(name)) {
+        (ToolExposure::Eager, true) => ToolExposure::Deferred,
+        (other, _) => other,
     }
 }
 
@@ -790,5 +884,66 @@ mod tests {
         let (eager_cnt, def_cnt) =
             reg.exposure_counts_filtered(&avail_no_mcp, |s| s.name != "cron_tool");
         assert_eq!((eager_cnt, def_cnt), (1, 1));
+    }
+
+    #[test]
+    fn soft_demoted_tools_remain_searchable_and_counted_as_deferred() {
+        let reg = ToolRegistry::empty();
+        reg.register(Arc::new(DummyTool {
+            name: "read_file",
+            desc: "Read workspace file lines",
+            exp: ToolExposure::Eager,
+            set: ToolSet::CoreFs,
+            requires_mcp: false,
+        }));
+        reg.register(Arc::new(DummyTool {
+            name: "web_search",
+            desc: "Search the web for documentation and references",
+            exp: ToolExposure::Eager,
+            set: ToolSet::Web,
+            requires_mcp: false,
+        }));
+        reg.register(Arc::new(DummyTool {
+            name: "cron_tool",
+            desc: "Schedule recurring jobs",
+            exp: ToolExposure::Deferred,
+            set: ToolSet::Automation,
+            requires_mcp: false,
+        }));
+
+        let mut demoted = BTreeSet::new();
+        demoted.insert("web_search".to_string());
+        let avail = ToolAvailabilityContext::default();
+
+        assert!(reg.is_deferred_or_demoted("web_search", &demoted));
+        assert!(!reg.is_deferred_or_demoted("read_file", &demoted));
+        assert_eq!(reg.exposure_counts_with_demotions(&demoted, &avail, |_| true), (1, 2));
+
+        let by_query = reg.search_deferred_bm25_with_demotions(
+            "search web documentation",
+            5,
+            &demoted,
+            &avail,
+            |_| true,
+        );
+        assert!(by_query.iter().any(|s| s.name == "web_search"));
+
+        let by_name = reg.select_deferred_by_scope_with_demotions(
+            None,
+            false,
+            &["web_search".to_string()],
+            None,
+            5,
+            &demoted,
+            &avail,
+            |_| true,
+        );
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].name, "web_search");
+
+        let sets = reg.list_toolsets_with_demotions(&demoted, &avail, |_| true);
+        let web_set = sets.iter().find(|s| s.id == "web").expect("web toolset");
+        assert!(web_set.eager_tools.is_empty());
+        assert_eq!(web_set.deferred_tools, vec!["web_search".to_string()]);
     }
 }

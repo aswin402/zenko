@@ -44,12 +44,14 @@ impl ContextBridge for RuntimeContextBridge {
             return Vec::new();
         };
         let scope = rt.effective_session_scope(session_id);
-        let matched = rt.tools.select_deferred_by_scope(
+        let demoted = rt.economy_demoted_tools_for_session(session_id);
+        let matched = rt.tools.select_deferred_by_scope_with_demotions(
             toolset,
             activate_all,
             names,
             query,
             limit,
+            &demoted,
             &scope.availability,
             |spec| scope.permits_spec(spec),
         );
@@ -72,8 +74,11 @@ impl ContextBridge for RuntimeContextBridge {
             return Vec::new();
         };
         let scope = rt.effective_session_scope(session_id);
+        let demoted = rt.economy_demoted_tools_for_session(session_id);
         rt.tools
-            .list_toolsets_filtered(&scope.availability, |spec| scope.permits_spec(spec))
+            .list_toolsets_with_demotions(&demoted, &scope.availability, |spec| {
+                scope.permits_spec(spec)
+            })
     }
 
     async fn inspect_session_context(&self, session_id: &str) -> Result<ContextBreakdown> {
@@ -176,12 +181,22 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         duration_ms: 0,
                         content: "Skipped because an earlier batch step failed (`stop_on_error: true`).".into(),
                         diff: None,
+                        shell_command: None,
+                        raw_output_preview: None,
+                        read_less_tokens_saved: 0,
                     });
                     continue;
                 }
                 let interpolated =
                     zenko_tools::batch::interpolate_args_templates(item.args, &bound_vars);
                 let coerced_args = rt.coerce_tool_call_args(&item.tool, interpolated);
+                let shell_command = match item.tool.as_str() == TOOL_SHELL_EXEC {
+                    true => coerced_args
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(String::from),
+                    false => None,
+                };
                 if let Err(denied) = scope.permits_invocation(&item.tool, &coerced_args) {
                     outcomes.push(BatchToolStepOutcome {
                         index: idx,
@@ -193,6 +208,9 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         duration_ms: 0,
                         content: denied,
                         diff: None,
+                        shell_command: None,
+                        raw_output_preview: None,
+                        read_less_tokens_saved: 0,
                     });
                     if req.stop_on_error {
                         halted = true;
@@ -217,6 +235,24 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                 if exec.output.is_error && req.stop_on_error {
                     halted = true;
                 }
+                let raw_output_preview = match exec.tool_name.as_str() == TOOL_SHELL_EXEC {
+                    true => Some(
+                        exec.output
+                            .content
+                            .chars()
+                            .take(ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS)
+                            .collect(),
+                    ),
+                    false => None,
+                };
+                let read_less_tokens_saved = exec
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("read_less"))
+                    .and_then(|rl| rl.get("tokens_saved"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let projected = match exec.output.is_error {
                     true => exec.output.content,
                     false => zenko_tools::batch::extract_step_output(
@@ -239,6 +275,9 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     duration_ms: exec.duration_ms,
                     content: projected,
                     diff: exec.output.diff,
+                    shell_command,
+                    raw_output_preview,
+                    read_less_tokens_saved,
                 });
             }
             return Ok(outcomes);
@@ -266,6 +305,9 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     duration_ms: 0,
                     content: denied,
                     diff: None,
+                    shell_command: None,
+                    raw_output_preview: None,
+                    read_less_tokens_saved: 0,
                 });
             } else {
                 allowed.push((idx, tc, item.extract, item.quiet));
@@ -301,7 +343,33 @@ impl ToolBatchBridge for RuntimeBatchBridge {
             )
             .await?;
 
-            for ((idx, _, extract_opt, quiet), exec) in allowed.into_iter().zip(executed) {
+            for ((idx, tc, extract_opt, quiet), exec) in allowed.into_iter().zip(executed) {
+                let shell_command = match exec.tool_name.as_str() == TOOL_SHELL_EXEC {
+                    true => tc
+                        .arguments
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(String::from),
+                    false => None,
+                };
+                let raw_output_preview = match exec.tool_name.as_str() == TOOL_SHELL_EXEC {
+                    true => Some(
+                        exec.output
+                            .content
+                            .chars()
+                            .take(ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS)
+                            .collect(),
+                    ),
+                    false => None,
+                };
+                let read_less_tokens_saved = exec
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("read_less"))
+                    .and_then(|rl| rl.get("tokens_saved"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let projected = match exec.output.is_error {
                     true => exec.output.content,
                     false => zenko_tools::batch::extract_step_output(
@@ -319,6 +387,9 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     duration_ms: exec.duration_ms,
                     content: projected,
                     diff: exec.output.diff,
+                    shell_command,
+                    raw_output_preview,
+                    read_less_tokens_saved,
                 });
             }
         }

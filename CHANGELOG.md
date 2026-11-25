@@ -4,6 +4,22 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.26] - 2026-11-25
+
+Completed end-to-end Token Economy wiring across `tool_search`, Read-Only Plan Mode & subagents, live Context Breakdown, proactive Tier-2 prompt guidance, and `batch_tools` step telemetry.
+
+### Fixed
+- **Demotion-Aware `tool_search` & ToolSet Discovery (`crates/zenko-tools/src/lib.rs`, `runtime/bridges.rs`, `runtime/mod.rs`):**
+  - Added `effective_exposure`, `is_deferred_or_demoted`, `exposure_counts_with_demotions`, `list_toolsets_with_demotions`, `search_deferred_bm25_with_demotions`, and `select_deferred_by_scope_with_demotions` so Token-Economy soft-pruned tools stay 100% discoverable via `tool_search` (by `query`, `names`, or `toolset`) and accurately listed as deferred in `list_toolsets`.
+- **Read-Only Plan Mode & Subagent Gating for `token_economy` (`constants.rs`, `types.rs`, `policy.rs`, `guard.rs`, `registry.rs`):**
+  - Added `EconomyAction::is_mutating`, `is_economy_args_mutating`, and `TOOL_TOKEN_ECONOMY` in `PLAN_MODE_SCOPED_TOOLS`, `evaluate_plan_mode_policy`, `classify_tool_category`, and read-only `architect`/`critic` subagent roles — permitting read-only inspection (`status`, `micro_skills`, `prune_report`, `ledger`) in Plan Mode while blocking mutating actions (`add_micro_skill`, `retire_micro_skill`, `apply_prune`, `restore_tool`, `reaudit`).
+- **Live Per-Session Context Breakdown Accuracy (`crates/zenko-runtime/src/runtime/mod.rs`):**
+  - Updated `inspect_session_context` to resolve each session's actual `workspace_dir` and `repo_scope`, include soft-demoted tools in schema/exposure counts, include `<token_economy>` and `<repo_micro_skills>` blocks in `tier2_tokens`, and report accurate per-workspace ledger metrics.
+- **Proactive KV-Cache-Safe Orchestrator Guidance (`crates/zenko-core/src/registry.rs`, `runtime/turn.rs`):**
+  - Added `render_economy_prompt_block` in Tier-2 (active whenever `economy.enabled` is true and the role permits `token_economy`, even when Caveman Mode is `Off`) so the orchestrator proactively uses `token_economy` and `token-economy-audit` without ever mutating Tier-1 KV prefixes.
+- **`batch_tools` & `invoke_tool` Economy Trace Unwrapping (`types.rs`, `batch.rs`, `bridges.rs`, `economy/mod.rs`, `turn.rs`):**
+  - Propagated `shell_command`, bounded `raw_output_preview` (`ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS`), and `read_less_tokens_saved` through `BatchToolStepOutcome` metadata into `record_tool_outcome_in_economy_trace`, ensuring soft-demoted tools called inside `batch_tools` self-heal, batched shell fail→fix pairs mine micro-skills, and `invoke_tool` `"arguments"` aliases are traced cleanly.
+
 ## [0.0.25] - 2026-11-25
 
 Implemented Zenko's **Native Rust Token Economy Engine** (inspired by `microsoft/TokenEconomizer`, 100% native Rust, zero Python, zero regex, zero hardcoding) — adding cross-session repository Micro-Skills, experience-driven soft Tool Pruning, empirical `1.25× P90` Turn-Envelope Loop Guard, and an honest Net ROI Economy Ledger across Core, SQLite, Runtime, Tools, and WebUI.

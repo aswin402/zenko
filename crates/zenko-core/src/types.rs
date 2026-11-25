@@ -339,6 +339,12 @@ pub struct BatchToolStepOutcome {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_output_preview: Option<String>,
+    #[serde(default)]
+    pub read_less_tokens_saved: u64,
 }
 
 /// Declarative PTY terminal action for persistent `shell_exec(session=...)` sessions.
@@ -3942,4 +3948,19 @@ impl EconomyAction {
             _ => None,
         }
     }
+
+    pub fn is_mutating(self) -> bool {
+        !matches!(
+            self,
+            Self::Status | Self::MicroSkills | Self::PruneReport | Self::Ledger
+        )
+    }
+}
+
+pub fn is_economy_args_mutating(args: &serde_json::Value) -> bool {
+    args.get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(EconomyAction::parse)
+        .map(EconomyAction::is_mutating)
+        .unwrap_or(true)
 }

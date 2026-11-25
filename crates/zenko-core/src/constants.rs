@@ -998,8 +998,8 @@ pub const PLANNING_TOOLS: &[&str] = &[
 /// Tools that are conditionally permitted in Read-Only Plan Mode (enforced per-argument by ExecPolicy):
 /// read-only shell commands, read-only memory actions, read-only subagent roles, worktree diff,
 /// read-only git actions, read-only LSP actions (plus `rename` with `dry_run: true`), read-only
-/// `skill_manage` queries, read-only `goal_loop` queries, and `batch_tools` (each inner call
-/// individually policy-enforced).
+/// `skill_manage` queries, read-only `goal_loop` queries, read-only `token_economy` inspections,
+/// and `batch_tools` (each inner call individually policy-enforced).
 pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
     TOOL_MEMORY,
@@ -1012,6 +1012,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_BATCH_TOOLS,
     TOOL_INVOKE_TOOL,
     TOOL_SCRIPT_BLOCK,
+    TOOL_TOKEN_ECONOMY,
 ];
 pub const MUTATING_FILE_TOOLS: &[&str] = &[TOOL_WRITE_FILE, TOOL_HASH_EDIT, TOOL_APPLY_PATCH];
 pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];
@@ -1369,6 +1370,7 @@ pub const ECONOMY_ESTIMATED_USD_PER_1M_TOKENS: f64 = 3.0;
 pub const ECONOMY_FAST_JUDGE_MAX_TOKENS: u32 = 220;
 pub const ECONOMY_FAST_JUDGE_MIN_CONFIDENCE: f64 = 0.70;
 pub const ECONOMY_CMD_PREVIEW_CHARS: usize = 120;
+pub const ECONOMY_SHELL_OUTPUT_PREVIEW_CHARS: usize = 280;
 
 /// Core operational tools permanently protected from experience-driven tool pruning.
 pub const ECONOMY_PROTECTED_CORE_TOOLS: &[&str] = &[
