@@ -181,6 +181,7 @@ pub(crate) struct PendingControlShift {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub concise_mode: Option<ConciseMode>,
     pub minimalism_mode: Option<CodeMinimalismMode>,
+    pub zmode: Option<zenko_core::ZMode>,
     pub rationale: Option<String>,
 }
 
@@ -312,6 +313,7 @@ pub(crate) struct SessionControl {
     active_scope: Mutex<Option<SessionToolScope>>,
     concise_mode_override: Mutex<Option<ConciseMode>>,
     minimalism_mode_override: Mutex<Option<CodeMinimalismMode>>,
+    zmode_override: Mutex<Option<zenko_core::ZMode>>,
     read_less_stats: Mutex<ReadLessSessionStats>,
     output_dedup: Mutex<crate::read_less::SessionOutputDedup>,
 }
@@ -1501,6 +1503,7 @@ impl AgentRuntime {
         };
         let active_concise_mode = self.effective_concise_mode(session_id, &cfg, &branch);
         let active_minimalism_mode = self.effective_minimalism_mode(session_id, &cfg, &branch);
+        let active_zmode = self.effective_zmode(session_id, &cfg, &branch);
         let mut effective_sys = snapshot.compose_system_prompt(deferred_catalog.as_deref());
         if let Some(concise_block) = render_concise_prompt_block(
             active_concise_mode,
@@ -1616,6 +1619,8 @@ impl AgentRuntime {
             minimalism_mode: active_minimalism_mode,
             economy_lines_added: code_metrics.lines_added,
             economy_lines_deleted: code_metrics.lines_deleted,
+            zmode: active_zmode,
+            zmode_customized: cfg.is_zmode_customized(),
         })
     }
 
@@ -2044,11 +2049,19 @@ impl AgentRuntime {
             _ => None,
         };
 
+        let resolved_concise = req
+            .concise_mode
+            .or_else(|| req.zmode.map(|zm| zenko_core::find_zmode(zm).concise_mode));
+        let resolved_minimalism = req
+            .minimalism_mode
+            .or_else(|| req.zmode.map(|zm| zenko_core::find_zmode(zm).minimalism_mode));
+
         let has_shift = req.posture.is_some()
             || req.cognitive_tier.is_some()
             || req.reasoning_effort.is_some()
-            || req.concise_mode.is_some()
-            || req.minimalism_mode.is_some();
+            || resolved_concise.is_some()
+            || resolved_minimalism.is_some()
+            || req.zmode.is_some();
         if has_shift && let Ok(mut slot) = ctrl.pending_control.lock() {
             let entry = slot.get_or_insert_with(PendingControlShift::default);
             if req.posture.is_some() {
@@ -2060,35 +2073,52 @@ impl AgentRuntime {
             if req.reasoning_effort.is_some() {
                 entry.reasoning_effort = req.reasoning_effort;
             }
-            if req.concise_mode.is_some() {
-                entry.concise_mode = req.concise_mode;
+            if resolved_concise.is_some() {
+                entry.concise_mode = resolved_concise;
             }
-            if req.minimalism_mode.is_some() {
-                entry.minimalism_mode = req.minimalism_mode;
+            if resolved_minimalism.is_some() {
+                entry.minimalism_mode = resolved_minimalism;
+            }
+            if req.zmode.is_some() {
+                entry.zmode = req.zmode;
             }
             if req.rationale.is_some() {
                 entry.rationale = req.rationale.clone();
             }
         }
-        if let Some(cm) = req.concise_mode {
-            self.set_session_concise_mode(session_id, cm);
+        if let Some(zm) = req.zmode {
+            self.set_session_zmode(session_id, zm);
             self.emit(AgentEvent::OrchestratorUpdated {
                 session_id: session_id.to_string(),
-                stage: ORCH_STAGE_CONCISE.into(),
+                stage: zenko_core::ORCH_STAGE_ZMODE.into(),
                 tier: zenko_core::ExecutionTier::Standard,
-                detail: format!("Concise mode -> `{}`", cm.as_str()),
+                detail: format!("ZMode -> `{}`", zm.as_str()),
                 model: None,
             });
         }
-        if let Some(mm) = req.minimalism_mode {
+        if let Some(cm) = resolved_concise {
+            self.set_session_concise_mode(session_id, cm);
+            if req.zmode.is_none() {
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: session_id.to_string(),
+                    stage: ORCH_STAGE_CONCISE.into(),
+                    tier: zenko_core::ExecutionTier::Standard,
+                    detail: format!("Concise mode -> `{}`", cm.as_str()),
+                    model: None,
+                });
+            }
+        }
+        if let Some(mm) = resolved_minimalism {
             self.set_session_minimalism_mode(session_id, mm);
-            self.emit(AgentEvent::OrchestratorUpdated {
-                session_id: session_id.to_string(),
-                stage: ORCH_STAGE_MINIMALISM.into(),
-                tier: zenko_core::ExecutionTier::Standard,
-                detail: format!("Code minimalism -> `{}`", mm.as_str()),
-                model: None,
-            });
+            if req.zmode.is_none() {
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: session_id.to_string(),
+                    stage: ORCH_STAGE_MINIMALISM.into(),
+                    tier: zenko_core::ExecutionTier::Standard,
+                    detail: format!("Code minimalism -> `{}`", mm.as_str()),
+                    model: None,
+                });
+            }
         }
 
         if let Some(posture) = req.posture {
@@ -2130,8 +2160,9 @@ impl AgentRuntime {
             cognitive_tier: req.cognitive_tier,
             resolved_model,
             reasoning_effort: req.reasoning_effort,
-            concise_mode: req.concise_mode,
-            minimalism_mode: req.minimalism_mode,
+            concise_mode: resolved_concise,
+            minimalism_mode: resolved_minimalism,
+            zmode: req.zmode,
             recon_summary: None,
             rationale: req.rationale.clone(),
             model_locked_by_override: model_locked,
@@ -2217,6 +2248,52 @@ impl AgentRuntime {
     /// so `context_inspect` and WebUI Context Breakdown retain exact totals across daemon restarts.
     pub fn persisted_read_less_stats(&self, branch: &[SessionEvent]) -> (usize, u64, usize) {
         sum_persisted_read_less_stats(branch)
+    }
+
+    pub fn set_session_zmode(&self, session_id: &str, mode: zenko_core::ZMode) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut slot) = ctrl.zmode_override.lock() {
+            *slot = Some(mode);
+        }
+    }
+
+    /// Resolves the active `ZMode` for a session: live override -> persisted branch note -> global config.
+    pub fn effective_zmode(
+        &self,
+        session_id: &str,
+        cfg: &ZenkoConfig,
+        branch: &[SessionEvent],
+    ) -> zenko_core::ZMode {
+        let ctrl = self.session_control(session_id);
+        if let Ok(slot) = ctrl.zmode_override.lock()
+            && let Some(mode) = *slot
+        {
+            return mode;
+        }
+        for ev in branch.iter().rev() {
+            if ev.role != EventRole::System || ev.kind != EventKind::SystemNote {
+                continue;
+            }
+            let nk = ev.content_json.get("note_kind").and_then(Value::as_str);
+            let parsed = match nk {
+                Some(zenko_core::NOTE_KIND_ZMODE) => ev
+                    .content_json
+                    .get("zmode")
+                    .and_then(Value::as_str)
+                    .and_then(zenko_core::ZMode::parse),
+                Some(NOTE_KIND_ORCHESTRATE_CONTROL) => ev
+                    .content_json
+                    .get("control")
+                    .and_then(|c| c.get("zmode"))
+                    .and_then(Value::as_str)
+                    .and_then(zenko_core::ZMode::parse),
+                _ => None,
+            };
+            if let Some(mode) = parsed {
+                return mode;
+            }
+        }
+        cfg.context.zmode
     }
 
     pub fn set_session_concise_mode(&self, session_id: &str, mode: ConciseMode) {

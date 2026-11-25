@@ -89,7 +89,12 @@ pub async fn api_update_economy_config(
         state.runtime.set_session_minimalism_mode(sid, mode);
     }
     match res {
-        Ok(cfg) => Json(json!({"ok": true, "economy": cfg.economy})).into_response(),
+        Ok(cfg) => Json(json!({
+            "ok": true,
+            "economy": cfg.economy,
+            "zmode_customized": cfg.is_zmode_customized(),
+        }))
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

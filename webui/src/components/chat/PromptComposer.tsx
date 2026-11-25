@@ -12,24 +12,20 @@ import { motion } from 'motion/react'
 import { SPRING_PRESS } from '@/lib/ease'
 import { api, formatCompactTokens } from '@/lib/api'
 import type {
-  CodeMinimalismMode,
   ComponentSlots,
-  ConciseMode,
-  ConciseModeDescriptor,
   ContextBreakdown,
   ModelInfo,
   PermissionMode,
   ProviderDescriptor,
   QueuedPrompt,
+  ZMode,
+  ZModeDescriptor,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { ProgressRing } from '@/components/beui/ProgressRing'
 import { ZenkoIcon } from '@/components/beui/ZenkoIcon'
 import { CHAT_WIDTH_CLASS } from '@/components/chat/ChatStream'
-import {
-  CavemanModeControl,
-  type ConciseUpdatePatch,
-} from '@/components/chat/CavemanModeControl'
+import { FALLBACK_ZMODES, ZModeControl } from '@/components/chat/ZModeControl'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { KokonutContextMeter } from '@/components/kokonutui/ai-context-meter'
 import { PromptInput as MotionBrewPromptInput } from '@/components/motion-brew/prompt-input'
@@ -41,13 +37,6 @@ import AIContextMeter, {
 } from '@/components/smoothui/ai-context-meter'
 import { ComposerBeam } from '@/components/ui/ComposerBeam'
 import { ZenkoTooltip } from '@/components/ui/Tooltip'
-
-const MINIMALISM_POPOVER_LEVELS: readonly { id: CodeMinimalismMode; label: string }[] = [
-  { id: 'off', label: 'Off' },
-  { id: 'lite', label: 'Lite' },
-  { id: 'full', label: 'Full' },
-  { id: 'ultra', label: 'Ultra' },
-]
 
 const SHELL_VARIANT_CLASS: Record<ComponentSlots['composer']['shell_variant'], string> = {
   floating_card:
@@ -158,11 +147,10 @@ export const PromptComposer = memo(function PromptComposer({
   activeProvider,
   activeModel,
   providers,
-  conciseModes = [],
-  conciseMode = 'lite',
-  readLessEnabled = true,
-  autoClarityEnabled = true,
-  onUpdateConcise,
+  zmodes = [],
+  zmode = 'balanced',
+  zmodeCustomized = false,
+  onSelectZMode,
   configuredProviders,
   models,
   onSelectProviderModel,
@@ -194,11 +182,10 @@ export const PromptComposer = memo(function PromptComposer({
   activeProvider: string
   activeModel: string
   providers: ProviderDescriptor[]
-  conciseModes?: ConciseModeDescriptor[]
-  conciseMode?: ConciseMode
-  readLessEnabled?: boolean
-  autoClarityEnabled?: boolean
-  onUpdateConcise?: (patch: ConciseUpdatePatch) => Promise<void> | void
+  zmodes?: ZModeDescriptor[]
+  zmode?: ZMode
+  zmodeCustomized?: boolean
+  onSelectZMode?: (mode: ZMode) => Promise<void> | void
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   onSelectProviderModel: (providerId: string, modelId: string) => void
@@ -388,14 +375,13 @@ export const PromptComposer = memo(function PromptComposer({
         </ZenkoTooltip>
       )}
 
-      {/* Customizable Caveman Mode On/Off + Compression Level Control */}
+      {/* Customizable Unified ZMode Control (Lite / Balanced / High / Ultra) */}
       {composerStyle.show_concise_toggle !== false && (
-        <CavemanModeControl
-          conciseModes={conciseModes}
-          conciseMode={conciseMode}
-          readLessEnabled={readLessEnabled}
-          autoClarityEnabled={autoClarityEnabled}
-          onUpdateConcise={onUpdateConcise}
+        <ZModeControl
+          zmodes={zmodes}
+          zmode={zmode}
+          zmodeCustomized={zmodeCustomized}
+          onSelectZMode={onSelectZMode}
           composerStyle={composerStyle}
           popoverStyle={popoverStyle}
           open={conciseOpen}
@@ -631,6 +617,10 @@ export const PromptComposer = memo(function PromptComposer({
 
               <div className="space-y-1 border-t border-[var(--border)]/60 pt-2 font-mono text-[11px]">
                 {[
+                  [
+                    'ZMode',
+                    `${contextData.zmode ?? zmode}${contextData.zmode_customized ?? zmodeCustomized ? ' (custom)' : ''}`,
+                  ],
                   ['Tier 1 (KV frozen)', `${formatCompactTokens(contextData.tier1_tokens)} tok`],
                   ['Tier 2 (Memory/Skills)', `${formatCompactTokens(contextData.tier2_tokens)} tok`],
                   [
@@ -665,43 +655,31 @@ export const PromptComposer = memo(function PromptComposer({
                 ))}
               </div>
 
-              {onUpdateConcise && conciseModes.length > 0 && (
-                <div className="space-y-2 border-t border-[var(--border)]/60 pt-2.5">
+              {onSelectZMode && (
+                <div className="space-y-1.5 border-t border-[var(--border)]/60 pt-2.5">
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-[var(--muted)]">Concise English</span>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const nextReadLess = !(contextData.read_less_enabled ?? readLessEnabled)
-                        await onUpdateConcise({ read_less: nextReadLess })
-                        if (activeSessionId) refreshContextBreakdown(activeSessionId)
-                      }}
-                      className={cn(
-                        'cursor-pointer rounded-md border px-1.5 py-0.5 font-mono text-[10px] transition-colors',
-                        (contextData.read_less_enabled ?? readLessEnabled)
-                          ? 'border-[var(--accent)]/60 bg-[var(--accent)]/14 text-[var(--accent)]'
-                          : 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--fg)]',
-                      )}
-                    >
-                      Read-Less {(contextData.read_less_enabled ?? readLessEnabled) ? 'On' : 'Off'}
-                    </button>
+                    <span className="text-[var(--muted)]">ZMode Profile</span>
+                    <span className="font-mono text-[10px] text-[var(--muted)]">
+                      prose:{contextData.concise_mode ?? 'lite'} · code:
+                      {contextData.minimalism_mode ?? 'lite'}
+                    </span>
                   </div>
                   <div className="grid grid-cols-4 gap-1">
-                    {conciseModes.map((m) => {
-                      const active = (contextData.concise_mode ?? conciseMode) === m.id
+                    {(zmodes.length > 0 ? zmodes : FALLBACK_ZMODES).map((m) => {
+                      const active = (contextData.zmode ?? zmode) === m.id
                       return (
                         <button
                           key={m.id}
                           type="button"
-                          title={m.description}
+                          title={`${m.label} — ${m.tagline}`}
                           onClick={async () => {
-                            await onUpdateConcise({ concise_mode: m.id })
+                            await onSelectZMode(m.id)
                             if (activeSessionId) refreshContextBreakdown(activeSessionId)
                           }}
                           className={cn(
                             'cursor-pointer rounded-md border px-1.5 py-1 font-mono text-[10.5px] transition-colors',
                             active
-                              ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--bg)] font-semibold'
+                              ? 'border-[var(--accent)] bg-[var(--accent)] font-semibold text-[var(--bg)]'
                               : 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--fg)]',
                           )}
                         >
@@ -712,44 +690,6 @@ export const PromptComposer = memo(function PromptComposer({
                   </div>
                 </div>
               )}
-
-              <div className="space-y-1.5 border-t border-[var(--border)]/60 pt-2.5">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-[var(--muted)]">Code Minimalism</span>
-                  <span className="font-mono text-[10px] text-[var(--muted)]">
-                    +{contextData.economy_lines_added ?? 0} / -{contextData.economy_lines_deleted ?? 0} LOC
-                  </span>
-                </div>
-                <div className="grid grid-cols-4 gap-1">
-                  {MINIMALISM_POPOVER_LEVELS.map((lvl) => {
-                    const active = (contextData.minimalism_mode ?? 'lite') === lvl.id
-                    return (
-                      <button
-                        key={lvl.id}
-                        type="button"
-                        onClick={async () => {
-                          await api('/api/economy/config', {
-                            method: 'PATCH',
-                            body: JSON.stringify({
-                              minimalism_mode: lvl.id,
-                              session_id: activeSessionId || undefined,
-                            }),
-                          })
-                          if (activeSessionId) refreshContextBreakdown(activeSessionId)
-                        }}
-                        className={cn(
-                          'cursor-pointer rounded-md border px-1.5 py-1 font-mono text-[10.5px] transition-colors',
-                          active
-                            ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--bg)] font-semibold'
-                            : 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--fg)]',
-                        )}
-                      >
-                        {lvl.label}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
 
               {contextData.repo_rules_loaded.length > 0 && (
                 <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10.5px] text-[var(--muted)]">

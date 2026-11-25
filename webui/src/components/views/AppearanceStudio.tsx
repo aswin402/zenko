@@ -19,7 +19,6 @@ import { ICON_PACK_META_MAP } from '@/lib/icon-packs'
 import type {
   ActiveView,
   ColorTokens,
-  ConciseModeDescriptor,
   ModelInfo,
   ProviderDescriptor,
   StudioCategory,
@@ -27,6 +26,7 @@ import type {
   StudioSubComponent,
   ThemePresetMeta,
   UiCustomization,
+  ZModeDescriptor,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { CUSTOMIZABLE_ICON_OPTIONS, ZenkoIcon } from '@/components/beui/ZenkoIcon'
@@ -174,7 +174,7 @@ export function AppearanceStudio({
   presets,
   studioSchema,
   providers,
-  conciseModes = [],
+  zmodes = [],
   configuredProviders,
   models,
   activeProvider,
@@ -190,7 +190,7 @@ export function AppearanceStudio({
   presets: ThemePresetMeta[]
   studioSchema: StudioCategory[]
   providers: ProviderDescriptor[]
-  conciseModes?: ConciseModeDescriptor[]
+  zmodes?: ZModeDescriptor[]
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   activeProvider: string
@@ -1115,7 +1115,7 @@ export function AppearanceStudio({
                   {renderStudioPreview(activeSub.preview, {
                     ui,
                     providers,
-                    conciseModes,
+                    zmodes,
                     configuredProviders,
                     models,
                     activeProvider,

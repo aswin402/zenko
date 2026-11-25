@@ -82,8 +82,12 @@ const STATUS_BADGE_LABEL: Record<string, string> = {
  */
 export function TokenEconomyPanel({
   toast,
+  syncKey,
+  onEconomyConfigChanged,
 }: {
   toast: (msg: string, kind?: 'info' | 'success' | 'error') => void
+  syncKey?: string
+  onEconomyConfigChanged?: (zmodeCustomized?: boolean) => void
 }) {
   const [report, setReport] = useState<TokenEconomyReport | null>(null)
   const [loading, setLoading] = useState(false)
@@ -111,18 +115,22 @@ export function TokenEconomyPanel({
 
   useEffect(() => {
     refresh()
-  }, [refresh])
+  }, [refresh, syncKey])
 
   const updateEconomyCfg = async (patch: Partial<EconomyConfig>) => {
     setBusy(true)
     try {
-      const res = await api<{ ok: boolean; economy?: EconomyConfig }>('/api/economy/config', {
-        method: 'PATCH',
-        body: JSON.stringify(patch),
-      })
+      const res = await api<{ ok: boolean; economy?: EconomyConfig; zmode_customized?: boolean }>(
+        '/api/economy/config',
+        {
+          method: 'PATCH',
+          body: JSON.stringify(patch),
+        },
+      )
       if (res.economy) {
         setReport((prev) => (prev ? { ...prev, config: res.economy! } : prev))
       }
+      onEconomyConfigChanged?.(res.zmode_customized)
       toast('Updated Token Economy settings', 'success')
     } catch (e: any) {
       toast(e?.message || 'Failed to update Token Economy config', 'error')

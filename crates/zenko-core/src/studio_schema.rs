@@ -724,12 +724,12 @@ const OPT_SURFACE_CARD: &[StudioOption] = &[
 ];
 
 const OPT_CONCISE_BUTTON_STYLE: &[StudioOption] = &[
-    StudioOption { value: "split_pill", label: "Split On/Off + Mode", hint: "Dual-segment control: 1-click Caveman On/Off toggle + separate mode selector (Default)" },
-    StudioOption { value: "accent_solid", label: "Accent Solid", hint: "High-contrast filled accent control when Caveman Mode is active" },
+    StudioOption { value: "split_pill", label: "Split Cycle + Menu", hint: "Dual-segment control: 1-click ZMode cycle + separate profile selector (Default)" },
+    StudioOption { value: "accent_solid", label: "Accent Solid", hint: "High-contrast filled accent control for Balanced / High / Ultra ZMode" },
     StudioOption { value: "soft_tint", label: "Soft Accent Tint", hint: "Subtle translucent accent wash and hairline border while active" },
     StudioOption { value: "outline_mono", label: "Mono Terminal", hint: "Crisp monospace badge with glowing status dot and precision outline" },
     StudioOption { value: "minimal_ghost", label: "Minimal Ghost", hint: "Ultra-quiet borderless toolbar control highlighting only active state" },
-    StudioOption { value: "segmented_bar", label: "Inline Mode Bar", hint: "On/Off switch plus inline Lite / Full / Ultra pills directly in chat input" },
+    StudioOption { value: "segmented_bar", label: "Inline Mode Bar", hint: "ZMode label plus inline Lite / Balanced / High / Ultra pills directly in chat input" },
 ];
 
 const OPT_CONCISE_BUTTON_SHAPE: &[StudioOption] = &[
@@ -1482,8 +1482,8 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                     },
                     StudioControl {
                         path: "components.composer.show_concise_toggle",
-                        label: "Caveman Mode Button",
-                        description: "Show 1-click Caveman On/Off toggle and Lite/Full/Ultra mode selector inside chat input.",
+                        label: "ZMode Button",
+                        description: "Show unified ZMode (Lite / Balanced / High / Ultra) efficiency selector inside chat input.",
                         kind: ControlKind::Toggle,
                         options: &[],
                         min: None,
@@ -1496,14 +1496,14 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
             StudioSubComponent {
                 id: "concise_button",
                 group: "",
-                label: "Caveman Mode Button",
-                description: "Customize layout, shape, border/background chrome, and active tint for the Chat Input Caveman On/Off & Mode selector.",
+                label: "ZMode Button",
+                description: "Customize layout, shape, border/background chrome, and active tint for the Chat Input ZMode (Lite / Balanced / High / Ultra) selector.",
                 preview: "concise_button",
                 controls: &[
                     StudioControl {
                         path: "components.composer.show_concise_toggle",
-                        label: "Show Caveman Button in Chat Input",
-                        description: "Display the Caveman On/Off toggle and compression level switcher inside the prompt toolbar.",
+                        label: "Show ZMode Button in Chat Input",
+                        description: "Display the unified ZMode efficiency & context profile switcher inside the prompt toolbar.",
                         kind: ControlKind::Toggle,
                         options: &[],
                         min: None,
@@ -1514,7 +1514,7 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                     StudioControl {
                         path: "components.composer.concise_button_style",
                         label: "Button Layout & Style",
-                        description: "Choose split On/Off + Mode pill, solid accent, soft tint, mono terminal, minimal ghost, or inline segmented level bar.",
+                        description: "Choose split pill, solid accent, soft tint, mono terminal, minimal ghost, or inline segmented Lite/Balanced/High/Ultra bar.",
                         kind: ControlKind::Cards,
                         options: OPT_CONCISE_BUTTON_STYLE,
                         min: None,
@@ -1525,7 +1525,7 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                     StudioControl {
                         path: "components.composer.concise_button_shape",
                         label: "Button Shape",
-                        description: "Corner radius silhouette for the Caveman On/Off & Mode control.",
+                        description: "Corner radius silhouette for the Chat Input ZMode control.",
                         kind: ControlKind::Cards,
                         options: OPT_CONCISE_BUTTON_SHAPE,
                         min: None,
@@ -1536,7 +1536,7 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                     StudioControl {
                         path: "components.composer.concise_button_chrome",
                         label: "Border & Background Chrome",
-                        description: "Fine-tune border and surface visibility for the Caveman control.",
+                        description: "Fine-tune border and surface visibility for the ZMode control.",
                         kind: ControlKind::Cards,
                         options: OPT_CONCISE_BUTTON_CHROME,
                         min: None,
@@ -1547,7 +1547,7 @@ pub const STUDIO_SCHEMA: &[StudioCategory] = &[
                     StudioControl {
                         path: "components.composer.concise_button_accent",
                         label: "Active Accent Color Override",
-                        description: "Leave on Theme Default to strictly inherit your 10% global accent, or pick a custom active highlight for Caveman Mode.",
+                        description: "Leave on Theme Default to strictly inherit your 10% global accent, or pick a custom active highlight for ZMode.",
                         kind: ControlKind::Color,
                         options: &[],
                         min: None,

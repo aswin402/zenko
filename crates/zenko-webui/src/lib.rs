@@ -261,6 +261,7 @@ pub fn build_router(state: WebState) -> Router {
         // Setup & Gateways
         .route("/api/setup", post(api::api_save_setup))
         .route("/api/context/concise", patch(api::api_update_context_concise))
+        .route("/api/context/zmode", patch(api::api_update_context_zmode))
         // Native Token Economy Engine
         .route("/api/economy", get(api::api_get_economy))
         .route("/api/economy/config", patch(api::api_update_economy_config))

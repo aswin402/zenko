@@ -1097,6 +1097,29 @@ export interface ConciseModeDescriptor {
   directive: string
 }
 
+export type ZMode = 'lite' | 'balanced' | 'high' | 'ultra'
+
+export interface ZModeDescriptor {
+  mode: ZMode
+  id: ZMode
+  label: string
+  tagline: string
+  description: string
+  concise_mode: ConciseMode
+  minimalism_mode: CodeMinimalismMode
+  auto_bloat_hint: boolean
+  read_less: boolean
+  read_less_min_bytes: number
+  microcompact_trigger_ratio: number
+  compaction_trigger_ratio: number
+  auto_micro_skills: boolean
+  auto_tool_prune: boolean
+  tool_prune_min_prompts: number
+  tool_prune_min_sessions: number
+  p90_loop_guard: boolean
+  p90_multiplier: number
+}
+
 export interface ContextBreakdown {
   session_id: string
   model: string
@@ -1118,6 +1141,8 @@ export interface ContextBreakdown {
   checkpoints_count: number
   spilled_artifacts_count: number
   cache_hit_pct: number
+  zmode?: ZMode
+  zmode_customized?: boolean
   concise_mode?: ConciseMode
   auto_clarity?: boolean
   read_less_enabled?: boolean
@@ -1504,6 +1529,8 @@ export interface BootstrapResponse {
   studio_schema?: StudioCategory[]
   providers?: ProviderDescriptor[]
   concise_modes?: ConciseModeDescriptor[]
+  zmodes?: ZModeDescriptor[]
+  zmode_customized?: boolean
   configured_providers?: Record<string, boolean>
   pending_approvals?: ApprovalRecord[]
   pending_clarifications?: ClarificationRecord[]

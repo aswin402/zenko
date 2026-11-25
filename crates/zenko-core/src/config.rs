@@ -583,6 +583,9 @@ pub struct ContextConfig {
     pub freeze_tool_schemas: bool,
     #[serde(default = "default_true")]
     pub auto_repo_rules: bool,
+    /// Unified Zenko context & efficiency gear (`lite`, `balanced` [default], `high`, `ultra`).
+    #[serde(default)]
+    pub zmode: crate::types::ZMode,
     /// Native English output compression intensity (`off`, `lite`, `full`, `ultra`).
     #[serde(default)]
     pub concise_mode: crate::types::ConciseMode,
@@ -607,6 +610,7 @@ impl Default for ContextConfig {
             deferred_tool_loading: true,
             freeze_tool_schemas: true,
             auto_repo_rules: true,
+            zmode: crate::types::ZMode::Balanced,
             concise_mode: crate::types::ConciseMode::Lite,
             auto_clarity: true,
             read_less: true,
@@ -1251,6 +1255,50 @@ fn collect_hub_dir(
     }
 }
 
+impl ZenkoConfig {
+    /// Atomically applies a declarative `ZMode` preset (`lite`, `balanced`, `high`, `ultra`)
+    /// across `ContextConfig` and `EconomyConfig` while preserving all safety & KV-cache invariants.
+    pub fn apply_zmode(&mut self, mode: crate::types::ZMode) {
+        let d = crate::registry::find_zmode(mode);
+        self.context.zmode = d.mode;
+        self.context.concise_mode = d.concise_mode;
+        self.context.auto_clarity = true;
+        self.context.read_less = d.read_less;
+        self.context.read_less_min_bytes = d.read_less_min_bytes;
+        self.context.microcompact_trigger_ratio = d.microcompact_trigger_ratio;
+        self.context.compaction_trigger_ratio = d.compaction_trigger_ratio;
+        self.context.artifact_spilling = true;
+        self.context.deferred_tool_loading = true;
+        self.context.freeze_tool_schemas = true;
+
+        self.economy.enabled = true;
+        self.economy.minimalism_mode = d.minimalism_mode;
+        self.economy.auto_bloat_hint = d.auto_bloat_hint;
+        self.economy.auto_micro_skills = d.auto_micro_skills;
+        self.economy.auto_tool_prune = d.auto_tool_prune;
+        self.economy.tool_prune_min_prompts = d.tool_prune_min_prompts;
+        self.economy.tool_prune_min_sessions = d.tool_prune_min_sessions;
+        self.economy.p90_loop_guard = d.p90_loop_guard;
+        self.economy.p90_multiplier = d.p90_multiplier;
+    }
+
+    /// Returns `true` when individual context or economy settings diverge from the active `ZMode` preset.
+    pub fn is_zmode_customized(&self) -> bool {
+        let d = crate::registry::find_zmode(self.context.zmode);
+        self.context.concise_mode != d.concise_mode
+            || self.context.read_less != d.read_less
+            || self.context.read_less_min_bytes != d.read_less_min_bytes
+            || (self.context.microcompact_trigger_ratio - d.microcompact_trigger_ratio).abs() > 1e-6
+            || (self.context.compaction_trigger_ratio - d.compaction_trigger_ratio).abs() > 1e-6
+            || self.economy.minimalism_mode != d.minimalism_mode
+            || self.economy.auto_bloat_hint != d.auto_bloat_hint
+            || self.economy.auto_micro_skills != d.auto_micro_skills
+            || self.economy.auto_tool_prune != d.auto_tool_prune
+            || self.economy.p90_loop_guard != d.p90_loop_guard
+            || !self.economy.enabled
+    }
+}
+
 pub fn expand_tilde(input: &str) -> PathBuf {
     if let Some(stripped) = input.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
@@ -1281,5 +1329,29 @@ mod tests {
         assert_eq!(p.lead_model, "MiniMax-M3.1-Flash");
         assert_eq!(p.fast_model, "MiniMax-M3.1-Flash");
         assert!(p.base_url.contains("minimax"));
+    }
+
+    #[test]
+    fn zmode_default_is_balanced_and_apply_roundtrips_cleanly() {
+        let mut cfg = super::ZenkoConfig::default();
+        assert_eq!(cfg.context.zmode, crate::types::ZMode::Balanced);
+        assert!(
+            !cfg.is_zmode_customized(),
+            "ZenkoConfig::default() must match ZMode::Balanced exactly"
+        );
+
+        for desc in crate::registry::ZMODE_REGISTRY {
+            cfg.apply_zmode(desc.mode);
+            assert_eq!(cfg.context.zmode, desc.mode);
+            assert!(!cfg.is_zmode_customized());
+            assert!(cfg.context.freeze_tool_schemas);
+            assert!(cfg.context.artifact_spilling);
+            assert!(cfg.context.auto_clarity);
+            assert!(cfg.economy.enabled);
+        }
+
+        cfg.apply_zmode(crate::types::ZMode::Balanced);
+        cfg.context.concise_mode = crate::types::ConciseMode::Ultra;
+        assert!(cfg.is_zmode_customized());
     }
 }

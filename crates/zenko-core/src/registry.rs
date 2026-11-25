@@ -17,6 +17,16 @@ use crate::{
     TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
     VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI, VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI,
     VAULT_KEY_OPENROUTER, VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
+    ZMODE_BALANCED_COMPACTION_RATIO, ZMODE_BALANCED_MICROCOMPACT_RATIO,
+    ZMODE_BALANCED_P90_MULTIPLIER, ZMODE_BALANCED_PRUNE_MIN_PROMPTS,
+    ZMODE_BALANCED_PRUNE_MIN_SESSIONS, ZMODE_BALANCED_READ_LESS_MIN_BYTES,
+    ZMODE_HIGH_COMPACTION_RATIO, ZMODE_HIGH_MICROCOMPACT_RATIO, ZMODE_HIGH_P90_MULTIPLIER,
+    ZMODE_HIGH_PRUNE_MIN_PROMPTS, ZMODE_HIGH_PRUNE_MIN_SESSIONS, ZMODE_HIGH_READ_LESS_MIN_BYTES,
+    ZMODE_LITE_COMPACTION_RATIO, ZMODE_LITE_MICROCOMPACT_RATIO, ZMODE_LITE_P90_MULTIPLIER,
+    ZMODE_LITE_PRUNE_MIN_PROMPTS, ZMODE_LITE_PRUNE_MIN_SESSIONS, ZMODE_LITE_READ_LESS_MIN_BYTES,
+    ZMODE_ULTRA_COMPACTION_RATIO, ZMODE_ULTRA_MICROCOMPACT_RATIO, ZMODE_ULTRA_P90_MULTIPLIER,
+    ZMODE_ULTRA_PRUNE_MIN_PROMPTS, ZMODE_ULTRA_PRUNE_MIN_SESSIONS,
+    ZMODE_ULTRA_READ_LESS_MIN_BYTES,
 };
 use serde::Serialize;
 
@@ -954,6 +964,120 @@ pub fn find_minimalism_mode(mode: CodeMinimalismMode) -> &'static CodeMinimalism
         .unwrap_or(&CODE_MINIMALISM_REGISTRY[0])
 }
 
+/// Declarative unified `ZMode` preset descriptor (single source of truth shared by config,
+/// runtime, `orchestrate_control`, API bootstrap, Chat UI, Settings, and Theme Studio).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ZModeDescriptor {
+    pub mode: crate::types::ZMode,
+    pub id: &'static str,
+    pub label: &'static str,
+    pub tagline: &'static str,
+    pub description: &'static str,
+    pub concise_mode: ConciseMode,
+    pub minimalism_mode: CodeMinimalismMode,
+    pub auto_bloat_hint: bool,
+    pub read_less: bool,
+    pub read_less_min_bytes: usize,
+    pub microcompact_trigger_ratio: f64,
+    pub compaction_trigger_ratio: f64,
+    pub auto_micro_skills: bool,
+    pub auto_tool_prune: bool,
+    pub tool_prune_min_prompts: u32,
+    pub tool_prune_min_sessions: u32,
+    pub p90_loop_guard: bool,
+    pub p90_multiplier: f64,
+}
+
+pub const ZMODE_REGISTRY: &[ZModeDescriptor] = &[
+    ZModeDescriptor {
+        mode: crate::types::ZMode::Lite,
+        id: "lite",
+        label: "Lite",
+        tagline: "Max clarity · light compression",
+        description: "Full natural English prose, light reuse-first minicode, lossless dedup/scrub (4 KB Read-Less), longer raw history (78%/90%), and micro-skills with tool pruning off.",
+        concise_mode: ConciseMode::Off,
+        minimalism_mode: CodeMinimalismMode::Lite,
+        auto_bloat_hint: false,
+        read_less: true,
+        read_less_min_bytes: ZMODE_LITE_READ_LESS_MIN_BYTES,
+        microcompact_trigger_ratio: ZMODE_LITE_MICROCOMPACT_RATIO,
+        compaction_trigger_ratio: ZMODE_LITE_COMPACTION_RATIO,
+        auto_micro_skills: true,
+        auto_tool_prune: false,
+        tool_prune_min_prompts: ZMODE_LITE_PRUNE_MIN_PROMPTS,
+        tool_prune_min_sessions: ZMODE_LITE_PRUNE_MIN_SESSIONS,
+        p90_loop_guard: true,
+        p90_multiplier: ZMODE_LITE_P90_MULTIPLIER,
+    },
+    ZModeDescriptor {
+        mode: crate::types::ZMode::Balanced,
+        id: "balanced",
+        label: "Balanced",
+        tagline: "Recommended default · all features",
+        description: "All context, minicode, and token-economy engines harmonized: filler-free prose, Lite minicode + bloat guard, 3-tier dedup/scrub/Read-Less (1.5 KB), soft tool pruning, and 1.25x P90 loop guard.",
+        concise_mode: ConciseMode::Lite,
+        minimalism_mode: CodeMinimalismMode::Lite,
+        auto_bloat_hint: true,
+        read_less: true,
+        read_less_min_bytes: ZMODE_BALANCED_READ_LESS_MIN_BYTES,
+        microcompact_trigger_ratio: ZMODE_BALANCED_MICROCOMPACT_RATIO,
+        compaction_trigger_ratio: ZMODE_BALANCED_COMPACTION_RATIO,
+        auto_micro_skills: true,
+        auto_tool_prune: true,
+        tool_prune_min_prompts: ZMODE_BALANCED_PRUNE_MIN_PROMPTS,
+        tool_prune_min_sessions: ZMODE_BALANCED_PRUNE_MIN_SESSIONS,
+        p90_loop_guard: true,
+        p90_multiplier: ZMODE_BALANCED_P90_MULTIPLIER,
+    },
+    ZModeDescriptor {
+        mode: crate::types::ZMode::High,
+        id: "high",
+        label: "High",
+        tagline: "Strict minicode · high token savings",
+        description: "Tight telegraphic prose, strict 7-rung Full minicode (140 LOC bloat guard), aggressive 900 B Read-Less + dedup, earlier 55%/78% compaction, faster tool pruning, and 1.15x P90 loop guard.",
+        concise_mode: ConciseMode::Full,
+        minimalism_mode: CodeMinimalismMode::Full,
+        auto_bloat_hint: true,
+        read_less: true,
+        read_less_min_bytes: ZMODE_HIGH_READ_LESS_MIN_BYTES,
+        microcompact_trigger_ratio: ZMODE_HIGH_MICROCOMPACT_RATIO,
+        compaction_trigger_ratio: ZMODE_HIGH_COMPACTION_RATIO,
+        auto_micro_skills: true,
+        auto_tool_prune: true,
+        tool_prune_min_prompts: ZMODE_HIGH_PRUNE_MIN_PROMPTS,
+        tool_prune_min_sessions: ZMODE_HIGH_PRUNE_MIN_SESSIONS,
+        p90_loop_guard: true,
+        p90_multiplier: ZMODE_HIGH_P90_MULTIPLIER,
+    },
+    ZModeDescriptor {
+        mode: crate::types::ZMode::Ultra,
+        id: "ultra",
+        label: "Ultra",
+        tagline: "Maximum density & consolidation",
+        description: "Ultra-dense prose, ruthless Ultra minicode (70 LOC bloat guard), 512 B 3-tier compression, tight 45%/70% compaction, strict tool pruning, and 1.10x P90 loop guard while preserving all safety checks.",
+        concise_mode: ConciseMode::Ultra,
+        minimalism_mode: CodeMinimalismMode::Ultra,
+        auto_bloat_hint: true,
+        read_less: true,
+        read_less_min_bytes: ZMODE_ULTRA_READ_LESS_MIN_BYTES,
+        microcompact_trigger_ratio: ZMODE_ULTRA_MICROCOMPACT_RATIO,
+        compaction_trigger_ratio: ZMODE_ULTRA_COMPACTION_RATIO,
+        auto_micro_skills: true,
+        auto_tool_prune: true,
+        tool_prune_min_prompts: ZMODE_ULTRA_PRUNE_MIN_PROMPTS,
+        tool_prune_min_sessions: ZMODE_ULTRA_PRUNE_MIN_SESSIONS,
+        p90_loop_guard: true,
+        p90_multiplier: ZMODE_ULTRA_P90_MULTIPLIER,
+    },
+];
+
+pub fn find_zmode(mode: crate::types::ZMode) -> &'static ZModeDescriptor {
+    ZMODE_REGISTRY
+        .iter()
+        .find(|d| d.mode == mode)
+        .unwrap_or(&ZMODE_REGISTRY[1])
+}
+
 /// Renders the KV-cache-safe Tier-2 `<code_minimalism>` directive block (returns `None` when `Off`).
 /// Instructs the orchestrator to apply the 7-rung Simplicity Ladder and autonomously use
 /// `code_minimalism` (`audit_diff`, `audit_repo`, `debt_scan`, `gain`) and `minimal-*` skills.
@@ -1026,12 +1150,12 @@ pub fn render_economy_prompt_block(
     }
     let body = match read_only_plan {
         true => format!(
-            "- Background micro-skills, soft tool pruning, Read-Less compression, and 1.25x P90 loop guard are active for this repository.\n\
-             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
+            "- Background micro-skills, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, and P90 loop guard are active under your current ZMode.\n\
+             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})`, adjust gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
         false => format!(
-            "- Background micro-skill mining, soft tool pruning, Read-Less compression, diff-LOC tracking, and 1.25x P90 loop guard run automatically for this repository.\n\
-             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` via `retire_micro_skill`, audit code bloat/debt via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"}})`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
+            "- Background micro-skill mining, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, diff-LOC tracking, and P90 loop guard run automatically under your current ZMode.\n\
+             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` via `retire_micro_skill`, audit code bloat/debt via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"}})`, shift overall context gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
     };
     Some(format!("<token_economy>\n{body}\n</token_economy>"))

@@ -223,6 +223,8 @@ pub async fn api_bootstrap(State(state): State<WebState>, headers: HeaderMap) ->
         "providers": PROVIDER_REGISTRY,
         "concise_modes": CONCISE_MODE_REGISTRY,
         "minimalism_modes": CODE_MINIMALISM_REGISTRY,
+        "zmodes": ZMODE_REGISTRY,
+        "zmode_customized": cfg.is_zmode_customized(),
         "configured_providers": configured_providers,
         "pending_approvals": pending_approvals,
         "pending_clarifications": pending_clarifications,

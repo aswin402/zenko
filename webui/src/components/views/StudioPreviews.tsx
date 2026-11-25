@@ -4,12 +4,12 @@ import { splitIntoStreamingSegments } from '@/lib/elements'
 import { ICON_PACK_META_MAP } from '@/lib/icon-packs'
 import type {
   ActiveView,
-  ConciseMode,
-  ConciseModeDescriptor,
   ModelInfo,
   ProviderDescriptor,
   Session,
   UiCustomization,
+  ZMode,
+  ZModeDescriptor,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { StreamingResponse } from '@/components/agents/streaming-response'
@@ -44,7 +44,7 @@ import {
 } from '@/components/vengeanceui/line-hover-link'
 import { LiquidButton } from '@/components/vengeanceui/liquid-button'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
-import { CavemanModeControl } from '@/components/chat/CavemanModeControl'
+import { ZModeControl } from '@/components/chat/ZModeControl'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { Sidebar } from '@/components/chat/Sidebar'
@@ -92,7 +92,7 @@ import { DashboardMiniPreview } from '@/components/views/DashboardView'
 export interface StudioPreviewContext {
   ui: UiCustomization
   providers: ProviderDescriptor[]
-  conciseModes?: ConciseModeDescriptor[]
+  zmodes?: ZModeDescriptor[]
   configuredProviders: Record<string, boolean>
   models: ModelInfo[]
   activeProvider: string
@@ -483,9 +483,9 @@ function ComposerAnimationPreview({ ctx }: { ctx: StudioPreviewContext }) {
         activeProvider={ctx.activeProvider}
         activeModel={activeModel}
         providers={ctx.providers}
-        conciseModes={ctx.conciseModes}
-        conciseMode="full"
-        onUpdateConcise={() => {}}
+        zmodes={ctx.zmodes}
+        zmode="balanced"
+        onSelectZMode={() => {}}
         configuredProviders={ctx.configuredProviders}
         models={ctx.models}
         onSelectProviderModel={() => {}}
@@ -503,22 +503,10 @@ function ComposerAnimationPreview({ ctx }: { ctx: StudioPreviewContext }) {
   )
 }
 
-function ConciseButtonPreview({ ctx }: { ctx: StudioPreviewContext }) {
+function ZModeButtonPreview({ ctx }: { ctx: StudioPreviewContext }) {
   const { ui, activeModel, activeMode } = ctx
-  const [simMode, setSimMode] = useState<ConciseMode>('full')
-  const [simReadLess, setSimReadLess] = useState(true)
-  const [simAutoClarity, setSimAutoClarity] = useState(true)
+  const [simZMode, setSimZMode] = useState<ZMode>('balanced')
   const [popoverOpen, setPopoverOpen] = useState(false)
-
-  const handlePatch = (patch: {
-    concise_mode?: ConciseMode
-    read_less?: boolean
-    auto_clarity?: boolean
-  }) => {
-    if (patch.concise_mode !== undefined) setSimMode(patch.concise_mode)
-    if (patch.read_less !== undefined) setSimReadLess(patch.read_less)
-    if (patch.auto_clarity !== undefined) setSimAutoClarity(patch.auto_clarity)
-  }
 
   const c = ui.components.composer
   const styleLabel = c.concise_button_style || 'split_pill'
@@ -530,7 +518,7 @@ function ConciseButtonPreview({ ctx }: { ctx: StudioPreviewContext }) {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)]/75 px-4 py-3">
         <div className="flex flex-col gap-0.5">
           <span className="text-[12px] font-medium text-[var(--fg)]">
-            Interactive Caveman Button Preview
+            Interactive ZMode Button Preview
           </span>
           <span className="font-mono text-[10.5px] text-[var(--muted)]">
             {styleLabel} · {shapeLabel} · {chromeLabel}
@@ -542,12 +530,10 @@ function ConciseButtonPreview({ ctx }: { ctx: StudioPreviewContext }) {
             Hidden in Chat Input (enable toggle below)
           </span>
         ) : (
-          <CavemanModeControl
-            conciseModes={ctx.conciseModes || []}
-            conciseMode={simMode}
-            readLessEnabled={simReadLess}
-            autoClarityEnabled={simAutoClarity}
-            onUpdateConcise={handlePatch}
+          <ZModeControl
+            zmodes={ctx.zmodes || []}
+            zmode={simZMode}
+            onSelectZMode={setSimZMode}
             composerStyle={c}
             popoverStyle={ui.surface.popover_style || 'gooey'}
             open={popoverOpen}
@@ -567,11 +553,9 @@ function ConciseButtonPreview({ ctx }: { ctx: StudioPreviewContext }) {
         activeProvider={ctx.activeProvider}
         activeModel={activeModel}
         providers={ctx.providers}
-        conciseModes={ctx.conciseModes}
-        conciseMode={simMode}
-        readLessEnabled={simReadLess}
-        autoClarityEnabled={simAutoClarity}
-        onUpdateConcise={handlePatch}
+        zmodes={ctx.zmodes}
+        zmode={simZMode}
+        onSelectZMode={setSimZMode}
         configuredProviders={ctx.configuredProviders}
         models={ctx.models}
         onSelectProviderModel={() => {}}
@@ -1360,9 +1344,9 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
           activeProvider={ctx.activeProvider}
           activeModel={activeModel}
           providers={ctx.providers}
-          conciseModes={ctx.conciseModes}
-          conciseMode="lite"
-          onUpdateConcise={() => {}}
+          zmodes={ctx.zmodes}
+          zmode="balanced"
+          onSelectZMode={() => {}}
           configuredProviders={ctx.configuredProviders}
           models={ctx.models}
           onSelectProviderModel={() => {}}
@@ -1379,7 +1363,7 @@ export function renderStudioPreview(previewKey: string, ctx: StudioPreviewContex
       </div>
     ),
 
-    concise_button: () => <ConciseButtonPreview ctx={ctx} />,
+    concise_button: () => <ZModeButtonPreview ctx={ctx} />,
 
     composer_animation: () => <ComposerAnimationPreview ctx={ctx} />,
 

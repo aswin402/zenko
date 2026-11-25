@@ -737,6 +737,13 @@ impl AgentRuntime {
                     if let Some(eff) = shift.reasoning_effort {
                         reasoning_effort = Some(eff);
                     }
+                    if let Some(zm) = shift.zmode {
+                        let d = zenko_core::find_zmode(zm);
+                        pending_orch_hints.push(format!(
+                            "Live ZMode shifted to `{}` ({}): prose=`{}`, minicode=`{}`, Read-Less >= {} B. Preserve all safety invariants.",
+                            d.id, d.tagline, d.concise_mode.as_str(), d.minimalism_mode.as_str(), d.read_less_min_bytes
+                        ));
+                    }
                     if let Some(cm) = shift.concise_mode {
                         let desc = find_concise_mode(cm);
                         let hint = match cm.is_active() {

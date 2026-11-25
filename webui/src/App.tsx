@@ -38,6 +38,8 @@ import type {
   UiProfile,
   WebSearchProviderDescriptor,
   WorkspaceCheckpoint,
+  ZMode,
+  ZModeDescriptor,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { FloatingDock } from '@/components/beui/FloatingDock'
@@ -172,6 +174,8 @@ export default function App() {
   const [studioSchema, setStudioSchema] = useState<StudioCategory[]>([])
   const [providers, setProviders] = useState<ProviderDescriptor[]>([])
   const [conciseModes, setConciseModes] = useState<ConciseModeDescriptor[]>([])
+  const [zmodes, setZModes] = useState<ZModeDescriptor[]>([])
+  const [zmodeCustomized, setZModeCustomized] = useState(false)
   const [configuredProviders, setConfiguredProviders] = useState<Record<string, boolean>>({})
   const [hasProviderKey, setHasProviderKey] = useState(false)
   const [hasTelegram, setHasTelegram] = useState(false)
@@ -302,6 +306,8 @@ export default function App() {
       setSessions(data.sessions || [])
       setProviders(data.providers || [])
       setConciseModes(data.concise_modes || [])
+      setZModes(data.zmodes || [])
+      setZModeCustomized(Boolean(data.zmode_customized))
       setConfiguredProviders(data.configured_providers || {})
       setPendingApprovals(data.pending_approvals || [])
       setPendingClarifications(data.pending_clarifications || [])
@@ -824,9 +830,42 @@ export default function App() {
     }
   }
 
+  const activeZMode = (config?.context?.zmode as ZMode) || 'balanced'
   const activeConciseMode = (config?.context?.concise_mode as ConciseMode) || 'lite'
   const readLessEnabled = config?.context?.read_less !== false
   const autoClarityEnabled = config?.context?.auto_clarity !== false
+
+  const applyZMode = async (mode: ZMode) => {
+    try {
+      const res = await api<{
+        ok: boolean
+        zmode?: ZMode
+        zmode_customized?: boolean
+        context?: any
+        economy?: any
+      }>('/api/context/zmode', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          zmode: mode,
+          session_id: activeSessionId || undefined,
+        }),
+      })
+      setConfig((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              ...(res.context ? { context: res.context } : {}),
+              ...(res.economy ? { economy: res.economy } : {}),
+            }
+          : prev,
+      )
+      setZModeCustomized(Boolean(res.zmode_customized))
+      const label = zmodes.find((m) => m.id === mode)?.label || mode
+      toast(`ZMode · ${label}`, 'info')
+    } catch (e: any) {
+      toast(e?.message || 'Failed to switch ZMode', 'error')
+    }
+  }
 
   const updateConciseSettings = async (patch: {
     concise_mode?: ConciseMode
@@ -834,21 +873,27 @@ export default function App() {
     auto_clarity?: boolean
   }) => {
     try {
-      const res = await api<{ ok: boolean; context?: any }>('/api/context/concise', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          ...patch,
-          session_id: activeSessionId || undefined,
-        }),
-      })
+      const res = await api<{ ok: boolean; context?: any; zmode_customized?: boolean }>(
+        '/api/context/concise',
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            ...patch,
+            session_id: activeSessionId || undefined,
+          }),
+        },
+      )
       if (res.context) {
         setConfig((prev: any) => (prev ? { ...prev, context: res.context } : prev))
+      }
+      if (typeof res.zmode_customized === 'boolean') {
+        setZModeCustomized(res.zmode_customized)
       }
       if (patch.concise_mode !== undefined) {
         const label =
           conciseModes.find((m) => m.id === patch.concise_mode)?.label || patch.concise_mode
         toast(
-          patch.concise_mode === 'off' ? 'Caveman Mode OFF' : `Caveman Mode ON · ${label}`,
+          patch.concise_mode === 'off' ? 'Concise Prose OFF' : `Concise Prose · ${label}`,
           'info',
         )
       } else if (patch.read_less !== undefined) {
@@ -857,7 +902,7 @@ export default function App() {
         toast(`Auto-Clarity ${patch.auto_clarity ? 'ON' : 'OFF'}`, 'info')
       }
     } catch (e: any) {
-      toast(e?.message || 'Failed to update Caveman mode settings', 'error')
+      toast(e?.message || 'Failed to update context settings', 'error')
     }
   }
 
@@ -1169,11 +1214,10 @@ export default function App() {
               activeProvider={activeProvider}
               activeModel={activeModel}
               providers={providers}
-              conciseModes={conciseModes}
-              conciseMode={activeConciseMode}
-              readLessEnabled={readLessEnabled}
-              autoClarityEnabled={autoClarityEnabled}
-              onUpdateConcise={updateConciseSettings}
+              zmodes={zmodes}
+              zmode={activeZMode}
+              zmodeCustomized={zmodeCustomized}
+              onSelectZMode={applyZMode}
               configuredProviders={configuredProviders}
               models={models}
               onSelectProviderModel={async (providerId, modelId) => {
@@ -1316,7 +1360,7 @@ export default function App() {
             presets={presets}
             studioSchema={studioSchema}
             providers={providers}
-            conciseModes={conciseModes}
+            zmodes={zmodes}
             configuredProviders={configuredProviders}
             models={models}
             activeProvider={activeProvider}
@@ -1507,6 +1551,11 @@ export default function App() {
             config={config}
             providers={providers}
             configuredProviders={configuredProviders}
+            zmodes={zmodes}
+            zmode={activeZMode}
+            zmodeCustomized={zmodeCustomized}
+            onSelectZMode={applyZMode}
+            onZModeCustomizedChange={setZModeCustomized}
             conciseModes={conciseModes}
             conciseMode={activeConciseMode}
             autoClarityEnabled={autoClarityEnabled}

@@ -313,7 +313,68 @@ pub async fn api_update_context_concise(
     }
 
     match res {
-        Ok(cfg) => Json(json!({"ok": true, "context": cfg.context})).into_response(),
+        Ok(cfg) => Json(json!({
+            "ok": true,
+            "context": cfg.context,
+            "zmode_customized": cfg.is_zmode_customized(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateZModeReq {
+    zmode: String,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+pub async fn api_update_context_zmode(
+    State(state): State<WebState>,
+    Json(req): Json<UpdateZModeReq>,
+) -> Response {
+    let Some(mode) = ZMode::parse(&req.zmode) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "Invalid zmode `{}` (expected lite, balanced, high, or ultra)",
+                    req.zmode
+                )
+            })),
+        )
+            .into_response();
+    };
+    let desc = find_zmode(mode);
+    let res = state.runtime.update_config(|c| {
+        c.apply_zmode(mode);
+    });
+    if let Some(sid) = req
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        state.runtime.set_session_zmode(sid, mode);
+        state.runtime.set_session_concise_mode(sid, desc.concise_mode);
+        state
+            .runtime
+            .set_session_minimalism_mode(sid, desc.minimalism_mode);
+    }
+    match res {
+        Ok(cfg) => Json(json!({
+            "ok": true,
+            "zmode": mode,
+            "zmode_customized": cfg.is_zmode_customized(),
+            "context": cfg.context,
+            "economy": cfg.economy,
+        }))
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

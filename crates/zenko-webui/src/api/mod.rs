@@ -31,7 +31,8 @@ use zenko_core::{
     VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET, VAULT_KEY_WEBUI_ADMIN,
     WATCHER_MIN_POLL_INTERVAL_SECS, WEB_SEARCH_PROVIDER_REGISTRY, WEBHOOK_DEFAULT_COOLDOWN_SECS,
     WEBHOOK_DEFAULT_MAX_PER_HOUR, WEBHOOK_SIGNATURE_HEADER, WebhookRuleConfig,
-    WorkspaceWatcherConfig, find_provider, new_id, new_session_task_id,
+    WorkspaceWatcherConfig, ZMODE_REGISTRY, ZMode, find_provider, find_zmode, new_id,
+    new_session_task_id,
 };
 use zenko_gateways::{
     has_webhook_rules_for_source, match_webhook_rule, render_webhook_prompt, verify_bot_token,

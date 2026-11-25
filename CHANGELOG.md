@@ -4,6 +4,21 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.32] - 2026-11-26
+
+Bundled all context-compression, code-minimalism, and token-economy systems under a single declarative **`ZMode`** (`lite`, `balanced` [default], `high`, `ultra`) engine and replaced the Chat UI Caveman button with `ZMode`.
+
+### Added
+- **Unified Declarative `ZMode` Registry & Presets (`zenko-core/src/{constants,types,registry,config}.rs`):**
+  - Added `ZMode` (`Lite`, `Balanced` [default], `High`, `Ultra`) and `ZMODE_REGISTRY` bundling Concise Prose, 7-rung Code Minimalism + Auto Bloat Guard, 3-tier Dedup/Scrub/Read-Less thresholds, Microcompaction/Stage-B Compaction trigger ratios, Auto Micro-Skills, Soft Tool Pruning cadence, and P90 Loop Guard multiplier while keeping KV-cache freeze, deferred tool loading, error-salvaging artifact spilling, Auto-Clarity, and safety invariants always on.
+  - Added `ZenkoConfig::apply_zmode` (atomic preset application) and `ZenkoConfig::is_zmode_customized` (automatic custom override detection when users fine-tune individual knobs).
+- **Live Runtime, Orchestrator & API Switching (`zenko-tools`, `zenko-runtime`, `zenko-webui`):**
+  - Added `zmode` parameter to `orchestrate_control` (zero `/commands`) with live mid-turn Tier-3 hints and SSE `zmode` stage updates.
+  - Added `PATCH /api/context/zmode` (persisting to `zenko.toml` and updating active session overrides atomically), plus `zmodes` and `zmode_customized` in `/api/bootstrap`, `/api/sessions/:id/context`, `/api/context/concise`, and `/api/economy/config`.
+- **Chat UI, Context Breakdown, Settings & Studio `ZMode` Control (`webui/`):**
+  - Replaced `CavemanModeControl.tsx` completely with `ZModeControl.tsx` (`<Zap />` icon, 1-click cycle + rich 4-tier profile popover with spec chips and custom-knob reset) preserving all 6 Appearance Studio layouts (`split_pill`, `accent_solid`, `soft_tint`, `outline_mono`, `minimal_ghost`, `segmented_bar`), shapes, chromes, and accent overrides under backward-compatible theme config keys.
+  - Unified the Context Breakdown popover live switcher and Settings (`SetupView.tsx`) into the **`ZMode Engine`** card with an expandable **Fine-Tune Context Overrides** drawer synchronized with `TokenEconomyPanel`.
+
 ## [0.0.31] - 2026-11-25
 
 Closed all four remaining end-to-end wiring seams across `batch_tools`, checkpoint rewinds, background subagent collection (`agent_wait`), and `code_minimalism` text summaries.

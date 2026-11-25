@@ -271,6 +271,7 @@
                     posture: Some(TurnPosture::Brainstorm),
                     cognitive_tier: Some(ModelRoutingRole::Advisor),
                     reasoning_effort: Some(ReasoningEffort::High),
+                    zmode: None,
                     concise_mode: None,
                     minimalism_mode: Some(CodeMinimalismMode::Full),
                     refresh_recon: true,
@@ -311,6 +312,7 @@
                     posture: Some(TurnPosture::Review),
                     cognitive_tier: Some(ModelRoutingRole::Fast),
                     reasoning_effort: Some(ReasoningEffort::Low),
+                    zmode: Some(zenko_core::ZMode::High),
                     concise_mode: None,
                     minimalism_mode: None,
                     refresh_recon: false,
@@ -323,6 +325,17 @@
         assert!(locked_receipt.model_locked_by_override);
         assert!(locked_receipt.resolved_model.is_none());
         assert_eq!(locked_receipt.reasoning_effort, Some(ReasoningEffort::Low));
+        assert_eq!(locked_receipt.zmode, Some(zenko_core::ZMode::High));
+        let cfg_now = rt.config();
+        assert_eq!(rt.effective_zmode(&sess.id, &cfg_now, &[]), zenko_core::ZMode::High);
+        assert_eq!(
+            rt.effective_concise_mode(&sess.id, &cfg_now, &[]),
+            zenko_core::ConciseMode::Full
+        );
+        assert_eq!(
+            rt.effective_minimalism_mode(&sess.id, &cfg_now, &[]),
+            CodeMinimalismMode::Full
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

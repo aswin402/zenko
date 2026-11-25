@@ -480,9 +480,13 @@ impl Tool for OrchestrateControlTool {
             .iter()
             .map(|&m| Value::String(m.to_string()))
             .collect();
+        let zmode_enum: Vec<Value> = zenko_core::ZMODES
+            .iter()
+            .map(|&m| Value::String(m.to_string()))
+            .collect();
         ToolSpec {
             name: TOOL_ORCHESTRATE_CONTROL.into(),
-            description: "Exercise sovereign control over your own turn orchestration (zero /commands): declare or transition your turn posture, dynamically shift cognitive gear (configured model tier & reasoning effort), adjust live English concise mode (`off`, `lite`, `full`, `ultra`), adjust live 7-rung code minimalism mode (`off`, `lite`, `full`, `ultra`), or refresh live 5-way parallel workspace/git/memory/DAG recon on demand.".into(),
+            description: "Exercise sovereign control over your own turn orchestration (zero /commands): declare or transition your turn posture, dynamically shift cognitive gear (configured model tier & reasoning effort), switch unified ZMode (`lite`, `balanced`, `high`, `ultra`), adjust live English concise mode or 7-rung code minimalism mode, or refresh live 5-way parallel workspace/git/memory/DAG recon on demand.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -500,6 +504,11 @@ impl Tool for OrchestrateControlTool {
                         "type": "string",
                         "enum": effort_enum,
                         "description": "Reasoning depth for subsequent iterations (`low`, `medium`, `high`)."
+                    },
+                    "zmode": {
+                        "type": "string",
+                        "enum": zmode_enum,
+                        "description": "Unified Zenko context & efficiency profile (`lite`, `balanced`, `high`, `ultra`) synchronizing prose conciseness, 7-rung code minimalism, and compression."
                     },
                     "concise_mode": {
                         "type": "string",
@@ -580,6 +589,15 @@ impl Tool for OrchestrateControlTool {
             })?),
             None => None,
         };
+        let zmode = match args.get("zmode").and_then(Value::as_str) {
+            Some(raw) => Some(zenko_core::ZMode::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Unknown `zmode` `{raw}`. Valid values: {}.",
+                    zenko_core::ZMODES.join(", ")
+                ))
+            })?),
+            None => None,
+        };
         let refresh_recon = args
             .get("refresh_recon")
             .and_then(Value::as_bool)
@@ -608,6 +626,7 @@ impl Tool for OrchestrateControlTool {
                     reasoning_effort,
                     concise_mode,
                     minimalism_mode,
+                    zmode,
                     refresh_recon,
                     recon_query,
                     rationale,
@@ -629,6 +648,9 @@ impl Tool for OrchestrateControlTool {
         }
         if let Some(e) = receipt.reasoning_effort {
             parts.push(format!("effort={}", e.as_str()));
+        }
+        if let Some(zm) = receipt.zmode {
+            parts.push(format!("zmode={}", zm.as_str()));
         }
         if let Some(cm) = receipt.concise_mode {
             parts.push(format!("concise_mode={}", cm.as_str()));

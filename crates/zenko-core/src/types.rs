@@ -563,6 +563,10 @@ pub struct ContextBreakdown {
     pub economy_lines_added: u64,
     #[serde(default)]
     pub economy_lines_deleted: u64,
+    #[serde(default)]
+    pub zmode: ZMode,
+    #[serde(default)]
+    pub zmode_customized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1871,6 +1875,8 @@ pub struct OrchestrateControlRequest {
     pub concise_mode: Option<ConciseMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimalism_mode: Option<CodeMinimalismMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zmode: Option<ZMode>,
     #[serde(default)]
     pub refresh_recon: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1894,6 +1900,8 @@ pub struct OrchestrateControlReceipt {
     pub concise_mode: Option<ConciseMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimalism_mode: Option<CodeMinimalismMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zmode: Option<ZMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3979,6 +3987,40 @@ impl CodeMinimalismMode {
 
     pub fn is_active(self) -> bool {
         !matches!(self, Self::Off)
+    }
+}
+
+/// Unified declarative Zenko context & efficiency gear (`lite`, `balanced` [default], `high`, `ultra`).
+/// Coordinates Concise Prose, Code Minimalism, 3-tier Read-Less/Dedup/Scrub thresholds,
+/// Microcompaction/Compaction budgets, and Token Economy guardrails from one single registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ZMode {
+    Lite,
+    #[default]
+    Balanced,
+    High,
+    Ultra,
+}
+
+impl ZMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lite => "lite",
+            Self::Balanced => "balanced",
+            Self::High => "high",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "lite" | "light" => Some(Self::Lite),
+            "balanced" | "default" | "standard" => Some(Self::Balanced),
+            "high" | "full" | "aggressive" => Some(Self::High),
+            "ultra" | "max" | "strict" => Some(Self::Ultra),
+            _ => None,
+        }
     }
 }
 
