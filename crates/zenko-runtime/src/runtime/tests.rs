@@ -1829,6 +1829,71 @@
             recon_block.contains("project_brain_truth") && recon_block.contains("payment-ledger"),
             "formatted recon context must include Project Brain truth block: {recon_block}"
         );
+        assert!(
+            brain_recon.language_summary.is_some() && recon_block.contains("languages:"),
+            "parallel recon must include Tokei language summary: {recon_block}"
+        );
+
+        // Verify `code_refactor` Plan Mode & orchestrator category gating end-to-end:
+        assert_eq!(
+            crate::orchestrator::classify_tool_category(
+                zenko_core::TOOL_CODE_REFACTOR,
+                &json!({ "action": "replace", "find": "a", "replace": "b", "dry_run": true }),
+            ),
+            crate::orchestrator::ToolCategory::ReadOnly
+        );
+        assert_eq!(
+            crate::orchestrator::classify_tool_category(
+                zenko_core::TOOL_CODE_REFACTOR,
+                &json!({ "action": "replace", "find": "a", "replace": "b" }),
+            ),
+            crate::orchestrator::ToolCategory::Mutation
+        );
+        let plan_ref_dry = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t19a".into(),
+                    name: zenko_core::TOOL_CODE_REFACTOR.into(),
+                    arguments: json!({ "action": "stats" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_ref_stats");
+        assert!(
+            !plan_ref_dry.output.is_error && plan_ref_dry.output.content.contains("Rust"),
+            "Plan Mode must permit read-only code_refactor stats: {}",
+            plan_ref_dry.output.content
+        );
+        let plan_ref_mut = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t19b".into(),
+                    name: zenko_core::TOOL_CODE_REFACTOR.into(),
+                    arguments: json!({
+                        "action": "replace",
+                        "find": "settle",
+                        "replace": "finalize"
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_ref_mut");
+        assert!(
+            plan_ref_mut.output.is_error,
+            "Plan Mode must block mutating code_refactor replace without dry_run=true"
+        );
 
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);

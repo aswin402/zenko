@@ -823,6 +823,13 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
                     .into(),
             ),
         },
+        zenko_core::TOOL_CODE_REFACTOR => match zenko_core::is_code_refactor_args_mutating(args) {
+            false => PolicyVerdict::Allow,
+            true => PolicyVerdict::Deny(
+                "Read-only Plan Mode only permits read-only `code_refactor` actions (`stats`, `struct_search`, `struct_diff`) or previews with `dry_run: true`. Approve the plan before applying workspace refactors."
+                    .into(),
+            ),
+        },
         TOOL_SCRIPT_BLOCK => {
             let action = args
                 .get("action")

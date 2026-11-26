@@ -438,6 +438,8 @@ pub struct WorkspaceWatcherConfig {
     pub path: String,
     #[serde(default = "default_watcher_glob")]
     pub glob: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_glob: Option<String>,
     #[serde(default = "default_watcher_poll")]
     pub poll_interval_secs: u64,
     #[serde(default = "default_watcher_debounce")]

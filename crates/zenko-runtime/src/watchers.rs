@@ -1,8 +1,11 @@
-//! Phase 8 Declarative Workspace File-Change Watchers (`[[watchers]]` in `zenko.toml`).
+//! Phase 8+ Event-Driven Workspace File-Change Watchers (`watchexec`-inspired, zero new crates).
 //!
-//! Zero new crates: reuses `ignore::WalkBuilder` + Phase 7's zero-regex `CompiledGlob`,
-//! stays 0% CPU asleep on `watcher_notify` when no watchers are enabled, enforces debounce,
-//! cooldown, hourly rate caps, and suppresses self-edit feedback loops from Zenko's own turns.
+//! Combines:
+//! - Pure-Rust Linux `inotify` (`libc::inotify_init1` + `tokio::io::unix::AsyncFd`) for instant
+//!   OS-event wakeup with graceful polling fallback on non-Linux or watch-limit overflow
+//! - Layered deterministic `WatcherFilter` (`skip_dirs -> .gitignore -> include_glob -> exclude_glob`)
+//! - True trailing-edge debounce (burst saves/builds reset the quiet window into one trigger)
+//! - Cooldown, hourly rate caps, self-edit feedback suppression, and 0% idle CPU when disabled.
 
 use crate::runtime::{AgentRuntime, TurnOptions};
 use ignore::WalkBuilder;
@@ -15,26 +18,208 @@ use tracing::{info, warn};
 use zenko_core::{
     AgentEvent, DEFAULT_SEARCH_SKIP_DIRS, ExecutionTier, LogChannel, LogDirection, LogStatusTone,
     ORCH_STAGE_TRIGGER, WATCHER_MAX_FILES_PER_SCAN, WATCHER_MAX_SLEEP_SECS,
-    WATCHER_MIN_POLL_INTERVAL_SECS, WATCHER_PREVIEW_MAX_FILES, WATCHER_SELF_EDIT_SUPPRESS_SECS,
-    WatcherActionKind, WorkspaceWatcherConfig, emit_hono_line,
+    WATCHER_MIN_POLL_INTERVAL_SECS, WATCHER_MIN_WAKE_MS, WATCHER_PREVIEW_MAX_FILES,
+    WATCHER_SELF_EDIT_SUPPRESS_SECS, WatcherActionKind, WorkspaceWatcherConfig, emit_hono_line,
 };
 use zenko_tools::glob::CompiledGlob;
 
 type FileSigMap = HashMap<String, (u64, u64)>;
 
+/// Composable layered event/path filter (`skip_dirs` + `.gitignore` + `include` + optional `exclude`).
+#[derive(Debug, Clone)]
+pub struct WatcherFilter {
+    include: CompiledGlob,
+    exclude: Option<CompiledGlob>,
+}
+
+impl WatcherFilter {
+    pub fn new(include_glob: &str, exclude_glob: Option<&str>) -> Self {
+        let exclude = exclude_glob
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(CompiledGlob::compile);
+        Self {
+            include: CompiledGlob::compile(include_glob),
+            exclude,
+        }
+    }
+
+    pub fn matches(&self, rel_path: &str) -> bool {
+        self.include.matches(rel_path)
+            && !self
+                .exclude
+                .as_ref()
+                .is_some_and(|ex| ex.matches(rel_path))
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod os_watch {
+    use super::*;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+    use tokio::io::unix::AsyncFd;
+    use zenko_core::{WATCHER_INOTIFY_READ_BUF_BYTES, WATCHER_MAX_INOTIFY_DIRS};
+
+    pub struct OsEventWatcher {
+        fd: AsyncFd<OwnedFd>,
+        watched_roots: Vec<PathBuf>,
+    }
+
+    impl OsEventWatcher {
+        pub fn try_new(roots: &[PathBuf]) -> Option<Self> {
+            // SAFETY: inotify_init1 with NONBLOCK | CLOEXEC returns a fresh owned fd or -1.
+            let raw_fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if raw_fd < 0 {
+                return None;
+            }
+            // SAFETY: raw_fd >= 0 is uniquely owned by this OwnedFd (auto-closes on drop).
+            let handle = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+            let mask = libc::IN_CLOSE_WRITE
+                | libc::IN_MOVED_TO
+                | libc::IN_MOVED_FROM
+                | libc::IN_CREATE
+                | libc::IN_DELETE
+                | libc::IN_MODIFY;
+
+            let mut dir_count = 0usize;
+            for root in roots {
+                if !root.exists() || dir_count >= WATCHER_MAX_INOTIFY_DIRS {
+                    continue;
+                }
+                let mut walker = WalkBuilder::new(root);
+                walker
+                    .hidden(false)
+                    .git_ignore(true)
+                    .git_global(true)
+                    .git_exclude(true)
+                    .require_git(false)
+                    .filter_entry(|dent| {
+                        if dent.depth() == 0 {
+                            return true;
+                        }
+                        match dent.file_type().is_some_and(|ft| ft.is_dir()) {
+                            true => {
+                                let name = dent.file_name().to_string_lossy();
+                                !DEFAULT_SEARCH_SKIP_DIRS.contains(&name.as_ref())
+                            }
+                            false => false,
+                        }
+                    });
+                for dent in walker.build().flatten() {
+                    if dir_count >= WATCHER_MAX_INOTIFY_DIRS {
+                        break;
+                    }
+                    if !dent.file_type().is_some_and(|ft| ft.is_dir()) {
+                        continue;
+                    }
+                    let Ok(cpath) = CString::new(dent.path().as_os_str().as_bytes()) else {
+                        continue;
+                    };
+                    // SAFETY: handle is a valid inotify fd and cpath is NUL-terminated.
+                    let wd =
+                        unsafe { libc::inotify_add_watch(handle.as_raw_fd(), cpath.as_ptr(), mask) };
+                    if wd >= 0 {
+                        dir_count += 1;
+                    }
+                }
+            }
+
+            // SAFETY: `handle` is a uniquely owned non-blocking inotify fd that stays open until
+            // `AsyncFd<OwnedFd>` drops and unregisters it from the Tokio reactor.
+            let async_fd = unsafe { AsyncFd::register(handle) }.ok()?;
+            Some(Self {
+                fd: async_fd,
+                watched_roots: roots.to_vec(),
+            })
+        }
+
+        pub fn matches_roots(&self, roots: &[PathBuf]) -> bool {
+            self.watched_roots == roots
+        }
+
+        pub async fn wait_for_event(&self) {
+            let Ok(mut guard) = self.fd.readable().await else {
+                std::future::pending::<()>().await;
+                return;
+            };
+            let mut buf = [0u8; WATCHER_INOTIFY_READ_BUF_BYTES];
+            loop {
+                // SAFETY: non-blocking read drains queued inotify events into stack buffer.
+                let n = unsafe {
+                    libc::read(
+                        self.fd.as_raw_fd(),
+                        buf.as_mut_ptr().cast::<libc::c_void>(),
+                        buf.len(),
+                    )
+                };
+                if n <= 0 {
+                    break;
+                }
+            }
+            guard.clear_ready();
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod os_watch {
+    use super::*;
+
+    pub struct OsEventWatcher;
+
+    impl OsEventWatcher {
+        pub fn try_new(_roots: &[PathBuf]) -> Option<Self> {
+            None
+        }
+
+        pub fn matches_roots(&self, _roots: &[PathBuf]) -> bool {
+            true
+        }
+
+        pub async fn wait_for_event(&self) {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 struct WatcherRuntimeState {
     root: PathBuf,
     glob_raw: String,
+    exclude_raw: Option<String>,
     baseline: FileSigMap,
     pending_changed: Vec<String>,
     pending_since: Option<Instant>,
     last_scan: Instant,
 }
 
+/// Applies true trailing-edge debounce: every newly detected change resets `pending_since`
+/// to `event_time` so rapid save/build bursts coalesce into a single calm trigger.
+fn record_trailing_debounce_changes(
+    pending_changed: &mut Vec<String>,
+    pending_since: &mut Option<Instant>,
+    changed: Vec<String>,
+    event_time: Instant,
+) {
+    if changed.is_empty() {
+        return;
+    }
+    for p in changed {
+        if !pending_changed.contains(&p) {
+            pending_changed.push(p);
+        }
+    }
+    *pending_since = Some(event_time);
+}
+
 /// Zero-CPU-when-idle background loop monitoring configured `[[watchers]]`.
+/// Uses Linux `inotify` for immediate event-driven wakeups with portable polling fallback.
 pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: CancellationToken) {
-    info!("workspace file-change watcher service started (0% CPU when no watchers enabled)");
+    info!("workspace file-change watcher service started (event-driven + 0% idle CPU)");
     let mut states: HashMap<String, WatcherRuntimeState> = HashMap::new();
+    let mut os_watcher: Option<os_watch::OsEventWatcher> = None;
+    let mut force_scan = false;
 
     loop {
         if cancel.is_cancelled() {
@@ -50,6 +235,8 @@ pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: Cancella
 
         if active_watchers.is_empty() {
             states.clear();
+            os_watcher = None;
+            force_scan = false;
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => break,
@@ -62,22 +249,40 @@ pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: Cancella
         states.retain(|id, _| active_ids.contains(id.as_str()));
 
         let ws_base = cfg.resolved_workspace_dir();
+        let mut desired_roots: Vec<PathBuf> = active_watchers
+            .iter()
+            .map(|w| resolve_watcher_root(&ws_base, &w.path))
+            .collect();
+        desired_roots.sort();
+        desired_roots.dedup();
+        if os_watcher
+            .as_ref()
+            .is_none_or(|ow| !ow.matches_roots(&desired_roots))
+        {
+            os_watcher = os_watch::OsEventWatcher::try_new(&desired_roots);
+        }
+
+        let scan_now_forced = std::mem::take(&mut force_scan);
 
         for watcher in &active_watchers {
             let poll_secs = watcher.poll_interval_secs.max(WATCHER_MIN_POLL_INTERVAL_SECS);
             let scan_root = resolve_watcher_root(&ws_base, &watcher.path);
-            let glob = CompiledGlob::compile(&watcher.glob);
+            let filter = WatcherFilter::new(&watcher.glob, watcher.exclude_glob.as_deref());
             let now_inst = Instant::now();
 
             let needs_baseline = match states.get(&watcher.id) {
                 None => true,
-                Some(existing) => existing.root != scan_root || existing.glob_raw != watcher.glob,
+                Some(existing) => {
+                    existing.root != scan_root
+                        || existing.glob_raw != watcher.glob
+                        || existing.exclude_raw != watcher.exclude_glob
+                }
             };
             if needs_baseline {
                 let root_clone = scan_root.clone();
-                let glob_clone = glob.clone();
+                let filter_clone = filter.clone();
                 let initial = tokio::task::spawn_blocking(move || {
-                    scan_matching_files(&root_clone, &glob_clone)
+                    scan_matching_files_filtered(&root_clone, &filter_clone)
                 })
                 .await
                 .unwrap_or_default();
@@ -86,6 +291,7 @@ pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: Cancella
                     WatcherRuntimeState {
                         root: scan_root.clone(),
                         glob_raw: watcher.glob.clone(),
+                        exclude_raw: watcher.exclude_glob.clone(),
                         baseline: initial,
                         pending_changed: Vec::new(),
                         pending_since: None,
@@ -99,11 +305,11 @@ pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: Cancella
                 continue;
             };
 
-            if now_inst.duration_since(entry.last_scan).as_secs() >= poll_secs {
+            if scan_now_forced || now_inst.duration_since(entry.last_scan).as_secs() >= poll_secs {
                 let root_clone = scan_root.clone();
-                let glob_clone = glob.clone();
+                let filter_clone = filter.clone();
                 let latest = tokio::task::spawn_blocking(move || {
-                    scan_matching_files(&root_clone, &glob_clone)
+                    scan_matching_files_filtered(&root_clone, &filter_clone)
                 })
                 .await
                 .unwrap_or_default();
@@ -118,18 +324,16 @@ pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: Cancella
                     if runtime.recently_mutated_workspace(WATCHER_SELF_EDIT_SUPPRESS_SECS) {
                         continue;
                     }
-                    for p in changed {
-                        if !entry.pending_changed.contains(&p) {
-                            entry.pending_changed.push(p);
-                        }
-                    }
-                    if entry.pending_since.is_none() {
-                        entry.pending_since = Some(scanned_at);
-                    }
+                    record_trailing_debounce_changes(
+                        &mut entry.pending_changed,
+                        &mut entry.pending_since,
+                        changed,
+                        scanned_at,
+                    );
                 }
             }
 
-            // Fire once debounce window has elapsed
+            // Fire once trailing-edge debounce quiet window has elapsed
             let check_inst = Instant::now();
             let debounce_ready = entry
                 .pending_since
@@ -151,10 +355,19 @@ pub async fn run_workspace_watchers(runtime: Arc<AgentRuntime>, cancel: Cancella
         }
 
         let sleep_ms = compute_next_watcher_sleep_ms(Instant::now(), &active_watchers, &states);
+        let os_event_fut = async {
+            match os_watcher.as_ref() {
+                Some(ow) => ow.wait_for_event().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
             _ = runtime.watcher_notify.notified() => continue,
+            _ = os_event_fut => {
+                force_scan = true;
+            }
             _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
         }
     }
@@ -178,18 +391,19 @@ fn compute_next_watcher_sleep_ms(
                 let since_scan = now.duration_since(st.last_scan).as_millis() as u64;
                 wake_ms = wake_ms.min(poll_ms.saturating_sub(since_scan));
                 if let Some(pending_since) = st.pending_since
-                    && !st.pending_changed.is_empty() {
-                        let deb_ms = watcher.debounce_secs.saturating_mul(1_000);
-                        let since_pend = now.duration_since(pending_since).as_millis() as u64;
-                        wake_ms = wake_ms.min(deb_ms.saturating_sub(since_pend));
-                    }
+                    && !st.pending_changed.is_empty()
+                {
+                    let deb_ms = watcher.debounce_secs.saturating_mul(1_000);
+                    let since_pend = now.duration_since(pending_since).as_millis() as u64;
+                    wake_ms = wake_ms.min(deb_ms.saturating_sub(since_pend));
+                }
             }
             None => {
                 wake_ms = wake_ms.min(poll_ms);
             }
         }
     }
-    wake_ms.clamp(200, max_ms)
+    wake_ms.clamp(WATCHER_MIN_WAKE_MS, max_ms)
 }
 
 async fn dispatch_watcher_action(
@@ -309,6 +523,14 @@ fn resolve_watcher_root(ws_base: &Path, raw: &str) -> PathBuf {
 }
 
 pub fn scan_matching_files(root: &Path, glob: &CompiledGlob) -> FileSigMap {
+    let filter = WatcherFilter {
+        include: glob.clone(),
+        exclude: None,
+    };
+    scan_matching_files_filtered(root, &filter)
+}
+
+pub fn scan_matching_files_filtered(root: &Path, filter: &WatcherFilter) -> FileSigMap {
     let mut map = HashMap::new();
     if !root.exists() {
         return map;
@@ -346,7 +568,7 @@ pub fn scan_matching_files(root: &Path, glob: &CompiledGlob) -> FileSigMap {
             .unwrap_or_else(|_| dent.path())
             .to_string_lossy()
             .replace('\\', "/");
-        if !glob.matches(&rel) {
+        if !filter.matches(&rel) {
             continue;
         }
         let Ok(meta) = dent.metadata() else {
@@ -388,21 +610,46 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zenko_watch_{}", zenko_core::new_id()));
         std::fs::create_dir_all(dir.join("src")).expect("mkdir");
         std::fs::write(dir.join("src/main.rs"), "fn main() {}").expect("rs");
+        std::fs::write(dir.join("src/gen.rs"), "// generated").expect("gen");
         std::fs::write(dir.join("README.md"), "# hi").expect("md");
 
-        let glob = CompiledGlob::compile("**/*.rs");
-        let snap1 = scan_matching_files(&dir, &glob);
+        let filter = WatcherFilter::new("**/*.rs", Some("**/gen.rs"));
+        let snap1 = scan_matching_files_filtered(&dir, &filter);
         assert!(snap1.contains_key("src/main.rs"));
+        assert!(!snap1.contains_key("src/gen.rs"), "exclude_glob must filter out gen.rs");
         assert!(!snap1.contains_key("README.md"));
 
         std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"ok\"); }").expect("edit");
+        std::fs::write(dir.join("src/gen.rs"), "// edited gen").expect("edit gen");
         std::fs::write(dir.join("README.md"), "# edited").expect("edit md");
 
-        let snap2 = scan_matching_files(&dir, &glob);
+        let snap2 = scan_matching_files_filtered(&dir, &filter);
         let diff = diff_file_signatures(&snap1, &snap2);
         assert_eq!(diff, vec!["src/main.rs"]);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn watcher_trailing_edge_debounce_resets_window_on_event_bursts() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let mut pending = Vec::new();
+        let mut since = None;
+        record_trailing_debounce_changes(&mut pending, &mut since, vec!["a.rs".into()], t0);
+        assert_eq!(since, Some(t0));
+        record_trailing_debounce_changes(
+            &mut pending,
+            &mut since,
+            vec!["a.rs".into(), "b.rs".into()],
+            t1,
+        );
+        assert_eq!(pending, vec!["a.rs", "b.rs"]);
+        assert_eq!(
+            since,
+            Some(t1),
+            "trailing-edge debounce must reset pending_since to latest burst timestamp"
+        );
     }
 
     #[test]
@@ -413,6 +660,7 @@ mod tests {
             enabled: true,
             path: ".".into(),
             glob: "**/*.rs".into(),
+            exclude_glob: None,
             action: WatcherActionKind::Prompt,
             prompt: "check".into(),
             goal_loop_id: None,
@@ -429,6 +677,7 @@ mod tests {
             WatcherRuntimeState {
                 root: PathBuf::from("."),
                 glob_raw: "**/*.rs".into(),
+                exclude_raw: None,
                 baseline: HashMap::new(),
                 pending_changed: vec!["src/main.rs".into()],
                 pending_since: Some(now),
@@ -440,5 +689,23 @@ mod tests {
             sleep_ms, 2_000,
             "pending 2s debounce must wake in 2s instead of waiting 30s poll_interval"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_inotify_wakes_immediately_on_file_write() {
+        let dir = std::env::temp_dir().join(format!("zenko_inotify_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let ow = os_watch::OsEventWatcher::try_new(std::slice::from_ref(&dir))
+            .expect("inotify init on Linux");
+        let target = dir.join("trigger.rs");
+        let write_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = std::fs::write(&target, "pub fn hi() {}\n");
+        });
+        let woke = tokio::time::timeout(Duration::from_secs(2), ow.wait_for_event()).await;
+        let _ = write_task.await;
+        assert!(woke.is_ok(), "Linux inotify must wake promptly on file write");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

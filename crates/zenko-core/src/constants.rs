@@ -373,6 +373,9 @@ pub const WATCHER_DEFAULT_MAX_PER_HOUR: usize = 30;
 pub const WATCHER_SELF_EDIT_SUPPRESS_SECS: u64 = 8;
 pub const WATCHER_MAX_FILES_PER_SCAN: usize = 4_000;
 pub const WATCHER_PREVIEW_MAX_FILES: usize = 12;
+pub const WATCHER_MAX_INOTIFY_DIRS: usize = 512;
+pub const WATCHER_INOTIFY_READ_BUF_BYTES: usize = 4_096;
+pub const WATCHER_MIN_WAKE_MS: u64 = 200;
 
 pub const TRAJECTORY_SCHEMA_VERSION: &str = "zenko.trajectory.v1";
 pub const EXPORT_DEFAULT_BATCH_LIMIT: usize = 200;
@@ -566,6 +569,7 @@ pub const TOOL_HASH_EDIT: &str = "hash_edit";
 pub const TOOL_APPLY_PATCH: &str = "apply_patch";
 pub const TOOL_LIST_DIR: &str = "list_dir";
 pub const TOOL_CODE_SEARCH: &str = "code_search";
+pub const TOOL_CODE_REFACTOR: &str = "code_refactor";
 pub const TOOL_WEB_FETCH: &str = "web_fetch";
 pub const TOOL_MEMORY: &str = "memory_tool";
 pub const TOOL_PROJECT_BRAIN: &str = "project_brain";
@@ -1102,6 +1106,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_AGENT_WORKTREE,
     TOOL_GIT,
     TOOL_LSP,
+    TOOL_CODE_REFACTOR,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,
     TOOL_BATCH_TOOLS,
@@ -1849,3 +1854,30 @@ pub const CUSTOM_STYLE_DIRECTIVE_TOKENS: &[&str] = &[
     "response_style:",
     "custom_output_style",
 ];
+
+// ── Structural Code Intelligence (tokei, tgrep, ast-grep, sd, ripide, difftastic)
+pub const CODE_REFACTOR_ACTIONS: &[&str] = &[
+    "struct_search",
+    "struct_rewrite",
+    "replace",
+    "move_imports",
+    "stats",
+    "struct_diff",
+];
+pub const TRIGRAM_MIN_REPO_FILES: usize = 64;
+pub const TRIGRAM_MAX_INDEXED_FILES: usize = 16_000;
+pub const TRIGRAM_MAX_FILE_BYTES: u64 = 512 * 1024;
+pub const TRIGRAM_MAX_WORKSPACES_CACHED: usize = 4;
+pub const TRIGRAM_QUERY_MIN_RUN_BYTES: usize = 3;
+pub const STRUCT_SEARCH_DEFAULT_MAX_MATCHES: usize = 30;
+pub const STRUCT_SEARCH_MAX_MATCHES: usize = 80;
+pub const STRUCT_DIFF_MAX_TOKENS_DIJKSTRA: usize = 1_600;
+pub const STRUCT_DIFF_MAX_EDITS_RENDER: usize = 60;
+pub const STRUCT_DIFF_MAX_GIT_FILES: usize = 24;
+pub const CODE_REFACTOR_MAX_FILES_APPLY: usize = 64;
+pub const CODE_STATS_MAX_FILES: usize = 20_000;
+pub const CODE_STATS_RECON_MAX_FILES: usize = 2_500;
+pub const CODE_STATS_RECON_TOP_LANGS: usize = 4;
+pub const STRUCT_META_SINGLE_PREFIX: &str = "$";
+pub const STRUCT_META_VARIADIC_PREFIX: &str = "$$$";
+pub const STRUCT_META_WILDCARD: &str = "$_";

@@ -16,11 +16,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use zenko_core::{
-    BRAIN_RECON_MAX_HITS, BrainstormSpec, EventRole, ExecutionPlan, HUB_PATH_PREFIX, JobSupervisor,
-    NOTE_KIND_BRAINSTORM_SPEC, NOTE_KIND_EXECUTION_PLAN, ORCH_RECON_GIT_TIMEOUT_MS,
-    ORCH_RECON_MAX_FILES, ORCH_RECON_MAX_GIT_FILES, ORCH_RECON_MAX_MEMORIES,
-    ORCH_RECON_MAX_MENTIONED_FILES, ORCH_RECON_MAX_PROBE_BYTES, ORCH_RECON_MAX_SESSION_HITS,
-    ORCH_RECON_MAX_TASKS, REPO_MARKER_FILES, ReconSummary, SessionSearchFilter, compact_preview,
+    BRAIN_RECON_MAX_HITS, BrainstormSpec, CODE_STATS_RECON_MAX_FILES, CODE_STATS_RECON_TOP_LANGS,
+    EventRole, ExecutionPlan, HUB_PATH_PREFIX, JobSupervisor, NOTE_KIND_BRAINSTORM_SPEC,
+    NOTE_KIND_EXECUTION_PLAN, ORCH_RECON_GIT_TIMEOUT_MS, ORCH_RECON_MAX_FILES,
+    ORCH_RECON_MAX_GIT_FILES, ORCH_RECON_MAX_MEMORIES, ORCH_RECON_MAX_MENTIONED_FILES,
+    ORCH_RECON_MAX_PROBE_BYTES, ORCH_RECON_MAX_SESSION_HITS, ORCH_RECON_MAX_TASKS,
+    REPO_MARKER_FILES, ReconSummary, SessionSearchFilter, compact_preview,
 };
 use zenko_memory::{
     SqliteStore, filter_query_terms, project_scope_for_workspace, resolve_git_root,
@@ -34,7 +35,7 @@ fn extract_recon_query(prompt: &str) -> String {
         .join(" ")
 }
 
-fn scan_workspace_sync(workspace_dir: &Path) -> (Vec<String>, Vec<String>) {
+fn scan_workspace_sync(workspace_dir: &Path) -> (Vec<String>, Vec<String>, Option<String>) {
     let mut entries = Vec::new();
     let mut markers = Vec::new();
 
@@ -65,7 +66,16 @@ fn scan_workspace_sync(workspace_dir: &Path) -> (Vec<String>, Vec<String>) {
         }
     }
 
-    (entries, markers)
+    let lang_stats = zenko_tools::code_stats::scan_workspace_code_stats(
+        workspace_dir,
+        CODE_STATS_RECON_MAX_FILES,
+    );
+    let language_summary = zenko_tools::code_stats::format_recon_language_summary(
+        &lang_stats,
+        CODE_STATS_RECON_TOP_LANGS,
+    );
+
+    (entries, markers, language_summary)
 }
 
 fn probe_mentioned_files_sync(
@@ -301,7 +311,7 @@ pub async fn run_parallel_recon(
 
     let (ws_res, git_res, probe_res, mem_res, tasks_res) =
         tokio::join!(ws_fut, git_fut, probe_fut, mem_fut, tasks_fut);
-    let (workspace_entries, repo_markers) = ws_res.unwrap_or_default();
+    let (workspace_entries, repo_markers, language_summary) = ws_res.unwrap_or_default();
     let (git_branch, git_dirty_files) = git_res;
     let mentioned_files = probe_res.unwrap_or_default();
     let (memory_hits, session_hits, prior_plan_summary, brain_hits) = mem_res.unwrap_or_default();
@@ -310,6 +320,7 @@ pub async fn run_parallel_recon(
     ReconSummary {
         workspace_entries,
         repo_markers,
+        language_summary,
         memory_hits,
         session_hits,
         brain_hits,
@@ -323,9 +334,12 @@ pub async fn run_parallel_recon(
 }
 
 pub fn format_recon_context(summary: &ReconSummary) -> String {
-    let mut lines = Vec::with_capacity(8);
+    let mut lines = Vec::with_capacity(9);
     if !summary.repo_markers.is_empty() {
         lines.push(format!("repo_stack: {}", summary.repo_markers.join(", ")));
+    }
+    if let Some(ref langs) = summary.language_summary {
+        lines.push(format!("languages: {langs}"));
     }
     if let Some(ref br) = summary.git_branch {
         let dirty_suffix = match summary.git_dirty_files.is_empty() {

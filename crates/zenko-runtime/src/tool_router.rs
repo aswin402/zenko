@@ -508,6 +508,8 @@ pub(crate) async fn dispatch_tool_call(
             || (tc.name == TOOL_GIT && is_git_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_LSP && is_lsp_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_PROJECT_BRAIN && is_brain_tool_args_mutating(&tc.arguments))
+            || (tc.name == zenko_core::TOOL_CODE_REFACTOR
+                && zenko_core::is_code_refactor_args_mutating(&tc.arguments))
             || (tc.name == TOOL_SCRIPT_BLOCK
                 && tc
                     .arguments

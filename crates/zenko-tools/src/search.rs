@@ -1,6 +1,7 @@
 use crate::fs_tools::line_hash;
 use crate::glob::CompiledGlob;
 use crate::jail::{format_display_rel_path, resolve_readable_path};
+use crate::trigram::{TrigramQueryPlan, query_trigram_candidates};
 use async_trait::async_trait;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::UTF8;
@@ -139,31 +140,42 @@ impl Tool for CodeSearchTool {
             let mut rows = Vec::new();
             let mut match_lines_emitted = 0usize;
 
-            let mut walker = WalkBuilder::new(&root);
-            walker
-                .hidden(true)
-                .require_git(false)
-                .max_filesize(Some(DEFAULT_SEARCH_MAX_FILE_BYTES))
-                .filter_entry(|dent| {
-                    if dent.depth() == 0 {
-                        return true;
+            let candidate_files: Vec<std::path::PathBuf> =
+                match query_trigram_candidates(&root, &pattern, fixed_strings) {
+                    TrigramQueryPlan::Candidates(paths) => paths,
+                    TrigramQueryPlan::FullScan => {
+                        let mut walker = WalkBuilder::new(&root);
+                        walker
+                            .hidden(true)
+                            .require_git(false)
+                            .max_filesize(Some(DEFAULT_SEARCH_MAX_FILE_BYTES))
+                            .filter_entry(|dent| {
+                                if dent.depth() == 0 {
+                                    return true;
+                                }
+                                let is_dir = dent.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                                match is_dir {
+                                    false => true,
+                                    true => {
+                                        let name = dent.file_name().to_str().unwrap_or("");
+                                        !DEFAULT_SEARCH_SKIP_DIRS.contains(&name)
+                                    }
+                                }
+                            });
+                        walker
+                            .build()
+                            .flatten()
+                            .filter(|d| d.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+                            .map(|d| d.into_path())
+                            .collect()
                     }
-                    let is_dir = dent.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                    if !is_dir {
-                        return true;
-                    }
-                    let name = dent.file_name().to_str().unwrap_or("");
-                    !DEFAULT_SEARCH_SKIP_DIRS.contains(&name)
-                });
+                };
 
-            for dent in walker.build().flatten() {
+            for file_path_buf in candidate_files {
                 if cancel.is_cancelled() {
                     return Err(ZenkoError::Cancelled);
                 }
-                if !dent.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                    continue;
-                }
-                let file_path = dent.path();
+                let file_path = file_path_buf.as_path();
                 let rel_for_glob = file_path
                     .strip_prefix(&root)
                     .or_else(|_| file_path.strip_prefix(&ws_root))

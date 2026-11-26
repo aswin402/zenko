@@ -2009,6 +2009,8 @@ pub struct TriageReport {
 pub struct ReconSummary {
     pub workspace_entries: Vec<String>,
     pub repo_markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_summary: Option<String>,
     pub memory_hits: Vec<String>,
     #[serde(default)]
     pub session_hits: Vec<String>,
@@ -4599,4 +4601,65 @@ pub fn is_economy_args_mutating(args: &serde_json::Value) -> bool {
         .and_then(EconomyAction::parse)
         .map(EconomyAction::is_mutating)
         .unwrap_or(true)
+}
+
+/// Declarative action enum for the unified deferred `code_refactor` tool
+/// (combining pure-Rust `ast-grep` structural search/rewrite, `sd`/`ripide` multi-file
+/// code-only replace & import-aware file move, `tokei` FSM stats, and `difftastic` structural diff).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeRefactorAction {
+    StructSearch,
+    StructRewrite,
+    Replace,
+    MoveImports,
+    Stats,
+    StructDiff,
+}
+
+impl CodeRefactorAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "struct_search" | "ast_search" | "pattern_search" => Some(Self::StructSearch),
+            "struct_rewrite" | "ast_rewrite" | "rewrite" => Some(Self::StructRewrite),
+            "replace" | "find_replace" | "rename" => Some(Self::Replace),
+            "move_imports" | "move_file" | "move" => Some(Self::MoveImports),
+            "stats" | "loc" | "languages" => Some(Self::Stats),
+            "struct_diff" | "semantic_diff" | "diff" => Some(Self::StructDiff),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StructSearch => "struct_search",
+            Self::StructRewrite => "struct_rewrite",
+            Self::Replace => "replace",
+            Self::MoveImports => "move_imports",
+            Self::Stats => "stats",
+            Self::StructDiff => "struct_diff",
+        }
+    }
+
+    pub fn can_mutate(self) -> bool {
+        matches!(self, Self::StructRewrite | Self::Replace | Self::MoveImports)
+    }
+}
+
+/// Returns `true` iff a `code_refactor` invocation mutates workspace files on disk.
+/// Any read-only action (`struct_search`, `stats`, `struct_diff`) OR any mutating action
+/// invoked with `dry_run: true` returns `false` (permitted in Plan Mode and read-only subagents).
+pub fn is_code_refactor_args_mutating(args: &serde_json::Value) -> bool {
+    let Some(action) = args
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(CodeRefactorAction::parse)
+    else {
+        return true;
+    };
+    let dry_run = args
+        .get("dry_run")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    action.can_mutate() && !dry_run
 }

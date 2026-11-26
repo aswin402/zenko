@@ -4,6 +4,25 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.41] - 2026-11-26
+
+Added a unified pure-Rust **Structural Code Intelligence, Trigram Search, Atomic Refactor, Semantic Diff & Event-Driven Watcher** suite inspired by **`tokei`**, **`tgrep`**, **`ast-grep`**, **`sd`**, **`ripide`**, **`difftastic`**, and **`watchexec`** — with zero new external crates, zero C/tree-sitter bloat, zero `/commands`, zero hardcoding, zero regex, and zero `if/else` ladders.
+
+### Added
+- **Shared Declarative Language Syntax Table & Built-in Skill (`crates/zenko-core/src/{constants,types,registry,config}.rs`):**
+  - Added 20-language `LANGUAGE_SYNTAX_TABLE` (`LanguageSyntaxSpec` + `find_language_syntax_by_ext`), `TOOL_CODE_REFACTOR`, `CodeRefactorAction`, `is_code_refactor_args_mutating`, `WorkspaceWatcherConfig.exclude_glob`, `ReconSummary.language_summary`, and the built-in `structural-refactor.md` skill.
+  - Wired `TOOL_CODE_REFACTOR` into `PLAN_MODE_SCOPED_TOOLS`, `explorer`/`architect`/`critic`/`researcher` read-only subagent roles, and `verifier` deny-list.
+- **Tokei-Style Deterministic FSM Code-Stats & Recon (`crates/zenko-tools/src/code_stats.rs`, `crates/zenko-runtime/src/orchestrator/recon.rs`):**
+  - Built a zero-regex byte FSM counting `code`, `comments`, and `blanks` across nested block comments and string literals, surfaced automatically as a compact `languages:` line in Sovereign Orchestrator Turn-1 `<situational_awareness>`.
+- **Lazy In-Process `tgrep` Trigram Accelerator (`crates/zenko-tools/src/trigram.rs`, `search.rs`):**
+  - Added a bounded-RAM 3-byte trigram inverted index with incremental `(mtime, len)` validation, deterministic zero-regex literal-run extraction for both fixed strings and regex queries, oversized-file passthrough (zero false negatives), and sorted posting-list intersection wired transparently into `code_search` and `code_refactor`.
+- **Pure-Rust Token-Tree Unifier (`ast-grep`), Code-Only Replace (`sd`/`ripide`), Relative-Import Move (`ripide`) & Dijkstra Semantic Diff (`difftastic`) (`crates/zenko-tools/src/{struct_code,refactor_tool,git}.rs`):**
+  - Implemented a balanced delimiter token-tree lexer and structural metavariable matcher/rewriter (`$X`, `$$$ARGS`, `$_`, repeated-variable equality `$X == $X`, comment & formatting insensitivity).
+  - Implemented prefix/suffix-pruned weighted Dijkstra shortest-path token diffing (`compute_structural_diff`) wired into both `code_refactor(action="struct_diff")` and `git_tool(action="diff", structural=true)` to collapse formatting/comment-only diffs.
+  - Registered the unified deferred `code_refactor` tool (`stats`, `struct_search`, `struct_rewrite`, `replace` with `code_only`/`whole_word`, `move_imports`, `struct_diff`) with Plan Mode `dry_run: true` preview support, two-phase kernel `O_NOFOLLOW` atomic commits, and `FileStateBridge` sync.
+- **Watchexec-Inspired Event-Driven Watchers (`crates/zenko-runtime/src/watchers.rs`):**
+  - Added pure-Rust Linux `inotify` (`libc::inotify_init1` + `tokio::io::unix::AsyncFd`) for immediate OS-event wakeup with portable polling fallback, layered `WatcherFilter` (`skip_dirs -> .gitignore -> include_glob -> exclude_glob`), and true trailing-edge debounce resetting on event bursts.
+
 ## [0.0.40] - 2026-11-26
 
 Hardened `v0.0.38`–`v0.0.39` modules to zero remaining hardcoded protocol/mode literals, pure enum state machines, and 100% kernel `O_NOFOLLOW` confinement across all file and LSP mutation paths.

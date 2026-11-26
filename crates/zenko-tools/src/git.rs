@@ -1,6 +1,7 @@
 //! Structured native Rust Git tool (`git_tool`) invoking `git` directly via `argv`
 //! (zero `/bin/sh`, zero quoting/injection hazards, strict Plan Mode read/write separation).
 
+use crate::struct_code::{compute_structural_diff, format_structural_diff, syntax_for_path};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -9,11 +10,11 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    GIT_ACTIONS, GIT_SENSITIVE_FILE_PATTERNS, GIT_TOOL_DEFAULT_BLAME_LINES,
+    FS_MAX_EDIT_FILE_BYTES, GIT_ACTIONS, GIT_SENSITIVE_FILE_PATTERNS, GIT_TOOL_DEFAULT_BLAME_LINES,
     GIT_TOOL_DEFAULT_LOG_LIMIT, GIT_TOOL_MAX_LOG_LIMIT, GIT_TOOL_MAX_OUTPUT_CHARS,
-    GIT_TOOL_TIMEOUT_SECS, GitAction, ResourceLockKey, Result, RiskLevel, TOOL_GIT, Tool,
-    ToolConcurrency, ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec, ZenkoError,
-    is_git_tool_args_mutating,
+    GIT_TOOL_TIMEOUT_SECS, GitAction, ResourceLockKey, Result, RiskLevel,
+    STRUCT_DIFF_MAX_GIT_FILES, TOOL_GIT, Tool, ToolConcurrency, ToolContext, ToolExposure,
+    ToolOutput, ToolSet, ToolSpec, ZenkoError, is_git_tool_args_mutating,
 };
 
 pub struct GitTool;
@@ -53,6 +54,7 @@ impl Tool for GitTool {
                     },
                     "staged": { "type": "boolean", "description": "For `diff`: inspect staged (`--cached`) changes." },
                     "stat_only": { "type": "boolean", "description": "For `diff`/`show`: return compact `--stat` summary only." },
+                    "structural": { "type": "boolean", "description": "For `diff`: run Difftastic-inspired Dijkstra structural token diff ignoring pure formatting/whitespace/comment-only noise (default false)." },
                     "rev": { "type": "string", "description": "Commit SHA, branch, or range (e.g. `HEAD~1..HEAD`, `main`)." },
                     "path": { "type": "string", "description": "Optional single file path filter (for `diff`, `log`, `blame`, `show`, `stage`, `unstage`)." },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths to pass to `diff`, `stage`, or `unstage`." },
@@ -162,8 +164,20 @@ async fn exec_status(ws: &Path, cancel: CancellationToken) -> Result<ToolOutput>
 }
 
 async fn exec_diff(ws: &Path, args: &Value, cancel: CancellationToken) -> Result<ToolOutput> {
+    let staged = args.get("staged").and_then(Value::as_bool).unwrap_or(false);
+    let structural = args
+        .get("structural")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let rev = opt_safe_rev(args.get("rev"))?;
+    let paths = collect_safe_paths(args)?;
+
+    if structural {
+        return exec_structural_git_diff(ws, staged, rev.as_deref(), &paths, cancel).await;
+    }
+
     let mut argv: Vec<String> = vec!["diff".into(), "--no-color".into()];
-    if args.get("staged").and_then(Value::as_bool).unwrap_or(false) {
+    if staged {
         argv.push("--cached".into());
     }
     if args
@@ -173,10 +187,9 @@ async fn exec_diff(ws: &Path, args: &Value, cancel: CancellationToken) -> Result
     {
         argv.push("--stat".into());
     }
-    if let Some(rev) = opt_safe_rev(args.get("rev"))? {
-        argv.push(rev);
+    if let Some(r) = rev {
+        argv.push(r);
     }
-    let paths = collect_safe_paths(args)?;
     if !paths.is_empty() {
         argv.push("--".into());
         argv.extend(paths);
@@ -191,6 +204,117 @@ async fn exec_diff(ws: &Path, args: &Value, cancel: CancellationToken) -> Result
         false => truncate_chars(&stdout, GIT_TOOL_MAX_OUTPUT_CHARS),
     };
     Ok(ToolOutput::ok(text))
+}
+
+async fn exec_structural_git_diff(
+    ws: &Path,
+    staged: bool,
+    rev: Option<&str>,
+    paths: &[String],
+    cancel: CancellationToken,
+) -> Result<ToolOutput> {
+    let mut name_argv: Vec<String> = vec!["diff".into(), "--name-only".into()];
+    if staged {
+        name_argv.push("--cached".into());
+    }
+    if let Some(r) = rev {
+        name_argv.push(r.to_string());
+    }
+    if !paths.is_empty() {
+        name_argv.push("--".into());
+        name_argv.extend(paths.iter().cloned());
+    }
+    let refs: Vec<&str> = name_argv.iter().map(String::as_str).collect();
+    let (ok, stdout, stderr) = run_git(ws, &refs, cancel.clone()).await?;
+    if !ok {
+        return Ok(ToolOutput::err(format!(
+            "git diff --name-only failed: {}",
+            stderr.trim()
+        )));
+    }
+    let changed_files: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    if changed_files.is_empty() {
+        return Ok(ToolOutput::ok("(no structural diff)"));
+    }
+
+    let base_ref = match rev {
+        Some(r) => r.split("..").next().unwrap_or("HEAD").to_string(),
+        None => "HEAD".to_string(),
+    };
+    let mut sections: Vec<String> = Vec::new();
+    let mut formatting_only_files: Vec<String> = Vec::new();
+    let mut total_semantic = 0usize;
+
+    for rel in changed_files.iter().take(STRUCT_DIFF_MAX_GIT_FILES) {
+        let old_spec = format!("{base_ref}:{rel}");
+        let (old_ok, old_content, _) = run_git(ws, &["show", &old_spec], cancel.clone()).await?;
+        let before = match old_ok {
+            true => old_content,
+            false => String::new(),
+        };
+        let after = match staged {
+            true => {
+                let idx_spec = format!(":{rel}");
+                let (a_ok, a_out, _) = run_git(ws, &["show", &idx_spec], cancel.clone()).await?;
+                match a_ok {
+                    true => a_out,
+                    false => String::new(),
+                }
+            }
+            false => {
+                let p = ws.join(rel);
+                let len = tokio::fs::metadata(&p).await.map(|m| m.len()).unwrap_or(0);
+                match len <= FS_MAX_EDIT_FILE_BYTES {
+                    true => tokio::fs::read_to_string(&p).await.unwrap_or_default(),
+                    false => String::new(),
+                }
+            }
+        };
+
+        let report = compute_structural_diff(syntax_for_path(Path::new(rel)), &before, &after);
+        match (report.semantic_changes, report.formatting_only) {
+            (0, true) => formatting_only_files.push(rel.clone()),
+            (0, false) => {}
+            (n, _) => {
+                total_semantic += n;
+                sections.push(format_structural_diff(rel, &report));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    if !sections.is_empty() {
+        out.push(sections.join("\n"));
+    }
+    if !formatting_only_files.is_empty() {
+        out.push(format!(
+            "Formatting/comment-only (0 semantic changes): {}",
+            formatting_only_files.join(", ")
+        ));
+    }
+    if changed_files.len() > STRUCT_DIFF_MAX_GIT_FILES {
+        out.push(format!(
+            "... (+{} more changed file(s) not shown; narrow `path` to inspect)",
+            changed_files.len() - STRUCT_DIFF_MAX_GIT_FILES
+        ));
+    }
+    let body = match out.is_empty() {
+        true => "(no semantic changes)".to_string(),
+        false => truncate_chars(&out.join("\n\n"), GIT_TOOL_MAX_OUTPUT_CHARS),
+    };
+    let mut res = ToolOutput::ok(body);
+    res.metadata = Some(json!({
+        "structural": true,
+        "semantic_changes": total_semantic,
+        "formatting_only_files": formatting_only_files,
+        "total_changed_files": changed_files.len(),
+    }));
+    Ok(res)
 }
 
 async fn exec_log(ws: &Path, args: &Value, cancel: CancellationToken) -> Result<ToolOutput> {

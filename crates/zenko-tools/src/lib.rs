@@ -2,6 +2,7 @@ pub mod agents;
 pub mod batch;
 pub mod blocks;
 pub mod brain_tool;
+pub mod code_stats;
 pub mod codex_patch;
 pub mod coerce;
 pub mod context_tools;
@@ -20,9 +21,12 @@ pub mod minimalism;
 pub mod orchestrator_tools;
 pub mod outline;
 pub mod pty;
+pub mod refactor_tool;
 pub mod sandbox;
 pub mod search;
 pub mod shell;
+pub mod struct_code;
+pub mod trigram;
 pub mod web;
 pub mod web_search;
 
@@ -65,6 +69,7 @@ impl ToolRegistry {
         reg.register(Arc::new(fs_tools::WriteFileTool));
         reg.register(Arc::new(fs_tools::ListDirTool));
         reg.register(Arc::new(search::CodeSearchTool));
+        reg.register(Arc::new(refactor_tool::CodeRefactorTool));
         reg.register(Arc::new(glob::GlobFindTool));
         reg.register(Arc::new(git::GitTool));
         reg.register(Arc::new(shell::ShellExecTool::new(jobs.clone())));
