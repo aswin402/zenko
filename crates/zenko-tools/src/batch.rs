@@ -467,7 +467,7 @@ impl Tool for BatchToolsTool {
                 }
                 if step.shunt_tokens_saved > 0 {
                     obj.insert(
-                        "shunt_tokens_saved".into(),
+                        zenko_core::SHUNT_BATCH_STEP_TOKENS_SAVED_KEY.into(),
                         Value::Number(step.shunt_tokens_saved.into()),
                     );
                 }

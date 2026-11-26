@@ -122,7 +122,7 @@ pub fn record_tool_outcome_in_economy_trace(
                     trace.ccr_recoveries = trace.ccr_recoveries.saturating_add(1);
                 }
                 if let Some(shunt_tok) = step
-                    .get("shunt_tokens_saved")
+                    .get(zenko_core::SHUNT_BATCH_STEP_TOKENS_SAVED_KEY)
                     .and_then(Value::as_u64)
                     .filter(|&v| v > 0)
                 {
@@ -133,20 +133,23 @@ pub fn record_tool_outcome_in_economy_trace(
                         .shunt_by_source
                         .push(("batch".to_string(), shunt_tok as usize));
                 }
-                if let Some(dedup_tok) = step
+                let dedup_tok = step
                     .get("output_dedup_tokens_saved")
                     .and_then(Value::as_u64)
-                    .filter(|&v| v > 0)
-                {
-                    trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
-                    trace.output_dedup_tokens_saved = trace
-                        .output_dedup_tokens_saved
-                        .saturating_add(dedup_tok as usize);
-                } else if let Some(saved_tok) =
-                    step.get("read_less_tokens_saved").and_then(Value::as_u64)
-                {
-                    trace.read_less_tokens_saved =
-                        trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
+                    .filter(|&v| v > 0);
+                let saved_tok = step.get("read_less_tokens_saved").and_then(Value::as_u64);
+                match (dedup_tok, saved_tok) {
+                    (Some(tok), _) => {
+                        trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
+                        trace.output_dedup_tokens_saved = trace
+                            .output_dedup_tokens_saved
+                            .saturating_add(tok as usize);
+                    }
+                    (None, Some(tok)) => {
+                        trace.read_less_tokens_saved =
+                            trace.read_less_tokens_saved.saturating_add(tok as usize);
+                    }
+                    (None, None) => {}
                 }
             }
         }
@@ -185,7 +188,7 @@ pub fn record_tool_outcome_in_economy_trace(
         .metadata
         .as_ref()
         .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
-        .and_then(|s| s.get("tokens_saved"))
+        .and_then(|s| s.get(zenko_core::SHUNT_META_FIELD_TOKENS_SAVED))
         .and_then(Value::as_u64)
         .filter(|&v| v > 0)
     {
@@ -193,56 +196,49 @@ pub fn record_tool_outcome_in_economy_trace(
             .metadata
             .as_ref()
             .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
-            .and_then(|s| s.get("source_kind"))
+            .and_then(|s| s.get(zenko_core::SHUNT_META_FIELD_SOURCE_KIND))
             .and_then(Value::as_str)
-            .unwrap_or("shunt");
+            .unwrap_or(zenko_core::SHUNT_META_KEY);
         trace.shunt_hits = trace.shunt_hits.saturating_add(1);
         trace.shunt_tokens_saved = trace.shunt_tokens_saved.saturating_add(shunt_tok as usize);
         trace
             .shunt_by_source
             .push((src.to_string(), shunt_tok as usize));
     }
-    if let Some(dedup_tok) = output
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("output_dedup"))
-        .and_then(|od| od.get("tokens_saved"))
-        .and_then(Value::as_u64)
-    {
-        let fam = output
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("output_dedup"))
-            .and_then(|od| od.get("command_family"))
-            .and_then(Value::as_str)
-            .unwrap_or("shell");
-        trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
-        trace.output_dedup_tokens_saved = trace
-            .output_dedup_tokens_saved
-            .saturating_add(dedup_tok as usize);
-        trace
-            .output_dedup_by_cmd
-            .push((fam.to_string(), dedup_tok as usize));
-    } else if let Some(saved_tok) = output
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("read_less"))
-        .and_then(|rl| rl.get("tokens_saved"))
-        .and_then(Value::as_u64)
-    {
-        let fam = output
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("read_less"))
-            .and_then(|rl| rl.get("command_family"))
-            .and_then(Value::as_str)
-            .unwrap_or("shell");
-        trace.read_less_tokens_saved =
-            trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
-        *trace
-            .read_less_by_cmd
-            .entry(fam.to_string())
-            .or_insert(0) += saved_tok as usize;
+    let dedup_meta = output.metadata.as_ref().and_then(|m| m.get("output_dedup"));
+    let read_less_meta = output.metadata.as_ref().and_then(|m| m.get("read_less"));
+    match (
+        dedup_meta.and_then(|od| od.get("tokens_saved")).and_then(Value::as_u64),
+        read_less_meta
+            .and_then(|rl| rl.get("tokens_saved"))
+            .and_then(Value::as_u64),
+    ) {
+        (Some(dedup_tok), _) => {
+            let fam = dedup_meta
+                .and_then(|od| od.get("command_family"))
+                .and_then(Value::as_str)
+                .unwrap_or("shell");
+            trace.output_dedup_hits = trace.output_dedup_hits.saturating_add(1);
+            trace.output_dedup_tokens_saved = trace
+                .output_dedup_tokens_saved
+                .saturating_add(dedup_tok as usize);
+            trace
+                .output_dedup_by_cmd
+                .push((fam.to_string(), dedup_tok as usize));
+        }
+        (None, Some(saved_tok)) => {
+            let fam = read_less_meta
+                .and_then(|rl| rl.get("command_family"))
+                .and_then(Value::as_str)
+                .unwrap_or("shell");
+            trace.read_less_tokens_saved =
+                trace.read_less_tokens_saved.saturating_add(saved_tok as usize);
+            *trace
+                .read_less_by_cmd
+                .entry(fam.to_string())
+                .or_insert(0) += saved_tok as usize;
+        }
+        (None, None) => {}
     }
 }
 

@@ -275,7 +275,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     .metadata
                     .as_ref()
                     .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
-                    .and_then(|s| s.get("tokens_saved"))
+                    .and_then(|s| s.get(zenko_core::SHUNT_META_FIELD_TOKENS_SAVED))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 let ccr_recovery = exec
@@ -424,7 +424,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     .metadata
                     .as_ref()
                     .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
-                    .and_then(|s| s.get("tokens_saved"))
+                    .and_then(|s| s.get(zenko_core::SHUNT_META_FIELD_TOKENS_SAVED))
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 let ccr_recovery = exec

@@ -17,8 +17,9 @@ use zenko_core::{
     ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, DOX_MAX_SCOPED_RULE_BYTES,
     DOX_SCOPED_RULES_META_KEY, DOX_SCOPED_RULES_TAG_CLOSE, DOX_SCOPED_RULES_TAG_PREFIX, HookEvent,
     MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS, ORCH_STAGE_SHUNT, ORCH_STAGE_TOOL_ACTIVATED,
-    PermissionMode, REPO_RULE_FILES, Result, SHUNT_META_KEY, ScriptBlockAction, SkillManageAction,
-    TOOL_APPLY_PATCH,
+    PermissionMode, REPO_RULE_FILES, Result, SHUNT_META_FIELD_ACTION,
+    SHUNT_META_FIELD_SOURCE_KIND, SHUNT_META_FIELD_TOKENS_SAVED, SHUNT_META_KEY,
+    ScriptBlockAction, ShuntActionKind, SkillManageAction, TOOL_APPLY_PATCH,
     TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_PROJECT_BRAIN,
     TOOL_READ_FILE, TOOL_SCRIPT_BLOCK, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC,
     TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency,
@@ -265,13 +266,13 @@ async fn authorize_and_invoke(
                 diff: None,
                 metadata: Some(json!({
                     SHUNT_META_KEY: {
-                        "action": "redirect",
-                        "source_kind": outcome.source_kind,
+                        SHUNT_META_FIELD_ACTION: ShuntActionKind::Redirect.as_str(),
+                        SHUNT_META_FIELD_SOURCE_KIND: outcome.source_kind.as_str(),
                         "target_path": outcome.target_path,
                         "total_lines": outcome.total_lines,
                         "original_bytes": outcome.original_bytes,
                         "returned_bytes": outcome.returned_bytes,
-                        "tokens_saved": outcome.tokens_saved,
+                        SHUNT_META_FIELD_TOKENS_SAVED: outcome.tokens_saved,
                     }
                 })),
             });
@@ -296,11 +297,11 @@ async fn authorize_and_invoke(
                 }
                 out.content.push_str(&note);
                 let shunt_meta = json!({
-                    "action": "advise",
-                    "source_kind": source_kind,
+                    SHUNT_META_FIELD_ACTION: ShuntActionKind::Advise.as_str(),
+                    SHUNT_META_FIELD_SOURCE_KIND: source_kind.as_str(),
                     "target_path": target_path,
                     "total_lines": total_lines,
-                    "tokens_saved": 0,
+                    SHUNT_META_FIELD_TOKENS_SAVED: 0,
                 });
                 out.metadata = match out.metadata {
                     Some(Value::Object(mut map)) => {
@@ -593,9 +594,9 @@ pub(crate) async fn dispatch_tool_call(
         .metadata
         .as_ref()
         .and_then(|m| m.get(SHUNT_META_KEY))
-        .and_then(|s| s.get("action"))
+        .and_then(|s| s.get(SHUNT_META_FIELD_ACTION))
         .and_then(Value::as_str)
-        == Some("redirect");
+        == Some(ShuntActionKind::Redirect.as_str());
     let mutated_workspace = !tool_output.is_error
         && !is_shunt_redirected
         && (MUTATING_FILE_TOOLS.contains(&tc.name.as_str())

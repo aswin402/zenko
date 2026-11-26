@@ -1884,18 +1884,32 @@ pub const STRUCT_META_WILDCARD: &str = "$_";
 
 // ── Tier-Aware Shunt Context Gate & Repo-Native Service Briefing (zero regex) ─
 pub const ORCH_STAGE_SHUNT: &str = "shunt";
+pub const SUBAGENT_ROLE_EXPLORER: &str = "explorer";
 pub const SUBAGENT_ROLE_DRAFTER: &str = "drafter";
 pub const SHUNT_META_KEY: &str = "shunt";
+pub const SHUNT_META_FIELD_ACTION: &str = "action";
+pub const SHUNT_META_FIELD_SOURCE_KIND: &str = "source_kind";
+pub const SHUNT_META_FIELD_TOKENS_SAVED: &str = "tokens_saved";
+pub const SHUNT_BATCH_STEP_TOKENS_SAVED_KEY: &str = "shunt_tokens_saved";
 pub const SHUNT_DEFAULT_MIN_LINES: usize = 350;
 pub const SHUNT_MAX_SCAN_BYTES: u64 = 16 * 1024 * 1024;
 pub const SHUNT_SCAN_BUF_BYTES: usize = 16 * 1024;
 pub const SHUNT_OUTLINE_MAX_SYMBOLS: usize = 48;
 pub const SHUNT_MODES: &[&str] = &["off", "advise", "redirect"];
-pub const SHUNT_SHELL_FULL_DUMP_BINS: &[&str] = &["cat", "less", "more", "nl", "bat", "batcat"];
-pub const SHUNT_SHELL_SLICE_BINS: &[&str] = &["head", "tail"];
+pub const SHUNT_SHELL_DEFAULT_SLICE_LINES: usize = 10;
+pub const SHUNT_SHELL_LINES_SHORT_FLAG: &str = "-n";
+pub const SHUNT_SHELL_LINES_LONG_FLAG: &str = "--lines";
+pub const SHUNT_SHELL_LINES_LONG_EQ: &str = "--lines=";
+pub const SHUNT_SHELL_END_OF_OPTIONS: &str = "--";
+pub const SHUNT_SHELL_STDIN_OPERAND: &str = "-";
+pub const SHUNT_SHELL_GLOB_CHARS: &[char] = &['*', '?', '['];
 pub const SHUNT_SHELL_VALUE_FLAGS: &[&str] = &[
     "-n", "--lines", "-c", "--bytes", "-b", "-i", "-l", "-s", "-v", "-w",
 ];
+pub const SHUNT_LINE_PREFIX_ESTIMATE_BYTES: usize = 10;
+pub const SHUNT_BYTES_PER_TOKEN_ESTIMATE: usize = 4;
+pub const SHUNT_MIN_OUTPUT_CAP_BYTES: usize = 4_096;
+pub const SHUNT_FALLBACK_READ_WINDOW_LINES: usize = 120;
 pub const SERVICE_CATALOG_FILES: &[&str] = &["catalog-info.yaml", "catalog-info.yml"];
 pub const SERVICE_CODEOWNERS_PATHS: &[&str] = &[
     ".github/CODEOWNERS",
@@ -1908,6 +1922,21 @@ pub const SERVICE_BRIEF_MAX_DEPS: usize = 6;
 pub const SERVICE_BRIEF_MAX_APIS: usize = 4;
 pub const SERVICE_BRIEF_MAX_OWNERS: usize = 4;
 pub const SERVICE_BRIEF_MAX_LINKS: usize = 3;
+pub const SERVICE_BRIEF_MAX_SCOPED_RULES: usize = 3;
+pub const SERVICE_BRIEF_ANNOTATION_MAX_CHARS: usize = 48;
+pub const SERVICE_YAML_DOC_START: &str = "---";
+pub const SERVICE_YAML_DOC_END: &str = "...";
+pub const SERVICE_YAML_KEY_KIND: &str = "kind";
+pub const SERVICE_YAML_KEY_METADATA: &str = "metadata";
+pub const SERVICE_YAML_KEY_SPEC: &str = "spec";
+pub const SERVICE_YAML_KEY_NAME: &str = "name";
+pub const SERVICE_YAML_KEY_ANNOTATIONS: &str = "annotations";
+pub const SERVICE_YAML_KEY_OWNER: &str = "owner";
+pub const SERVICE_YAML_KEY_LIFECYCLE: &str = "lifecycle";
+pub const SERVICE_YAML_KEY_SYSTEM: &str = "system";
+pub const SERVICE_YAML_KEY_TYPE: &str = "type";
+pub const SERVICE_YAML_KEY_DEPENDS_ON: &str = "dependsOn";
+pub const SERVICE_YAML_KEY_PROVIDES_APIS: &str = "providesApis";
 pub const SERVICE_CATALOG_ANNOTATION_KEYS: &[(&str, &str)] = &[
     ("backstage.io/techdocs-ref", "docs"),
     ("pagerduty.com/service-id", "pagerduty"),

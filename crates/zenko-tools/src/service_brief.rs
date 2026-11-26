@@ -7,9 +7,14 @@
 use crate::jail::read_jailed_string_bounded;
 use std::path::Path;
 use zenko_core::{
-    SERVICE_BRIEF_MAX_APIS, SERVICE_BRIEF_MAX_DEPS, SERVICE_BRIEF_MAX_FILE_BYTES,
-    SERVICE_BRIEF_MAX_LINKS, SERVICE_BRIEF_MAX_OWNERS, SERVICE_CATALOG_ANNOTATION_KEYS,
-    SERVICE_CATALOG_FILES, SERVICE_CODEOWNERS_PATHS, compact_preview,
+    SERVICE_BRIEF_ANNOTATION_MAX_CHARS, SERVICE_BRIEF_MAX_APIS, SERVICE_BRIEF_MAX_DEPS,
+    SERVICE_BRIEF_MAX_FILE_BYTES, SERVICE_BRIEF_MAX_LINKS, SERVICE_BRIEF_MAX_OWNERS,
+    SERVICE_BRIEF_MAX_SCOPED_RULES, SERVICE_CATALOG_ANNOTATION_KEYS, SERVICE_CATALOG_FILES,
+    SERVICE_CODEOWNERS_PATHS, SERVICE_YAML_DOC_END, SERVICE_YAML_DOC_START,
+    SERVICE_YAML_KEY_ANNOTATIONS, SERVICE_YAML_KEY_DEPENDS_ON, SERVICE_YAML_KEY_KIND,
+    SERVICE_YAML_KEY_LIFECYCLE, SERVICE_YAML_KEY_METADATA, SERVICE_YAML_KEY_NAME,
+    SERVICE_YAML_KEY_OWNER, SERVICE_YAML_KEY_PROVIDES_APIS, SERVICE_YAML_KEY_SPEC,
+    SERVICE_YAML_KEY_SYSTEM, SERVICE_YAML_KEY_TYPE, compact_preview,
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -104,7 +109,7 @@ pub fn parse_catalog_info_yaml(content: &str) -> Option<CatalogServiceInfo> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if trimmed == "---" || trimmed == "..." {
+        if trimmed == SERVICE_YAML_DOC_START || trimmed == SERVICE_YAML_DOC_END {
             if saw_entity {
                 break;
             }
@@ -158,26 +163,26 @@ pub fn parse_catalog_info_yaml(content: &str) -> Option<CatalogServiceInfo> {
         let val = unquote_yaml_scalar(val_trimmed);
 
         match (parent, key.as_str()) {
-            (YamlSection::Root, "kind") => {
+            (YamlSection::Root, SERVICE_YAML_KEY_KIND) => {
                 if !val.is_empty() {
                     info.kind = Some(val);
                     saw_entity = true;
                 }
             }
-            (YamlSection::Root, "metadata") => {
+            (YamlSection::Root, SERVICE_YAML_KEY_METADATA) => {
                 stack.push((indent, YamlSection::Metadata));
             }
-            (YamlSection::Root, "spec") => {
+            (YamlSection::Root, SERVICE_YAML_KEY_SPEC) => {
                 stack.push((indent, YamlSection::Spec));
             }
             (YamlSection::Root, _) if val_trimmed.is_empty() => {
                 stack.push((indent, YamlSection::Ignored));
             }
-            (YamlSection::Metadata, "name") if !val.is_empty() => {
+            (YamlSection::Metadata, SERVICE_YAML_KEY_NAME) if !val.is_empty() => {
                 info.name = Some(val);
                 saw_entity = true;
             }
-            (YamlSection::Metadata, "annotations") => {
+            (YamlSection::Metadata, SERVICE_YAML_KEY_ANNOTATIONS) => {
                 stack.push((indent, YamlSection::MetadataAnnotations));
             }
             (YamlSection::Metadata, _) if val_trimmed.is_empty() => {
@@ -191,22 +196,25 @@ pub fn parse_catalog_info_yaml(content: &str) -> Option<CatalogServiceInfo> {
                         .find(|&&(k, _)| k.eq_ignore_ascii_case(ann_key))
                     && !info.annotations.iter().any(|&(l, _)| l == label)
                 {
-                    info.annotations.push((label, compact_preview(&val, 48)));
+                    info.annotations.push((
+                        label,
+                        compact_preview(&val, SERVICE_BRIEF_ANNOTATION_MAX_CHARS),
+                    ));
                 }
             }
-            (YamlSection::Spec, "owner") if !val.is_empty() => {
+            (YamlSection::Spec, SERVICE_YAML_KEY_OWNER) if !val.is_empty() => {
                 info.owner = Some(val);
             }
-            (YamlSection::Spec, "lifecycle") if !val.is_empty() => {
+            (YamlSection::Spec, SERVICE_YAML_KEY_LIFECYCLE) if !val.is_empty() => {
                 info.lifecycle = Some(val);
             }
-            (YamlSection::Spec, "system") if !val.is_empty() => {
+            (YamlSection::Spec, SERVICE_YAML_KEY_SYSTEM) if !val.is_empty() => {
                 info.system = Some(val);
             }
-            (YamlSection::Spec, "type") if !val.is_empty() => {
+            (YamlSection::Spec, SERVICE_YAML_KEY_TYPE) if !val.is_empty() => {
                 info.service_type = Some(val);
             }
-            (YamlSection::Spec, "dependsOn") => {
+            (YamlSection::Spec, SERVICE_YAML_KEY_DEPENDS_ON) => {
                 for item in parse_inline_yaml_list(val_trimmed, SERVICE_BRIEF_MAX_DEPS) {
                     push_bounded_unique(&mut info.depends_on, item, SERVICE_BRIEF_MAX_DEPS);
                 }
@@ -214,7 +222,7 @@ pub fn parse_catalog_info_yaml(content: &str) -> Option<CatalogServiceInfo> {
                     stack.push((indent, YamlSection::SpecList(SpecListKind::DependsOn)));
                 }
             }
-            (YamlSection::Spec, "providesApis") => {
+            (YamlSection::Spec, SERVICE_YAML_KEY_PROVIDES_APIS) => {
                 for item in parse_inline_yaml_list(val_trimmed, SERVICE_BRIEF_MAX_APIS) {
                     push_bounded_unique(&mut info.provides_apis, item, SERVICE_BRIEF_MAX_APIS);
                 }
@@ -316,16 +324,20 @@ pub fn format_service_brief(
     }
 
     if let Some(co) = codeowners {
-        if !co.default_owners.is_empty() {
-            parts.push(format!("codeowners={}", co.default_owners.join(",")));
-        } else if !co.scoped_rules.is_empty() {
-            let rendered: Vec<String> = co
-                .scoped_rules
-                .iter()
-                .take(3)
-                .map(|(p, owners)| format!("{p}->{}", owners.join(",")))
-                .collect();
-            parts.push(format!("codeowners=[{}]", rendered.join("; ")));
+        match (co.default_owners.is_empty(), co.scoped_rules.is_empty()) {
+            (false, _) => {
+                parts.push(format!("codeowners={}", co.default_owners.join(",")));
+            }
+            (true, false) => {
+                let rendered: Vec<String> = co
+                    .scoped_rules
+                    .iter()
+                    .take(SERVICE_BRIEF_MAX_SCOPED_RULES)
+                    .map(|(p, owners)| format!("{p}->{}", owners.join(",")))
+                    .collect();
+                parts.push(format!("codeowners=[{}]", rendered.join("; ")));
+            }
+            (true, true) => {}
         }
     }
 

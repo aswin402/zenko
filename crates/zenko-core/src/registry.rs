@@ -7,7 +7,7 @@ use crate::{
     MINIMALISM_BLOAT_HINT_NET_LOC_LITE, MINIMALISM_BLOAT_HINT_NET_LOC_ULTRA,
     MINIMALISM_BLOAT_HINT_NEW_FILES_FULL, MINIMALISM_BLOAT_HINT_NEW_FILES_LITE,
     MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA, SUBAGENT_ROLE_CUSTOM, SUBAGENT_ROLE_DRAFTER,
-    TOOL_AGENT_KILL, TOOL_AGENT_LIST,
+    SUBAGENT_ROLE_EXPLORER, ShuntShellBinBehavior, TOOL_AGENT_KILL, TOOL_AGENT_LIST,
     TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH,
     TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM, TOOL_CODE_REFACTOR,
     TOOL_CODE_SEARCH,
@@ -220,7 +220,7 @@ impl SubagentRoleDescriptor {
 
 pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
     SubagentRoleDescriptor {
-        id: "explorer",
+        id: SUBAGENT_ROLE_EXPLORER,
         label: "Explorer",
         description: "Fast read-only codebase & memory reconnaissance worker (strictly zero mutations)",
         model_tier: SubagentModelTier::Fast,
@@ -994,6 +994,26 @@ enabled: true\n\
     },
 ];
 
+/// Declarative single-source-of-truth table mapping unpiped shell file-reading binaries
+/// to their output-bound semantics for Zenko's tier-aware Shunt gate.
+pub const SHUNT_SHELL_BIN_SPECS: &[(&str, ShuntShellBinBehavior)] = &[
+    ("cat", ShuntShellBinBehavior::FullDump),
+    ("less", ShuntShellBinBehavior::FullDump),
+    ("more", ShuntShellBinBehavior::FullDump),
+    ("nl", ShuntShellBinBehavior::FullDump),
+    ("bat", ShuntShellBinBehavior::FullDump),
+    ("batcat", ShuntShellBinBehavior::FullDump),
+    ("head", ShuntShellBinBehavior::HeadSlice),
+    ("tail", ShuntShellBinBehavior::TailSlice),
+];
+
+pub fn find_shunt_shell_bin(bin: &str) -> Option<ShuntShellBinBehavior> {
+    SHUNT_SHELL_BIN_SPECS
+        .iter()
+        .find(|&&(name, _)| name == bin)
+        .map(|&(_, behavior)| behavior)
+}
+
 /// Declarative per-language lexical syntax specification powering Zenko's pure-Rust
 /// Tokei-style LOC/comment/blank FSM, comment/string-aware token-tree matcher (`ast-grep`),
 /// code-only multi-file replace (`sd`/`ripide`), and structural diff (`difftastic`).
@@ -1571,12 +1591,12 @@ pub fn render_economy_prompt_block(
     let body = match read_only_plan {
         true => format!(
             "- Background micro-skills, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, tier-aware Shunt large-read protection, and P90 loop guard are active under your current ZMode.\n\
-             - Cost-tier discipline: offload wide multi-file scans to `spawn_agent(role=\"explorer\")` (`fast_model`) and prefer `read_file(mode=\"outline\"|symbol=\"...\"|ranges=[...])` on large files.\n\
+             - Cost-tier discipline: offload wide multi-file scans to `spawn_agent(role=\"{SUBAGENT_ROLE_EXPLORER}\")` (`fast_model`) and prefer `read_file(mode=\"outline\"|symbol=\"...\"|ranges=[...])` on large files.\n\
              - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})`, adjust gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `shunt-delegation` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
         false => format!(
             "- Background micro-skill mining, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, tier-aware Shunt large-read protection, diff-LOC tracking, and P90 loop guard run automatically under your current ZMode.\n\
-             - Cost-tier discipline: offload wide multi-file scans to `spawn_agent(role=\"explorer\")` and mechanical boilerplate/test matrices to `spawn_agent(role=\"{SUBAGENT_ROLE_DRAFTER}\")` (`fast_model`); prefer `read_file(mode=\"outline\"|symbol=\"...\"|ranges=[...])` on large files (pass `raw: true` only when raw full text is strictly required).\n\
+             - Cost-tier discipline: offload wide multi-file scans to `spawn_agent(role=\"{SUBAGENT_ROLE_EXPLORER}\")` and mechanical boilerplate/test matrices to `spawn_agent(role=\"{SUBAGENT_ROLE_DRAFTER}\")` (`fast_model`); prefer `read_file(mode=\"outline\"|symbol=\"...\"|ranges=[...])` on large files (pass `raw: true` only when raw full text is strictly required).\n\
              - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` via `retire_micro_skill`, audit code bloat/debt via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"}})`, shift overall context gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `shunt-delegation` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
     };

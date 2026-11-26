@@ -4,6 +4,18 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.43] - 2026-11-27
+
+Hardened `v0.0.42`'s Shunt gate, Service Briefing parser, and Token Economy accounting to eliminate every remaining inline literal and replace sequential `if`/`else if` guards with pure declarative tables and finite-state machines.
+
+### Changed
+- **Declarative Core Tables & Typed Shunt Enums (`crates/zenko-core/src/{constants,types,registry}.rs`):**
+  - Centralized all Shunt metadata keys, shell slice flags/defaults, glob chars, byte/token estimation constants, `SUBAGENT_ROLE_EXPLORER`, and Backstage YAML/CODEOWNERS schema keys & caps in `constants.rs`.
+  - Replaced stringly-typed Shunt actions/sources and inline `"head"`/`"tail"` matching with typed `ShuntActionKind`, `ShuntSourceKind`, `ShuntShellBinBehavior`, and a single `SHUNT_SHELL_BIN_SPECS` declarative lookup table (`find_shunt_shell_bin`).
+- **Pure State-Machine Dispatch (`crates/zenko-runtime/src/{shunt,tool_router,economy/mod}.rs`, `crates/zenko-tools/src/{service_brief,batch}.rs`):**
+  - Replaced sequential `if ... { continue; }` guards in `shunt::detect_shell_bulk_read` with an explicit `(ShellArgLexState, ShellArgToken)` finite-state machine (`classify_shell_arg_token` + exhaustive `match`).
+  - Replaced `if ... else if ...` branches in `service_brief::format_service_brief` and `economy::record_tool_outcome_in_economy_trace` with exhaustive tuple `match` dispatch.
+
 ## [0.0.42] - 2026-11-27
 
 Added a native pure-Rust **Tier-Aware Shunt Context-Protection Gate**, fast-tier **`drafter`** boilerplate subagent role, zero-LLM **Repo-Native Service & Ownership Briefing** (`catalog-info.yaml` + `CODEOWNERS`), and built-in **`shunt-delegation.md`** skill inspired by **`spotify/portal-ai-plugins`** (`shunt`, `service`, and `fleetshift`) — with zero `/commands`, zero new external crates, zero hardcoding, zero regex, and zero `if/else` ladders.

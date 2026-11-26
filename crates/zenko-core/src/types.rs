@@ -3968,6 +3968,48 @@ impl ShuntMode {
     }
 }
 
+/// Typed action recorded in Shunt tool metadata (`redirect` vs `advise`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShuntActionKind {
+    Redirect,
+    Advise,
+}
+
+impl ShuntActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Redirect => "redirect",
+            Self::Advise => "advise",
+        }
+    }
+}
+
+/// Typed source category for Shunt interceptions (`read_file` vs `shell_read`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShuntSourceKind {
+    ReadFile,
+    ShellRead,
+}
+
+impl ShuntSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadFile => "read_file",
+            Self::ShellRead => "shell_read",
+        }
+    }
+}
+
+/// Declarative file-dump behavior class for shell file-reading binaries in `SHUNT_SHELL_BIN_SPECS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShuntShellBinBehavior {
+    FullDump,
+    HeadSlice,
+    TailSlice,
+}
+
 /// Per-command-family token savings breakdown (`cargo`, `git`, `tsc`, `lint`, `test`, `pkg`, `docker`, `custom`, `mcp`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommandSavingsStat {

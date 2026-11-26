@@ -1,9 +1,10 @@
 //! Native Rust Tier-Aware Shunt Context-Protection Gate
 //! (inspired by Spotify `portal-ai-plugins/shunt`).
 //!
-//! Pure deterministic logic — zero regex, zero `if/else` ladders, kernel-confined
-//! `openat(O_NOFOLLOW)` bounded scanning, strictly fail-open, and "Never Worse"
-//! byte-savings verified before intercepting.
+//! Pure deterministic logic — zero regex, zero `if/else` ladders, declarative
+//! binary table (`SHUNT_SHELL_BIN_SPECS`), explicit shell-argument FSM,
+//! kernel-confined `openat(O_NOFOLLOW)` bounded scanning, strictly fail-open,
+//! and "Never Worse" byte-savings verified before intercepting.
 
 use crate::orchestrator::router::model_slot_rank;
 use crate::policy::{segment_bin_name, strip_shell_wrappers, tokenize_shell};
@@ -12,9 +13,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use zenko_core::{
     ARTIFACT_PATH_PREFIX, DEFAULT_READ_FILE_LINE_WINDOW, OUTLINE_MAX_FILE_BYTES,
-    READ_FILE_MODE_OUTLINE, SHUNT_MAX_SCAN_BYTES, SHUNT_OUTLINE_MAX_SYMBOLS, SHUNT_SCAN_BUF_BYTES,
-    SHUNT_SHELL_FULL_DUMP_BINS, SHUNT_SHELL_SLICE_BINS, SHUNT_SHELL_VALUE_FLAGS, ShuntMode,
-    SubagentModelTier, TOOL_READ_FILE, TOOL_SHELL_EXEC, ZenkoConfig, find_subagent_role,
+    READ_FILE_MODE_OUTLINE, SHUNT_BYTES_PER_TOKEN_ESTIMATE, SHUNT_FALLBACK_READ_WINDOW_LINES,
+    SHUNT_LINE_PREFIX_ESTIMATE_BYTES, SHUNT_MAX_SCAN_BYTES, SHUNT_MIN_OUTPUT_CAP_BYTES,
+    SHUNT_OUTLINE_MAX_SYMBOLS, SHUNT_SCAN_BUF_BYTES, SHUNT_SHELL_DEFAULT_SLICE_LINES,
+    SHUNT_SHELL_END_OF_OPTIONS, SHUNT_SHELL_GLOB_CHARS, SHUNT_SHELL_LINES_LONG_EQ,
+    SHUNT_SHELL_LINES_LONG_FLAG, SHUNT_SHELL_LINES_SHORT_FLAG, SHUNT_SHELL_STDIN_OPERAND,
+    SHUNT_SHELL_VALUE_FLAGS, SUBAGENT_ROLE_EXPLORER, ShuntMode, ShuntShellBinBehavior,
+    ShuntSourceKind, SubagentModelTier, TOOL_READ_FILE, TOOL_SHELL_EXEC, ZenkoConfig,
+    find_shunt_shell_bin, find_subagent_role,
 };
 use zenko_tools::jail::{
     open_jailed_read_file, read_jailed_string_bounded, resolve_readable_path, select_jail_root,
@@ -51,7 +57,7 @@ pub struct ShellBulkReadCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShuntOutcome {
     pub target_path: String,
-    pub source_kind: &'static str,
+    pub source_kind: ShuntSourceKind,
     pub total_lines: usize,
     pub estimated_output_lines: usize,
     pub original_bytes: usize,
@@ -65,7 +71,7 @@ pub enum ShuntDecision {
     PassThrough,
     Advise {
         target_path: String,
-        source_kind: &'static str,
+        source_kind: ShuntSourceKind,
         total_lines: usize,
         note: String,
     },
@@ -86,7 +92,10 @@ pub fn is_fast_tier_context(
         return true;
     }
     let fast_configured = !cfg.provider.fast_model.trim().is_empty();
-    match (fast_configured, active_model.map(str::trim).filter(|s| !s.is_empty())) {
+    match (
+        fast_configured,
+        active_model.map(str::trim).filter(|s| !s.is_empty()),
+    ) {
         (true, Some(model)) => model_slot_rank(cfg, model) == 0,
         _ => false,
     }
@@ -97,44 +106,94 @@ fn has_distinct_fast_model(cfg: &ZenkoConfig, active_model: Option<&str>) -> boo
     !fast.is_empty() && active_model.map(str::trim) != Some(fast)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShellBinKind {
-    FullDump,
-    Head,
-    Tail,
-}
-
-fn classify_shell_read_bin(bin: &str) -> Option<ShellBinKind> {
-    if SHUNT_SHELL_FULL_DUMP_BINS.contains(&bin) {
-        return Some(ShellBinKind::FullDump);
-    }
-    if SHUNT_SHELL_SLICE_BINS.contains(&bin) {
-        return match bin {
-            "head" => Some(ShellBinKind::Head),
-            "tail" => Some(ShellBinKind::Tail),
-            _ => None,
-        };
-    }
-    None
-}
-
-fn parse_line_count_spec(bin_kind: ShellBinKind, raw: &str) -> Option<ShellSliceBound> {
+fn parse_line_count_spec(behavior: ShuntShellBinBehavior, raw: &str) -> Option<ShellSliceBound> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    match (bin_kind, trimmed.strip_prefix('+')) {
-        (ShellBinKind::Tail, Some(rest)) => rest
+    match (behavior, trimmed.strip_prefix('+')) {
+        (ShuntShellBinBehavior::TailSlice, Some(rest)) => rest
             .parse::<usize>()
             .ok()
             .map(ShellSliceBound::FromStartLine),
-        (_, Some(rest)) => rest.parse::<usize>().ok().map(ShellSliceBound::ExplicitLines),
+        (_, Some(rest)) => rest
+            .parse::<usize>()
+            .ok()
+            .map(ShellSliceBound::ExplicitLines),
         (_, None) => trimmed
             .strip_prefix('-')
             .unwrap_or(trimmed)
             .parse::<usize>()
             .ok()
             .map(ShellSliceBound::ExplicitLines),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellArgLexState {
+    Options,
+    OperandsOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellArgToken<'a> {
+    EndOfOptions,
+    Stdin,
+    SliceFlagSeparate,
+    SliceFlagInline(ShellSliceBound),
+    OtherValueFlag,
+    OtherFlag,
+    Operand(&'a str),
+}
+
+fn try_parse_inline_slice_bound(
+    behavior: ShuntShellBinBehavior,
+    tok: &str,
+) -> Option<ShellSliceBound> {
+    if !matches!(
+        behavior,
+        ShuntShellBinBehavior::HeadSlice | ShuntShellBinBehavior::TailSlice
+    ) {
+        return None;
+    }
+    tok.strip_prefix(SHUNT_SHELL_LINES_LONG_EQ)
+        .and_then(|v| parse_line_count_spec(behavior, v))
+        .or_else(|| {
+            tok.strip_prefix(SHUNT_SHELL_LINES_SHORT_FLAG)
+                .filter(|v| !v.is_empty())
+                .and_then(|v| parse_line_count_spec(behavior, v))
+        })
+        .or_else(|| {
+            tok.strip_prefix('-')
+                .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|d| parse_line_count_spec(behavior, d))
+        })
+}
+
+fn classify_shell_arg_token(behavior: ShuntShellBinBehavior, tok: &str) -> ShellArgToken<'_> {
+    let is_slice_bin = matches!(
+        behavior,
+        ShuntShellBinBehavior::HeadSlice | ShuntShellBinBehavior::TailSlice
+    );
+    match tok {
+        SHUNT_SHELL_END_OF_OPTIONS => ShellArgToken::EndOfOptions,
+        SHUNT_SHELL_STDIN_OPERAND => ShellArgToken::Stdin,
+        t if is_slice_bin
+            && (t == SHUNT_SHELL_LINES_SHORT_FLAG || t == SHUNT_SHELL_LINES_LONG_FLAG) =>
+        {
+            ShellArgToken::SliceFlagSeparate
+        }
+        t => match try_parse_inline_slice_bound(behavior, t) {
+            Some(bound) => ShellArgToken::SliceFlagInline(bound),
+            None => match (
+                SHUNT_SHELL_VALUE_FLAGS.contains(&t),
+                t.starts_with('-'),
+            ) {
+                (true, _) => ShellArgToken::OtherValueFlag,
+                (false, true) => ShellArgToken::OtherFlag,
+                (false, false) => ShellArgToken::Operand(t),
+            },
+        },
     }
 }
 
@@ -149,78 +208,53 @@ pub fn detect_shell_bulk_read(command: &str) -> Option<ShellBulkReadCandidate> {
     let tokens = strip_shell_wrappers(&parsed.tokens);
     let first = tokens.first()?;
     let bin = segment_bin_name(first);
-    let bin_kind = classify_shell_read_bin(&bin)?;
+    let behavior = find_shunt_shell_bin(&bin)?;
 
-    let mut bound = match bin_kind {
-        ShellBinKind::FullDump => ShellSliceBound::FullFile,
-        ShellBinKind::Head | ShellBinKind::Tail => ShellSliceBound::ExplicitLines(10),
+    let mut bound = match behavior {
+        ShuntShellBinBehavior::FullDump => ShellSliceBound::FullFile,
+        ShuntShellBinBehavior::HeadSlice | ShuntShellBinBehavior::TailSlice => {
+            ShellSliceBound::ExplicitLines(SHUNT_SHELL_DEFAULT_SLICE_LINES)
+        }
     };
 
     let mut operands: Vec<&str> = Vec::new();
-    let mut after_double_dash = false;
+    let mut lex_state = ShellArgLexState::Options;
     let mut i = 1usize;
     while i < tokens.len() {
         let tok = tokens[i].as_str();
-        if after_double_dash {
-            if tok != "-" {
-                operands.push(tok);
-            }
-            i += 1;
-            continue;
-        }
-        if tok == "--" {
-            after_double_dash = true;
-            i += 1;
-            continue;
-        }
-
-        // Parse slice bounds for `head` / `tail` (`-n 500`, `--lines=500`, `-n500`, `-500`, `tail -n +1`)
-        if matches!(bin_kind, ShellBinKind::Head | ShellBinKind::Tail) {
-            if tok == "-n" || tok == "--lines" {
-                if let Some(val) = tokens.get(i + 1)
-                    && let Some(parsed_bound) = parse_line_count_spec(bin_kind, val)
-                {
-                    bound = parsed_bound;
+        let step = match lex_state {
+            ShellArgLexState::OperandsOnly => {
+                if tok != SHUNT_SHELL_STDIN_OPERAND {
+                    operands.push(tok);
                 }
-                i = (i + 2).min(tokens.len());
-                continue;
+                1
             }
-            if let Some(val) = tok.strip_prefix("--lines=") {
-                if let Some(parsed_bound) = parse_line_count_spec(bin_kind, val) {
-                    bound = parsed_bound;
+            ShellArgLexState::Options => match classify_shell_arg_token(behavior, tok) {
+                ShellArgToken::EndOfOptions => {
+                    lex_state = ShellArgLexState::OperandsOnly;
+                    1
                 }
-                i += 1;
-                continue;
-            }
-            if let Some(val) = tok.strip_prefix("-n")
-                && !val.is_empty()
-                && let Some(parsed_bound) = parse_line_count_spec(bin_kind, val)
-            {
-                bound = parsed_bound;
-                i += 1;
-                continue;
-            }
-            if let Some(digits) = tok.strip_prefix('-')
-                && !digits.is_empty()
-                && digits.bytes().all(|b| b.is_ascii_digit())
-                && let Some(parsed_bound) = parse_line_count_spec(bin_kind, digits)
-            {
-                bound = parsed_bound;
-                i += 1;
-                continue;
-            }
-        }
-
-        if SHUNT_SHELL_VALUE_FLAGS.contains(&tok) {
-            i = (i + 2).min(tokens.len());
-            continue;
-        }
-        if tok.starts_with('-') {
-            i += 1;
-            continue;
-        }
-        operands.push(tok);
-        i += 1;
+                ShellArgToken::Stdin | ShellArgToken::OtherFlag => 1,
+                ShellArgToken::SliceFlagSeparate => {
+                    if let Some(val) = tokens.get(i + 1)
+                        && let Some(parsed_bound) = parse_line_count_spec(behavior, val)
+                    {
+                        bound = parsed_bound;
+                    }
+                    2
+                }
+                ShellArgToken::SliceFlagInline(parsed_bound) => {
+                    bound = parsed_bound;
+                    1
+                }
+                ShellArgToken::OtherValueFlag => 2,
+                ShellArgToken::Operand(op) => {
+                    operands.push(op);
+                    1
+                }
+            },
+        };
+        i = i.saturating_add(step).min(tokens.len());
     }
 
     // Only intercept single-file direct dumps (multi-file / empty / glob patterns pass through safely)
@@ -228,7 +262,7 @@ pub fn detect_shell_bulk_read(command: &str) -> Option<ShellBulkReadCandidate> {
         return None;
     }
     let path = operands[0];
-    if path.contains('*') || path.contains('?') || path.contains('[') {
+    if path.contains(SHUNT_SHELL_GLOB_CHARS) {
         return None;
     }
 
@@ -322,17 +356,19 @@ fn build_shunt_hint_footer(
     total_lines: usize,
     min_lines: usize,
     has_fast_worker: bool,
-    is_shell_dump: bool,
+    source_kind: ShuntSourceKind,
 ) -> String {
     let explorer_clause = match has_fast_worker {
-        true => " or delegate broad analysis to `spawn_agent(role=\"explorer\", ...)` (runs on `fast_model`)",
-        false => "",
-    };
-    let bypass_clause = match is_shell_dump {
         true => format!(
+            " or delegate broad analysis to `spawn_agent(role=\"{SUBAGENT_ROLE_EXPLORER}\", ...)` (runs on `fast_model`)"
+        ),
+        false => String::new(),
+    };
+    let bypass_clause = match source_kind {
+        ShuntSourceKind::ShellRead => format!(
             "use `read_file(path=\"{req_path}\", symbol=\"...\")` / `ranges`, pipe through `grep`/`rg`, or pass `raw: true`"
         ),
-        false => format!(
+        ShuntSourceKind::ReadFile => format!(
             "read targeted spans via `read_file(path=\"{req_path}\", symbol=\"...\")` or `ranges: [{{start_line, end_line}}]` (or pass `raw: true` for raw lines)"
         ),
     };
@@ -393,14 +429,14 @@ pub fn evaluate_shunt_pre_tool(
                 total_lines,
                 min_lines,
                 has_fast_worker,
-                false,
+                ShuntSourceKind::ReadFile,
             );
 
             match shunt_cfg.mode {
                 ShuntMode::Off => ShuntDecision::PassThrough,
                 ShuntMode::Advise => ShuntDecision::Advise {
                     target_path: req_path.to_string(),
-                    source_kind: "read_file",
+                    source_kind: ShuntSourceKind::ReadFile,
                     total_lines,
                     note: footer,
                 },
@@ -425,21 +461,19 @@ pub fn evaluate_shunt_pre_tool(
 
                     let outline_body = format_outline_report(req_path, &report);
                     let content = format!("{outline_body}\n{footer}");
-                    // Honest avoided bytes: unconstrained `read_file` streams `DEFAULT_READ_FILE_LINE_WINDOW`
-                    // lines plus ~10-byte `line:hash| ` prefixes per line.
                     let window_lines = total_lines.min(DEFAULT_READ_FILE_LINE_WINDOW);
                     let avg_line_bytes = (file_bytes as usize).div_ceil(total_lines.max(1));
-                    let estimated_raw_bytes =
-                        window_lines.saturating_mul(avg_line_bytes.saturating_add(10));
+                    let estimated_raw_bytes = window_lines
+                        .saturating_mul(avg_line_bytes.saturating_add(SHUNT_LINE_PREFIX_ESTIMATE_BYTES));
                     if content.len() >= estimated_raw_bytes {
                         return ShuntDecision::PassThrough;
                     }
                     let tokens_saved = estimated_raw_bytes
                         .saturating_sub(content.len())
-                        .div_ceil(4);
+                        .div_ceil(SHUNT_BYTES_PER_TOKEN_ESTIMATE);
                     ShuntDecision::Redirect(ShuntOutcome {
                         target_path: req_path.to_string(),
-                        source_kind: "read_file",
+                        source_kind: ShuntSourceKind::ReadFile,
                         total_lines,
                         estimated_output_lines: window_lines,
                         original_bytes: estimated_raw_bytes,
@@ -483,14 +517,14 @@ pub fn evaluate_shunt_pre_tool(
                 total_lines,
                 min_lines,
                 has_fast_worker,
-                true,
+                ShuntSourceKind::ShellRead,
             );
 
             match shunt_cfg.mode {
                 ShuntMode::Off => ShuntDecision::PassThrough,
                 ShuntMode::Advise => ShuntDecision::Advise {
                     target_path: cand.path,
-                    source_kind: "shell_read",
+                    source_kind: ShuntSourceKind::ShellRead,
                     total_lines,
                     note: footer,
                 },
@@ -519,7 +553,7 @@ pub fn evaluate_shunt_pre_tool(
                             cand.bin, cand.path
                         ),
                         None => format!(
-                            "Shunt intercepted unpiped `{}` dump of `{}` ({total_lines} lines, {file_bytes} B).\nUse `code_search(path=\"{}\", pattern=\"...\")` or `read_file(path=\"{}\", start_line=1, end_line=120)` to inspect only needed sections.\n{footer}",
+                            "Shunt intercepted unpiped `{}` dump of `{}` ({total_lines} lines, {file_bytes} B).\nUse `code_search(path=\"{}\", pattern=\"...\")` or `read_file(path=\"{}\", start_line=1, end_line={SHUNT_FALLBACK_READ_WINDOW_LINES})` to inspect only needed sections.\n{footer}",
                             cand.bin, cand.path, cand.path, cand.path
                         ),
                     };
@@ -528,14 +562,17 @@ pub fn evaluate_shunt_pre_tool(
                         .saturating_mul(estimated_lines as u128)
                         / (total_lines.max(1) as u128))
                         as usize;
-                    let avoided_bytes = scaled_bytes.min(cfg.policy.max_output_bytes.max(4096));
+                    let avoided_bytes =
+                        scaled_bytes.min(cfg.policy.max_output_bytes.max(SHUNT_MIN_OUTPUT_CAP_BYTES));
                     if content.len() >= avoided_bytes {
                         return ShuntDecision::PassThrough;
                     }
-                    let tokens_saved = avoided_bytes.saturating_sub(content.len()).div_ceil(4);
+                    let tokens_saved = avoided_bytes
+                        .saturating_sub(content.len())
+                        .div_ceil(SHUNT_BYTES_PER_TOKEN_ESTIMATE);
                     ShuntDecision::Redirect(ShuntOutcome {
                         target_path: cand.path,
-                        source_kind: "shell_read",
+                        source_kind: ShuntSourceKind::ShellRead,
                         total_lines,
                         estimated_output_lines: estimated_lines,
                         original_bytes: avoided_bytes,
@@ -632,6 +669,7 @@ mod tests {
         );
         match dec {
             ShuntDecision::Redirect(out) => {
+                assert_eq!(out.source_kind, ShuntSourceKind::ReadFile);
                 assert!(out.tokens_saved > 0);
                 assert!(out.content.contains("helper_0"));
                 assert!(out.content.contains("spawn_agent(role=\"explorer\""));
@@ -682,7 +720,7 @@ mod tests {
                 &hub,
                 &data,
                 Some("anthropic/claude-sonnet-4"),
-                Some("explorer"),
+                Some(SUBAGENT_ROLE_EXPLORER),
                 TOOL_READ_FILE,
                 &json!({ "path": "big.rs" }),
             ),
@@ -715,7 +753,7 @@ mod tests {
             &json!({ "command": "cat plain.log" }),
         ) {
             ShuntDecision::Redirect(out) => {
-                assert_eq!(out.source_kind, "shell_read");
+                assert_eq!(out.source_kind, ShuntSourceKind::ShellRead);
                 assert!(out.tokens_saved > 0);
                 assert!(out.content.contains("code_search"));
             }
