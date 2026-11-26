@@ -950,6 +950,22 @@ export function TokenEconomyPanel({
                   </div>
                 )}
 
+                {(auditPayload.diff.dox_drift ?? []).length > 0 && (
+                  <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 font-mono text-[10.5px]">
+                    <span className="font-semibold" style={{ color: 'var(--accent)' }}>
+                      DOX Subtree Drift ({(auditPayload.diff.dox_drift ?? []).length})
+                    </span>
+                    {(auditPayload.diff.dox_drift ?? []).map((drift, idx) => (
+                      <span key={idx} className="truncate text-[var(--fg)]">
+                        <span style={{ color: 'var(--accent)' }}>{drift.doc_path}</span>{' '}
+                        <span className="text-[var(--muted)]">
+                          untouched · {drift.changed_files.slice(0, 3).join(', ')}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <div className="flex flex-col gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[10.5px]">
                     <span className="text-[var(--muted)]">

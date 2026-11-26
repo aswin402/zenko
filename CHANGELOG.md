@@ -4,6 +4,20 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.35] - 2026-11-26
+
+Closed all seven end-to-end wiring seams across JIT scoped DOX rules, Stage-A microcompaction, daemon-restart hydration, medium-JSON SmartCrusher, CLI `zenko context`, WebUI `TokenEconomyPanel`, and provider wire canonicalization.
+
+### Fixed
+- **Post-Spill JIT Scoped Rule Injection (`crates/zenko-runtime/src/tool_router.rs`):** Moved `<scoped_repo_rules>` auto-injection strictly after oversized artifact spilling so reading a large file inside a documented subtree never truncates or hides its injected subtree rules inside a spill artifact.
+- **Stage-A Microcompaction Rule Preservation (`crates/zenko-runtime/src/compaction.rs`):** Extracted and preserved any `<scoped_repo_rules ...>...</scoped_repo_rules>` blocks alongside `[microcompacted ...]` stubs so long sessions collapse bulky file reads without causing subtree-rule amnesia.
+- **Daemon-Restart Scoped-Rule Hydration (`crates/zenko-runtime/src/runtime/{mod,turn}.rs`):** Persisted `scoped_rules_injected` onto SQLite `ToolResult` events and added `hydrate_loaded_scoped_rules` (scanning post-checkpoint metadata + inline `<scoped_repo_rules>` markers) on turn start and `inspect_session_context`, preventing duplicate rule injection after daemon restarts.
+- **Medium Minified JSON Tier-1 Lossless Tabular CSV (`crates/zenko-runtime/src/read_less/{mod,smart_crusher}.rs`):** Enabled strictly lossless Tier-1 CSV conversion (`try_crush_json_tabular_only`) for medium uniform JSON arrays (`>= 256 B`, below `read_less_min_bytes`) while keeping lossy Tier-2 gated by `min_bytes`.
+- **CLI, WebUI, Schema & Prompt Alignment (`jobs_hub_queue.rs`, `TokenEconomyPanel.tsx`, `dialect.rs`, `search.rs`, `registry.rs`):**
+  - Added `KV Prefix` stability status/warnings and `Scoped DOX` loaded/indexed counts to human-readable `zenko context`.
+  - Added structured `DOX Subtree Drift` breakdown (`doc_path` + affected files) to the WebUI `TokenEconomyPanel` Code Minimalism Audit card.
+  - Canonicalized historical assistant `tool_calls` arguments via `canonicalize_json_value`, updated `code_search`'s `with_hashes` schema description for file-grouped output, and referenced `dox_drift` / `dox-tree` inside `render_minimalism_prompt_block`.
+
 ## [0.0.34] - 2026-11-26
 
 Implemented six native Rust Headroom- and DOX-inspired context-efficiency, KV-cache alignment, and hierarchical subtree documentation upgrades (zero ML/ONNX, zero regex, zero `/commands`).

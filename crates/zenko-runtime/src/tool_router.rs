@@ -561,39 +561,6 @@ pub(crate) async fn dispatch_tool_call(
         };
     }
 
-    // Just-In-Time (JIT) hierarchical DOX / nested `AGENTS.md` ancestor auto-injection:
-    // on first read or edit inside any subdirectory governed by nested `REPO_RULE_FILES`,
-    // inject each unseen ancestor rule at most once per session (zero Tier-1 KV invalidation).
-    if !tool_output.is_error && cfg.context.auto_repo_rules && !is_ccr_recovery {
-        let touched = extract_touched_rel_paths(&tc.name, &tc.arguments, tool_output.metadata.as_ref());
-        if !touched.is_empty() {
-            let candidates = discover_ancestor_scoped_rules(&tool_ctx.workspace_dir, &touched);
-            let mut injected_paths: Vec<String> = Vec::new();
-            for (rel_doc, full_doc) in candidates {
-                if !rt.claim_unloaded_scoped_rule(session_id, &rel_doc) {
-                    continue;
-                }
-                if let Some(body) = read_capped_scoped_rule(&full_doc) {
-                    tool_output.content.push_str(&format!(
-                        "\n\n<scoped_repo_rules path=\"{rel_doc}\">\n{body}\n</scoped_repo_rules>"
-                    ));
-                    injected_paths.push(rel_doc);
-                }
-            }
-            if !injected_paths.is_empty() {
-                let val = Value::Array(injected_paths.into_iter().map(Value::String).collect());
-                tool_output.metadata = match tool_output.metadata {
-                    Some(Value::Object(mut map)) => {
-                        map.insert("scoped_rules_injected".into(), val);
-                        Some(Value::Object(map))
-                    }
-                    Some(other) => Some(json!({ "data": other, "scoped_rules_injected": val })),
-                    None => Some(json!({ "scoped_rules_injected": val })),
-                };
-            }
-        }
-    }
-
     // Tier 1 (Session Output Dedup) -> Tier 2 (Custom Filters + Command-Aware Read-Less + Failure Tee) -> Tier 3 (Error-Salvaging Spill)
     let raw_bypass = tc.name == TOOL_SHELL_EXEC
         && tc
@@ -852,6 +819,39 @@ pub(crate) async fn dispatch_tool_call(
                 Some(other) => Some(json!({ "data": other, "artifact": art_val })),
                 None => Some(json!({ "artifact": art_val })),
             };
+        }
+    }
+
+    // Just-In-Time (JIT) hierarchical DOX / nested `AGENTS.md` ancestor auto-injection:
+    // runs strictly AFTER artifact spilling so injected `<scoped_repo_rules>` blocks are never
+    // truncated or hidden inside an oversized spill artifact (zero Tier-1 KV invalidation).
+    if !tool_output.is_error && cfg.context.auto_repo_rules && !is_ccr_recovery {
+        let touched = extract_touched_rel_paths(&tc.name, &tc.arguments, tool_output.metadata.as_ref());
+        if !touched.is_empty() {
+            let candidates = discover_ancestor_scoped_rules(&tool_ctx.workspace_dir, &touched);
+            let mut injected_paths: Vec<String> = Vec::new();
+            for (rel_doc, full_doc) in candidates {
+                if !rt.claim_unloaded_scoped_rule(session_id, &rel_doc) {
+                    continue;
+                }
+                if let Some(body) = read_capped_scoped_rule(&full_doc) {
+                    tool_output.content.push_str(&format!(
+                        "\n\n<scoped_repo_rules path=\"{rel_doc}\">\n{body}\n</scoped_repo_rules>"
+                    ));
+                    injected_paths.push(rel_doc);
+                }
+            }
+            if !injected_paths.is_empty() {
+                let val = Value::Array(injected_paths.into_iter().map(Value::String).collect());
+                tool_output.metadata = match tool_output.metadata {
+                    Some(Value::Object(mut map)) => {
+                        map.insert("scoped_rules_injected".into(), val);
+                        Some(Value::Object(map))
+                    }
+                    Some(other) => Some(json!({ "data": other, "scoped_rules_injected": val })),
+                    None => Some(json!({ "scoped_rules_injected": val })),
+                };
+            }
         }
     }
 

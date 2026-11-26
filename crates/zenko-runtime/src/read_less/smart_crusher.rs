@@ -105,36 +105,52 @@ fn split_optional_exit_header(text: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// Tier-1 strictly lossless JSON tabular compressor (safe to run below `read_less_min_bytes`
+/// because zero rows or cells are dropped). Handles both top-level uniform arrays and objects
+/// containing uniform scalar arrays when compact CSV saves `>= 30%` bytes.
+pub fn try_crush_json_tabular_only(text: &str) -> Option<String> {
+    let (header, body) = split_optional_exit_header(text);
+    let trimmed = body.trim();
+    if !matches!(trimmed.as_bytes().first(), Some(b'[')) {
+        return None;
+    }
+    let parsed: Value = serde_json::from_str(trimmed).ok()?;
+    let Value::Array(items) = &parsed else {
+        return None;
+    };
+    let (cols, csv_body) = try_render_lossless_tabular_csv(items)?;
+    let table = format!(
+        "# lossless-tabular-json (rows={}, cols={})\n{csv_body}",
+        items.len(),
+        cols
+    );
+    let compact_raw_len = serde_json::to_string(&parsed)
+        .map(|s| s.len())
+        .unwrap_or(trimmed.len());
+    let saved_pct = compact_raw_len
+        .saturating_sub(table.len())
+        .saturating_mul(100)
+        / compact_raw_len.max(1);
+    if table.len() >= compact_raw_len || saved_pct < SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT {
+        return None;
+    }
+    Some(match header {
+        Some(h) => format!("{h}\n{table}"),
+        None => table,
+    })
+}
+
 /// Top-level 2-tier SmartCrusher entry point for JSON tool outputs.
 pub fn try_crush_json_body(text: &str, tool_args: &Value, zmode: ZMode) -> Option<String> {
+    if let Some(lossless) = try_crush_json_tabular_only(text) {
+        return Some(lossless);
+    }
     let (header, body) = split_optional_exit_header(text);
     let trimmed = body.trim();
     if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[')) {
         return None;
     }
     let parsed: Value = serde_json::from_str(trimmed).ok()?;
-
-    // Fast path: top-level uniform flat object array -> lossless compact CSV table.
-    if let Value::Array(items) = &parsed
-        && let Some((cols, csv_body)) = try_render_lossless_tabular_csv(items)
-    {
-        let table = format!(
-            "# lossless-tabular-json (rows={}, cols={})\n{csv_body}",
-            items.len(),
-            cols
-        );
-        let compact_raw_len = serde_json::to_string(&parsed).map(|s| s.len()).unwrap_or(trimmed.len());
-        let saved_pct = compact_raw_len
-            .saturating_sub(table.len())
-            .saturating_mul(100)
-            / compact_raw_len.max(1);
-        if table.len() < compact_raw_len && saved_pct >= SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT {
-            return Some(match header {
-                Some(h) => format!("{h}\n{table}"),
-                None => table,
-            });
-        }
-    }
 
     let query_tokens = extract_query_tokens(tool_args);
     let max_kept = max_kept_for_zmode(zmode);

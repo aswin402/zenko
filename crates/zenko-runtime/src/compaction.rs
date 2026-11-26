@@ -161,6 +161,23 @@ fn extract_artifact_handle(content: &str) -> Option<&str> {
     }
 }
 
+fn extract_scoped_repo_rules_blocks(content: &str) -> Vec<&str> {
+    const OPEN: &str = "<scoped_repo_rules ";
+    const CLOSE: &str = "</scoped_repo_rules>";
+    let mut blocks = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel_start) = content[cursor..].find(OPEN) {
+        let start = cursor + rel_start;
+        let Some(rel_end) = content[start..].find(CLOSE) else {
+            break;
+        };
+        let end = start + rel_end + CLOSE.len();
+        blocks.push(&content[start..end]);
+        cursor = end;
+    }
+    blocks
+}
+
 fn extract_tool_target_hint(args: Option<&Value>) -> String {
     let Some(val) = args else {
         return String::new();
@@ -239,7 +256,11 @@ pub fn microcompact_messages(
                         true => String::new(),
                         false => format!(" `{target}`"),
                     };
-                    let stub = match extract_artifact_handle(&msg.content) {
+                    let preserved_rules: Vec<String> = extract_scoped_repo_rules_blocks(&msg.content)
+                        .into_iter()
+                        .map(String::from)
+                        .collect();
+                    let base_stub = match extract_artifact_handle(&msg.content) {
                         Some(handle) => format!(
                             "[microcompacted `{tool_name}`{target_part} ({orig_lines} lines, {orig_bytes}B) — inspect full output with `read_file` at `{handle}`]"
                         ),
@@ -247,6 +268,13 @@ pub fn microcompact_messages(
                             "[microcompacted `{tool_name}`{target_part} ({orig_lines} lines, {orig_bytes}B) — re-read if needed]"
                         ),
                     };
+                    let stub = match preserved_rules.is_empty() {
+                        true => base_stub,
+                        false => format!("{base_stub}\n\n{}", preserved_rules.join("\n\n")),
+                    };
+                    if stub.len() >= orig_bytes {
+                        continue;
+                    }
                     let saved = orig_bytes.saturating_sub(stub.len()) / 4;
                     msg.content = stub;
                     stats.compacted_tools += 1;
@@ -901,6 +929,52 @@ mod tests {
             .find(|m| m.tool_call_id.as_deref() == Some("c_plan"))
             .expect("c_plan kept");
         assert_eq!(plan_res.content, big_plan, "protected plan_update must never microcompact");
+    }
+
+    #[test]
+    fn stage_a_microcompaction_preserves_scoped_repo_rules_blocks() {
+        let mut msgs = Vec::new();
+        msgs.push(user_msg("inspect api routes"));
+        msgs.push(ChatMessage {
+            role: EventRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "c_scoped".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "crates/api/src/routes.rs"}),
+            }],
+            tool_call_id: None,
+            name: None,
+        });
+        let scoped_block = "<scoped_repo_rules path=\"crates/api/AGENTS.md\">\n# API\nAlways validate auth header.\n</scoped_repo_rules>";
+        let bulky_body = format!("{}\n\n{scoped_block}", "pub fn route() {}\n".repeat(120));
+        msgs.push(ChatMessage {
+            role: EventRole::Tool,
+            content: bulky_body,
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            tool_call_id: Some("c_scoped".into()),
+            name: Some("read_file".into()),
+        });
+
+        for i in 0..MICROCOMPACT_PROTECT_RECENT_EXCHANGES {
+            msgs.push(user_msg(&format!("later turn {i}")));
+        }
+
+        let (out, stats) = microcompact_messages(msgs, 1_800, 500, 0.50);
+        assert_eq!(stats.compacted_tools, 1);
+        let compacted = out
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("c_scoped"))
+            .expect("c_scoped kept");
+        assert!(compacted.content.contains("[microcompacted `read_file`"));
+        assert!(
+            compacted.content.contains(scoped_block),
+            "microcompaction must preserve JIT scoped rules: {}",
+            compacted.content
+        );
+        assert!(!compacted.content.contains("pub fn route() {}"));
     }
 
     #[test]

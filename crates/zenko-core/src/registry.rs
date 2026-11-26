@@ -1110,10 +1110,10 @@ pub fn render_minimalism_prompt_block(
         .join(" -> ");
     let tool_clause = match (can_use_tool, read_only_plan) {
         (true, true) => format!(
-            "\n- Autonomous audit tools: run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})` or load `minimal-review`, `minimal-audit`, or `debt-harvest` via `{TOOL_SKILL_VIEW}` when planning refactors, reviewing diffs, or auditing bloat."
+            "\n- Autonomous audit tools: run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})` (which also checks nested `dox_drift`) or load `minimal-review`, `minimal-audit`, `debt-harvest`, or `dox-tree` via `{TOOL_SKILL_VIEW}` when planning refactors, reviewing diffs, or auditing bloat."
         ),
         (true, false) => format!(
-            "\n- Autonomous audit tools: before finalizing multi-file or large edits, run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"}})` (or load `minimal-review` via `{TOOL_SKILL_VIEW}`) to verify nothing can be reused or deleted; use `audit_repo` / `minimal-audit` for codebase simplification and annotate deliberate temporary shortcuts with `DEBT: <reason>` (harvested via `debt_scan` / `debt-harvest`)."
+            "\n- Autonomous audit tools: before finalizing multi-file or large edits, run `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"}})` (or load `minimal-review` / `dox-tree` via `{TOOL_SKILL_VIEW}`) to verify nothing can be reused, deleted, or drifted from nested `AGENTS.md` docs; use `audit_repo` / `minimal-audit` for codebase simplification and annotate deliberate temporary shortcuts with `DEBT: <reason>` (harvested via `debt_scan` / `debt-harvest`)."
         ),
         (false, _) => String::new(),
     };

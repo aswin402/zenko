@@ -94,7 +94,7 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                                     "type": "function",
                                     "function": {
                                         "name": tc.name,
-                                        "arguments": tc.arguments.to_string()
+                                        "arguments": canonicalize_json_value(&tc.arguments).to_string()
                                     }
                                 })
                             })

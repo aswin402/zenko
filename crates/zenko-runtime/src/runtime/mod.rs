@@ -1623,7 +1623,7 @@ impl AgentRuntime {
             zmode: active_zmode,
             zmode_customized: cfg.is_zmode_customized(),
             cache_stability_warnings: snapshot.cache_stability_warnings.clone(),
-            scoped_rules_loaded: self.loaded_scoped_rules_for(session_id),
+            scoped_rules_loaded: self.hydrate_loaded_scoped_rules(session_id, &branch),
             nested_repo_docs_count: snapshot.nested_repo_docs.len(),
         })
     }
@@ -2287,19 +2287,66 @@ impl AgentRuntime {
             })
     }
 
-    pub(crate) fn loaded_scoped_rules_for(&self, session_id: &str) -> Vec<String> {
-        let ctrl = self.session_control(session_id);
-        ctrl.loaded_scoped_rules
-            .lock()
-            .map(|set| set.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
     pub(crate) fn clear_session_scoped_rules(&self, session_id: &str) {
         let ctrl = self.session_control(session_id);
         if let Ok(mut set) = ctrl.loaded_scoped_rules.lock() {
             set.clear();
         }
+    }
+
+    /// Hydrates session-scoped JIT DOX / nested `AGENTS.md` rule paths from post-checkpoint
+    /// `EventKind::ToolResult` events on `branch_events` (both structured `scoped_rules_injected`
+    /// metadata and inline `<scoped_repo_rules path="...">` blocks, including `batch_tools`),
+    /// merging them into `SessionControl` so daemon restarts never duplicate active scoped rules.
+    pub(crate) fn hydrate_loaded_scoped_rules(
+        &self,
+        session_id: &str,
+        branch_events: &[SessionEvent],
+    ) -> Vec<String> {
+        let ckpt_slice = slice_from_latest_checkpoint(branch_events);
+        let mut discovered: BTreeSet<String> = BTreeSet::new();
+        for ev in &ckpt_slice.kept_events {
+            if ev.kind != EventKind::ToolResult {
+                continue;
+            }
+            if let Some(arr) = ev
+                .content_json
+                .get("scoped_rules_injected")
+                .and_then(Value::as_array)
+            {
+                for path in arr.iter().filter_map(Value::as_str).map(str::trim) {
+                    if !path.is_empty() {
+                        discovered.insert(path.to_string());
+                    }
+                }
+            }
+            if let Some(content) = ev.content_json.get("content").and_then(Value::as_str) {
+                const PREFIX: &str = "<scoped_repo_rules path=\"";
+                let mut cursor = 0usize;
+                while let Some(rel) = content[cursor..].find(PREFIX) {
+                    let start = cursor + rel + PREFIX.len();
+                    let Some(end_rel) = content[start..].find("\">") else {
+                        break;
+                    };
+                    let path = content[start..start + end_rel].trim();
+                    if !path.is_empty() {
+                        discovered.insert(path.to_string());
+                    }
+                    cursor = start + end_rel + 2;
+                }
+            }
+        }
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut set) = ctrl.loaded_scoped_rules.lock() {
+            for path in discovered {
+                if set.len() >= zenko_core::DOX_MAX_SCOPED_RULES_PER_SESSION {
+                    break;
+                }
+                set.insert(path);
+            }
+            return set.iter().cloned().collect();
+        }
+        discovered.into_iter().collect()
     }
 
     /// Executes 3-mode checkpoint rewind and atomically invalidates per-session output-dedup,

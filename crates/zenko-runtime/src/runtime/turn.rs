@@ -404,8 +404,9 @@ impl AgentRuntime {
                     None
                 }
             });
-        // Hydrate session-scoped activated deferred tools from prior turns
+        // Hydrate session-scoped activated deferred tools & active post-checkpoint JIT DOX rules
         let _ = self.hydrate_activated_deferred(&session_id, &initial_branch);
+        let _ = self.hydrate_loaded_scoped_rules(&session_id, &initial_branch);
 
         // Oh My Pi cache-safe First-Turn Auto-Recall for Standard turns (Orchestrated turns
         // already recall inside parallel recon). Persisted as `NOTE_KIND_MEMORY_RECALL` once.
@@ -1795,6 +1796,15 @@ impl AgentRuntime {
                     && let Some(obj) = tool_payload.as_object_mut()
                 {
                     obj.insert("read_less".into(), rl_meta.clone());
+                }
+                if let Some(scoped_meta) = done
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("scoped_rules_injected"))
+                    && let Some(obj) = tool_payload.as_object_mut()
+                {
+                    obj.insert("scoped_rules_injected".into(), scoped_meta.clone());
                 }
                 let ev = self.store.append_event(
                     &session_id,

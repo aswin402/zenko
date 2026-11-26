@@ -56,7 +56,7 @@ impl Tool for CodeSearchTool {
                     "fixed_strings": { "type": "boolean", "description": "Treat `pattern` as exact literal text instead of regex (default false)" },
                     "output_mode": { "type": "string", "enum": ["matches", "files_only", "count"], "description": "Result format: `matches` (default), `files_only`, or per-file `count`" },
                     "context_lines": { "type": "integer", "description": "Optional surrounding context lines (0..=5, default 0)" },
-                    "with_hashes": { "type": "boolean", "description": "Include 3-char `hash_edit` anchors (`file:line:hash| text`, default false)" },
+                    "with_hashes": { "type": "boolean", "description": "Include 3-char `hash_edit` anchors in lossless file-grouped output (`path:\\n  line:hash| text`, default false)" },
                     "max_results": { "type": "integer", "description": "Maximum lines/files returned (default 60, cap 200)" }
                 },
                 "required": ["pattern"]

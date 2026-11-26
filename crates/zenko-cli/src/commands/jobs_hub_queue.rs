@@ -983,6 +983,15 @@ pub async fn run_session_context(
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
+            let scoped_rules: Vec<&str> = data["scoped_rules_loaded"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let nested_docs = data["nested_repo_docs_count"].as_u64().unwrap_or(0);
+            let cache_warns: Vec<&str> = data["cache_stability_warnings"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
 
             println!("Zenko Context Breakdown · {session_id}");
             println!(
@@ -991,9 +1000,13 @@ pub async fn run_session_context(
                 format_tokens(window)
             );
             println!(
-                "  Tier 1 (KV):  {} tok (hash={})",
+                "  Tier 1 (KV):  {} tok (hash={} · prefix={})",
                 format_tokens(t1),
-                zenko_core::truncate_utf8_prefix(t1_hash, 12)
+                zenko_core::truncate_utf8_prefix(t1_hash, 12),
+                match cache_warns.is_empty() {
+                    true => "stable".to_string(),
+                    false => format!("{} volatile warning(s)", cache_warns.len()),
+                }
             );
             println!("  Tier 2:       {} tok", format_tokens(t2));
             println!(
@@ -1003,6 +1016,17 @@ pub async fn run_session_context(
                     false => rules.join(", "),
                 }
             );
+            println!(
+                "  Scoped DOX:   {} loaded / {nested_docs} indexed{}",
+                scoped_rules.len(),
+                match scoped_rules.is_empty() {
+                    true => String::new(),
+                    false => format!(" [{}]", scoped_rules.join(", ")),
+                }
+            );
+            for warn in &cache_warns {
+                println!("  KV Warning:   {warn}");
+            }
             println!(
                 "  Tool Schemas: {} tok ({eager} eager, {def_act}/{def_avail} deferred active)",
                 format_tokens(tools_tok)

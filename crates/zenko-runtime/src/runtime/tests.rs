@@ -1497,6 +1497,105 @@
             .content
             .contains("<scoped_repo_rules path=\"crates/submod/AGENTS.md\">"));
 
+        // Verify JIT scoped rules survive oversized artifact spilling verbatim (injected AFTER spill).
+        std::fs::create_dir_all(dir.join("crates/huge/src")).expect("mkdir huge");
+        std::fs::write(
+            dir.join("crates/huge/AGENTS.md"),
+            "# Huge DOX\n\n## Purpose\nMust survive oversized spill intact.\n",
+        )
+        .expect("huge agents");
+        std::fs::write(
+            dir.join("crates/huge/src/big.rs"),
+            "pub const PAD: &str = \"0123456789abcdef\";\n".repeat(120),
+        )
+        .expect("big.rs");
+        let mut tight_spill_ctx = tool_ctx.clone();
+        tight_spill_ctx.max_output_bytes = 512;
+        let spilled_read = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tight_spill_ctx,
+                true,
+                ToolCall {
+                    id: "t17d".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "crates/huge/src/big.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("spilled_read");
+        assert!(!spilled_read.output.is_error);
+        assert!(spilled_read.output.content.contains("artifact:"));
+        assert!(
+            spilled_read
+                .output
+                .content
+                .contains("<scoped_repo_rules path=\"crates/huge/AGENTS.md\">\n# Huge DOX\n\n## Purpose\nMust survive oversized spill intact.\n</scoped_repo_rules>"),
+            "scoped rule must survive oversized spill verbatim: {}",
+            spilled_read.output.content
+        );
+
+        // Verify restart durability: persisting ToolResult with `scoped_rules_injected` hydrates
+        // `loaded_scoped_rules` after in-memory state is cleared (simulating daemon restart).
+        let restart_sess = rt
+            .store
+            .create_session(
+                "dox-restart",
+                "cli",
+                Some(&dir.display().to_string()),
+                None,
+                PermissionMode::Autonomous,
+            )
+            .expect("create restart_sess");
+        rt.store
+            .append_event(
+                &restart_sess.id,
+                None,
+                EventRole::Tool,
+                EventKind::ToolResult,
+                json!({
+                    "tool_call_id": "c_persisted",
+                    "tool_name": zenko_core::TOOL_READ_FILE,
+                    "content": "1:aaa| pub fn settle() -> bool { true }",
+                    "is_error": false,
+                    "scoped_rules_injected": ["crates/submod/AGENTS.md"],
+                }),
+                &UsageStats::default(),
+            )
+            .expect("append persisted scoped rule event");
+        rt.clear_session_scoped_rules(&restart_sess.id);
+        let hydrated_ctx = rt
+            .inspect_session_context(&restart_sess.id)
+            .await
+            .expect("hydrated_ctx");
+        assert_eq!(
+            hydrated_ctx.scoped_rules_loaded,
+            vec!["crates/submod/AGENTS.md"]
+        );
+        let post_restart_read = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &restart_sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t17e".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "crates/submod/src/worker.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("post_restart_read");
+        assert!(
+            !post_restart_read.output.content.contains("<scoped_repo_rules"),
+            "hydrated scoped rule must not re-inject after daemon restart"
+        );
+
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);
     }

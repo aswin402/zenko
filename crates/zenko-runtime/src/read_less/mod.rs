@@ -344,11 +344,16 @@ pub fn try_compress_tool_output_with_context(
                 .or_else(|| compress_by_detected_shape(tool_name, tool_args, &cleaned, zmode))
                 .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))),
             false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
-                // Always fold huge lockfile diffs or apply lossless scrub on medium outputs
+                // Always fold huge lockfile diffs, apply lossless Tier-1 tabular JSON -> CSV on
+                // medium uniform arrays, or run lossless scrub on medium outputs.
                 if cmd_family == CommandFamily::GitDiff
                     && let Some(diff_out) = shape_git_diff(&cleaned)
                 {
                     Some((ReadLessShape::GitDiff, diff_out))
+                } else if let Some(tabular_json) =
+                    smart_crusher::try_crush_json_tabular_only(&cleaned)
+                {
+                    Some((ReadLessShape::Json, tabular_json))
                 } else {
                     try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))
                 }
@@ -1121,5 +1126,31 @@ mod tests {
         assert_eq!(glob_res.command_family, "glob");
         assert!(glob_res.compressed.contains("crates/zenko-core/src/ (12):"));
         assert!(glob_res.compressed.contains("[+4 more]"));
+    }
+
+    #[test]
+    fn medium_minified_json_array_uses_lossless_tabular_csv_below_min_bytes() {
+        // Single-line minified 16-row JSON (~1.3 KiB): below Balanced `min_bytes` (2048) and
+        // `READ_LESS_MIN_LINES`, yet Tier-1 lossless CSV still fires with zero dropped rows.
+        let items: Vec<Value> = (0..16)
+            .map(|i| {
+                json!({
+                    "service_id": i,
+                    "service_name": format!("worker-{i}"),
+                    "region": "us-east-1",
+                    "status": "healthy",
+                    "latency_ms": 10 + i
+                })
+            })
+            .collect();
+        let raw = serde_json::to_string(&Value::Array(items)).expect("minified json");
+        assert!(raw.len() < 2048, "raw_len={}", raw.len());
+        let res = try_compress_tool_output("mcp__ops__list_services", &raw, 2048)
+            .expect("lossless tabular CSV should fire below min_bytes");
+        assert_eq!(res.shape, ReadLessShape::Json);
+        assert!(res.compressed.starts_with("# lossless-tabular-json (rows=16, cols=5)"));
+        for i in 0..16 {
+            assert!(res.compressed.contains(&format!("worker-{i}")));
+        }
     }
 }
