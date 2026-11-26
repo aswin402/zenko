@@ -1506,6 +1506,10 @@ impl AgentRuntime {
             false => None,
         };
         let active_concise_mode = self.effective_concise_mode(session_id, &cfg, &branch);
+        let style_yield = match self.has_explicit_concise_override(session_id, &branch) {
+            true => None,
+            false => snapshot.custom_prose_style_source.as_deref(),
+        };
         let active_minimalism_mode = self.effective_minimalism_mode(session_id, &cfg, &branch);
         let active_zmode = self.effective_zmode(session_id, &cfg, &branch);
         let mut effective_sys = snapshot.compose_system_prompt(deferred_catalog.as_deref());
@@ -1513,6 +1517,7 @@ impl AgentRuntime {
             active_concise_mode,
             cfg.context.auto_clarity,
             scope.availability.read_only,
+            style_yield,
         ) {
             effective_sys.push_str("\n\n");
             effective_sys.push_str(&concise_block);
@@ -2478,6 +2483,37 @@ impl AgentRuntime {
             }
         }
         cfg.context.concise_mode
+    }
+
+    /// Returns `true` when the user or LLM explicitly overrode `concise_mode` in this session
+    /// (live control or persisted branch note), taking precedence over automatic custom-style yield.
+    pub fn has_explicit_concise_override(&self, session_id: &str, branch: &[SessionEvent]) -> bool {
+        let ctrl = self.session_control(session_id);
+        if let Ok(slot) = ctrl.concise_mode_override.lock()
+            && slot.is_some()
+        {
+            return true;
+        }
+        branch.iter().rev().any(|ev| {
+            ev.role == EventRole::System
+                && ev.kind == EventKind::SystemNote
+                && match ev.content_json.get("note_kind").and_then(Value::as_str) {
+                    Some(NOTE_KIND_CONCISE_MODE) => ev
+                        .content_json
+                        .get("concise_mode")
+                        .and_then(Value::as_str)
+                        .and_then(ConciseMode::parse)
+                        .is_some(),
+                    Some(NOTE_KIND_ORCHESTRATE_CONTROL) => ev
+                        .content_json
+                        .get("control")
+                        .and_then(|c| c.get("concise_mode"))
+                        .and_then(Value::as_str)
+                        .and_then(ConciseMode::parse)
+                        .is_some(),
+                    _ => false,
+                }
+        })
     }
 
     pub fn set_session_minimalism_mode(&self, session_id: &str, mode: CodeMinimalismMode) {

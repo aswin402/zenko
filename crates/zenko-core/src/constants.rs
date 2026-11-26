@@ -1792,3 +1792,26 @@ pub const BRAIN_ACTIONS: &[&str] = &[
     "search",
     "impact",
 ];
+
+// ── Chisel / Chisle Precision File I/O, Context Diet & Prose Yield ───────────
+pub const READ_FILE_CONTEXT_DIET_HINT_MIN_LINES: usize = 300;
+pub const READ_FILE_MAX_SYMBOL_QUERIES: usize = 8;
+pub const READ_FILE_SYMBOL_NOT_FOUND_PREVIEW: usize = 20;
+pub const SHORT_TASK_MAX_PROMPT_CHARS: usize = 160;
+pub const SHORT_TASK_MAX_NONEMPTY_LINES: usize = 2;
+pub const CUSTOM_STYLE_MARKER_HEADERS: &[&str] = &[
+    "output style",
+    "prose style",
+    "writing style",
+    "communication style",
+    "tone & style",
+    "response style",
+    "formatting style",
+];
+pub const CUSTOM_STYLE_DIRECTIVE_TOKENS: &[&str] = &[
+    "output_style:",
+    "prose_style:",
+    "writing_style:",
+    "response_style:",
+    "custom_output_style",
+];

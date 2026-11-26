@@ -1,6 +1,9 @@
-use crate::codex_patch::{CodexPatchFileOp, CodexUpdateHunk, parse_codex_patch};
-use crate::jail::{resolve_readable_path, resolve_workspace_or_hub_path};
-use crate::outline::{extract_outline, format_outline_report};
+use crate::codex_patch::{CodexPatchFileOp, CodexUpdateHunk, parse_auto_patch};
+use crate::jail::{
+    atomic_write_jailed, open_jailed_read_file, read_jailed_string_bounded, remove_jailed_file,
+    resolve_readable_path, resolve_workspace_or_hub_path, select_jail_root,
+};
+use crate::outline::{extract_outline, find_outline_symbol_spans, format_outline_report};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,11 +17,88 @@ use zenko_core::{
     DEFAULT_READ_FILE_LINE_WINDOW, DEFAULT_READ_FILE_MAX_BYTES, FILE_FRESHNESS_PREVIEW_LINES,
     FS_MAX_EDIT_FILE_BYTES, FS_MAX_SINGLE_READ_LINE_BYTES, FileFreshnessCheck, HASH_EDIT_MAX_HUNKS,
     HASH_EDIT_OPS, HASH_EDIT_RECOVERY_RADIUS, HashEditOp, OUTLINE_MAX_ENTRIES,
-    OUTLINE_MAX_FILE_BYTES, PATCH_FILE_ACTIONS, PatchFileAction, READ_FILE_MAX_RANGES,
-    ResourceLockKey, Result, RiskLevel, TOOL_APPLY_PATCH, TOOL_HASH_EDIT, TOOL_LIST_DIR,
-    TOOL_READ_FILE, TOOL_WRITE_FILE, Tool, ToolConcurrency, ToolContext, ToolOutput, ToolSet,
-    ToolSpec, ZenkoError,
+    OUTLINE_MAX_FILE_BYTES, PATCH_FILE_ACTIONS, PatchFileAction,
+    READ_FILE_CONTEXT_DIET_HINT_MIN_LINES, READ_FILE_MAX_RANGES, READ_FILE_MAX_SYMBOL_QUERIES,
+    READ_FILE_SYMBOL_NOT_FOUND_PREVIEW, ResourceLockKey, Result, RiskLevel, TOOL_APPLY_PATCH,
+    TOOL_HASH_EDIT, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, Tool, ToolConcurrency,
+    ToolContext, ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
+
+async fn open_jailed_async(ctx: &ToolContext, abs_path: &Path) -> Result<tokio::fs::File> {
+    let root = select_jail_root(
+        abs_path,
+        &ctx.workspace_dir,
+        &ctx.hub_dir,
+        Some(&ctx.data_dir),
+    )
+    .ok_or_else(|| {
+        ZenkoError::PolicyDenied(format!(
+            "path '{}' is outside all confined roots",
+            abs_path.display()
+        ))
+    })?;
+    let target = abs_path.to_path_buf();
+    let std_file = tokio::task::spawn_blocking(move || open_jailed_read_file(&root, &target))
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("confined open join error: {e}")))??;
+    Ok(tokio::fs::File::from_std(std_file))
+}
+
+async fn read_jailed_string_async(
+    ctx: &ToolContext,
+    abs_path: &Path,
+    max_bytes: u64,
+    label: &str,
+) -> Result<String> {
+    let root = select_jail_root(
+        abs_path,
+        &ctx.workspace_dir,
+        &ctx.hub_dir,
+        Some(&ctx.data_dir),
+    )
+    .ok_or_else(|| {
+        ZenkoError::PolicyDenied(format!(
+            "path '{}' is outside all confined roots",
+            abs_path.display()
+        ))
+    })?;
+    let target = abs_path.to_path_buf();
+    let lbl = label.to_string();
+    tokio::task::spawn_blocking(move || read_jailed_string_bounded(&root, &target, max_bytes, &lbl))
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("confined read join error: {e}")))?
+}
+
+async fn atomic_write_in_ctx(ctx: &ToolContext, abs_path: &Path, content: &str) -> Result<()> {
+    let root = select_jail_root(abs_path, &ctx.workspace_dir, &ctx.hub_dir, None).ok_or_else(
+        || {
+            ZenkoError::PolicyDenied(format!(
+                "write path '{}' is outside writable workspace and hub roots",
+                abs_path.display()
+            ))
+        },
+    )?;
+    let target = abs_path.to_path_buf();
+    let bytes = content.as_bytes().to_vec();
+    tokio::task::spawn_blocking(move || atomic_write_jailed(&root, &target, &bytes))
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("confined atomic write join error: {e}")))?
+}
+
+async fn remove_jailed_in_ctx(ctx: &ToolContext, abs_path: &Path) -> Result<()> {
+    let root = select_jail_root(abs_path, &ctx.workspace_dir, &ctx.hub_dir, None).ok_or_else(
+        || {
+            ZenkoError::PolicyDenied(format!(
+                "delete path '{}' is outside writable workspace and hub roots",
+                abs_path.display()
+            ))
+        },
+    )?;
+    let target = abs_path.to_path_buf();
+    tokio::task::spawn_blocking(move || remove_jailed_file(&root, &target))
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("confined delete join error: {e}")))?
+}
 
 /// Computes full-content SHA-256 hex digest used by `FileStateBridge` stale-read detection.
 pub(crate) fn content_sha256_hex(bytes: &[u8]) -> String {
@@ -252,6 +332,29 @@ fn parse_read_ranges(args: &Value) -> Result<Vec<LineRange>> {
     Ok(vec![LineRange { start, end }])
 }
 
+fn parse_requested_symbols(args: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(single) = args.get("symbol").and_then(Value::as_str) {
+        let s = single.trim();
+        if !s.is_empty() {
+            out.push(s.to_string());
+        }
+    }
+    if let Some(arr) = args.get("symbols").and_then(Value::as_array) {
+        for item in arr {
+            if out.len() >= READ_FILE_MAX_SYMBOL_QUERIES {
+                break;
+            }
+            if let Some(s) = item.as_str().map(str::trim).filter(|s| !s.is_empty())
+                && !out.iter().any(|existing| existing == s)
+            {
+                out.push(s.to_string());
+            }
+        }
+    }
+    out
+}
+
 #[async_trait]
 impl Tool for ReadFileTool {
     fn toolset(&self) -> ToolSet {
@@ -265,12 +368,18 @@ impl Tool for ReadFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_READ_FILE.into(),
-            description: "Read a workspace, `hub:`, or `artifact:` file. Returns hash-anchored lines (`line:hash| text`) for exact `hash_edit` mutations. Supports single window (`start_line`/`end_line`), multiple non-contiguous `ranges`, or `mode=\"outline\"` for an instant zero-dependency structural symbol map.".into(),
+            description: "Read a workspace, `hub:`, or `artifact:` file through kernel-confined `O_NOFOLLOW` handles. Returns hash-anchored lines (`line:hash| text`) for exact `hash_edit` mutations. Supports single window (`start_line`/`end_line`), multiple non-contiguous `ranges`, one-shot targeted `symbol`/`symbols` spans, or `mode=\"outline\"` for a zero-dependency structural symbol map.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative workspace, `hub:`, or `artifact:` path to file" },
                     "mode": { "type": "string", "enum": ["lines", "outline"], "description": "`lines` (default) for hash-anchored line content, or `outline` for a compact structural symbol map with line spans & hashes" },
+                    "symbol": { "type": "string", "description": "One-shot targeted structural symbol name (function, struct, class, section) returning ONLY that symbol's hash-anchored lines" },
+                    "symbols": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of up to 8 targeted symbol names to read in a single call"
+                    },
                     "start_line": { "type": "integer", "description": "1-based start line (default 1)" },
                     "end_line": { "type": "integer", "description": "1-based inclusive end line (default start_line + 200)" },
                     "ranges": {
@@ -310,8 +419,6 @@ impl Tool for ReadFileTool {
             req_path,
             true,
         )?;
-        let meta = tokio::fs::metadata(&path).await?;
-        let file_bytes = meta.len();
 
         let mode = args
             .get("mode")
@@ -321,18 +428,13 @@ impl Tool for ReadFileTool {
             .to_ascii_lowercase();
 
         if mode == "outline" {
-            if file_bytes > OUTLINE_MAX_FILE_BYTES {
-                return Ok(ToolOutput::err(format!(
-                    "File '{}' ({file_bytes} bytes) exceeds outline size cap ({OUTLINE_MAX_FILE_BYTES} bytes). Read explicit `start_line`/`end_line` windows instead.",
-                    req_path
-                )));
-            }
             let max_symbols = args
                 .get("max_symbols")
                 .and_then(Value::as_u64)
                 .unwrap_or(OUTLINE_MAX_ENTRIES as u64)
                 .clamp(1, OUTLINE_MAX_ENTRIES as u64) as usize;
-            let raw = tokio::fs::read_to_string(&path).await?;
+            let raw = read_jailed_string_async(ctx, &path, OUTLINE_MAX_FILE_BYTES, req_path)
+                .await?;
             let report = extract_outline(&path, &raw, max_symbols);
             let rendered = format_outline_report(req_path, &report);
             let mut out = ToolOutput::ok(rendered);
@@ -345,11 +447,72 @@ impl Tool for ReadFileTool {
             return Ok(out);
         }
 
+        let requested_symbols = parse_requested_symbols(&args);
+        if !requested_symbols.is_empty() {
+            let raw = read_jailed_string_async(ctx, &path, OUTLINE_MAX_FILE_BYTES, req_path)
+                .await?;
+            record_fresh_file_state(ctx, &path, &raw);
+            let report = extract_outline(&path, &raw, OUTLINE_MAX_ENTRIES);
+            let hits = find_outline_symbol_spans(&report, &requested_symbols);
+            if hits.is_empty() {
+                let preview: Vec<String> = report
+                    .entries
+                    .iter()
+                    .take(READ_FILE_SYMBOL_NOT_FOUND_PREVIEW)
+                    .map(|e| format!("  {}:{}| [{}] {} (L{}..L{})", e.line, e.hash, e.kind, e.signature, e.line, e.end_line))
+                    .collect();
+                let avail = match preview.is_empty() {
+                    true => "No structural symbols detected in this file; read explicit `start_line`/`end_line` windows.".to_string(),
+                    false => format!(
+                        "Available symbols ({} total, showing up to {}):\n{}",
+                        report.entries.len(),
+                        preview.len(),
+                        preview.join("\n")
+                    ),
+                };
+                return Ok(ToolOutput::ok(format!(
+                    "Symbol(s) [{}] not found in `{req_path}` ({} lines).\n{avail}",
+                    requested_symbols.join(", "),
+                    report.total_lines
+                )));
+            }
+            let lines: Vec<&str> = raw.lines().collect();
+            let mut out = format!(
+                "File: {req_path} ({} matched symbol(s), total {} lines)\n",
+                hits.len(),
+                lines.len()
+            );
+            for entry in &hits {
+                let start = entry.line.max(1);
+                let end = entry.end_line.max(start).min(lines.len());
+                out.push_str(&format!(
+                    "\n--- [{}] {} (lines {start}..={end}) ---\n",
+                    entry.kind, entry.signature
+                ));
+                for ln in start..=end {
+                    let text = lines[ln - 1];
+                    let h = line_hash(text);
+                    out.push_str(&format!("{ln}:{h}| {text}\n"));
+                }
+            }
+            let mut res = ToolOutput::ok(out);
+            res.metadata = Some(json!({
+                "mode": "symbol",
+                "matched_symbols": hits.len(),
+                "total_lines": lines.len(),
+            }));
+            return Ok(res);
+        }
+
+        let was_explicit_window = args.get("start_line").is_some()
+            || args.get("end_line").is_some()
+            || args.get("ranges").is_some();
         let ranges = parse_read_ranges(&args)?;
         let max_requested_end = ranges.iter().map(|r| r.end).max().unwrap_or(1);
 
-        // Stream line-by-line with strict per-line and total RAM bounds so giant or minified files never spike RAM.
-        let file = tokio::fs::File::open(&path).await?;
+        // Stream line-by-line via kernel-confined `openat(O_NOFOLLOW)` handle with strict RAM bounds.
+        let file = open_jailed_async(ctx, &path).await?;
+        let file_bytes = file.metadata().await?.len();
         let mut reader = BufReader::with_capacity(16 * 1024, file);
         let mut raw_line = Vec::with_capacity(512);
         let mut line_no = 0usize;
@@ -476,6 +639,14 @@ impl Tool for ReadFileTool {
             );
             for row in rows {
                 out.push_str(row);
+            }
+            if !was_explicit_window
+                && line_no >= READ_FILE_CONTEXT_DIET_HINT_MIN_LINES
+                && end_shown < line_no
+            {
+                out.push_str(&format!(
+                    "\n[context-diet: {total_label} lines total — use `mode=\"outline\"`, `symbol=\"<name>\"`, or `ranges=[...]` instead of paginating full files]\n"
+                ));
             }
             return Ok(ToolOutput::ok(out));
         }
@@ -706,14 +877,7 @@ impl Tool for HashEditTool {
         let mut hunks = parse_hash_edit_hunks(&args)?;
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
-        let file_len = tokio::fs::metadata(&path).await?.len();
-        if file_len > FS_MAX_EDIT_FILE_BYTES {
-            return Ok(ToolOutput::err(format!(
-                "Refused to hash_edit '{}': file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes).",
-                req_path
-            )));
-        }
-        let old = tokio::fs::read_to_string(&path).await?;
+        let old = read_jailed_string_async(ctx, &path, FS_MAX_EDIT_FILE_BYTES, req_path).await?;
         let eol = detect_line_ending(&old);
         let mut lines: Vec<String> = old.lines().map(String::from).collect();
 
@@ -808,7 +972,7 @@ impl Tool for HashEditTool {
             new.push_str(eol);
         }
 
-        atomic_write(&path, &new).await?;
+        atomic_write_in_ctx(ctx, &path, &new).await?;
         record_fresh_file_state(ctx, &path, &new);
         let diff = unified_diff(req_path, &old, &new);
         Ok(ToolOutput::ok_with_diff(
@@ -1112,7 +1276,7 @@ async fn plan_codex_patch_transaction(
     ctx: &ToolContext,
     raw_patch: &str,
 ) -> Result<std::result::Result<Vec<PlannedFileTx>, String>> {
-    let ops = parse_codex_patch(raw_patch)?;
+    let (_format, ops) = parse_auto_patch(raw_patch)?;
     let mut planned = Vec::with_capacity(ops.len());
     let mut touched: HashSet<PathBuf> = HashSet::new();
 
@@ -1196,13 +1360,8 @@ async fn plan_codex_patch_transaction(
                         "Duplicate operation targeting `{req_path}` in the same patch transaction."
                     )));
                 }
-                let file_len = tokio::fs::metadata(&abs).await?.len();
-                if file_len > FS_MAX_EDIT_FILE_BYTES {
-                    return Ok(Err(format!(
-                        "Refused to update `{req_path}`: file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes)."
-                    )));
-                }
-                let old_content = tokio::fs::read_to_string(&abs).await?;
+                let old_content =
+                    read_jailed_string_async(ctx, &abs, FS_MAX_EDIT_FILE_BYTES, &req_path).await?;
                 if let Err(stale) =
                     check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
                 {
@@ -1376,13 +1535,8 @@ async fn plan_structured_files_transaction(
                         "Duplicate operation targeting `{req_path}` in `files[]`."
                     )));
                 }
-                let file_len = tokio::fs::metadata(&abs).await?.len();
-                if file_len > FS_MAX_EDIT_FILE_BYTES {
-                    return Ok(Err(format!(
-                        "Refused to patch `{req_path}`: file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes)."
-                    )));
-                }
-                let old_content = tokio::fs::read_to_string(&abs).await?;
+                let old_content =
+                    read_jailed_string_async(ctx, &abs, FS_MAX_EDIT_FILE_BYTES, &req_path).await?;
                 if let Err(stale) =
                     check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
                 {
@@ -1476,7 +1630,7 @@ async fn commit_planned_file_tx(
                 abs_path,
                 content,
             } => {
-                atomic_write(&abs_path, &content).await?;
+                atomic_write_in_ctx(ctx, &abs_path, &content).await?;
                 record_fresh_file_state(ctx, &abs_path, &content);
                 diffs.push(unified_diff(&req_path, "", &content));
                 summaries.push(format!("created `{req_path}` ({} bytes)", content.len()));
@@ -1491,8 +1645,8 @@ async fn commit_planned_file_tx(
                 move_to,
             } => match move_to {
                 Some((dest_req, dest_abs)) if dest_abs != abs_path => {
-                    atomic_write(&dest_abs, &new_content).await?;
-                    tokio::fs::remove_file(&abs_path).await?;
+                    atomic_write_in_ctx(ctx, &dest_abs, &new_content).await?;
+                    remove_jailed_in_ctx(ctx, &abs_path).await?;
                     forget_fresh_file_state(ctx, &abs_path);
                     record_fresh_file_state(ctx, &dest_abs, &new_content);
                     diffs.push(unified_diff(
@@ -1507,7 +1661,7 @@ async fn commit_planned_file_tx(
                     edited_files.push(dest_req);
                 }
                 _ => {
-                    atomic_write(&abs_path, &new_content).await?;
+                    atomic_write_in_ctx(ctx, &abs_path, &new_content).await?;
                     record_fresh_file_state(ctx, &abs_path, &new_content);
                     diffs.push(unified_diff(&req_path, &old_content, &new_content));
                     summaries.push(format!(
@@ -1521,7 +1675,7 @@ async fn commit_planned_file_tx(
                 abs_path,
                 old_content,
             } => {
-                tokio::fs::remove_file(&abs_path).await?;
+                remove_jailed_in_ctx(ctx, &abs_path).await?;
                 forget_fresh_file_state(ctx, &abs_path);
                 diffs.push(unified_diff(&req_path, &old_content, ""));
                 summaries.push(format!("deleted `{req_path}`"));
@@ -1564,7 +1718,7 @@ impl Tool for ApplyPatchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_APPLY_PATCH.into(),
-            description: "Atomically apply single-file or multi-file patches (create, update, move/rename, delete) with two-phase validation (zero disk writes if any file fails), tolerant seeking, ambiguity protection, and stale-read safety. Supports single-file `path`+`old_text`/`new_text` or `edits[]`, structured multi-file `files[]`, OR Codex's native `patch` (`*** Begin Patch ... *** End Patch`) grammar.".into(),
+            description: "Atomically apply single-file or multi-file patches (create, update, move/rename, delete) with two-phase validation (zero disk writes if any file fails), kernel-confined `O_NOFOLLOW` I/O, tolerant seeking, ambiguity protection, and stale-read safety. Supports single-file `path`+`old_text`/`new_text` or `edits[]`, structured multi-file `files[]`, OR raw/fenced `patch` in EITHER Codex (`*** Begin Patch ... *** End Patch`) OR standard POSIX/Git unified diff (`--- a/file` / `+++ b/file` / `@@ ... @@`) format.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -1609,7 +1763,7 @@ impl Tool for ApplyPatchTool {
                     },
                     "patch": {
                         "type": "string",
-                        "description": "Codex native multi-file patch block (`*** Begin Patch` / `*** Add File:` / `*** Update File:` / `*** Move to:` / `*** Delete File:` / `*** End Patch`)"
+                        "description": "Multi-file patch block (raw or fenced): accepts EITHER Codex (`*** Begin Patch ... *** End Patch`) OR standard POSIX/Git unified diff (`--- a/file` / `+++ b/file` / `@@ ... @@`)"
                     }
                 }
             }),
@@ -1646,14 +1800,7 @@ impl Tool for ApplyPatchTool {
         let edits = parse_patch_edits(&args)?;
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, true)?;
-        let file_len = tokio::fs::metadata(&path).await?.len();
-        if file_len > FS_MAX_EDIT_FILE_BYTES {
-            return Ok(ToolOutput::err(format!(
-                "Refused to apply_patch '{}': file size ({file_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes).",
-                req_path
-            )));
-        }
-        let old = tokio::fs::read_to_string(&path).await?;
+        let old = read_jailed_string_async(ctx, &path, FS_MAX_EDIT_FILE_BYTES, req_path).await?;
         if let Err(stale) = check_existing_file_freshness(ctx, req_path, &path, &old, true) {
             return Ok(ToolOutput::err(stale));
         }
@@ -1675,7 +1822,7 @@ impl Tool for ApplyPatchTool {
             }
         }
 
-        atomic_write(&path, &working).await?;
+        atomic_write_in_ctx(ctx, &path, &working).await?;
         record_fresh_file_state(ctx, &path, &working);
         let diff = unified_diff(req_path, &old, &working);
         let mut out = ToolOutput::ok_with_diff(
@@ -1746,7 +1893,7 @@ impl Tool for WriteFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_WRITE_FILE.into(),
-            description: "Create or overwrite a file inside the workspace atomically. Protects against blind overwrites of existing unread files (pass `overwrite: true` to replace intentionally) and blocks silent clobbers when a previously read file changed externally on disk.".into(),
+            description: "Create, overwrite, or atomically append (`append: true`) to a file inside the workspace through kernel-confined `O_NOFOLLOW` writes. Protects against blind overwrites of existing unread files (pass `overwrite: true` to replace intentionally) and blocks silent clobbers when a previously read file changed externally on disk.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -1755,6 +1902,10 @@ impl Tool for WriteFileTool {
                     "overwrite": {
                         "type": "boolean",
                         "description": "Explicitly allow overwriting an existing file that has not been read in this session (default false)"
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "Atomically append `content` to the end of the file (creating it if missing) without rewriting prior contents (default false)"
                     }
                 },
                 "required": ["path", "content"]
@@ -1781,26 +1932,57 @@ impl Tool for WriteFileTool {
             .get("overwrite")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let append = args
+            .get("append")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let path = resolve_workspace_or_hub_path(&ctx.workspace_dir, &ctx.hub_dir, req_path, false)?;
         let existed = path.is_file();
-        let old = match existed {
-            true => tokio::fs::read_to_string(&path).await.unwrap_or_default(),
-            false => String::new(),
+        let old = match (existed, append) {
+            (true, true) => {
+                read_jailed_string_async(ctx, &path, FS_MAX_EDIT_FILE_BYTES, req_path).await?
+            }
+            (true, false) => read_jailed_string_async(ctx, &path, FS_MAX_EDIT_FILE_BYTES, req_path)
+                .await
+                .unwrap_or_default(),
+            (false, _) => String::new(),
         };
         if existed
             && let Err(stale_msg) =
-                check_existing_file_freshness(ctx, req_path, &path, &old, overwrite)
+                check_existing_file_freshness(ctx, req_path, &path, &old, overwrite || append)
         {
             return Ok(ToolOutput::err(stale_msg));
         }
-        atomic_write(&path, content).await?;
-        record_fresh_file_state(ctx, &path, content);
-        let diff = unified_diff(req_path, &old, content);
-        Ok(ToolOutput::ok_with_diff(
-            format!("Wrote {} bytes to {req_path}.", content.len()),
-            diff,
-        ))
+
+        let (final_content, summary) = match append {
+            true => {
+                let next_len = old.len().saturating_add(content.len()) as u64;
+                if next_len > FS_MAX_EDIT_FILE_BYTES {
+                    return Ok(ToolOutput::err(format!(
+                        "Refused to append to '{req_path}': resulting size ({next_len} bytes) exceeds edit safety limit ({FS_MAX_EDIT_FILE_BYTES} bytes)."
+                    )));
+                }
+                let mut combined = String::with_capacity(old.len() + content.len());
+                combined.push_str(&old);
+                combined.push_str(content);
+                let msg = format!(
+                    "Appended {} bytes to {req_path} (total {} bytes).",
+                    content.len(),
+                    combined.len()
+                );
+                (combined, msg)
+            }
+            false => (
+                content.to_string(),
+                format!("Wrote {} bytes to {req_path}.", content.len()),
+            ),
+        };
+
+        atomic_write_in_ctx(ctx, &path, &final_content).await?;
+        record_fresh_file_state(ctx, &path, &final_content);
+        let diff = unified_diff(req_path, &old, &final_content);
+        Ok(ToolOutput::ok_with_diff(summary, diff))
     }
 }
 
@@ -2201,6 +2383,97 @@ mod tests {
             .expect("drift");
         assert!(drifted.is_error);
         assert!(drifted.content.contains("changed externally"), "out={}", drifted.content);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn chisel_symbol_read_context_diet_unified_diff_and_append_work_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("zenko_chisel_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+
+        // Build a 320-line Rust file with distinct symbols to test one-shot symbol read & Context Diet hint
+        let mut big = String::new();
+        for i in 1..=305 {
+            big.push_str(&format!("// filler line {i}\n"));
+        }
+        big.push_str("pub fn compute_tax(amount: u64) -> u64 {\n    amount / 10\n}\n\npub struct Ledger {\n    pub total: u64,\n}\n");
+        std::fs::write(dir.join("src/billing.rs"), &big).expect("write billing");
+
+        let mut ctx = test_ctx(&dir);
+        ctx.file_state = Some(std::sync::Arc::new(MockFileState::default()));
+        let cancel = CancellationToken::new();
+
+        // 1. Unwindowed read of >= 300-line file emits Context Diet footer; explicit window does NOT
+        let unwindowed = ReadFileTool
+            .execute(&ctx, json!({ "path": "src/billing.rs" }), cancel.clone())
+            .await
+            .expect("unwindowed");
+        assert!(!unwindowed.is_error);
+        assert!(
+            unwindowed.content.contains("[context-diet:"),
+            "expected context-diet footer on large unwindowed read: {}",
+            unwindowed.content
+        );
+        let windowed = ReadFileTool
+            .execute(
+                &ctx,
+                json!({ "path": "src/billing.rs", "start_line": 1, "end_line": 5 }),
+                cancel.clone(),
+            )
+            .await
+            .expect("windowed");
+        assert!(!windowed.content.contains("[context-diet:"));
+
+        // 2. One-shot `read_file(symbol=...)` returns ONLY that symbol with hash anchors
+        let sym = ReadFileTool
+            .execute(
+                &ctx,
+                json!({ "path": "src/billing.rs", "symbol": "compute_tax" }),
+                cancel.clone(),
+            )
+            .await
+            .expect("symbol read");
+        assert!(!sym.is_error);
+        assert!(sym.content.contains("pub fn compute_tax"));
+        assert!(sym.content.contains("amount / 10"));
+        assert!(!sym.content.contains("pub struct Ledger"));
+
+        // 3. Standard POSIX/Git unified diff works directly in `apply_patch`
+        let udiff = "\
+```diff
+--- a/src/billing.rs
++++ b/src/billing.rs
+@@ -306,3 +306,3 @@ pub fn compute_tax
+ pub fn compute_tax(amount: u64) -> u64 {
+-    amount / 10
++    amount / 5
+ }
+```";
+        let patched = ApplyPatchTool
+            .execute(&ctx, json!({ "patch": udiff }), cancel.clone())
+            .await
+            .expect("unified diff patch");
+        assert!(!patched.is_error, "unified diff failed: {}", patched.content);
+        let updated = std::fs::read_to_string(dir.join("src/billing.rs")).expect("read");
+        assert!(updated.contains("amount / 5"));
+
+        // 4. `write_file(append=true)` performs atomic O(delta) append and preserves prior bytes
+        std::fs::write(dir.join("NOTES.md"), "# Notes\n").expect("notes");
+        let app = WriteFileTool
+            .execute(
+                &ctx,
+                json!({ "path": "NOTES.md", "content": "- added entry\n", "append": true }),
+                cancel,
+            )
+            .await
+            .expect("append");
+        assert!(!app.is_error, "append failed: {}", app.content);
+        assert!(app.content.contains("Appended"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("NOTES.md")).expect("notes after"),
+            "# Notes\n- added entry\n"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

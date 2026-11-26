@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.39] - 2026-11-26
+
+Integrated six native pure-Rust precision file-I/O, context-diet, and prose-adaptation upgrades inspired by **`ckanthony/Chisel`** and **`JayPokale/Chisle`** — with zero `/commands`, zero new eager tool schemas, zero regex, zero hardcoding, and full KV-cache stability.
+
+### Added
+- **Kernel-Enforced TOCTOU-Proof File Confinement (`crates/zenko-tools/src/jail.rs`, `fs_tools.rs`):**
+  - Added POSIX directory-FD traversal (`openat` + `O_NOFOLLOW | O_CLOEXEC`, `mkdirat`, `fstatat(AT_SYMLINK_NOFOLLOW)`, `renameat`, `unlinkat`) via `open_jailed_read_file`, `read_jailed_string_bounded`, `atomic_write_jailed`, and `remove_jailed_file` (with safe cross-platform non-Unix fallbacks), eliminating concurrent symlink-swap TOCTOU races across `read_file`, `write_file`, `hash_edit`, and `apply_patch`.
+- **Standard Unified Diff Support in `apply_patch` (`crates/zenko-tools/src/codex_patch.rs`, `fs_tools.rs`):**
+  - Added a zero-regex deterministic POSIX/Git unified-diff state-machine parser (`parse_unified_diff_patch` + `parse_auto_patch`) supporting raw or fenced ` ```diff ` payloads (`diff --git`, `--- /dev/null`, `+++ /dev/null`, `rename from`/`rename to`, `@@ -old +new @@` context headers) directly through `apply_patch`'s two-phase atomic commit and tolerant `seek_sequence_all` matcher.
+- **One-Shot Targeted `symbol` Reading & Context-Diet Footer in `read_file` (`crates/zenko-tools/src/outline.rs`, `fs_tools.rs`):**
+  - Added deterministic ranked symbol-span lookup (`find_outline_symbol_spans`) and optional `symbol` / `symbols` parameters on `read_file` to return ONLY targeted symbol(s)' hash-anchored `line:hash|` lines in a single call (with inline symbol recovery if missed and `FileStateBridge` freshness tracking).
+  - Appends a compact 1-line context-diet hint when an unwindowed `read_file` truncates a large file (`>= 300` lines), steering toward `mode="outline"`, `symbol`, or `ranges`.
+- **$O(\Delta)$ Atomic `append` Mode on `write_file` (`crates/zenko-tools/src/fs_tools.rs`):**
+  - Added optional `append: true` to `write_file` using `O_NOFOLLOW` atomic writes, stale-read external-modification protection, and unified diff output without requiring full-file rewrites.
+- **Anti-Manufactured-Structure Prose & Custom-Style Auto-Yield (`crates/zenko-core/src/{constants,registry}.rs`, `crates/zenko-memory/src/snapshot.rs`, `crates/zenko-runtime/src/runtime/{mod,turn}.rs`):**
+  - Refined `CONCISE_MODE_REGISTRY` directives (`Lite`/`Full`/`Ultra`) to suppress manufactured headings, checklists, and recap bloat on simple answers.
+  - Added deterministic zero-regex `detect_custom_prose_style` over `USER.md`, `SOUL.md`, and `<repo_rules>`: automatically yields default prose compression when a user or repo specifies an explicit output style (unless overridden live via `orchestrate_control`), while keeping Code Minimalism and Read-Less active.
+- **Net-Positive Short-Task Overhead Guard (`crates/zenko-runtime/src/orchestrator/{triage,mod}.rs`, `runtime/turn.rs`):**
+  - Added `is_short_trivial_turn` using strictly objective structural signals (`ExecutionTier::Standard`, non-first-turn, non-Plan, `complexity_score == 0`, short single/two-line prompt) to skip redundant volatile turn scaffolding and initial bloat nudges on tiny follow-ups without altering frozen Tier-1/Tier-2 KV prefixes.
+
 ## [0.0.38] - 2026-11-26
 
 Added a native pure-Rust, git-versioned **Project Brain** knowledge-base engine (`mindmuxai/brain.md`-interoperable) wired directly into Zenko's Sovereign Orchestrator, Tier-2 KV-cache-safe snapshot index, Plan Mode policy, and deferred toolset — with zero `/commands`, zero hardcoding, zero regex, and zero `if/else` ladders.

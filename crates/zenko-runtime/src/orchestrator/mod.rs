@@ -18,7 +18,7 @@ use recon::{format_recon_context, run_parallel_recon};
 use router::{ModelRouteDecision, select_turn_model};
 use std::path::PathBuf;
 use std::sync::Arc;
-use triage::{TriageInput, classify_turn};
+use triage::{TriageInput, classify_turn, is_short_trivial_turn};
 use zenko_core::{
     DeliberationDepth, ExecutionTier, IntentKind, ModelRoutingRole, PermissionMode,
     ReasoningEffort, ReconSummary, TriageReport, ZenkoConfig,
@@ -43,6 +43,7 @@ pub use router::escalate_on_pivot;
 
 pub struct OrchestratorTurnPlan {
     pub triage: TriageReport,
+    pub short_trivial_turn: bool,
     pub route: Option<ModelRouteDecision>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub has_explicit_model_override: bool,
@@ -108,6 +109,7 @@ pub async fn prepare_turn(
         },
     };
 
+    let short_trivial_turn = is_short_trivial_turn(prompt, &triage, is_first_turn, permission_mode);
     let route = select_turn_model(
         cfg,
         opt_model_override,
@@ -115,12 +117,18 @@ pub async fn prepare_turn(
         triage.recommended_model_role,
         None,
     );
-    let reasoning_effort = match cfg.orchestrator.enabled && cfg.orchestrator.adaptive_effort {
+    let reasoning_effort = match cfg.orchestrator.enabled
+        && cfg.orchestrator.adaptive_effort
+        && !short_trivial_turn
+    {
         true => Some(triage.recommended_effort),
         false => None,
     };
 
-    let recon = match cfg.orchestrator.enabled && cfg.orchestrator.auto_recon && triage.needs_recon
+    let recon = match cfg.orchestrator.enabled
+        && cfg.orchestrator.auto_recon
+        && triage.needs_recon
+        && !short_trivial_turn
     {
         true => Some(
             run_parallel_recon(
@@ -147,6 +155,7 @@ pub async fn prepare_turn(
     OrchestratorTurnPlan {
         guard: ExecutionGuard::new(triage.tier, triage.intent, triage.deliberation),
         triage,
+        short_trivial_turn,
         route,
         reasoning_effort,
         has_explicit_model_override,

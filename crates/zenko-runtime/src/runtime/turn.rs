@@ -607,6 +607,10 @@ impl AgentRuntime {
             false => None,
         };
         let active_concise_mode = self.effective_concise_mode(&session_id, cfg, &initial_branch);
+        let style_yield = match self.has_explicit_concise_override(&session_id, &initial_branch) {
+            true => None,
+            false => snapshot.custom_prose_style_source.as_deref(),
+        };
         let mut active_minimalism_mode =
             self.effective_minimalism_mode(&session_id, cfg, &initial_branch);
         let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
@@ -614,6 +618,7 @@ impl AgentRuntime {
             active_concise_mode,
             cfg.context.auto_clarity,
             session_scope.availability.read_only,
+            style_yield,
         ) {
             effective_system_prompt.push_str("\n\n");
             effective_system_prompt.push_str(&concise_block);
@@ -1702,6 +1707,7 @@ impl AgentRuntime {
                     );
                     if cfg.economy.enabled
                         && cfg.economy.auto_bloat_hint
+                        && !(orch.short_trivial_turn && iter_idx == 0)
                         && let Some(min_hint) = crate::economy::maybe_emit_bloat_hint(
                             active_minimalism_mode,
                             &mut economy_trace,

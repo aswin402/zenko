@@ -241,6 +241,401 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     out
 }
 
+/// Resolves which confined root (`workspace_root`, `hub_root`, or optional `<data_dir>/artifacts`)
+/// contains a previously resolved `abs_path`.
+pub fn select_jail_root(
+    abs_path: &Path,
+    workspace_root: &Path,
+    hub_root: &Path,
+    data_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    let candidates = [
+        Some(workspace_root.to_path_buf()),
+        Some(hub_root.to_path_buf()),
+        data_dir.map(|d| d.join(ARTIFACTS_DIR_NAME)),
+    ];
+    for root in candidates.into_iter().flatten() {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(&root));
+        if abs_path.starts_with(&canon_root) {
+            return Some(canon_root);
+        }
+    }
+    None
+}
+
+fn split_confined_relative<'a>(
+    canon_root: &Path,
+    abs_path: &'a Path,
+) -> Result<(&'a Path, &'a std::ffi::OsStr)> {
+    let rel = abs_path.strip_prefix(canon_root).map_err(|_| {
+        ZenkoError::PolicyDenied(format!(
+            "path '{}' escapes confined root '{}'",
+            abs_path.display(),
+            canon_root.display()
+        ))
+    })?;
+    let file_name = rel.file_name().ok_or_else(|| {
+        ZenkoError::PolicyDenied(format!(
+            "path '{}' does not point to a file inside '{}'",
+            abs_path.display(),
+            canon_root.display()
+        ))
+    })?;
+    let parent_rel = rel.parent().unwrap_or_else(|| Path::new(""));
+    Ok((parent_rel, file_name))
+}
+
+#[cfg(unix)]
+mod unix_confined {
+    use super::*;
+    use std::ffi::CString;
+    use std::io::Write as _;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+
+    struct OwnedRawFd(libc::c_int);
+
+    impl OwnedRawFd {
+        fn into_raw(self) -> libc::c_int {
+            let md = std::mem::ManuallyDrop::new(self);
+            md.0
+        }
+    }
+
+    impl Drop for OwnedRawFd {
+        fn drop(&mut self) {
+            // SAFETY: OwnedRawFd uniquely owns a valid open Unix file descriptor.
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+
+    fn os_to_cstring(s: &std::ffi::OsStr) -> Result<CString> {
+        CString::new(s.as_bytes())
+            .map_err(|_| ZenkoError::PolicyDenied("path component contains interior NUL byte".into()))
+    }
+
+    fn map_open_err(err: std::io::Error, label: &str) -> ZenkoError {
+        match err.raw_os_error() {
+            Some(code) if code == libc::ELOOP => ZenkoError::PolicyDenied(format!(
+                "kernel O_NOFOLLOW blocked symlink traversal on '{label}'"
+            )),
+            Some(code) if code == libc::ENOTDIR => ZenkoError::PolicyDenied(format!(
+                "non-directory path segment encountered while traversing '{label}'"
+            )),
+            _ => ZenkoError::Tool(format!("cannot access '{label}': {err}")),
+        }
+    }
+
+    fn open_dir_confined(
+        canon_root: &Path,
+        rel_dir: &Path,
+        create_missing: bool,
+    ) -> Result<OwnedRawFd> {
+        let root_c = os_to_cstring(canon_root.as_os_str())?;
+        // SAFETY: root_c is a valid NUL-terminated path; flags open a directory fd with CLOEXEC.
+        let root_fd = unsafe {
+            libc::open(
+                root_c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if root_fd < 0 {
+            return Err(map_open_err(
+                std::io::Error::last_os_error(),
+                &canon_root.display().to_string(),
+            ));
+        }
+        let mut cur = OwnedRawFd(root_fd);
+
+        for comp in rel_dir.components() {
+            let seg = match comp {
+                Component::CurDir => continue,
+                Component::Normal(s) => s,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(ZenkoError::PolicyDenied(format!(
+                        "illegal relative segment in confined path '{}'",
+                        rel_dir.display()
+                    )));
+                }
+            };
+            let seg_c = os_to_cstring(seg)?;
+            let seg_label = seg.to_string_lossy();
+            let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            // SAFETY: cur.0 is a valid directory fd and seg_c is a valid single path component.
+            let mut next_fd = unsafe { libc::openat(cur.0, seg_c.as_ptr(), flags) };
+            if next_fd < 0 && create_missing {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ENOENT) {
+                    // SAFETY: cur.0 is a valid confined directory fd; mkdirat creates child dir only.
+                    let mk = unsafe { libc::mkdirat(cur.0, seg_c.as_ptr(), 0o755) };
+                    if mk < 0 {
+                        let mk_err = std::io::Error::last_os_error();
+                        if mk_err.raw_os_error() != Some(libc::EEXIST) {
+                            return Err(map_open_err(mk_err, &seg_label));
+                        }
+                    }
+                    // SAFETY: Re-open newly created segment strictly with O_NOFOLLOW | O_DIRECTORY.
+                    next_fd = unsafe { libc::openat(cur.0, seg_c.as_ptr(), flags) };
+                } else {
+                    return Err(map_open_err(err, &seg_label));
+                }
+            }
+            if next_fd < 0 {
+                return Err(map_open_err(std::io::Error::last_os_error(), &seg_label));
+            }
+            cur = OwnedRawFd(next_fd);
+        }
+        Ok(cur)
+    }
+
+    pub fn open_jailed_read_file(root: &Path, abs_path: &Path) -> Result<std::fs::File> {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(root));
+        let (parent_rel, file_name) = split_confined_relative(&canon_root, abs_path)?;
+        let parent_fd = open_dir_confined(&canon_root, parent_rel, false)?;
+        let name_c = os_to_cstring(file_name)?;
+        let name_label = file_name.to_string_lossy();
+        // SAFETY: parent_fd.0 is a confined directory fd; O_NOFOLLOW blocks leaf symlink races.
+        let fd = unsafe {
+            libc::openat(
+                parent_fd.0,
+                name_c.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(map_open_err(std::io::Error::last_os_error(), &name_label));
+        }
+        let owned = OwnedRawFd(fd);
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: owned.0 is a valid open file descriptor and st is a writable stat struct.
+        if unsafe { libc::fstat(owned.0, &mut st) } < 0 {
+            return Err(map_open_err(std::io::Error::last_os_error(), &name_label));
+        }
+        if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+            return Err(ZenkoError::PolicyDenied(format!(
+                "refused to read non-regular file '{name_label}'"
+            )));
+        }
+        // SAFETY: ownership of fd transfers cleanly to std::fs::File via into_raw().
+        Ok(unsafe { std::fs::File::from_raw_fd(owned.into_raw()) })
+    }
+
+    pub fn atomic_write_jailed(root: &Path, abs_path: &Path, content: &[u8]) -> Result<()> {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(root));
+        let (parent_rel, file_name) = split_confined_relative(&canon_root, abs_path)?;
+        let parent_fd = open_dir_confined(&canon_root, parent_rel, true)?;
+        let name_c = os_to_cstring(file_name)?;
+        let name_label = file_name.to_string_lossy();
+
+        // Reject overwriting a symlink at the destination inside the pinned parent directory.
+        let mut existing_st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: parent_fd.0 is a confined directory fd; AT_SYMLINK_NOFOLLOW inspects leaf directly.
+        if unsafe {
+            libc::fstatat(
+                parent_fd.0,
+                name_c.as_ptr(),
+                &mut existing_st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } == 0
+            && (existing_st.st_mode & libc::S_IFMT) == libc::S_IFLNK
+        {
+            return Err(ZenkoError::PolicyDenied(format!(
+                "kernel AT_SYMLINK_NOFOLLOW blocked atomic write over symlink '{name_label}'"
+            )));
+        }
+
+        let tmp_name = format!(".zenko-tmp-{}", zenko_core::new_id());
+        let tmp_c = CString::new(tmp_name.as_bytes())
+            .map_err(|_| ZenkoError::Tool("invalid temp filename".into()))?;
+        // SAFETY: parent_fd.0 is a confined directory fd; O_CREAT|O_EXCL|O_NOFOLLOW creates a fresh 0600 file.
+        let tmp_fd = unsafe {
+            libc::openat(
+                parent_fd.0,
+                tmp_c.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600 as libc::c_uint,
+            )
+        };
+        if tmp_fd < 0 {
+            return Err(map_open_err(std::io::Error::last_os_error(), &tmp_name));
+        }
+
+        // SAFETY: tmp_fd is uniquely owned and transfers into std::fs::File.
+        let mut file = unsafe { std::fs::File::from_raw_fd(tmp_fd) };
+        let write_res = file.write_all(content).and_then(|_| file.flush());
+        drop(file);
+        if let Err(err) = write_res {
+            // SAFETY: clean up temporary file inside the same confined directory fd.
+            unsafe {
+                libc::unlinkat(parent_fd.0, tmp_c.as_ptr(), 0);
+            }
+            return Err(err.into());
+        }
+
+        // SAFETY: atomic rename within the pinned parent directory fd (immune to parent symlink swaps).
+        if unsafe { libc::renameat(parent_fd.0, tmp_c.as_ptr(), parent_fd.0, name_c.as_ptr()) } < 0
+        {
+            let err = std::io::Error::last_os_error();
+            unsafe {
+                libc::unlinkat(parent_fd.0, tmp_c.as_ptr(), 0);
+            }
+            return Err(map_open_err(err, &name_label));
+        }
+        Ok(())
+    }
+
+    pub fn remove_jailed_file(root: &Path, abs_path: &Path) -> Result<()> {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(root));
+        let (parent_rel, file_name) = split_confined_relative(&canon_root, abs_path)?;
+        let parent_fd = open_dir_confined(&canon_root, parent_rel, false)?;
+        let name_c = os_to_cstring(file_name)?;
+        let name_label = file_name.to_string_lossy();
+
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: parent_fd.0 is a confined directory fd; AT_SYMLINK_NOFOLLOW checks leaf without deref.
+        if unsafe {
+            libc::fstatat(
+                parent_fd.0,
+                name_c.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } < 0
+        {
+            return Err(map_open_err(std::io::Error::last_os_error(), &name_label));
+        }
+        if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+            return Err(ZenkoError::PolicyDenied(format!(
+                "refused to delete non-regular file '{name_label}'"
+            )));
+        }
+        // SAFETY: unlink strictly inside the pinned confined directory fd.
+        if unsafe { libc::unlinkat(parent_fd.0, name_c.as_ptr(), 0) } < 0 {
+            return Err(map_open_err(std::io::Error::last_os_error(), &name_label));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+mod unix_confined {
+    use super::*;
+
+    pub fn open_jailed_read_file(root: &Path, abs_path: &Path) -> Result<std::fs::File> {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(root));
+        let _ = split_confined_relative(&canon_root, abs_path)?;
+        let meta = std::fs::symlink_metadata(abs_path)?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(ZenkoError::PolicyDenied(format!(
+                "refused to read non-regular or symlink target '{}'",
+                abs_path.display()
+            )));
+        }
+        Ok(std::fs::File::open(abs_path)?)
+    }
+
+    pub fn atomic_write_jailed(root: &Path, abs_path: &Path, content: &[u8]) -> Result<()> {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(root));
+        let _ = split_confined_relative(&canon_root, abs_path)?;
+        if let Some(parent) = abs_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(abs_path)
+            && meta.file_type().is_symlink()
+        {
+            return Err(ZenkoError::PolicyDenied(format!(
+                "refused to overwrite symlink '{}'",
+                abs_path.display()
+            )));
+        }
+        let tmp = abs_path.with_extension(format!("zenko-tmp-{}", zenko_core::new_id()));
+        if let Err(err) = std::fs::write(&tmp, content) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
+        if let Err(err) = std::fs::rename(&tmp, abs_path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
+    pub fn remove_jailed_file(root: &Path, abs_path: &Path) -> Result<()> {
+        let canon_root = root
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(root));
+        let _ = split_confined_relative(&canon_root, abs_path)?;
+        let meta = std::fs::symlink_metadata(abs_path)?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(ZenkoError::PolicyDenied(format!(
+                "refused to delete non-regular or symlink target '{}'",
+                abs_path.display()
+            )));
+        }
+        std::fs::remove_file(abs_path)?;
+        Ok(())
+    }
+}
+
+/// Opens a regular file inside `root` using kernel-enforced directory-FD traversal (`openat` +
+/// `O_NOFOLLOW | O_CLOEXEC` on Unix), blocking concurrent TOCTOU symlink-swap escapes.
+pub fn open_jailed_read_file(root: &Path, abs_path: &Path) -> Result<std::fs::File> {
+    unix_confined::open_jailed_read_file(root, abs_path)
+}
+
+/// Reads a bounded UTF-8 file strictly through a kernel-confined `openat(O_NOFOLLOW)` handle.
+pub fn read_jailed_string_bounded(
+    root: &Path,
+    abs_path: &Path,
+    max_bytes: u64,
+    label: &str,
+) -> Result<String> {
+    use std::io::Read as _;
+    let file = open_jailed_read_file(root, abs_path)?;
+    let len = file.metadata()?.len();
+    if len > max_bytes {
+        return Err(ZenkoError::Tool(format!(
+            "File '{label}' ({len} bytes) exceeds safety limit ({max_bytes} bytes)."
+        )));
+    }
+    let mut buf = Vec::with_capacity(len.min(max_bytes) as usize);
+    file.take(max_bytes.saturating_add(1)).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        return Err(ZenkoError::Tool(format!(
+            "File '{label}' grew past safety limit ({max_bytes} bytes) while reading."
+        )));
+    }
+    String::from_utf8(buf).map_err(|_| {
+        ZenkoError::Tool(format!("File '{label}' is not valid UTF-8 text."))
+    })
+}
+
+/// Atomically writes `content` to `abs_path` strictly inside `root` via pinned parent `dir_fd`,
+/// `O_CREAT | O_EXCL | O_NOFOLLOW` temp file, and `renameat`.
+pub fn atomic_write_jailed(root: &Path, abs_path: &Path, content: &[u8]) -> Result<()> {
+    unix_confined::atomic_write_jailed(root, abs_path, content)
+}
+
+/// Deletes a regular file strictly inside `root` via pinned parent `dir_fd` + `unlinkat`.
+pub fn remove_jailed_file(root: &Path, abs_path: &Path) -> Result<()> {
+    unix_confined::remove_jailed_file(root, abs_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +691,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(hub);
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn kernel_confined_openat_writes_reads_deletes_and_blocks_symlinks() {
+        let dir = std::env::temp_dir().join(format!("zenko_openat_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let target = dir.join("nested/sub/hello.txt");
+        atomic_write_jailed(&dir, &target, b"safe-content\n").expect("atomic write");
+        let read_back = read_jailed_string_bounded(&dir, &target, 4096, "hello.txt").expect("read");
+        assert_eq!(read_back, "safe-content\n");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = std::env::temp_dir().join(format!("zenko_ext_{}.txt", zenko_core::new_id()));
+            std::fs::write(&outside, "secret").expect("write outside");
+            let sym_leaf = dir.join("link.txt");
+            symlink(&outside, &sym_leaf).expect("symlink leaf");
+
+            // Kernel O_NOFOLLOW must block reading, overwriting, and deleting a symlink leaf!
+            assert!(
+                open_jailed_read_file(&dir, &sym_leaf).is_err(),
+                "O_NOFOLLOW must block reading symlink leaf"
+            );
+            assert!(
+                atomic_write_jailed(&dir, &sym_leaf, b"pwn").is_err(),
+                "AT_SYMLINK_NOFOLLOW must block overwriting symlink leaf"
+            );
+            assert!(
+                remove_jailed_file(&dir, &sym_leaf).is_err(),
+                "AT_SYMLINK_NOFOLLOW must refuse deleting non-regular symlink"
+            );
+            assert_eq!(std::fs::read_to_string(&outside).expect("outside intact"), "secret");
+            let _ = std::fs::remove_file(&outside);
+        }
+
+        remove_jailed_file(&dir, &target).expect("remove regular");
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

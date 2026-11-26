@@ -61,6 +61,8 @@ pub struct WorkspaceSnapshot {
     pub nested_repo_docs: Vec<String>,
     #[serde(default)]
     pub project_brain_pages_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_prose_style_source: Option<String>,
     #[serde(default)]
     pub cache_stability_warnings: Vec<String>,
     #[serde(default)]
@@ -1153,6 +1155,11 @@ impl SnapshotManager {
         let nested_repo_docs: Vec<String> = nested_docs.iter().map(|(p, _)| p.clone()).collect();
         let (project_brain_pages_count, brain_root_slots, brain_index_lines) =
             crate::brain::build_project_brain_index(&self.workspace_dir());
+        let custom_prose_style_source = zenko_core::detect_custom_prose_style(&[
+            ("USER.md", &user_md),
+            ("SOUL.md", &soul_md),
+            ("repo_rules", &repo_rules_body),
+        ]);
         let cache_stability_warnings = detect_tier1_volatility(&soul_md, &repo_rules_body);
 
         // ── Tier 1: Immutable Static Prefix (Cache Breakpoint Anchor) ────────
@@ -1171,7 +1178,7 @@ impl SnapshotManager {
             "\nzenko_hub_policy: Store standalone creations (new projects -> hub:projects/, reusable & cron scripts -> hub:scripts/, media -> hub:media/, reports/exports -> hub:artifacts/) unless the user specifies another directory. Keep edits to existing repository code inside workspace_dir.\n\
              artifact_policy: Oversized tool outputs are automatically spilled to `artifact:<session>/<call>.txt` with a head+tail preview; use `read_file` or `code_search` on `artifact:` paths whenever you need exact slices.\n\
              sovereign_orchestration: You decide how to tackle every request directly in natural language (zero /commands). Answer simple asks immediately; for complex, ambiguous, or high-impact work, freely use `record_brainstorm` (iterative exploring/refined/committed specs with assumptions, blind spots & critique), `ask_clarification` (high-impact forks), `plan_update`/`session_task` (durable DAG tracking), `orchestrate_control` (shift posture, cognitive tier, reasoning effort, or refresh workspace recon mid-turn), and `spawn_agent` (parallel `explorer`, `architect`, `critic`, `researcher`, `coder`, `verifier`, or bespoke `custom` specialists).\n\
-             minicode_tools: Use `read_file(mode=\"outline\")` to map large files before slicing exact `ranges`, multi-hunk `hash_edit(edits=[...])` or ambiguity-guarded `apply_patch` for atomic edits, `code_search` (`file_glob`/`fixed_strings`/`output_mode`/`with_hashes`) for surgical recon, `batch_tools` to fan out multi-file reads/searches or short-circuit pipelines in one turn, and `tool_search` (`query`/`toolset`/`names`/`list_toolsets`) to activate deferred domains on demand.\n\
+             minicode_tools: Use `read_file(mode=\"outline\")` or one-shot `read_file(symbol=\"...\")` to inspect exact symbol spans before slicing `ranges`, multi-hunk `hash_edit(edits=[...])` or atomic `apply_patch` (single-file, multi-file, Codex patch, or standard unified diff) and `write_file(append=true)` for O(delta) edits, `code_search` (`file_glob`/`fixed_strings`/`output_mode`/`with_hashes`) for surgical recon, `batch_tools` to fan out multi-file reads/searches or short-circuit pipelines in one turn, and `tool_search` (`query`/`toolset`/`names`/`list_toolsets`) to activate deferred domains on demand.\n\
              </environment>",
         );
 
@@ -1260,6 +1267,7 @@ impl SnapshotManager {
             repo_rules_loaded,
             nested_repo_docs,
             project_brain_pages_count,
+            custom_prose_style_source,
             cache_stability_warnings,
             tier1_prompt: tier1,
             tier1_hash,

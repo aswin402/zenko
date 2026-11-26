@@ -766,25 +766,25 @@ pub const CONCISE_MODE_REGISTRY: &[ConciseModeDescriptor] = &[
         mode: ConciseMode::Lite,
         id: "lite",
         label: "Lite",
-        description: "Filler-free professional English: drop pleasantries and hedging, keep clear sentences",
+        description: "Filler-free professional English: drop pleasantries, hedging, and manufactured headings/recaps",
         target_reduction_pct: 30,
-        directive: "Write crisp, direct English. Drop pleasantries, throat-clearing, hedging, and repetition while keeping clear complete sentences.",
+        directive: "Write crisp, direct English. Drop pleasantries, throat-clearing, hedging, and manufactured structure (skip unnecessary headings, bulleted recaps, and checklists on simple answers; short direct paragraphs beat five headed sections).",
     },
     ConciseModeDescriptor {
         mode: ConciseMode::Full,
         id: "full",
         label: "Full",
-        description: "Telegraphic English (ASD-STE100 style): short active-voice fragments, zero fluff",
+        description: "Telegraphic English (ASD-STE100 style): short active-voice fragments, zero fluff or decorative structure",
         target_reduction_pct: 60,
-        directive: "Write ultra-terse telegraphic English: drop filler, articles, and padding; use short active-voice fragments and bullets. State each fact once.",
+        directive: "Write ultra-terse telegraphic English: drop filler, articles, padding, and decorative headings or recap sections; use short active-voice fragments. State each fact once.",
     },
     ConciseModeDescriptor {
         mode: ConciseMode::Ultra,
         id: "ultra",
         label: "Ultra",
-        description: "Maximum English token density: minimal fragments, arrows (A -> B), zero narrative padding",
+        description: "Maximum English token density: minimal fragments, arrows (A -> B), zero decorative structure or padding",
         target_reduction_pct: 75,
-        directive: "Write maximum-density telegraphic English: minimal fragments, causal arrows (`cause -> effect -> fix`), compact bullet lines, zero narrative padding. State each fact once.",
+        directive: "Write maximum-density telegraphic English: minimal fragments, causal arrows (`cause -> effect -> fix`), zero decorative headings, recaps, or narrative padding. State each fact once.",
     },
 ];
 
@@ -1200,7 +1200,7 @@ pub fn render_minimalism_prompt_block(
         "<code_minimalism level=\"{}\">\n\
          - {}\n\
          - Simplicity Ladder (stop at first rung that fits): {ladder}.\n\
-         - Context Diet: locate symbols via `code_search` / `read_file(mode=\"outline\")` and read targeted line ranges before opening full files; avoid bloated narrative comments that restate code.\n\
+         - Context Diet: locate symbols via `code_search` / `read_file(mode=\"outline\")` / one-shot `read_file(symbol=\"...\")` and read targeted ranges before opening full files; use `apply_patch` (Codex or unified diff) and `write_file(append=true)` for O(delta) edits; avoid bloated narrative comments that restate code.\n\
          - Safety invariant (minimal != careless): NEVER omit security checks, trust-boundary input validation, error handling, data-loss guards, or accessibility.{tool_clause}\n\
          - Live control (zero /commands): adjust via `{TOOL_ORCHESTRATE_CONTROL}(minimalism_mode=\"off|lite|full|ultra\")` if task complexity requires it.\n\
          </code_minimalism>",
@@ -1253,14 +1253,54 @@ pub fn render_economy_prompt_block(
     Some(format!("<token_economy>\n{body}\n</token_economy>"))
 }
 
-/// Renders the Tier-2 English `<concise_mode>` directive block (returns `None` when `Off`).
-/// Enforces Verbatim Payload Protection and optional Auto-Clarity safety hatch with zero Chinese terms.
+/// Deterministic zero-regex detector for explicit user/repo output-style directives
+/// across `USER.md`, `SOUL.md`, and loaded repo rules. When detected (and the user has not
+/// explicitly overridden `concise_mode` live), Zenko automatically yields default prose
+/// compression so it never fights custom prose preferences while keeping Code Minimalism
+/// and Read-Less compression active.
+pub fn detect_custom_prose_style(labeled_docs: &[(&str, &str)]) -> Option<String> {
+    for &(label, body) in labeled_docs {
+        for raw_line in body.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                let heading = trimmed.trim_start_matches('#').trim().to_ascii_lowercase();
+                let header_hit = crate::constants::CUSTOM_STYLE_MARKER_HEADERS.iter().any(|m| {
+                    heading == *m
+                        || heading
+                            .strip_prefix(m)
+                            .is_some_and(|rest| rest.starts_with([' ', ':', '-', '(']))
+                });
+                if header_hit {
+                    return Some(label.to_string());
+                }
+                continue;
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            let token_hit = crate::constants::CUSTOM_STYLE_DIRECTIVE_TOKENS
+                .iter()
+                .any(|tok| lower.contains(tok));
+            if token_hit {
+                return Some(label.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Renders the Tier-2 English `<concise_mode>` directive block (returns `None` when `Off`
+/// or when yielded to an explicit user/repo custom output style).
+/// Enforces Verbatim Payload Protection, anti-manufactured-structure prose, and optional
+/// Auto-Clarity safety hatch with zero Chinese terms.
 pub fn render_concise_prompt_block(
     mode: ConciseMode,
     auto_clarity: bool,
     read_only_plan: bool,
+    custom_style_source: Option<&str>,
 ) -> Option<String> {
-    if !mode.is_active() {
+    if !mode.is_active() || custom_style_source.is_some() {
         return None;
     }
     let desc = find_concise_mode(mode);
@@ -1415,8 +1455,20 @@ mod tests {
                 desc.id
             );
         }
-        assert!(render_concise_prompt_block(ConciseMode::Off, true, false).is_none());
-        let ultra = render_concise_prompt_block(ConciseMode::Ultra, true, false).expect("ultra");
+        assert!(render_concise_prompt_block(ConciseMode::Off, true, false, None).is_none());
+        assert!(
+            render_concise_prompt_block(ConciseMode::Full, true, false, Some("USER.md")).is_none(),
+            "concise prose block must yield when user/repo defines an explicit custom style"
+        );
+        assert_eq!(
+            detect_custom_prose_style(&[("USER.md", "# User Preferences\n\n## Output Style\nWrite long narrative essays.\n")]),
+            Some("USER.md".to_string())
+        );
+        assert_eq!(
+            detect_custom_prose_style(&[("USER.md", "# User Preferences\n- Keep responses crisp.\n")]),
+            None
+        );
+        let ultra = render_concise_prompt_block(ConciseMode::Ultra, true, false, None).expect("ultra");
         assert!(ultra.contains("level=\"ultra\""));
         assert!(ultra.contains("Verbatim invariant"));
         assert!(ultra.contains("Auto-Clarity"));
@@ -1424,7 +1476,7 @@ mod tests {
         assert!(ultra.contains("compress_doc"));
         assert!(ultra.is_ascii());
 
-        let plan_ro = render_concise_prompt_block(ConciseMode::Full, true, true).expect("plan_ro");
+        let plan_ro = render_concise_prompt_block(ConciseMode::Full, true, true, None).expect("plan_ro");
         assert!(plan_ro.contains("concise-review"));
         assert!(!plan_ro.contains("script_block"));
         assert!(!plan_ro.contains("compress_doc"));

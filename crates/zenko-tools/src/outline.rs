@@ -186,6 +186,92 @@ pub fn format_outline_report(req_path: &str, report: &OutlineReport) -> String {
     out
 }
 
+/// Deterministic zero-regex identifier extractor for an `OutlineEntry` signature.
+/// Extracts ASCII identifier tokens (e.g., `pub async fn foo_bar<T>(...)` -> `["pub", "async", "fn", "foo_bar", "T"]`)
+/// so `read_file(symbol=...)` can rank exact identifier hits ahead of loose substring hits.
+fn signature_identifier_tokens(sig: &str) -> Vec<&str> {
+    let bytes = sig.as_bytes();
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    for (idx, &b) in bytes.iter().enumerate() {
+        let is_ident = b.is_ascii_alphanumeric() || b == b'_';
+        match (start, is_ident) {
+            (None, true) => start = Some(idx),
+            (Some(s), false) => {
+                tokens.push(&sig[s..idx]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        tokens.push(&sig[s..]);
+    }
+    tokens
+}
+
+/// Finds matching structural outline entries for one or more requested symbol names using
+/// deterministic ranked matching:
+/// 1. Exact identifier match (case-sensitive)
+/// 2. Case-insensitive identifier match
+/// 3. Case-insensitive signature substring fallback
+/// Results are deduplicated by `(line, end_line)` and sorted by ascending start line.
+pub fn find_outline_symbol_spans<'a>(
+    report: &'a OutlineReport,
+    queries: &[String],
+) -> Vec<&'a OutlineEntry> {
+    let mut matched: Vec<&'a OutlineEntry> = Vec::new();
+    let mut seen: Vec<(usize, usize)> = Vec::new();
+
+    for raw_q in queries {
+        let q = raw_q.trim();
+        if q.is_empty() {
+            continue;
+        }
+        let q_lower = q.to_ascii_lowercase();
+
+        let exact: Vec<&'a OutlineEntry> = report
+            .entries
+            .iter()
+            .filter(|e| signature_identifier_tokens(&e.signature).iter().any(|tok| *tok == q))
+            .collect();
+
+        let picked = match exact.is_empty() {
+            false => exact,
+            true => {
+                let ci_ident: Vec<&'a OutlineEntry> = report
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        signature_identifier_tokens(&e.signature)
+                            .iter()
+                            .any(|tok| tok.eq_ignore_ascii_case(q))
+                    })
+                    .collect();
+                match ci_ident.is_empty() {
+                    false => ci_ident,
+                    true => report
+                        .entries
+                        .iter()
+                        .filter(|e| e.signature.to_ascii_lowercase().contains(&q_lower))
+                        .collect(),
+                }
+            }
+        };
+
+        for entry in picked {
+            let key = (entry.line, entry.end_line);
+            if !seen.contains(&key) {
+                seen.push(key);
+                matched.push(entry);
+            }
+        }
+    }
+
+    matched.sort_by_key(|e| (e.line, e.end_line));
+    matched
+}
+
 // ─── Brace-Scoped Language Scanner (Rust / TS / JS / Go / C-Like) ─────────────
 
 #[derive(Default)]

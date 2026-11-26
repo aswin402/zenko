@@ -9,7 +9,7 @@
 
 use zenko_core::{
     DeliberationDepth, ExecutionTier, IntentKind, ModelRoutingRole, PermissionMode,
-    ReasoningEffort, TriageReport,
+    ReasoningEffort, SHORT_TASK_MAX_NONEMPTY_LINES, SHORT_TASK_MAX_PROMPT_CHARS, TriageReport,
 };
 
 #[derive(Debug, Clone)]
@@ -165,6 +165,28 @@ pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
     }
 }
 
+/// Net-positive Short-Task Overhead Guard (inspired by Chisle's published failure benchmarks):
+/// returns `true` strictly when objective structural signals indicate a tiny, non-first-turn,
+/// non-Plan follow-up with zero mentioned paths and zero prior errors — allowing the orchestrator
+/// to skip heavy volatile turn scaffolding unless the model escalates into tool iterations.
+/// Never alters Tier-1/Tier-2 system prompts, preserving 100% KV-cache stability.
+pub fn is_short_trivial_turn(
+    prompt: &str,
+    triage: &TriageReport,
+    is_first_turn: bool,
+    permission_mode: PermissionMode,
+) -> bool {
+    let trimmed = prompt.trim();
+    let nonempty_lines = trimmed.lines().filter(|l| !l.trim().is_empty()).count();
+    triage.tier == ExecutionTier::Standard
+        && permission_mode != PermissionMode::Plan
+        && !is_first_turn
+        && !triage.needs_recon
+        && triage.complexity_score == 0
+        && trimmed.chars().count() <= SHORT_TASK_MAX_PROMPT_CHARS
+        && nonempty_lines <= SHORT_TASK_MAX_NONEMPTY_LINES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +245,40 @@ mod tests {
         });
         assert!(with_path.needs_recon);
         assert!(with_path.matched_signals.iter().any(|s| s == "paths(1)"));
+
+        // Short-Task Overhead Guard: true ONLY on trivial non-first-turn non-Plan follow-ups
+        let trivial_prompt = "what does that flag default to?";
+        let trivial = classify_turn(&TriageInput {
+            prompt: trivial_prompt,
+            prior_turn_errors: 0,
+            is_first_turn: false,
+            permission_mode: PermissionMode::Autonomous,
+            has_fast_model: true,
+            has_plan_model: true,
+        });
+        assert!(is_short_trivial_turn(
+            trivial_prompt,
+            &trivial,
+            false,
+            PermissionMode::Autonomous
+        ));
+        assert!(!is_short_trivial_turn(
+            trivial_prompt,
+            &trivial,
+            true,
+            PermissionMode::Autonomous
+        ));
+        assert!(!is_short_trivial_turn(
+            "check crates/zenko-core/src/types.rs",
+            &with_path,
+            false,
+            PermissionMode::Autonomous
+        ));
+        assert!(!is_short_trivial_turn(
+            "design the caching layer",
+            &plan_mode,
+            false,
+            PermissionMode::Plan
+        ));
     }
 }
