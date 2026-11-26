@@ -429,9 +429,23 @@ export function ActivityDisplay({
 
   if (style === 'hidden' || (items.length === 0 && tools.length === 0)) return null
 
+  const activityViewportClass =
+    status === 'working' ? 'max-h-48 p-2.5 pr-4' : 'max-h-56 p-2.5 pr-4'
+
+  const wrapActivityBox = (content: ReactNode) => (
+    <CompactScrollArea
+      autoHeight
+      stickToBottom={status === 'working'}
+      className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)]"
+      viewportClassName={activityViewportClass}
+    >
+      {content}
+    </CompactScrollArea>
+  )
+
   if (TOOL_CARD_ACTIVITY_STYLES.has(style)) {
     if (tools.length === 0) return null
-    return (
+    return wrapActivityBox(
       <div className="flex flex-col gap-1.5">
         {tools.map((tool) => (
           <SmartToolElement
@@ -445,37 +459,39 @@ export function ActivityDisplay({
             onRetryTool={onRetryTool}
           />
         ))}
-      </div>
+      </div>,
     )
   }
 
   const ACTIVITY_RENDERERS: Partial<Record<typeof style, () => ReactNode>> = {
     kokonut_tool_calls: () =>
-      tools.length === 0 ? null : (
-        <KokonutAIToolCalls
-          defaultOpen={defaultOpen}
-          calls={tools.map((t) => {
-            const detail =
-              extractJsonField(t.args_preview, ['path', 'command', 'cmd', 'query', 'url']) ||
-              (t.args_preview ? t.args_preview.slice(0, 48) : undefined)
-            return {
-              id: t.id,
-              tool: t.name,
-              detail,
-              state:
-                t.status === 'running'
-                  ? 'input-available'
-                  : t.status === 'error'
-                    ? 'output-error'
-                    : 'output-available',
-              durationMs: t.duration_ms,
-            }
-          })}
-        />
-      ),
+      tools.length === 0
+        ? null
+        : wrapActivityBox(
+            <KokonutAIToolCalls
+              defaultOpen={defaultOpen}
+              calls={tools.map((t) => {
+                const detail =
+                  extractJsonField(t.args_preview, ['path', 'command', 'cmd', 'query', 'url']) ||
+                  (t.args_preview ? t.args_preview.slice(0, 48) : undefined)
+                return {
+                  id: t.id,
+                  tool: t.name,
+                  detail,
+                  state:
+                    t.status === 'running'
+                      ? 'input-available'
+                      : t.status === 'error'
+                        ? 'output-error'
+                        : 'output-available',
+                  durationMs: t.duration_ms,
+                }
+              })}
+            />,
+          ),
     aui_run_activity: () => {
       const runStatus: RunActivityStatus = status === 'working' ? 'running' : 'complete'
-      return (
+      return wrapActivityBox(
         <RunActivity
           status={runStatus}
           statusLabel={statusLabel}
@@ -483,70 +499,76 @@ export function ActivityDisplay({
           entries={runEntries}
           open={open}
           onOpenChange={setOpen}
-        />
+        />,
       )
     },
     aui_tool_timeline: () =>
-      timelineSteps.length === 0 ? null : (
-        <ToolTimeline
-          steps={timelineSteps}
-          visibleSteps={timelineSteps.length}
-          streaming={status === 'working'}
-          open={open}
-          onOpenChange={setOpen}
-          restingLabel={`${timelineSteps.length} ${timelineSteps.length === 1 ? 'tool step' : 'tool steps'}${durationLabel ? ` · ${durationLabel}` : ''}`}
-          activeLabel={statusLabel}
-          stats={timelineStats}
-        />
-      ),
+      timelineSteps.length === 0
+        ? null
+        : wrapActivityBox(
+            <ToolTimeline
+              steps={timelineSteps}
+              visibleSteps={timelineSteps.length}
+              streaming={status === 'working'}
+              open={open}
+              onOpenChange={setOpen}
+              restingLabel={`${timelineSteps.length} ${timelineSteps.length === 1 ? 'tool step' : 'tool steps'}${durationLabel ? ` · ${durationLabel}` : ''}`}
+              activeLabel={statusLabel}
+              stats={timelineStats}
+            />,
+          ),
     easeui_tool_chip: () =>
-      tools.length === 0 ? null : (
-        <div className="flex flex-wrap gap-1.5">
-          {tools.map((t) => {
-            const IconComp = resolveToolLeadingIcon(t.name)
-            const detail =
-              extractJsonField(t.args_preview, ['path', 'command', 'cmd', 'query', 'url']) || ''
-            const chipLabel = detail
-              ? `${t.name} · ${detail.length > 26 ? `${detail.slice(0, 26)}…` : detail}`
-              : t.duration_ms !== undefined
-                ? `${t.name} · ${t.duration_ms}ms`
-                : t.name
-            return (
-              <EaseToolChip
-                key={t.id}
-                icon={<IconComp className="h-3.5 w-3.5" />}
-                label={chipLabel}
-                status={t.status === 'ok' ? 'done' : t.status}
-              />
-            )
-          })}
-        </div>
-      ),
+      tools.length === 0
+        ? null
+        : wrapActivityBox(
+            <div className="flex flex-wrap gap-1.5">
+              {tools.map((t) => {
+                const IconComp = resolveToolLeadingIcon(t.name)
+                const detail =
+                  extractJsonField(t.args_preview, ['path', 'command', 'cmd', 'query', 'url']) || ''
+                const chipLabel = detail
+                  ? `${t.name} · ${detail.length > 26 ? `${detail.slice(0, 26)}…` : detail}`
+                  : t.duration_ms !== undefined
+                    ? `${t.name} · ${t.duration_ms}ms`
+                    : t.name
+                return (
+                  <EaseToolChip
+                    key={t.id}
+                    icon={<IconComp className="h-3.5 w-3.5" />}
+                    label={chipLabel}
+                    status={t.status === 'ok' ? 'done' : t.status}
+                  />
+                )
+              })}
+            </div>,
+          ),
     minimal_pills: () =>
-      tools.length === 0 ? null : (
-        <div className="flex flex-wrap gap-1.5">
-          {tools.map((t) => (
-            <span
-              key={t.id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--muted)]"
-            >
-              <Terminal
-                size={10.5}
-                style={{
-                  color:
-                    t.status === 'running'
-                      ? 'var(--accent)'
-                      : t.status === 'error'
-                        ? 'var(--destructive)'
-                        : 'var(--muted)',
-                }}
-              />
-              <span>{t.name}</span>
-              {t.duration_ms !== undefined && <span>{t.duration_ms}ms</span>}
-            </span>
-          ))}
-        </div>
-      ),
+      tools.length === 0
+        ? null
+        : wrapActivityBox(
+            <div className="flex flex-wrap gap-1.5">
+              {tools.map((t) => (
+                <span
+                  key={t.id}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--muted)]"
+                >
+                  <Terminal
+                    size={10.5}
+                    style={{
+                      color:
+                        t.status === 'running'
+                          ? 'var(--accent)'
+                          : t.status === 'error'
+                            ? 'var(--destructive)'
+                            : 'var(--muted)',
+                    }}
+                  />
+                  <span>{t.name}</span>
+                  {t.duration_ms !== undefined && <span>{t.duration_ms}ms</span>}
+                </span>
+              ))}
+            </div>,
+          ),
   }
 
   const customActivity = ACTIVITY_RENDERERS[style]
@@ -1068,6 +1090,7 @@ export function AssistantMessageFooter({
   citationsStyle = 'beui_citations',
   text,
   citations,
+  extraActions,
   tokenMeta,
   onRegenerate,
   onToggleSteps,
@@ -1076,6 +1099,7 @@ export function AssistantMessageFooter({
   citationsStyle?: CitationsStyle
   text: string
   citations: CitationItem[]
+  extraActions?: ReactNode
   tokenMeta?: ReactNode
   onRegenerate?: () => void
   onToggleSteps?: () => void
@@ -1117,6 +1141,7 @@ export function AssistantMessageFooter({
             Retry
           </button>
         )}
+        {extraActions}
         <CitationsDisplay citations={citations} style={citationsStyle} />
         {tokenMeta}
       </div>
@@ -1132,6 +1157,7 @@ export function AssistantMessageFooter({
         onRegenerate={onRegenerate ? handleRegenerate : undefined}
         onMore={onToggleSteps}
       />
+      {extraActions}
       <CitationsDisplay citations={citations} style={citationsStyle} />
       {tokenMeta}
     </div>

@@ -59,6 +59,8 @@ export interface StreamingResponseProps {
   announce?: boolean;
   /** Hides the built-in completion actions without changing response status. */
   showActions?: boolean;
+  /** Optional extra action buttons rendered inline right after Retry (e.g. Checkpoints). */
+  extraActions?: ReactNode;
   /** Optional inline metadata rendered right after the sources trigger on the same action bar. */
   footerMeta?: ReactNode;
   /** Override any built-in string. `{count}` fills `source` (one) and `sources` (many). */
@@ -115,6 +117,7 @@ export function StreamingResponse({
   sourceIdPrefix,
   announce = true,
   showActions = true,
+  extraActions,
   footerMeta,
   labels,
   className,
@@ -134,7 +137,9 @@ export function StreamingResponse({
   const canCopy = Boolean(copyText || onCopy);
   const hasSources = sources.length > 0;
   const shouldShowActions =
-    showActions && !streaming && (canCopy || Boolean(onRetry) || hasSources || Boolean(footerMeta));
+    showActions &&
+    !streaming &&
+    (canCopy || Boolean(onRetry) || Boolean(extraActions) || hasSources || Boolean(footerMeta));
   const sourcesContentId = `${baseId}-sources`;
   const resolvedSourcePrefix =
     sourceIdPrefix ?? `response-source-${baseId.replace(/:/g, "")}`;
@@ -218,6 +223,7 @@ export function StreamingResponse({
                   />
                 </ResponseAction>
               ) : null}
+              {extraActions}
               {hasSources ? (
                 <button
                   type="button"

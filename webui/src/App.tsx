@@ -1081,6 +1081,7 @@ export default function App() {
               sessionId={activeSessionId}
               events={events}
               siblings={siblings}
+              checkpoints={sessionCheckpoints}
               pendingApprovals={pendingApprovals}
               pendingClarifications={pendingClarifications}
               liveOrchestrator={liveOrchestrator}
@@ -1094,6 +1095,34 @@ export default function App() {
               activeModel={activeModel}
               ui={ui}
               setupCompleted={Boolean(config?.general?.setup_completed || hasProviderKey)}
+              onRewindCheckpoint={async (checkpointId, mode, overwriteManual) => {
+                if (!activeSessionId) return
+                try {
+                  const rep = await api<RewindReport>(
+                    `/api/sessions/${encodeURIComponent(activeSessionId)}/rewind`,
+                    {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        checkpoint_id: checkpointId,
+                        mode,
+                        overwrite_manual_edits: overwriteManual,
+                        summarize_abandoned: true,
+                      }),
+                    },
+                  )
+                  await loadSession(activeSessionId)
+                  toast(
+                    `Rewound (${rep.restored_files.length} restored, ${rep.deleted_files.length} removed${
+                      rep.preserved_manual_edits.length > 0
+                        ? `, ${rep.preserved_manual_edits.length} hand-edit kept`
+                        : ''
+                    })`,
+                    'success',
+                  )
+                } catch (e: any) {
+                  toast(e.message, 'error')
+                }
+              }}
               onQuickPrompt={(p) => sendMessage(p)}
               onRetryTurn={() => {
                 const retryText =
@@ -1311,36 +1340,7 @@ export default function App() {
                 <WorkspaceToolsPopovers
                   sessionId={activeSessionId}
                   tasks={sessionTasks}
-                  checkpoints={sessionCheckpoints}
                   popoverStyle={ui.surface.popover_style || 'gooey'}
-                  onRewind={async (checkpointId, mode, overwriteManual) => {
-                    if (!activeSessionId) return
-                    try {
-                      const rep = await api<RewindReport>(
-                        `/api/sessions/${encodeURIComponent(activeSessionId)}/rewind`,
-                        {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            checkpoint_id: checkpointId,
-                            mode,
-                            overwrite_manual_edits: overwriteManual,
-                            summarize_abandoned: true,
-                          }),
-                        },
-                      )
-                      await loadSession(activeSessionId)
-                      toast(
-                        `Rewound (${rep.restored_files.length} restored, ${rep.deleted_files.length} removed${
-                          rep.preserved_manual_edits.length > 0
-                            ? `, ${rep.preserved_manual_edits.length} hand-edit kept`
-                            : ''
-                        })`,
-                        'success',
-                      )
-                    } catch (e: any) {
-                      toast(e.message, 'error')
-                    }
-                  }}
                 />
               }
             />

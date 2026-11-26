@@ -4,6 +4,18 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.44] - 2026-11-27
+
+Refined WebUI chat ergonomics: relocated Workspace Checkpoints from the crowded chat composer bar into each assistant message footer, styled hover hint badges and the Checkpoints menu to match Zenko's 60/30/10 theme, and bounded Agent Activity inside a Thinking-style auto-scrolling box.
+
+### Changed
+- **Message-Footer Checkpoints & Minimal Theme-Native Menu (`webui/src/components/chat/{Phase6Bar,ChatStream,ChatElements}.tsx`, `webui/src/components/agents/streaming-response.tsx`, `webui/src/App.tsx`):**
+  - Removed the Checkpoints pill from `PromptComposer`'s right toolbar (`WorkspaceToolsPopovers`) so the chat input stays cleanly on a single row, and moved Checkpoints into a subtle `CheckpointMenuButton` right alongside Copy, Retry, and token stats at the end of assistant messages (matching each checkpoint to its exact turn `event_id` while keeping all session checkpoints accessible from the latest turn).
+  - Replaced raw browser `title` attributes on Checkpoints and Session Tasks with global `<ZenkoTooltip>` hover hint badges honoring the active theme.
+  - Redesigned the Checkpoints popover into a compact, minimal surface with a recessed segmented `Code + Chat | Code | Chat` switcher, a custom theme-native `Force` checkbox (replacing the native white browser checkbox), subtle turn highlighting, and compact inline diff previews.
+- **Bounded Scrollable Agent Activity Box (`webui/src/components/chat/{ChatElements,ChatStream}.tsx`):**
+  - Wrapped `ActivityDisplay` tool execution lists in `<CompactScrollArea>` matching the `Thought for Xs` recessed surface, slim themed scrollbar, edge fade, and `stickToBottom` live tracking (`max-h-48` while working, `max-h-56` when complete), alongside crisp `Thinking · Xs` and `Agent Activity (N)` section headers in `LiveAssistantTurn` so thinking and tool calls stay visible together without endless page scrolling.
+
 ## [0.0.43] - 2026-11-27
 
 Hardened `v0.0.42`'s Shunt gate, Service Briefing parser, and Token Economy accounting to eliminate every remaining inline literal and replace sequential `if`/`else if` guards with pure declarative tables and finite-state machines.

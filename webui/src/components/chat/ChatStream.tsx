@@ -34,8 +34,10 @@ import type {
   ExecutionPlan,
   OrchestratorStatus,
   PlanStepStatus,
+  RewindMode,
   SessionEvent,
   UiCustomization,
+  WorkspaceCheckpoint,
 } from '@/lib/types'
 import { safeHref } from '@/components/assistant-ui/utils/href'
 import { cn } from '@/lib/utils'
@@ -68,6 +70,7 @@ import {
 import { BouncyAccordion } from '@/components/motion/bouncy-accordion'
 import type { LoaderVariant } from '@/components/motion/loader'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
+import { CheckpointMenuButton } from '@/components/chat/Phase6Bar'
 import { DayDivider } from '@/components/assistant-ui/elements/day-separator'
 import { StreamingText } from '@/components/assistant-ui/elements/streaming-text'
 import {
@@ -526,19 +529,33 @@ const CompactionCheckpointPill = memo(function CompactionCheckpointPill({
 })
 
 const AssistantTurnView = memo(function AssistantTurnView({
+  sessionId = null,
   group,
   ui,
   promptForRegen,
   parentForRegen,
+  checkpoints = [],
+  turnCheckpointId = null,
+  showCheckpointCount = false,
   onRegenerate,
   onRetryTool,
+  onRewindCheckpoint,
 }: {
+  sessionId?: string | null
   group: AssistantGroup
   ui: UiCustomization
   promptForRegen?: string
   parentForRegen?: string | null
+  checkpoints?: WorkspaceCheckpoint[]
+  turnCheckpointId?: string | null
+  showCheckpointCount?: boolean
   onRegenerate?: (prompt: string, parentId?: string | null) => void
   onRetryTool?: (toolName: string, argsPreview?: string) => void
+  onRewindCheckpoint?: (
+    checkpointId: string,
+    mode: RewindMode,
+    overwriteManual: boolean,
+  ) => Promise<void>
 }) {
   const handleRegenerate = useMemo(
     () =>
@@ -608,6 +625,19 @@ const AssistantTurnView = memo(function AssistantTurnView({
 
   const useBeuiInlineActions =
     chatSlot.streaming_style === 'beui_stream' && actionsStyle === 'beui_inline'
+
+  const checkpointActionNode =
+    onRewindCheckpoint && checkpoints.length > 0 && (Boolean(turnCheckpointId) || showCheckpointCount) ? (
+      <CheckpointMenuButton
+        sessionId={sessionId}
+        checkpoints={checkpoints}
+        turnCheckpointId={turnCheckpointId}
+        popoverStyle={ui.surface.popover_style || 'gooey'}
+        showCount={showCheckpointCount && checkpoints.length > 1}
+        minimalTrigger={actionsStyle === 'minimal' && !useBeuiInlineActions}
+        onRewind={onRewindCheckpoint}
+      />
+    ) : null
 
   const tokenMetaNode =
     ui.widgets.show_cost_badges && group.tokens > 0 ? (
@@ -818,8 +848,9 @@ const AssistantTurnView = memo(function AssistantTurnView({
                   linkHoverStyle={ui.surface.link_hover_style}
                 />
               </EaseStreamingResponse>
-              {(citations.length > 0 || tokenMetaNode) && (
+              {(citations.length > 0 || checkpointActionNode || tokenMetaNode) && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                  {checkpointActionNode}
                   <CitationsDisplay citations={citations} style={chatSlot.citations_style} />
                   {tokenMetaNode}
                 </div>
@@ -835,8 +866,9 @@ const AssistantTurnView = memo(function AssistantTurnView({
                 linkHoverStyle={ui.surface.link_hover_style}
                 onRetry={handleRegenerate}
               />
-              {(citations.length > 0 || tokenMetaNode) && (
+              {(citations.length > 0 || checkpointActionNode || tokenMetaNode) && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                  {checkpointActionNode}
                   <CitationsDisplay citations={citations} style={chatSlot.citations_style} />
                   {tokenMetaNode}
                 </div>
@@ -848,6 +880,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
                 status="complete"
                 copyText={group.text}
                 onRetry={handleRegenerate}
+                extraActions={checkpointActionNode}
                 sources={
                   !chatSlot.citations_style || chatSlot.citations_style === 'beui_citations'
                     ? citations
@@ -885,6 +918,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
                 citationsStyle={chatSlot.citations_style}
                 text={group.text}
                 citations={citations}
+                extraActions={checkpointActionNode}
                 tokenMeta={tokenMetaNode}
                 onRegenerate={handleRegenerate}
                 onToggleSteps={stepCount > 0 ? () => setStepsOpen((v) => !v) : undefined}
@@ -1469,52 +1503,64 @@ function LiveAssistantTurn({
 
             {hasWorkDetails && (
               <AgentDisclosure open={liveOpen}>
-                <div className="flex flex-col gap-2.5 border-l border-[var(--border)] pl-3.5">
-                  {/* Live streaming reasoning words */}
+                <div className="flex flex-col gap-3 border-l border-[var(--border)] pl-3.5">
+                  {/* 1. Live streaming reasoning inside a bounded scroll box */}
                   {ui.widgets.show_thinking && mergedThinking && (
-                    <CompactScrollArea
-                      autoHeight
-                      stickToBottom
-                      className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)]"
-                      viewportClassName="max-h-44 p-3 pr-4"
-                    >
-                      <div className="font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-[var(--muted)]">
-                        {mergedThinking}
-                        {isRunning && !liveText && !runningTool && (
-                          <span
-                            aria-hidden="true"
-                            className="ml-0.5 inline-block h-3 w-1.5 animate-pulse rounded-[1px] align-middle"
-                            style={{ backgroundColor: 'var(--accent)' }}
-                          />
-                        )}
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+                        <BrainIcon size={12} style={{ color: 'var(--accent)' }} />
+                        <span>Thinking · {elapsedLabel}</span>
                       </div>
-                    </CompactScrollArea>
+                      <CompactScrollArea
+                        autoHeight
+                        stickToBottom
+                        className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)]"
+                        viewportClassName="max-h-40 p-3 pr-4"
+                      >
+                        <div className="font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-[var(--muted)]">
+                          {mergedThinking}
+                          {isRunning && !liveText && !runningTool && (
+                            <span
+                              aria-hidden="true"
+                              className="ml-0.5 inline-block h-3 w-1.5 animate-pulse rounded-[1px] align-middle"
+                              style={{ backgroundColor: 'var(--accent)' }}
+                            />
+                          )}
+                        </div>
+                      </CompactScrollArea>
+                    </div>
                   )}
 
-                  {/* Unified Live Agent Activity & Tool Execution */}
+                  {/* 2. Unified Live Agent Activity & Tool Execution inside matching bounded scroll box */}
                   {chatSlot.activity_style !== 'hidden' &&
                     (liveActivityItems.length > 0 || mergedTools.length > 0) && (
-                      <ActivityDisplay
-                        style={chatSlot.activity_style}
-                        items={liveActivityItems}
-                        tools={mergedTools.map((t) => ({
-                          id: t.call_id,
-                          name: t.tool_name,
-                          args_preview: t.args_preview,
-                          status: t.status,
-                          duration_ms: t.duration_ms,
-                          diff: t.diff,
-                          content: t.output_preview || '',
-                        }))}
-                        status={isRunning && !liveText ? 'working' : 'complete'}
-                        statusLabel={liveStatusText}
-                        durationLabel={elapsedLabel}
-                        defaultOpen={true}
-                        diffStyle={chatSlot.diff_style}
-                        shellStyle={chatSlot.shell_style}
-                        fileTreeStyle={chatSlot.file_tree_style}
-                        webSearchStyle={chatSlot.web_search_style}
-                      />
+                      <div className="flex flex-col gap-1.5">
+                        <span className="font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+                          Agent Activity
+                          {mergedTools.length > 0 ? ` (${mergedTools.length})` : ''}
+                        </span>
+                        <ActivityDisplay
+                          style={chatSlot.activity_style}
+                          items={liveActivityItems}
+                          tools={mergedTools.map((t) => ({
+                            id: t.call_id,
+                            name: t.tool_name,
+                            args_preview: t.args_preview,
+                            status: t.status,
+                            duration_ms: t.duration_ms,
+                            diff: t.diff,
+                            content: t.output_preview || '',
+                          }))}
+                          status={isRunning && !liveText ? 'working' : 'complete'}
+                          statusLabel={liveStatusText}
+                          durationLabel={elapsedLabel}
+                          defaultOpen={true}
+                          diffStyle={chatSlot.diff_style}
+                          shellStyle={chatSlot.shell_style}
+                          fileTreeStyle={chatSlot.file_tree_style}
+                          webSearchStyle={chatSlot.web_search_style}
+                        />
+                      </div>
                     )}
                 </div>
               </AgentDisclosure>
@@ -1578,6 +1624,7 @@ export function ChatStream({
   sessionId = null,
   events,
   siblings,
+  checkpoints = [],
   pendingApprovals,
   pendingClarifications = [],
   liveOrchestrator = null,
@@ -1597,6 +1644,7 @@ export function ChatStream({
   onDiscardStopped,
   onRegenerate,
   onRetryTool,
+  onRewindCheckpoint,
   onOpenSetup,
   onEditBranch,
   onSwitchBranch,
@@ -1606,6 +1654,7 @@ export function ChatStream({
   sessionId?: string | null
   events: SessionEvent[]
   siblings: Record<string, string[]>
+  checkpoints?: WorkspaceCheckpoint[]
   pendingApprovals: ApprovalRecord[]
   pendingClarifications?: ClarificationRecord[]
   liveOrchestrator?: OrchestratorStatus | null
@@ -1625,6 +1674,11 @@ export function ChatStream({
   onDiscardStopped?: () => void
   onRegenerate?: (promptText: string, parentId?: string | null) => void
   onRetryTool?: (toolName: string, argsPreview?: string) => void
+  onRewindCheckpoint?: (
+    checkpointId: string,
+    mode: RewindMode,
+    overwriteManual: boolean,
+  ) => Promise<void>
   onOpenSetup: () => void
   onEditBranch: (parentId: string | null, text: string) => void
   onSwitchBranch: (eventId: string) => void
@@ -1802,8 +1856,12 @@ export function ChatStream({
         let prevDay = ''
         let prevUserPrompt = ''
         let prevUserParentId: string | null | undefined = undefined
+        let lastAssistantIdx = -1
+        historicalBlocks.forEach((b, i) => {
+          if (b.kind === 'assistant') lastAssistantIdx = i
+        })
 
-        return historicalBlocks.map((block) => {
+        return historicalBlocks.map((block, blockIdx) => {
           const blockIso =
             block.kind === 'user'
               ? block.event.created_at
@@ -1922,16 +1980,25 @@ export function ChatStream({
 
           const promptForRegen = prevUserPrompt
           const parentForRegen = prevUserParentId
+          const matchedCheckpoint =
+            checkpoints.find(
+              (cp) => !cp.is_safety_backup && (cp.event_id ?? null) === (parentForRegen ?? null),
+            ) ?? null
           return (
             <div key={block.group.key} className="zenko-turn-item flex flex-col gap-5 sm:-mx-12 sm:px-12">
               {dayNode}
               <AssistantTurnView
+                sessionId={sessionId}
                 group={block.group}
                 ui={ui}
                 promptForRegen={promptForRegen}
                 parentForRegen={parentForRegen}
+                checkpoints={checkpoints}
+                turnCheckpointId={matchedCheckpoint?.id ?? null}
+                showCheckpointCount={blockIdx === lastAssistantIdx}
                 onRegenerate={onRegenerate}
                 onRetryTool={onRetryTool}
+                onRewindCheckpoint={onRewindCheckpoint}
               />
             </div>
           )
