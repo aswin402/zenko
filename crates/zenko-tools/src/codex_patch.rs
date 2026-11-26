@@ -1,16 +1,13 @@
 //! Zero-regex, pure-Rust state-machine parsers for both OpenAI Codex's structured multi-file
 //! `*** Begin Patch` grammar AND standard POSIX/Git unified diffs (`--- a/` / `+++ b/` / `@@`).
 
-use zenko_core::{APPLY_PATCH_MAX_FILES, Result, ZenkoError};
-
-const MARKER_BEGIN_PATCH: &str = "*** Begin Patch";
-const MARKER_END_PATCH: &str = "*** End Patch";
-const MARKER_ADD_FILE: &str = "*** Add File:";
-const MARKER_DELETE_FILE: &str = "*** Delete File:";
-const MARKER_UPDATE_FILE: &str = "*** Update File:";
-const MARKER_MOVE_TO: &str = "*** Move to:";
-const MARKER_END_OF_FILE: &str = "*** End of File";
-const UNIFIED_DEV_NULL: &str = "/dev/null";
+use zenko_core::{
+    APPLY_PATCH_MAX_FILES, CODEX_PATCH_ADD_FILE, CODEX_PATCH_BEGIN, CODEX_PATCH_DELETE_FILE,
+    CODEX_PATCH_END, CODEX_PATCH_END_OF_FILE, CODEX_PATCH_MOVE_TO, CODEX_PATCH_UPDATE_FILE, Result,
+    UNIFIED_DIFF_DEV_NULL, UNIFIED_DIFF_GIT_META_PREFIXES, UNIFIED_DIFF_GIT_PREFIX,
+    UNIFIED_DIFF_HUNK_MARKER, UNIFIED_DIFF_NEW_PREFIX, UNIFIED_DIFF_NO_NEWLINE,
+    UNIFIED_DIFF_OLD_PREFIX, UNIFIED_DIFF_RENAME_FROM, UNIFIED_DIFF_RENAME_TO, ZenkoError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchFormat {
@@ -21,12 +18,12 @@ pub enum PatchFormat {
 /// Deterministic zero-regex patch format detector (handles optional Markdown code fences).
 pub fn detect_patch_format(raw: &str) -> Option<PatchFormat> {
     let lines = strip_optional_code_fences(raw);
-    if lines.iter().any(|l| l.trim() == MARKER_BEGIN_PATCH) {
+    if lines.iter().any(|l| l.trim() == CODEX_PATCH_BEGIN) {
         return Some(PatchFormat::Codex);
     }
-    let has_git_diff = lines.iter().any(|l| l.starts_with("diff --git "));
-    let has_minus = lines.iter().any(|l| l.starts_with("--- "));
-    let has_plus = lines.iter().any(|l| l.starts_with("+++ "));
+    let has_git_diff = lines.iter().any(|l| l.starts_with(UNIFIED_DIFF_GIT_PREFIX));
+    let has_minus = lines.iter().any(|l| l.starts_with(UNIFIED_DIFF_OLD_PREFIX));
+    let has_plus = lines.iter().any(|l| l.starts_with(UNIFIED_DIFF_NEW_PREFIX));
     match has_git_diff || (has_minus && has_plus) {
         true => Some(PatchFormat::UnifiedDiff),
         false => None,
@@ -149,9 +146,9 @@ fn parse_header_path(raw: &str, marker: &str, line_no: usize) -> Result<String> 
 /// Parses a Codex multi-file patch payload into validated per-file operations.
 pub fn parse_codex_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
     let lines = strip_optional_code_fences(raw);
-    let Some(begin_idx) = lines.iter().position(|l| l.trim() == MARKER_BEGIN_PATCH) else {
+    let Some(begin_idx) = lines.iter().position(|l| l.trim() == CODEX_PATCH_BEGIN) else {
         return Err(ZenkoError::Tool(format!(
-            "Codex patch must start with `{MARKER_BEGIN_PATCH}`"
+            "Codex patch must start with `{CODEX_PATCH_BEGIN}`"
         )));
     };
 
@@ -162,14 +159,14 @@ pub fn parse_codex_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
         let line_no = begin_idx + offset + 2;
         let trimmed = raw_line.trim_end_matches('\r');
 
-        if trimmed.trim() == MARKER_END_PATCH {
+        if trimmed.trim() == CODEX_PATCH_END {
             flush_section(std::mem::replace(&mut section, ParserSection::Idle), &mut ops)?;
             break;
         }
 
-        if let Some(rest) = trimmed.strip_prefix(MARKER_ADD_FILE) {
+        if let Some(rest) = trimmed.strip_prefix(CODEX_PATCH_ADD_FILE) {
             flush_section(std::mem::replace(&mut section, ParserSection::Idle), &mut ops)?;
-            let path = parse_header_path(rest, MARKER_ADD_FILE, line_no)?;
+            let path = parse_header_path(rest, CODEX_PATCH_ADD_FILE, line_no)?;
             section = ParserSection::Add {
                 path,
                 lines: Vec::new(),
@@ -177,16 +174,16 @@ pub fn parse_codex_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix(MARKER_DELETE_FILE) {
+        if let Some(rest) = trimmed.strip_prefix(CODEX_PATCH_DELETE_FILE) {
             flush_section(std::mem::replace(&mut section, ParserSection::Idle), &mut ops)?;
-            let path = parse_header_path(rest, MARKER_DELETE_FILE, line_no)?;
+            let path = parse_header_path(rest, CODEX_PATCH_DELETE_FILE, line_no)?;
             ops.push(CodexPatchFileOp::Delete { path });
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix(MARKER_UPDATE_FILE) {
+        if let Some(rest) = trimmed.strip_prefix(CODEX_PATCH_UPDATE_FILE) {
             flush_section(std::mem::replace(&mut section, ParserSection::Idle), &mut ops)?;
-            let path = parse_header_path(rest, MARKER_UPDATE_FILE, line_no)?;
+            let path = parse_header_path(rest, CODEX_PATCH_UPDATE_FILE, line_no)?;
             section = ParserSection::Update {
                 path,
                 move_to: None,
@@ -196,8 +193,8 @@ pub fn parse_codex_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix(MARKER_MOVE_TO) {
-            let dest = parse_header_path(rest, MARKER_MOVE_TO, line_no)?;
+        if let Some(rest) = trimmed.strip_prefix(CODEX_PATCH_MOVE_TO) {
+            let dest = parse_header_path(rest, CODEX_PATCH_MOVE_TO, line_no)?;
             match &mut section {
                 ParserSection::Update {
                     move_to,
@@ -210,7 +207,7 @@ pub fn parse_codex_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
                 }
                 _ => {
                     return Err(ZenkoError::Tool(format!(
-                        "Codex patch line {line_no}: `{MARKER_MOVE_TO}` must appear immediately after `{MARKER_UPDATE_FILE}`"
+                        "Codex patch line {line_no}: `{CODEX_PATCH_MOVE_TO}` must appear immediately after `{CODEX_PATCH_UPDATE_FILE}`"
                     )));
                 }
             }
@@ -238,13 +235,13 @@ pub fn parse_codex_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
                 current_hunk,
                 ..
             } => {
-                if trimmed.trim() == MARKER_END_OF_FILE {
+                if trimmed.trim() == CODEX_PATCH_END_OF_FILE {
                     if let Some(h) = current_hunk.as_mut() {
                         h.is_eof = true;
                     }
                     continue;
                 }
-                if let Some(header_rest) = trimmed.strip_prefix("@@") {
+                if let Some(header_rest) = trimmed.strip_prefix(UNIFIED_DIFF_HUNK_MARKER) {
                     if let Some(prev) = current_hunk.take() {
                         hunks.push(prev);
                     }
@@ -316,8 +313,8 @@ fn clean_unified_diff_path(raw: &str, git_prefix: &str) -> String {
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or(without_ts);
-    match unquoted == UNIFIED_DEV_NULL {
-        true => UNIFIED_DEV_NULL.to_string(),
+    match unquoted == UNIFIED_DIFF_DEV_NULL {
+        true => UNIFIED_DIFF_DEV_NULL.to_string(),
         false => unquoted
             .strip_prefix(git_prefix)
             .unwrap_or(unquoted)
@@ -326,12 +323,12 @@ fn clean_unified_diff_path(raw: &str, git_prefix: &str) -> String {
 }
 
 fn parse_unified_hunk_context(line: &str) -> Result<Option<String>> {
-    let rest = line.strip_prefix("@@").ok_or_else(|| {
+    let rest = line.strip_prefix(UNIFIED_DIFF_HUNK_MARKER).ok_or_else(|| {
         ZenkoError::Tool(format!("Unified diff invalid hunk header: `{line}`"))
     })?;
-    let Some(close_idx) = rest.find("@@") else {
+    let Some(close_idx) = rest.find(UNIFIED_DIFF_HUNK_MARKER) else {
         return Err(ZenkoError::Tool(format!(
-            "Unified diff hunk header missing closing `@@`: `{line}`"
+            "Unified diff hunk header missing closing `{UNIFIED_DIFF_HUNK_MARKER}`: `{line}`"
         )));
     };
     let coords = rest[..close_idx].trim();
@@ -340,11 +337,80 @@ fn parse_unified_hunk_context(line: &str) -> Result<Option<String>> {
             "Unified diff hunk header missing `-old +new` coordinates: `{line}`"
         )));
     }
-    let ctx = rest[close_idx + 2..].trim();
+    let ctx = rest[close_idx + UNIFIED_DIFF_HUNK_MARKER.len()..].trim();
     Ok(match ctx.is_empty() {
         true => None,
         false => Some(ctx.to_string()),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnifiedDiffState {
+    Header,
+    Hunk,
+}
+
+enum UnifiedLineToken<'a> {
+    GitHeader,
+    OldFile(&'a str),
+    NewFile(&'a str),
+    RenameFrom(&'a str),
+    RenameTo(&'a str),
+    HunkHeader(&'a str),
+    GitMeta,
+    NoNewline,
+    Body(&'a str),
+}
+
+fn classify_unified_line<'a>(
+    state: UnifiedDiffState,
+    line: &'a str,
+    next_line: Option<&'a str>,
+) -> UnifiedLineToken<'a> {
+    if line.starts_with(UNIFIED_DIFF_GIT_PREFIX) {
+        return UnifiedLineToken::GitHeader;
+    }
+    if line.starts_with("@@ ") || line.starts_with("@@-") {
+        return UnifiedLineToken::HunkHeader(line);
+    }
+    match state {
+        UnifiedDiffState::Header => line
+            .strip_prefix(UNIFIED_DIFF_OLD_PREFIX)
+            .map(UnifiedLineToken::OldFile)
+            .or_else(|| {
+                line.strip_prefix(UNIFIED_DIFF_NEW_PREFIX)
+                    .map(UnifiedLineToken::NewFile)
+            })
+            .or_else(|| {
+                line.strip_prefix(UNIFIED_DIFF_RENAME_FROM)
+                    .map(UnifiedLineToken::RenameFrom)
+            })
+            .or_else(|| {
+                line.strip_prefix(UNIFIED_DIFF_RENAME_TO)
+                    .map(UnifiedLineToken::RenameTo)
+            })
+            .unwrap_or_else(|| {
+                let is_meta = line.trim().is_empty()
+                    || UNIFIED_DIFF_GIT_META_PREFIXES
+                        .iter()
+                        .any(|p| line.starts_with(p));
+                match is_meta {
+                    true => UnifiedLineToken::GitMeta,
+                    false => UnifiedLineToken::Body(line),
+                }
+            }),
+        UnifiedDiffState::Hunk => match line.strip_prefix(UNIFIED_DIFF_OLD_PREFIX) {
+            Some(old_rest)
+                if next_line.is_some_and(|n| n.starts_with(UNIFIED_DIFF_NEW_PREFIX)) =>
+            {
+                UnifiedLineToken::OldFile(old_rest)
+            }
+            _ => match line.starts_with(UNIFIED_DIFF_NO_NEWLINE) {
+                true => UnifiedLineToken::NoNewline,
+                false => UnifiedLineToken::Body(line),
+            },
+        },
+    }
 }
 
 struct UnifiedFileBuilder {
@@ -389,7 +455,9 @@ impl UnifiedFileBuilder {
         let old_p = self.old_path.or(self.rename_from);
         let new_p = self.new_path.or(self.rename_to);
         match (old_p.as_deref(), new_p.as_deref()) {
-            (Some(UNIFIED_DEV_NULL) | None, Some(dest)) if dest != UNIFIED_DEV_NULL => {
+            (Some(UNIFIED_DIFF_DEV_NULL) | None, Some(dest))
+                if dest != UNIFIED_DIFF_DEV_NULL =>
+            {
                 let mut added: Vec<String> = Vec::new();
                 for h in self.hunks {
                     added.extend(h.new_lines);
@@ -404,20 +472,22 @@ impl UnifiedFileBuilder {
                 });
                 Ok(())
             }
-            (Some(src), Some(UNIFIED_DEV_NULL)) if src != UNIFIED_DEV_NULL => {
+            (Some(src), Some(UNIFIED_DIFF_DEV_NULL)) if src != UNIFIED_DIFF_DEV_NULL => {
                 out.push(CodexPatchFileOp::Delete {
                     path: src.to_string(),
                 });
                 Ok(())
             }
-            (Some(src), Some(dest)) if src != UNIFIED_DEV_NULL && dest != UNIFIED_DEV_NULL => {
+            (Some(src), Some(dest))
+                if src != UNIFIED_DIFF_DEV_NULL && dest != UNIFIED_DIFF_DEV_NULL =>
+            {
                 let move_to = match src != dest {
                     true => Some(dest.to_string()),
                     false => None,
                 };
                 if self.hunks.is_empty() && move_to.is_none() {
                     return Err(ZenkoError::Tool(format!(
-                        "Unified diff for `{src}` contains no `@@` hunks and no rename."
+                        "Unified diff for `{src}` contains no `{UNIFIED_DIFF_HUNK_MARKER}` hunks and no rename."
                     )));
                 }
                 out.push(CodexPatchFileOp::Update {
@@ -434,115 +504,97 @@ impl UnifiedFileBuilder {
     }
 }
 
-/// Deterministic zero-regex parser for standard POSIX / Git unified diffs (`--- a/` / `+++ b/` / `@@`).
+/// Deterministic zero-regex finite state machine for standard POSIX / Git unified diffs.
 pub fn parse_unified_diff_patch(raw: &str) -> Result<Vec<CodexPatchFileOp>> {
     let lines = strip_optional_code_fences(raw);
     let mut ops: Vec<CodexPatchFileOp> = Vec::new();
     let mut cur = UnifiedFileBuilder::new();
-    let mut in_hunk = false;
+    let mut state = UnifiedDiffState::Header;
 
     for (idx, &raw_line) in lines.iter().enumerate() {
         let line_no = idx + 1;
         let line = raw_line.trim_end_matches('\r');
+        let next_line = lines.get(idx + 1).map(|l| l.trim_end_matches('\r'));
+        let token = classify_unified_line(state, line, next_line);
 
-        if line.starts_with("diff --git ") {
-            if !cur.is_empty() {
+        match (state, token) {
+            (_, UnifiedLineToken::GitHeader) => {
+                if !cur.is_empty() {
+                    std::mem::replace(&mut cur, UnifiedFileBuilder::new()).flush(&mut ops)?;
+                }
+                state = UnifiedDiffState::Header;
+            }
+            (UnifiedDiffState::Header, UnifiedLineToken::OldFile(rest)) => {
+                if cur.old_path.is_some() || cur.new_path.is_some() {
+                    std::mem::replace(&mut cur, UnifiedFileBuilder::new()).flush(&mut ops)?;
+                }
+                cur.old_path = Some(clean_unified_diff_path(rest, "a/"));
+            }
+            (UnifiedDiffState::Hunk, UnifiedLineToken::OldFile(rest)) => {
                 std::mem::replace(&mut cur, UnifiedFileBuilder::new()).flush(&mut ops)?;
+                cur.old_path = Some(clean_unified_diff_path(rest, "a/"));
+                state = UnifiedDiffState::Header;
             }
-            in_hunk = false;
-            continue;
-        }
-        if !in_hunk && line.starts_with("--- ") {
-            if cur.old_path.is_some() || cur.new_path.is_some() {
-                std::mem::replace(&mut cur, UnifiedFileBuilder::new()).flush(&mut ops)?;
+            (UnifiedDiffState::Header, UnifiedLineToken::NewFile(rest)) => {
+                cur.new_path = Some(clean_unified_diff_path(rest, "b/"));
             }
-            cur.old_path = Some(clean_unified_diff_path(&line[4..], "a/"));
-            continue;
-        }
-        if !in_hunk && line.starts_with("+++ ") {
-            cur.new_path = Some(clean_unified_diff_path(&line[4..], "b/"));
-            continue;
-        }
-        if !in_hunk && let Some(rest) = line.strip_prefix("rename from ") {
-            cur.rename_from = Some(rest.trim().to_string());
-            continue;
-        }
-        if !in_hunk && let Some(rest) = line.strip_prefix("rename to ") {
-            cur.rename_to = Some(rest.trim().to_string());
-            continue;
-        }
-        if line.starts_with("@@ ") || line.starts_with("@@-") {
-            if let Some(prev) = cur.current_hunk.take() {
-                cur.hunks.push(prev);
+            (UnifiedDiffState::Header, UnifiedLineToken::RenameFrom(rest)) => {
+                cur.rename_from = Some(rest.trim().to_string());
             }
-            let context_header = parse_unified_hunk_context(line)?;
-            cur.current_hunk = Some(CodexUpdateHunk {
-                context_header,
-                old_lines: Vec::new(),
-                new_lines: Vec::new(),
-                is_eof: false,
-            });
-            in_hunk = true;
-            continue;
-        }
-        // Handle back-to-back multi-file unified diffs without `diff --git` separators.
-        if in_hunk
-            && line.starts_with("--- ")
-            && lines.get(idx + 1).is_some_and(|next| next.starts_with("+++ "))
-        {
-            std::mem::replace(&mut cur, UnifiedFileBuilder::new()).flush(&mut ops)?;
-            cur.old_path = Some(clean_unified_diff_path(&line[4..], "a/"));
-            in_hunk = false;
-            continue;
-        }
-
-        if !in_hunk {
-            let is_git_meta = line.trim().is_empty()
-                || line.starts_with("index ")
-                || line.starts_with("new file mode ")
-                || line.starts_with("deleted file mode ")
-                || line.starts_with("old mode ")
-                || line.starts_with("new mode ")
-                || line.starts_with("similarity index ")
-                || line.starts_with("dissimilarity index ");
-            if !is_git_meta {
+            (UnifiedDiffState::Header, UnifiedLineToken::RenameTo(rest)) => {
+                cur.rename_to = Some(rest.trim().to_string());
+            }
+            (UnifiedDiffState::Header, UnifiedLineToken::GitMeta) => {}
+            (_, UnifiedLineToken::HunkHeader(hdr)) => {
+                if let Some(prev) = cur.current_hunk.take() {
+                    cur.hunks.push(prev);
+                }
+                let context_header = parse_unified_hunk_context(hdr)?;
+                cur.current_hunk = Some(CodexUpdateHunk {
+                    context_header,
+                    old_lines: Vec::new(),
+                    new_lines: Vec::new(),
+                    is_eof: false,
+                });
+                state = UnifiedDiffState::Hunk;
+            }
+            (UnifiedDiffState::Hunk, UnifiedLineToken::NoNewline) => {
+                cur.no_trailing_newline = true;
+            }
+            (UnifiedDiffState::Hunk, UnifiedLineToken::Body(body_line)) => {
+                let Some(hunk) = cur.current_hunk.as_mut() else {
+                    return Err(ZenkoError::Tool(format!(
+                        "Unified diff line {line_no}: diff body outside `{UNIFIED_DIFF_HUNK_MARKER}` hunk"
+                    )));
+                };
+                match body_line.as_bytes().first().copied() {
+                    Some(b' ') => {
+                        let body = &body_line[1..];
+                        hunk.old_lines.push(body.to_string());
+                        hunk.new_lines.push(body.to_string());
+                    }
+                    Some(b'-') => hunk.old_lines.push(body_line[1..].to_string()),
+                    Some(b'+') => hunk.new_lines.push(body_line[1..].to_string()),
+                    None => {
+                        hunk.old_lines.push(String::new());
+                        hunk.new_lines.push(String::new());
+                    }
+                    Some(other) => {
+                        return Err(ZenkoError::Tool(format!(
+                            "Unified diff line {line_no}: unexpected line prefix `{}` inside hunk",
+                            other as char
+                        )));
+                    }
+                }
+            }
+            (UnifiedDiffState::Header, UnifiedLineToken::Body(bad)) => {
                 return Err(ZenkoError::Tool(format!(
-                    "Unified diff line {line_no}: unexpected header line `{line}`"
+                    "Unified diff line {line_no}: unexpected header line `{bad}`"
                 )));
             }
-            continue;
-        }
-
-        if line.starts_with("\\ No newline at end of file") {
-            cur.no_trailing_newline = true;
-            continue;
-        }
-
-        let Some(hunk) = cur.current_hunk.as_mut() else {
-            return Err(ZenkoError::Tool(format!(
-                "Unified diff line {line_no}: diff body outside `@@` hunk"
-            )));
-        };
-        match line.as_bytes().first().copied() {
-            Some(b' ') => {
-                let body = &line[1..];
-                hunk.old_lines.push(body.to_string());
-                hunk.new_lines.push(body.to_string());
-            }
-            Some(b'-') => {
-                hunk.old_lines.push(line[1..].to_string());
-            }
-            Some(b'+') => {
-                hunk.new_lines.push(line[1..].to_string());
-            }
-            None => {
-                hunk.old_lines.push(String::new());
-                hunk.new_lines.push(String::new());
-            }
-            Some(other) => {
+            _ => {
                 return Err(ZenkoError::Tool(format!(
-                    "Unified diff line {line_no}: unexpected line prefix `{}` inside hunk",
-                    other as char
+                    "Unified diff line {line_no}: unexpected token `{line}`"
                 )));
             }
         }

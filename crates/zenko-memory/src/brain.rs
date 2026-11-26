@@ -400,7 +400,7 @@ pub fn summarize_brain_page(page: &BrainPage) -> BrainPageSummary {
         updated: page.updated.clone(),
         timeline_count: page.timeline.len(),
         has_reversals,
-        truth_preview: compact_preview(first_line, 110),
+        truth_preview: compact_preview(first_line, zenko_core::BRAIN_TRUTH_PREVIEW_CHARS),
     }
 }
 

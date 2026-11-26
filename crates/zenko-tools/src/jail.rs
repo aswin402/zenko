@@ -1,7 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 use zenko_core::{
-    ARTIFACT_PATH_PREFIX, ARTIFACTS_DIR_NAME, HUB_PATH_PREFIX, JAIL_MAX_SYMLINK_HOPS, Result,
-    ZenkoError, expand_tilde,
+    ARTIFACT_PATH_PREFIX, ARTIFACTS_DIR_NAME, HUB_PATH_PREFIX, JAIL_DIR_CREATE_MODE,
+    JAIL_MAX_SYMLINK_HOPS, JAIL_TMP_FILE_MODE, JAIL_TMP_FILE_PREFIX, Result, ZenkoError,
+    expand_tilde,
 };
 
 /// Formats a resolved file path cleanly for tool output: workspace-relative when under `ws_root`,
@@ -366,27 +367,42 @@ mod unix_confined {
             let seg_label = seg.to_string_lossy();
             let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
             // SAFETY: cur.0 is a valid directory fd and seg_c is a valid single path component.
-            let mut next_fd = unsafe { libc::openat(cur.0, seg_c.as_ptr(), flags) };
-            if next_fd < 0 && create_missing {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::ENOENT) {
-                    // SAFETY: cur.0 is a valid confined directory fd; mkdirat creates child dir only.
-                    let mk = unsafe { libc::mkdirat(cur.0, seg_c.as_ptr(), 0o755) };
-                    if mk < 0 {
-                        let mk_err = std::io::Error::last_os_error();
-                        if mk_err.raw_os_error() != Some(libc::EEXIST) {
-                            return Err(map_open_err(mk_err, &seg_label));
-                        }
-                    }
-                    // SAFETY: Re-open newly created segment strictly with O_NOFOLLOW | O_DIRECTORY.
-                    next_fd = unsafe { libc::openat(cur.0, seg_c.as_ptr(), flags) };
-                } else {
-                    return Err(map_open_err(err, &seg_label));
+            let raw_fd = unsafe { libc::openat(cur.0, seg_c.as_ptr(), flags) };
+            let next_fd = match (raw_fd >= 0, create_missing) {
+                (true, _) => raw_fd,
+                (false, false) => {
+                    return Err(map_open_err(std::io::Error::last_os_error(), &seg_label));
                 }
-            }
-            if next_fd < 0 {
-                return Err(map_open_err(std::io::Error::last_os_error(), &seg_label));
-            }
+                (false, true) => {
+                    let err = std::io::Error::last_os_error();
+                    match err.raw_os_error() {
+                        Some(code) if code == libc::ENOENT => {
+                            // SAFETY: cur.0 is a confined dir fd; mkdirat creates child dir only.
+                            let mk = unsafe {
+                                libc::mkdirat(cur.0, seg_c.as_ptr(), JAIL_DIR_CREATE_MODE as libc::mode_t)
+                            };
+                            if mk < 0 {
+                                let mk_err = std::io::Error::last_os_error();
+                                if mk_err.raw_os_error() != Some(libc::EEXIST) {
+                                    return Err(map_open_err(mk_err, &seg_label));
+                                }
+                            }
+                            // SAFETY: Re-open newly created segment strictly with O_NOFOLLOW | O_DIRECTORY.
+                            let reopened = unsafe { libc::openat(cur.0, seg_c.as_ptr(), flags) };
+                            match reopened >= 0 {
+                                true => reopened,
+                                false => {
+                                    return Err(map_open_err(
+                                        std::io::Error::last_os_error(),
+                                        &seg_label,
+                                    ));
+                                }
+                            }
+                        }
+                        _ => return Err(map_open_err(err, &seg_label)),
+                    }
+                }
+            };
             cur = OwnedRawFd(next_fd);
         }
         Ok(cur)
@@ -453,7 +469,7 @@ mod unix_confined {
             )));
         }
 
-        let tmp_name = format!(".zenko-tmp-{}", zenko_core::new_id());
+        let tmp_name = format!("{JAIL_TMP_FILE_PREFIX}{}", zenko_core::new_id());
         let tmp_c = CString::new(tmp_name.as_bytes())
             .map_err(|_| ZenkoError::Tool("invalid temp filename".into()))?;
         // SAFETY: parent_fd.0 is a confined directory fd; O_CREAT|O_EXCL|O_NOFOLLOW creates a fresh 0600 file.
@@ -462,7 +478,7 @@ mod unix_confined {
                 parent_fd.0,
                 tmp_c.as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0o600 as libc::c_uint,
+                JAIL_TMP_FILE_MODE as libc::c_uint,
             )
         };
         if tmp_fd < 0 {

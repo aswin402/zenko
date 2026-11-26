@@ -7,7 +7,8 @@
 //! - Push (`textDocument/publishDiagnostics`) + pull (`textDocument/diagnostic`) freshness support.
 
 use crate::fs_tools::{
-    atomic_write, check_existing_file_freshness, forget_fresh_file_state, record_fresh_file_state,
+    atomic_write_in_ctx, check_existing_file_freshness, forget_fresh_file_state,
+    read_jailed_string_async, record_fresh_file_state, remove_jailed_in_ctx,
     unified_diff,
 };
 use crate::jail::resolve_readable_path;
@@ -1664,9 +1665,9 @@ async fn apply_lsp_workspace_edit(
         return Ok(out);
     }
 
-    // Phase 2: Atomic commit + FileStateBridge sync + LSP didChange sync.
+    // Phase 2: Atomic kernel-confined commit + FileStateBridge sync + LSP didChange sync.
     for (abs_path, _, _, next, _) in &prepared_writes {
-        atomic_write(abs_path, next).await?;
+        atomic_write_in_ctx(ctx, abs_path, next).await?;
         record_fresh_file_state(ctx, abs_path, next);
         let _ = sess.ensure_document_synced(abs_path).await;
     }
@@ -1675,7 +1676,7 @@ async fn apply_lsp_workspace_edit(
         match op {
             LspResourceOp::Create { path, overwrite } => {
                 if !path.exists() || overwrite {
-                    atomic_write(&path, "").await?;
+                    atomic_write_in_ctx(ctx, &path, "").await?;
                     record_fresh_file_state(ctx, &path, "");
                     let rel = path
                         .strip_prefix(ws_canon)
@@ -1691,9 +1692,17 @@ async fn apply_lsp_workspace_edit(
                 overwrite,
             } => {
                 if old_path.is_file() && (!new_path.exists() || overwrite) {
-                    let body = tokio::fs::read_to_string(&old_path).await.unwrap_or_default();
-                    atomic_write(&new_path, &body).await?;
-                    tokio::fs::remove_file(&old_path).await?;
+                    let old_label = old_path.display().to_string();
+                    let body = read_jailed_string_async(
+                        ctx,
+                        &old_path,
+                        zenko_core::FS_MAX_EDIT_FILE_BYTES,
+                        &old_label,
+                    )
+                    .await
+                    .unwrap_or_default();
+                    atomic_write_in_ctx(ctx, &new_path, &body).await?;
+                    remove_jailed_in_ctx(ctx, &old_path).await?;
                     forget_fresh_file_state(ctx, &old_path);
                     record_fresh_file_state(ctx, &new_path, &body);
                     let old_rel = old_path
@@ -1712,7 +1721,7 @@ async fn apply_lsp_workspace_edit(
             }
             LspResourceOp::Delete { path } => {
                 if path.is_file() {
-                    tokio::fs::remove_file(&path).await?;
+                    remove_jailed_in_ctx(ctx, &path).await?;
                     forget_fresh_file_state(ctx, &path);
                     let rel = path
                         .strip_prefix(ws_canon)

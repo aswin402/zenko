@@ -19,6 +19,7 @@ use zenko_core::{
     HASH_EDIT_OPS, HASH_EDIT_RECOVERY_RADIUS, HashEditOp, OUTLINE_MAX_ENTRIES,
     OUTLINE_MAX_FILE_BYTES, PATCH_FILE_ACTIONS, PatchFileAction,
     READ_FILE_CONTEXT_DIET_HINT_MIN_LINES, READ_FILE_MAX_RANGES, READ_FILE_MAX_SYMBOL_QUERIES,
+    READ_FILE_MODE_LINES, READ_FILE_MODE_OUTLINE, READ_FILE_MODES,
     READ_FILE_SYMBOL_NOT_FOUND_PREVIEW, ResourceLockKey, Result, RiskLevel, TOOL_APPLY_PATCH,
     TOOL_HASH_EDIT, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, Tool, ToolConcurrency,
     ToolContext, ToolOutput, ToolSet, ToolSpec, ZenkoError,
@@ -44,7 +45,7 @@ async fn open_jailed_async(ctx: &ToolContext, abs_path: &Path) -> Result<tokio::
     Ok(tokio::fs::File::from_std(std_file))
 }
 
-async fn read_jailed_string_async(
+pub(crate) async fn read_jailed_string_async(
     ctx: &ToolContext,
     abs_path: &Path,
     max_bytes: u64,
@@ -69,7 +70,11 @@ async fn read_jailed_string_async(
         .map_err(|e| ZenkoError::Tool(format!("confined read join error: {e}")))?
 }
 
-async fn atomic_write_in_ctx(ctx: &ToolContext, abs_path: &Path, content: &str) -> Result<()> {
+pub(crate) async fn atomic_write_in_ctx(
+    ctx: &ToolContext,
+    abs_path: &Path,
+    content: &str,
+) -> Result<()> {
     let root = select_jail_root(abs_path, &ctx.workspace_dir, &ctx.hub_dir, None).ok_or_else(
         || {
             ZenkoError::PolicyDenied(format!(
@@ -85,7 +90,7 @@ async fn atomic_write_in_ctx(ctx: &ToolContext, abs_path: &Path, content: &str) 
         .map_err(|e| ZenkoError::Tool(format!("confined atomic write join error: {e}")))?
 }
 
-async fn remove_jailed_in_ctx(ctx: &ToolContext, abs_path: &Path) -> Result<()> {
+pub(crate) async fn remove_jailed_in_ctx(ctx: &ToolContext, abs_path: &Path) -> Result<()> {
     let root = select_jail_root(abs_path, &ctx.workspace_dir, &ctx.hub_dir, None).ok_or_else(
         || {
             ZenkoError::PolicyDenied(format!(
@@ -355,6 +360,31 @@ fn parse_requested_symbols(args: &Value) -> Vec<String> {
     out
 }
 
+enum ReadFileRequestMode {
+    Outline,
+    Symbols(Vec<String>),
+    Lines,
+}
+
+fn classify_read_file_mode(args: &Value) -> ReadFileRequestMode {
+    let raw_mode = args
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or(READ_FILE_MODE_LINES)
+        .trim()
+        .to_ascii_lowercase();
+    match raw_mode.as_str() {
+        READ_FILE_MODE_OUTLINE => ReadFileRequestMode::Outline,
+        _ => {
+            let symbols = parse_requested_symbols(args);
+            match symbols.is_empty() {
+                false => ReadFileRequestMode::Symbols(symbols),
+                true => ReadFileRequestMode::Lines,
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for ReadFileTool {
     fn toolset(&self) -> ToolSet {
@@ -373,18 +403,18 @@ impl Tool for ReadFileTool {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative workspace, `hub:`, or `artifact:` path to file" },
-                    "mode": { "type": "string", "enum": ["lines", "outline"], "description": "`lines` (default) for hash-anchored line content, or `outline` for a compact structural symbol map with line spans & hashes" },
+                    "mode": { "type": "string", "enum": READ_FILE_MODES, "description": "`lines` (default) for hash-anchored line content, or `outline` for a compact structural symbol map with line spans & hashes" },
                     "symbol": { "type": "string", "description": "One-shot targeted structural symbol name (function, struct, class, section) returning ONLY that symbol's hash-anchored lines" },
                     "symbols": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional list of up to 8 targeted symbol names to read in a single call"
+                        "description": format!("Optional list of up to {READ_FILE_MAX_SYMBOL_QUERIES} targeted symbol names to read in a single call")
                     },
                     "start_line": { "type": "integer", "description": "1-based start line (default 1)" },
-                    "end_line": { "type": "integer", "description": "1-based inclusive end line (default start_line + 200)" },
+                    "end_line": { "type": "integer", "description": format!("1-based inclusive end line (default start_line + {DEFAULT_READ_FILE_LINE_WINDOW})") },
                     "ranges": {
                         "type": "array",
-                        "description": "Optional list of up to 8 `{start_line, end_line}` slices to read multiple sections in one call",
+                        "description": format!("Optional list of up to {READ_FILE_MAX_RANGES} `{{start_line, end_line}}` slices to read multiple sections in one call"),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -394,7 +424,7 @@ impl Tool for ReadFileTool {
                             "required": ["start_line"]
                         }
                     },
-                    "max_symbols": { "type": "integer", "description": "Optional symbol cap when `mode=\"outline\"` (default 250)" }
+                    "max_symbols": { "type": "integer", "description": format!("Optional symbol cap when `mode=\"outline\"` (default {OUTLINE_MAX_ENTRIES})") }
                 },
                 "required": ["path"]
             }),
@@ -420,88 +450,87 @@ impl Tool for ReadFileTool {
             true,
         )?;
 
-        let mode = args
-            .get("mode")
-            .and_then(Value::as_str)
-            .unwrap_or("lines")
-            .trim()
-            .to_ascii_lowercase();
-
-        if mode == "outline" {
-            let max_symbols = args
-                .get("max_symbols")
-                .and_then(Value::as_u64)
-                .unwrap_or(OUTLINE_MAX_ENTRIES as u64)
-                .clamp(1, OUTLINE_MAX_ENTRIES as u64) as usize;
-            let raw = read_jailed_string_async(ctx, &path, OUTLINE_MAX_FILE_BYTES, req_path)
-                .await?;
-            let report = extract_outline(&path, &raw, max_symbols);
-            let rendered = format_outline_report(req_path, &report);
-            let mut out = ToolOutput::ok(rendered);
-            out.metadata = Some(json!({
-                "mode": "outline",
-                "total_lines": report.total_lines,
-                "symbols": report.entries.len(),
-                "truncated": report.truncated,
-            }));
-            return Ok(out);
-        }
-
-        let requested_symbols = parse_requested_symbols(&args);
-        if !requested_symbols.is_empty() {
-            let raw = read_jailed_string_async(ctx, &path, OUTLINE_MAX_FILE_BYTES, req_path)
-                .await?;
-            record_fresh_file_state(ctx, &path, &raw);
-            let report = extract_outline(&path, &raw, OUTLINE_MAX_ENTRIES);
-            let hits = find_outline_symbol_spans(&report, &requested_symbols);
-            if hits.is_empty() {
-                let preview: Vec<String> = report
-                    .entries
-                    .iter()
-                    .take(READ_FILE_SYMBOL_NOT_FOUND_PREVIEW)
-                    .map(|e| format!("  {}:{}| [{}] {} (L{}..L{})", e.line, e.hash, e.kind, e.signature, e.line, e.end_line))
-                    .collect();
-                let avail = match preview.is_empty() {
-                    true => "No structural symbols detected in this file; read explicit `start_line`/`end_line` windows.".to_string(),
-                    false => format!(
-                        "Available symbols ({} total, showing up to {}):\n{}",
-                        report.entries.len(),
-                        preview.len(),
-                        preview.join("\n")
-                    ),
-                };
-                return Ok(ToolOutput::ok(format!(
-                    "Symbol(s) [{}] not found in `{req_path}` ({} lines).\n{avail}",
-                    requested_symbols.join(", "),
-                    report.total_lines
-                )));
+        match classify_read_file_mode(&args) {
+            ReadFileRequestMode::Outline => {
+                let max_symbols = args
+                    .get("max_symbols")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(OUTLINE_MAX_ENTRIES as u64)
+                    .clamp(1, OUTLINE_MAX_ENTRIES as u64) as usize;
+                let raw = read_jailed_string_async(ctx, &path, OUTLINE_MAX_FILE_BYTES, req_path)
+                    .await?;
+                let report = extract_outline(&path, &raw, max_symbols);
+                let rendered = format_outline_report(req_path, &report);
+                let mut out = ToolOutput::ok(rendered);
+                out.metadata = Some(json!({
+                    "mode": READ_FILE_MODE_OUTLINE,
+                    "total_lines": report.total_lines,
+                    "symbols": report.entries.len(),
+                    "truncated": report.truncated,
+                }));
+                return Ok(out);
             }
-            let lines: Vec<&str> = raw.lines().collect();
-            let mut out = format!(
-                "File: {req_path} ({} matched symbol(s), total {} lines)\n",
-                hits.len(),
-                lines.len()
-            );
-            for entry in &hits {
-                let start = entry.line.max(1);
-                let end = entry.end_line.max(start).min(lines.len());
-                out.push_str(&format!(
-                    "\n--- [{}] {} (lines {start}..={end}) ---\n",
-                    entry.kind, entry.signature
-                ));
-                for ln in start..=end {
-                    let text = lines[ln - 1];
-                    let h = line_hash(text);
-                    out.push_str(&format!("{ln}:{h}| {text}\n"));
+            ReadFileRequestMode::Symbols(requested_symbols) => {
+                let raw = read_jailed_string_async(ctx, &path, OUTLINE_MAX_FILE_BYTES, req_path)
+                    .await?;
+                record_fresh_file_state(ctx, &path, &raw);
+                let report = extract_outline(&path, &raw, OUTLINE_MAX_ENTRIES);
+                let hits = find_outline_symbol_spans(&report, &requested_symbols);
+                if hits.is_empty() {
+                    let preview: Vec<String> = report
+                        .entries
+                        .iter()
+                        .take(READ_FILE_SYMBOL_NOT_FOUND_PREVIEW)
+                        .map(|e| {
+                            format!(
+                                "  {}:{}| [{}] {} (L{}..L{})",
+                                e.line, e.hash, e.kind, e.signature, e.line, e.end_line
+                            )
+                        })
+                        .collect();
+                    let avail = match preview.is_empty() {
+                        true => "No structural symbols detected in this file; read explicit `start_line`/`end_line` windows.".to_string(),
+                        false => format!(
+                            "Available symbols ({} total, showing up to {}):\n{}",
+                            report.entries.len(),
+                            preview.len(),
+                            preview.join("\n")
+                        ),
+                    };
+                    return Ok(ToolOutput::ok(format!(
+                        "Symbol(s) [{}] not found in `{req_path}` ({} lines).\n{avail}",
+                        requested_symbols.join(", "),
+                        report.total_lines
+                    )));
                 }
+                let lines: Vec<&str> = raw.lines().collect();
+                let mut out = format!(
+                    "File: {req_path} ({} matched symbol(s), total {} lines)\n",
+                    hits.len(),
+                    lines.len()
+                );
+                for entry in &hits {
+                    let start = entry.line.max(1);
+                    let end = entry.end_line.max(start).min(lines.len());
+                    out.push_str(&format!(
+                        "\n--- [{}] {} (lines {start}..={end}) ---\n",
+                        entry.kind, entry.signature
+                    ));
+                    for ln in start..=end {
+                        let text = lines[ln - 1];
+                        let h = line_hash(text);
+                        out.push_str(&format!("{ln}:{h}| {text}\n"));
+                    }
+                }
+                let mut res = ToolOutput::ok(out);
+                res.metadata = Some(json!({
+                    "mode": "symbol",
+                    "matched_symbols": hits.len(),
+                    "total_lines": lines.len(),
+                }));
+                return Ok(res);
             }
-            let mut res = ToolOutput::ok(out);
-            res.metadata = Some(json!({
-                "mode": "symbol",
-                "matched_symbols": hits.len(),
-                "total_lines": lines.len(),
-            }));
-            return Ok(res);
+            ReadFileRequestMode::Lines => {}
         }
 
         let was_explicit_window = args.get("start_line").is_some()
@@ -1319,19 +1348,8 @@ async fn plan_codex_patch_transaction(
                         "Duplicate operation targeting `{req_path}` in the same patch transaction."
                     )));
                 }
-                let meta = tokio::fs::metadata(&abs).await?;
-                if !meta.is_file() {
-                    return Ok(Err(format!(
-                        "Refused to delete `{req_path}`: target is not a regular file."
-                    )));
-                }
-                if meta.len() > FS_MAX_EDIT_FILE_BYTES {
-                    return Ok(Err(format!(
-                        "Refused to delete `{req_path}`: file size ({} bytes) exceeds safety limit.",
-                        meta.len()
-                    )));
-                }
-                let old_content = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
+                let old_content =
+                    read_jailed_string_async(ctx, &abs, FS_MAX_EDIT_FILE_BYTES, &req_path).await?;
                 if let Err(stale) =
                     check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
                 {
@@ -1504,13 +1522,8 @@ async fn plan_structured_files_transaction(
                         "Duplicate operation targeting `{req_path}` in `files[]`."
                     )));
                 }
-                let meta = tokio::fs::metadata(&abs).await?;
-                if !meta.is_file() {
-                    return Ok(Err(format!(
-                        "Refused to delete `{req_path}`: target is not a regular file."
-                    )));
-                }
-                let old_content = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
+                let old_content =
+                    read_jailed_string_async(ctx, &abs, FS_MAX_EDIT_FILE_BYTES, &req_path).await?;
                 if let Err(stale) =
                     check_existing_file_freshness(ctx, &req_path, &abs, &old_content, true)
                 {
@@ -2044,25 +2057,6 @@ impl Tool for ListDirTool {
         rows.sort();
         Ok(ToolOutput::ok(rows.join("\n")))
     }
-}
-
-pub(crate) async fn atomic_write(path: &std::path::Path, content: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    tokio::fs::create_dir_all(parent).await?;
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file");
-    let tmp = parent.join(format!(".{name}.zenko_tmp_{}", zenko_core::new_id()));
-    if let Err(err) = tokio::fs::write(&tmp, content).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(err.into());
-    }
-    if let Err(err) = tokio::fs::rename(&tmp, path).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(err.into());
-    }
-    Ok(())
 }
 
 #[cfg(test)]

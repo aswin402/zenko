@@ -1156,9 +1156,9 @@ impl SnapshotManager {
         let (project_brain_pages_count, brain_root_slots, brain_index_lines) =
             crate::brain::build_project_brain_index(&self.workspace_dir());
         let custom_prose_style_source = zenko_core::detect_custom_prose_style(&[
-            ("USER.md", &user_md),
-            ("SOUL.md", &soul_md),
-            ("repo_rules", &repo_rules_body),
+            (zenko_core::MEM_DOC_USER, &user_md),
+            (zenko_core::MEM_DOC_SOUL, &soul_md),
+            (zenko_core::MEM_DOC_REPO_RULES_LABEL, &repo_rules_body),
         ]);
         let cache_stability_warnings = detect_tier1_volatility(&soul_md, &repo_rules_body);
 

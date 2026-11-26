@@ -4,6 +4,19 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.40] - 2026-11-26
+
+Hardened `v0.0.38`–`v0.0.39` modules to zero remaining hardcoded protocol/mode literals, pure enum state machines, and 100% kernel `O_NOFOLLOW` confinement across all file and LSP mutation paths.
+
+### Changed
+- **Declarative Unified-Diff & `read_file` State Machines (`crates/zenko-core/src/constants.rs`, `crates/zenko-tools/src/{codex_patch,fs_tools}.rs`):**
+  - Centralized all Codex patch markers, unified-diff markers, `UNIFIED_DIFF_GIT_META_PREFIXES`, `READ_FILE_MODE_*`, `JAIL_DIR_CREATE_MODE`, `JAIL_TMP_FILE_MODE`, `JAIL_TMP_FILE_PREFIX`, `BRAIN_TRUTH_PREVIEW_CHARS`, and `MEM_DOC_*` constants in `zenko-core/src/constants.rs`.
+  - Replaced sequential `if ... continue` guards in `parse_unified_diff_patch` with a pure `(UnifiedDiffState, UnifiedLineToken)` enum state machine (`classify_unified_line` + exhaustive `match`).
+  - Replaced stringly-typed `ReadFileTool::execute` branches with a `ReadFileRequestMode` enum (`Outline | Symbols | Lines`) + exhaustive `match`.
+- **100% Kernel `O_NOFOLLOW` Confinement (`crates/zenko-tools/src/{jail,fs_tools,lsp}.rs`):**
+  - Flattened `open_dir_confined` in `jail.rs` into pure `match` dispatch using centralized POSIX mode/prefix constants.
+  - Migrated `apply_patch` `Delete` planning branches and all `lsp_tool` write/create/rename/delete commits onto `read_jailed_string_async`, `atomic_write_in_ctx`, and `remove_jailed_in_ctx`, removing the legacy non-`O_NOFOLLOW` `atomic_write` helper completely.
+
 ## [0.0.39] - 2026-11-26
 
 Integrated six native pure-Rust precision file-I/O, context-diet, and prose-adaptation upgrades inspired by **`ckanthony/Chisel`** and **`JayPokale/Chisle`** — with zero `/commands`, zero new eager tool schemas, zero regex, zero hardcoding, and full KV-cache stability.

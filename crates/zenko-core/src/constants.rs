@@ -1755,6 +1755,7 @@ pub const BRAIN_IMPACT_MAX_HOPS: usize = 3;
 pub const BRAIN_RECON_MAX_HITS: usize = 4;
 pub const BRAIN_DEFAULT_SEARCH_LIMIT: usize = 8;
 pub const BRAIN_MAX_SEARCH_LIMIT: usize = 24;
+pub const BRAIN_TRUTH_PREVIEW_CHARS: usize = 110;
 pub const BRAIN_PAGE_CATEGORIES: &[&str] = &[
     "project",
     "concept",
@@ -1794,11 +1795,44 @@ pub const BRAIN_ACTIONS: &[&str] = &[
 ];
 
 // ── Chisel / Chisle Precision File I/O, Context Diet & Prose Yield ───────────
+pub const JAIL_DIR_CREATE_MODE: u32 = 0o755;
+pub const JAIL_TMP_FILE_MODE: u32 = 0o600;
+pub const JAIL_TMP_FILE_PREFIX: &str = ".zenko-tmp-";
+pub const READ_FILE_MODE_LINES: &str = "lines";
+pub const READ_FILE_MODE_OUTLINE: &str = "outline";
+pub const READ_FILE_MODES: &[&str] = &[READ_FILE_MODE_LINES, READ_FILE_MODE_OUTLINE];
 pub const READ_FILE_CONTEXT_DIET_HINT_MIN_LINES: usize = 300;
 pub const READ_FILE_MAX_SYMBOL_QUERIES: usize = 8;
 pub const READ_FILE_SYMBOL_NOT_FOUND_PREVIEW: usize = 20;
 pub const SHORT_TASK_MAX_PROMPT_CHARS: usize = 160;
 pub const SHORT_TASK_MAX_NONEMPTY_LINES: usize = 2;
+pub const MEM_DOC_SOUL: &str = "SOUL.md";
+pub const MEM_DOC_USER: &str = "USER.md";
+pub const MEM_DOC_REPO_RULES_LABEL: &str = "repo_rules";
+pub const CODEX_PATCH_BEGIN: &str = "*** Begin Patch";
+pub const CODEX_PATCH_END: &str = "*** End Patch";
+pub const CODEX_PATCH_ADD_FILE: &str = "*** Add File:";
+pub const CODEX_PATCH_DELETE_FILE: &str = "*** Delete File:";
+pub const CODEX_PATCH_UPDATE_FILE: &str = "*** Update File:";
+pub const CODEX_PATCH_MOVE_TO: &str = "*** Move to:";
+pub const CODEX_PATCH_END_OF_FILE: &str = "*** End of File";
+pub const UNIFIED_DIFF_DEV_NULL: &str = "/dev/null";
+pub const UNIFIED_DIFF_GIT_PREFIX: &str = "diff --git ";
+pub const UNIFIED_DIFF_OLD_PREFIX: &str = "--- ";
+pub const UNIFIED_DIFF_NEW_PREFIX: &str = "+++ ";
+pub const UNIFIED_DIFF_RENAME_FROM: &str = "rename from ";
+pub const UNIFIED_DIFF_RENAME_TO: &str = "rename to ";
+pub const UNIFIED_DIFF_HUNK_MARKER: &str = "@@";
+pub const UNIFIED_DIFF_NO_NEWLINE: &str = "\\ No newline at end of file";
+pub const UNIFIED_DIFF_GIT_META_PREFIXES: &[&str] = &[
+    "index ",
+    "new file mode ",
+    "deleted file mode ",
+    "old mode ",
+    "new mode ",
+    "similarity index ",
+    "dissimilarity index ",
+];
 pub const CUSTOM_STYLE_MARKER_HEADERS: &[&str] = &[
     "output style",
     "prose style",
