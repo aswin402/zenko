@@ -11,7 +11,8 @@ use crate::{
     TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM, TOOL_CODE_SEARCH,
     TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND, TOOL_GOAL_LOOP, TOOL_HASH_EDIT,
     TOOL_INVOKE_TOOL, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY, TOOL_ORCHESTRATE_CONTROL,
-    TOOL_PLAN_UPDATE, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM, TOOL_SCRIPT_BLOCK,
+    TOOL_PLAN_UPDATE, TOOL_PROJECT_BRAIN, TOOL_READ_FILE, TOOL_RECORD_BRAINSTORM,
+    TOOL_SCRIPT_BLOCK,
     TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW,
     TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH,
     TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
@@ -237,6 +238,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_WEB_FETCH,
             TOOL_WEB_SEARCH,
             TOOL_MEMORY,
+            TOOL_PROJECT_BRAIN,
             TOOL_SESSION_SEARCH,
             TOOL_SKILL_VIEW,
             TOOL_TOOL_SEARCH,
@@ -281,6 +283,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_WEB_FETCH,
             TOOL_WEB_SEARCH,
             TOOL_MEMORY,
+            TOOL_PROJECT_BRAIN,
             TOOL_SESSION_SEARCH,
             TOOL_SKILL_VIEW,
             TOOL_TOOL_SEARCH,
@@ -373,6 +376,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_GIT,
             TOOL_LSP,
             TOOL_MEMORY,
+            TOOL_PROJECT_BRAIN,
             TOOL_SESSION_SEARCH,
             TOOL_SKILL_VIEW,
             TOOL_TOOL_SEARCH,
@@ -411,6 +415,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_WEB_SEARCH,
             TOOL_WEB_FETCH,
             TOOL_MEMORY,
+            TOOL_PROJECT_BRAIN,
             TOOL_SESSION_SEARCH,
             TOOL_SKILL_VIEW,
             TOOL_READ_FILE,
@@ -906,7 +911,81 @@ enabled: true\n\
 - Before bootstrapping or updating a subtree doc, map files cheaply via `glob_find`, `code_search(output_mode=\"files_only\")`, and `read_file(mode=\"outline\")`.\n\
 - After structural edits or new files in a documented subtree, run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_diff\"})` to check for `dox_drift` and update the owning subtree doc in the same change.\n",
     },
+    DefaultSkillTemplate {
+        filename: "project-brain.md",
+        content: "---\n\
+name: Repo-Native Project Brain\n\
+description: Maintain Git-tracked architectural truth, decisions, reversals, and blueprint root slots (`BRAIN.md` + `brain/`) via Zenko's native `project_brain` tool.\n\
+enabled: true\n\
+---\n\n\
+- Never hand-edit YAML frontmatter inside `brain/pages/*.md`; always mutate via `invoke_tool(tool=\"project_brain\", ...)` so frontmatter, `compiled_truth`, and append-only `## Timeline` stay correct-by-construction and secret-redacted.\n\
+- Before designing or reversing an architectural choice in a repo with `brain/`, inspect relevant pages (`read_page` / `search`) and downstream dependencies (`impact`) so previously reversed approaches are never accidentally repeated.\n\
+- When a durable decision, constraint, or reversal settles, call `update_truth` (or `create_page` / `archive_page` with `kind=\"reversal\"`) with a crisp `compiled_truth`, 1-line timeline `summary`, `source`, and `affects` links.\n\
+- Keep the 6 fixed root slots (`background`, `architecture`, `flow`, `mindmap`, `stack`, `roadmap`) concise and synced via `update_root` only when high-level system structure changes.\n",
+    },
 ];
+
+/// Declarative descriptor for the 6 fixed blueprint root slots inside `brain/` (`mindmuxai/brain.md`).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct BrainRootSlotDescriptor {
+    pub slot: crate::types::BrainRootSlot,
+    pub slug: &'static str,
+    pub filename: &'static str,
+    pub title: &'static str,
+    pub guidance: &'static str,
+}
+
+pub const BRAIN_ROOT_SLOTS: &[BrainRootSlotDescriptor] = &[
+    BrainRootSlotDescriptor {
+        slot: crate::types::BrainRootSlot::Background,
+        slug: "background",
+        filename: "background.md",
+        title: "Project Background",
+        guidance: "Goals, non-goals, target users, and core problem constraints.",
+    },
+    BrainRootSlotDescriptor {
+        slot: crate::types::BrainRootSlot::Architecture,
+        slug: "architecture",
+        filename: "architecture.md",
+        title: "System Architecture",
+        guidance: "Module boundaries, layers, trust zones, and key invariants.",
+    },
+    BrainRootSlotDescriptor {
+        slot: crate::types::BrainRootSlot::Flow,
+        slug: "flow",
+        filename: "flow.md",
+        title: "Core Request Flows",
+        guidance: "End-to-end execution paths and state transitions.",
+    },
+    BrainRootSlotDescriptor {
+        slot: crate::types::BrainRootSlot::Mindmap,
+        slug: "mindmap",
+        filename: "mindmap.md",
+        title: "Feature Mindmap",
+        guidance: "High-level capability tree branching from the project root.",
+    },
+    BrainRootSlotDescriptor {
+        slot: crate::types::BrainRootSlot::Stack,
+        slug: "stack",
+        filename: "stack.md",
+        title: "Technology Stack",
+        guidance: "Adopted technologies, rationale, trade-offs, and open evaluations.",
+    },
+    BrainRootSlotDescriptor {
+        slot: crate::types::BrainRootSlot::Roadmap,
+        slug: "roadmap",
+        filename: "roadmap.md",
+        title: "Roadmap & Milestones",
+        guidance: "Active milestones, upcoming phases, and sequencing constraints.",
+    },
+];
+
+pub fn find_brain_root_slot(slot: crate::types::BrainRootSlot) -> &'static BrainRootSlotDescriptor {
+    BRAIN_ROOT_SLOTS
+        .iter()
+        .find(|d| d.slot == slot)
+        .unwrap_or(&BRAIN_ROOT_SLOTS[0])
+}
 
 /// Declarative 7-rung Simplicity Ladder (inspired by DietrichGebert/ponytail; stop at first rung that works).
 pub const SIMPLICITY_LADDER_RUNGS: &[(&str, &str)] = &[
@@ -1419,6 +1498,7 @@ mod tests {
             "minimal-audit.md",
             "debt-harvest.md",
             "dox-tree.md",
+            "project-brain.md",
         ] {
             assert!(
                 DEFAULT_SKILL_TEMPLATES

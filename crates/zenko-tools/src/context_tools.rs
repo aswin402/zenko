@@ -404,7 +404,7 @@ impl Tool for ContextInspectTool {
             "Context Budget (`{}` · model=`{}`)\n\
              - Window: {} / {} tok ({:.1}% used · KV cache hit {:.1}%)\n\
              - Tier 1 (frozen prefix): {} tok (hash={} · repo_rules=[{rules}] · kv_prefix={kv_prefix_status})\n\
-             - Tier 2 (session stable): {} tok (scoped_dox={scoped_rules})\n\
+             - Tier 2 (session stable): {} tok (scoped_dox={scoped_rules} · project_brain={} active)\n\
              - Tool schemas: {} tok (eager={}, deferred_active={}/{})\n\
              - History: {} tok (microcompacted={} tools, ~{} tok saved)\n\
              - Concise Mode: `{}` (auto_clarity={}) · Read-Less: {} ({} outputs compressed, {} B / ~{} tok saved)\n\
@@ -419,6 +419,7 @@ impl Tool for ContextInspectTool {
             info.tier1_tokens,
             &info.tier1_hash[..info.tier1_hash.len().min(12)],
             info.tier2_tokens,
+            info.project_brain_pages_count,
             info.tool_schema_tokens,
             info.eager_tools_count,
             info.deferred_active_count,

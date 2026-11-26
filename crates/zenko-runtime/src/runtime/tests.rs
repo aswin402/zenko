@@ -1596,6 +1596,240 @@
             "hydrated scoped rule must not re-inject after daemon restart"
         );
 
+        // Verify native Project Brain (`project_brain`) end-to-end:
+        // 1. Plan Mode policy blocks mutating `init` and permits read-only `list_pages`.
+        // 2. Orchestrator classifier categorizes read-only vs mutating (direct & via `invoke_tool`).
+        // 3. Autonomous `init` -> `create_page` -> `update_truth` (reversal) -> `impact` -> `search`.
+        // 4. Fresh session Tier-2 snapshot emits `<project_brain_index>` & `project_brain_pages_count == 1`.
+        // 5. Parallel Sovereign Orchestrator recon auto-surfaces `brain_hits`.
+        assert_eq!(
+            crate::orchestrator::classify_tool_category(
+                zenko_core::TOOL_PROJECT_BRAIN,
+                &json!({ "action": "search", "query": "ledger" }),
+            ),
+            crate::orchestrator::ToolCategory::ReadOnly
+        );
+        assert_eq!(
+            crate::orchestrator::classify_tool_category(
+                zenko_core::TOOL_PROJECT_BRAIN,
+                &json!({ "action": "update_truth", "id": "payment-ledger", "truth": "v2" }),
+            ),
+            crate::orchestrator::ToolCategory::Mutation
+        );
+        assert_eq!(
+            crate::orchestrator::classify_tool_category(
+                zenko_core::TOOL_INVOKE_TOOL,
+                &json!({
+                    "tool": zenko_core::TOOL_PROJECT_BRAIN,
+                    "args": { "action": "create_page", "id": "payment-ledger" }
+                }),
+            ),
+            crate::orchestrator::ToolCategory::Mutation
+        );
+
+        let plan_brain_init = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t18a".into(),
+                    name: zenko_core::TOOL_PROJECT_BRAIN.into(),
+                    arguments: json!({ "action": "init" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_brain_init");
+        assert!(
+            plan_brain_init.output.is_error,
+            "Plan Mode must block mutating project_brain init: {}",
+            plan_brain_init.output.content
+        );
+
+        let plan_brain_list = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Plan,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t18b".into(),
+                    name: zenko_core::TOOL_PROJECT_BRAIN.into(),
+                    arguments: json!({ "action": "list_pages" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("plan_brain_list");
+        assert!(
+            !plan_brain_list.output.is_error,
+            "Plan Mode must permit read-only project_brain list_pages: {}",
+            plan_brain_list.output.content
+        );
+
+        let auto_brain_init = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t18c".into(),
+                    name: zenko_core::TOOL_PROJECT_BRAIN.into(),
+                    arguments: json!({ "action": "init" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("auto_brain_init");
+        assert!(!auto_brain_init.output.is_error);
+
+        let auto_brain_create = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t18d".into(),
+                    name: zenko_core::TOOL_PROJECT_BRAIN.into(),
+                    arguments: json!({
+                        "action": "create_page",
+                        "id": "payment-ledger",
+                        "title": "Payment Ledger Storage",
+                        "category": "decision",
+                        "affects": ["billing-api"],
+                        "compiled_truth": "Use SQLite WAL for single-node ledger durability.",
+                        "summary": "Initial storage choice: SQLite WAL (zero external dependencies)",
+                        "source": "ADR-01"
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("auto_brain_create");
+        assert!(
+            !auto_brain_create.output.is_error,
+            "create_page failed: {}",
+            auto_brain_create.output.content
+        );
+
+        let auto_brain_rev = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t18e".into(),
+                    name: zenko_core::TOOL_PROJECT_BRAIN.into(),
+                    arguments: json!({
+                        "action": "update_truth",
+                        "id": "payment-ledger",
+                        "kind": "reversal",
+                        "compiled_truth": "Use Postgres for multi-region ledger replication.",
+                        "summary": "Reversed SQLite WAL in favor of Postgres for cross-region HA",
+                        "source": "ADR-12",
+                        "affects": ["billing-api"]
+                    }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("auto_brain_rev");
+        assert!(
+            !auto_brain_rev.output.is_error,
+            "update_truth failed: {}",
+            auto_brain_rev.output.content
+        );
+
+        let auto_brain_impact = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t18f".into(),
+                    name: zenko_core::TOOL_PROJECT_BRAIN.into(),
+                    arguments: json!({ "action": "impact", "id": "payment-ledger" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("auto_brain_impact");
+        assert!(
+            !auto_brain_impact.output.is_error,
+            "impact failed: {}",
+            auto_brain_impact.output.content
+        );
+        assert!(
+            auto_brain_impact.output.content.contains("billing-api"),
+            "impact BFS must surface affected node: {}",
+            auto_brain_impact.output.content
+        );
+
+        let brain_sess = rt
+            .store
+            .create_session(
+                "brain-fresh",
+                "cli",
+                Some(&dir.display().to_string()),
+                None,
+                PermissionMode::Autonomous,
+            )
+            .expect("create brain_sess");
+        let brain_snap = rt
+            .frozen_snapshot_for_session(&brain_sess.id, &dir, &cfg_now)
+            .expect("brain_snap");
+        assert_eq!(brain_snap.project_brain_pages_count, 1);
+        assert!(
+            brain_snap
+                .tier2_prompt
+                .contains("<project_brain_index")
+                && brain_snap
+                    .tier2_prompt
+                    .contains("payment-ledger"),
+            "fresh session Tier-2 must include <project_brain_index>: {}",
+            brain_snap.tier2_prompt
+        );
+        let brain_ctx = rt
+            .inspect_session_context(&brain_sess.id)
+            .await
+            .expect("brain_ctx");
+        assert_eq!(brain_ctx.project_brain_pages_count, 1);
+
+        let brain_recon = crate::orchestrator::recon::run_parallel_recon(
+            dir.clone(),
+            cfg_now.resolved_hub_dir(),
+            brain_sess.id.clone(),
+            "Revisit payment ledger SQLite WAL storage decision",
+            rt.store.clone(),
+            rt.jobs.clone(),
+        )
+        .await;
+        assert!(
+            brain_recon
+                .brain_hits
+                .iter()
+                .any(|h| h.contains("payment-ledger")),
+            "orchestrator parallel recon must auto-surface Project Brain hits: {:?}",
+            brain_recon.brain_hits
+        );
+        let recon_block = crate::orchestrator::recon::format_recon_context(&brain_recon);
+        assert!(
+            recon_block.contains("project_brain_truth") && recon_block.contains("payment-ledger"),
+            "formatted recon context must include Project Brain truth block: {recon_block}"
+        );
+
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);
     }

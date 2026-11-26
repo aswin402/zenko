@@ -4,6 +4,24 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.38] - 2026-11-26
+
+Added a native pure-Rust, git-versioned **Project Brain** knowledge-base engine (`mindmuxai/brain.md`-interoperable) wired directly into Zenko's Sovereign Orchestrator, Tier-2 KV-cache-safe snapshot index, Plan Mode policy, and deferred toolset — with zero `/commands`, zero hardcoding, zero regex, and zero `if/else` ladders.
+
+### Added
+- **Declarative Project Brain Schema, Root Slots & Built-in Skill (`crates/zenko-core/src/{constants,types,registry}.rs`):**
+  - Centralized `TOOL_PROJECT_BRAIN`, all `BRAIN_*` file/layout/limit constants, typed enums (`BrainPageCategory`, `BrainPageStatus`, `BrainTimelineKind`, `BrainRootSlot`, `BrainAction`), `is_brain_tool_args_mutating`, 6 declarative `BRAIN_ROOT_SLOTS` (`background`, `architecture`, `flow`, `mindmap`, `stack`, `roadmap`), and the built-in `project-brain.md` skill template.
+  - Added `TOOL_PROJECT_BRAIN` to `PLAN_MODE_SCOPED_TOOLS`, `COMPACTION_PROTECTED_TOOLS`, and read-only subagent roles (`explorer`, `architect`, `critic`, `researcher`).
+- **Pure-Rust Project Brain Engine (`crates/zenko-memory/src/brain.rs`, `snapshot.rs`):**
+  - Implements correct-by-construction `BRAIN.md` + `brain/<slot>.md` + `brain/pages/<id>.md` parsing and atomic temp-file-rename writes with `<!-- compiled_truth -->` compiled-truth sections and append-only `## Timeline` history (preserving architectural reversals).
+  - Supports workspace-jailed `.mindmux/preferences.json` (`brainRoot`) with path-traversal protection, deterministic secret redaction, token-overlap search (with optional archived/reversed page recall), and BFS impact-graph traversal (`affects` + backlinks).
+  - Emits a compact Tier-2 `<project_brain_index>` inside `SnapshotManager` strictly when the repo has a Project Brain (zero bytes when unused) and tracks `project_brain_pages_count`.
+- **Deferred `project_brain` Tool & Autonomous Orchestrator Integration (`crates/zenko-tools/src/brain_tool.rs`, `crates/zenko-runtime/src/{policy,tool_router,orchestrator/{recon,guard},runtime/{mod,turn}}.rs`):**
+  - Registered `ProjectBrainTool` (`ToolExposure::Deferred`, `ToolSet::Memory`) with optional `SecretVault` redaction and read-only vs mutating policy gating across Plan Mode, `OrchestratorPhase` (`classify_tool_category`), read-only subagents, and workspace mutation watermarks.
+  - Auto-queries `brain/` (including reversed/archived pages) during parallel recon (`run_parallel_recon`), records in-session memory deltas on mutating `project_brain` actions without invalidating KV prefixes, and emits a compact `<orchestrator_hint type="project_brain_capture">` after committed `record_brainstorm` specs in Project Brain repos.
+- **Context Observability (`context_tools.rs`, `jobs_hub_queue.rs`, `webui/src/lib/types.ts`, `PromptComposer.tsx`):**
+  - Surfaced `project_brain_pages_count` across `ContextBreakdown`, `context_inspect`, CLI `zenko context`, and the WebUI Context Breakdown popover.
+
 ## [0.0.37] - 2026-11-26
 
 Hardened `v0.0.34–v0.0.36` modules against Zenko's zero-hardcoding, zero-duplication, and pure `match`/pipeline engineering standards.

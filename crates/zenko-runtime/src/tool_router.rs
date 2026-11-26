@@ -18,10 +18,11 @@ use zenko_core::{
     DOX_SCOPED_RULES_META_KEY, DOX_SCOPED_RULES_TAG_CLOSE, DOX_SCOPED_RULES_TAG_PREFIX, HookEvent,
     MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS, ORCH_STAGE_TOOL_ACTIVATED, PermissionMode,
     REPO_RULE_FILES, Result, ScriptBlockAction, SkillManageAction, TOOL_APPLY_PATCH,
-    TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_READ_FILE,
-    TOOL_SCRIPT_BLOCK, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
-    TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput,
-    ToolSpec, ZenkoConfig, ZenkoError, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
+    TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_PROJECT_BRAIN,
+    TOOL_READ_FILE, TOOL_SCRIPT_BLOCK, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC,
+    TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency,
+    ToolContext, ToolOutput, ToolSpec, ZenkoConfig, ZenkoError, is_brain_tool_args_mutating,
+    is_git_tool_args_mutating, is_lsp_tool_args_mutating,
 };
 use zenko_tools::coerce::{coerce_and_repair_args, format_compact_schema_hint};
 
@@ -506,6 +507,7 @@ pub(crate) async fn dispatch_tool_call(
         && (MUTATING_FILE_TOOLS.contains(&tc.name.as_str())
             || (tc.name == TOOL_GIT && is_git_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_LSP && is_lsp_tool_args_mutating(&tc.arguments))
+            || (tc.name == TOOL_PROJECT_BRAIN && is_brain_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_SCRIPT_BLOCK
                 && tc
                     .arguments

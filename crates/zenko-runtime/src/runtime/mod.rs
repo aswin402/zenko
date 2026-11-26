@@ -594,6 +594,9 @@ impl AgentRuntime {
             snapshots.clone(),
             vault.clone(),
         )));
+        tool_reg.register(Arc::new(zenko_tools::brain_tool::ProjectBrainTool::new_with_vault(
+            vault.clone(),
+        )));
         mcp_clients.hydrate_cached_tools(&tool_reg);
         let tools = Arc::new(tool_reg);
 
@@ -1625,6 +1628,7 @@ impl AgentRuntime {
             cache_stability_warnings: snapshot.cache_stability_warnings.clone(),
             scoped_rules_loaded: self.hydrate_loaded_scoped_rules(session_id, &branch),
             nested_repo_docs_count: snapshot.nested_repo_docs.len(),
+            project_brain_pages_count: snapshot.project_brain_pages_count,
         })
     }
 

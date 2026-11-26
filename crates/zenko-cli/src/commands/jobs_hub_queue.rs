@@ -988,6 +988,7 @@ pub async fn run_session_context(
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
             let nested_docs = data["nested_repo_docs_count"].as_u64().unwrap_or(0);
+            let brain_pages = data["project_brain_pages_count"].as_u64().unwrap_or(0);
             let cache_warns: Vec<&str> = data["cache_stability_warnings"]
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
@@ -1024,6 +1025,7 @@ pub async fn run_session_context(
                     false => format!(" [{}]", scoped_rules.join(", ")),
                 }
             );
+            println!("  Project Brain: {brain_pages} active page(s)");
             for warn in &cache_warns {
                 println!("  KV Warning:   {warn}");
             }

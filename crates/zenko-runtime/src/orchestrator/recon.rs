@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use zenko_core::{
-    BrainstormSpec, EventRole, ExecutionPlan, HUB_PATH_PREFIX, JobSupervisor,
+    BRAIN_RECON_MAX_HITS, BrainstormSpec, EventRole, ExecutionPlan, HUB_PATH_PREFIX, JobSupervisor,
     NOTE_KIND_BRAINSTORM_SPEC, NOTE_KIND_EXECUTION_PLAN, ORCH_RECON_GIT_TIMEOUT_MS,
     ORCH_RECON_MAX_FILES, ORCH_RECON_MAX_GIT_FILES, ORCH_RECON_MAX_MEMORIES,
     ORCH_RECON_MAX_MENTIONED_FILES, ORCH_RECON_MAX_PROBE_BYTES, ORCH_RECON_MAX_SESSION_HITS,
@@ -255,7 +255,32 @@ pub async fn run_parallel_recon(
             })
             .collect::<Vec<_>>();
         let prior_plan = load_prior_plan_summary_sync(&mem_store, &session_id);
-        (hits, sess_hits, prior_plan)
+        let brain_hits = match zenko_memory::brain::has_project_brain(&mem_ws) {
+            true => zenko_memory::brain::search_brain_pages(
+                &mem_ws,
+                &query,
+                true,
+                BRAIN_RECON_MAX_HITS,
+            )
+            .into_iter()
+            .map(|h| {
+                let rev = match h.summary.has_reversals {
+                    true => " [reversal]",
+                    false => "",
+                };
+                format!(
+                    "`{}` [{}][{}]{rev} {}: {}",
+                    h.summary.id,
+                    h.summary.category.as_str(),
+                    h.summary.status.as_str(),
+                    h.summary.title,
+                    compact_preview(&h.summary.truth_preview, 84)
+                )
+            })
+            .collect::<Vec<_>>(),
+            false => Vec::new(),
+        };
+        (hits, sess_hits, prior_plan, brain_hits)
     });
 
     let tasks_fut = tokio::task::spawn_blocking(move || {
@@ -279,7 +304,7 @@ pub async fn run_parallel_recon(
     let (workspace_entries, repo_markers) = ws_res.unwrap_or_default();
     let (git_branch, git_dirty_files) = git_res;
     let mentioned_files = probe_res.unwrap_or_default();
-    let (memory_hits, session_hits, prior_plan_summary) = mem_res.unwrap_or_default();
+    let (memory_hits, session_hits, prior_plan_summary, brain_hits) = mem_res.unwrap_or_default();
     let active_tasks = tasks_res.unwrap_or_default();
 
     ReconSummary {
@@ -287,6 +312,7 @@ pub async fn run_parallel_recon(
         repo_markers,
         memory_hits,
         session_hits,
+        brain_hits,
         active_tasks,
         git_branch,
         git_dirty_files,
@@ -326,6 +352,13 @@ pub fn format_recon_context(summary: &ReconSummary) -> String {
     }
     if let Some(ref prior) = summary.prior_plan_summary {
         lines.push(prior.clone());
+    }
+    if !summary.brain_hits.is_empty() {
+        lines.push(format!(
+            "project_brain_truth (respect prior decisions & reversals; inspect via `invoke_tool(tool=\"{}\", args={{\"action\":\"read_page\",\"id\":\"...\"}})`):\n  - {}",
+            zenko_core::TOOL_PROJECT_BRAIN,
+            summary.brain_hits.join("\n  - ")
+        ));
     }
     if !summary.memory_hits.is_empty() {
         lines.push(format!(

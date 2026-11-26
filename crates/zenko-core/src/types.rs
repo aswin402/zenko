@@ -573,6 +573,8 @@ pub struct ContextBreakdown {
     pub scoped_rules_loaded: Vec<String>,
     #[serde(default)]
     pub nested_repo_docs_count: usize,
+    #[serde(default)]
+    pub project_brain_pages_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2010,6 +2012,8 @@ pub struct ReconSummary {
     pub memory_hits: Vec<String>,
     #[serde(default)]
     pub session_hits: Vec<String>,
+    #[serde(default)]
+    pub brain_hits: Vec<String>,
     pub active_tasks: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
@@ -4199,6 +4203,270 @@ pub struct DoxDriftFinding {
     pub doc_path: String,
     pub changed_files: Vec<String>,
     pub new_files_count: usize,
+}
+
+/// Repo-native `project_brain` page category (`mindmuxai/brain.md` open standard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainPageCategory {
+    #[default]
+    Decision,
+    Project,
+    Concept,
+    Person,
+    Organization,
+    Reference,
+}
+
+impl BrainPageCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Concept => "concept",
+            Self::Decision => "decision",
+            Self::Person => "person",
+            Self::Organization => "organization",
+            Self::Reference => "reference",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "project" => Some(Self::Project),
+            "concept" => Some(Self::Concept),
+            "decision" => Some(Self::Decision),
+            "person" => Some(Self::Person),
+            "organization" | "org" => Some(Self::Organization),
+            "reference" | "ref" => Some(Self::Reference),
+            _ => None,
+        }
+    }
+}
+
+/// Lifecycle state of a repo-native `project_brain` page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainPageStatus {
+    #[default]
+    Active,
+    Draft,
+    Archived,
+}
+
+impl BrainPageStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Draft => "draft",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "active" => Some(Self::Active),
+            "draft" => Some(Self::Draft),
+            "archived" | "archive" => Some(Self::Archived),
+            _ => None,
+        }
+    }
+}
+
+/// Append-only timeline event kind recording how project truth evolved or was reversed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainTimelineKind {
+    #[default]
+    Decision,
+    Evidence,
+    Update,
+    Reversal,
+    Archived,
+}
+
+impl BrainTimelineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Decision => "decision",
+            Self::Evidence => "evidence",
+            Self::Update => "update",
+            Self::Reversal => "reversal",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "decision" => Some(Self::Decision),
+            "evidence" => Some(Self::Evidence),
+            "update" => Some(Self::Update),
+            "reversal" | "reversed" => Some(Self::Reversal),
+            "archived" | "archive" => Some(Self::Archived),
+            _ => None,
+        }
+    }
+}
+
+/// Fixed blueprint root slots inside `brain/` (`mindmuxai/brain.md` open standard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainRootSlot {
+    Background,
+    Architecture,
+    Flow,
+    Mindmap,
+    Stack,
+    Roadmap,
+}
+
+impl BrainRootSlot {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Architecture => "architecture",
+            Self::Flow => "flow",
+            Self::Mindmap => "mindmap",
+            Self::Stack => "stack",
+            Self::Roadmap => "roadmap",
+        }
+    }
+
+    pub fn filename(self) -> &'static str {
+        match self {
+            Self::Background => "background.md",
+            Self::Architecture => "architecture.md",
+            Self::Flow => "flow.md",
+            Self::Mindmap => "mindmap.md",
+            Self::Stack => "stack.md",
+            Self::Roadmap => "roadmap.md",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        let norm = raw.trim().to_ascii_lowercase();
+        let trimmed = norm.strip_suffix(".md").unwrap_or(&norm);
+        match trimmed {
+            "background" => Some(Self::Background),
+            "architecture" | "arch" => Some(Self::Architecture),
+            "flow" | "flows" => Some(Self::Flow),
+            "mindmap" => Some(Self::Mindmap),
+            "stack" => Some(Self::Stack),
+            "roadmap" => Some(Self::Roadmap),
+            _ => None,
+        }
+    }
+}
+
+/// Declarative action enum for the deferred `project_brain` tool (pure `match`, zero string ladders).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainAction {
+    Init,
+    ListPages,
+    ReadPage,
+    CreatePage,
+    UpdateTruth,
+    AppendTimeline,
+    ArchivePage,
+    ReadRoot,
+    UpdateRoot,
+    Search,
+    Impact,
+}
+
+impl BrainAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "init" | "setup" => Some(Self::Init),
+            "list_pages" | "list" => Some(Self::ListPages),
+            "read_page" | "read" | "get" => Some(Self::ReadPage),
+            "create_page" | "create" => Some(Self::CreatePage),
+            "update_truth" | "update" => Some(Self::UpdateTruth),
+            "append_timeline" | "timeline" => Some(Self::AppendTimeline),
+            "archive_page" | "archive" => Some(Self::ArchivePage),
+            "read_root" => Some(Self::ReadRoot),
+            "update_root" => Some(Self::UpdateRoot),
+            "search" | "query" => Some(Self::Search),
+            "impact" | "graph" | "links" => Some(Self::Impact),
+            _ => None,
+        }
+    }
+
+    pub fn is_mutating(self) -> bool {
+        matches!(
+            self,
+            Self::Init
+                | Self::CreatePage
+                | Self::UpdateTruth
+                | Self::AppendTimeline
+                | Self::ArchivePage
+                | Self::UpdateRoot
+        )
+    }
+}
+
+/// Returns `true` when `project_brain` arguments request a mutating repository write
+/// (used by `PermissionMode::Plan` policy and workspace mutation watermark).
+pub fn is_brain_tool_args_mutating(args: &serde_json::Value) -> bool {
+    args.get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(BrainAction::parse)
+        .is_none_or(BrainAction::is_mutating)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrainTimelineEntry {
+    pub time: String,
+    pub kind: BrainTimelineKind,
+    pub summary: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub affects: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrainPage {
+    pub id: String,
+    pub title: String,
+    pub category: BrainPageCategory,
+    pub status: BrainPageStatus,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created: String,
+    pub updated: String,
+    pub compiled_truth: String,
+    #[serde(default)]
+    pub timeline: Vec<BrainTimelineEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainPageSummary {
+    pub id: String,
+    pub title: String,
+    pub category: BrainPageCategory,
+    pub status: BrainPageStatus,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub updated: String,
+    pub timeline_count: usize,
+    pub has_reversals: bool,
+    pub truth_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainSearchHit {
+    pub summary: BrainPageSummary,
+    pub score: f64,
+    pub affects: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainImpactGraph {
+    pub page_id: String,
+    pub direct_affects: Vec<String>,
+    pub transitive_affects: Vec<String>,
+    pub referenced_by: Vec<String>,
 }
 
 /// Structured output of `code_minimalism(action="audit_diff")`.

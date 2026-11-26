@@ -1159,6 +1159,7 @@ export interface ContextBreakdown {
   cache_stability_warnings?: string[]
   scoped_rules_loaded?: string[]
   nested_repo_docs_count?: number
+  project_brain_pages_count?: number
 }
 
 export type CodeMinimalismMode = 'off' | 'lite' | 'full' | 'ultra'

@@ -640,6 +640,10 @@ export const PromptComposer = memo(function PromptComposer({
                     `${contextData.scoped_rules_loaded?.length ?? 0} loaded / ${contextData.nested_repo_docs_count ?? 0} indexed`,
                   ],
                   [
+                    'Project Brain',
+                    `${contextData.project_brain_pages_count ?? 0} active page(s)`,
+                  ],
+                  [
                     'Microcompacted',
                     `${contextData.microcompacted_tools_count} (${formatCompactTokens(contextData.microcompacted_tokens_saved)} saved)`,
                   ],

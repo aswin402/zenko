@@ -1653,17 +1653,26 @@ impl AgentRuntime {
                     other => (other, &done.arguments),
                 };
 
-                if !was_phase_redirect && eff_tool_name == TOOL_MEMORY && !done.output.is_error {
-                    let act = eff_tool_args
-                        .get("action")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    if is_memory_mutating_action(act) {
-                        self.record_memory_delta(
-                            &session_id,
-                            compact_preview(&done.output.content, 160),
-                        );
-                    }
+                let mutated_memory_surface = !was_phase_redirect
+                    && !done.output.is_error
+                    && match eff_tool_name {
+                        TOOL_MEMORY => {
+                            let act = eff_tool_args
+                                .get("action")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            is_memory_mutating_action(act)
+                        }
+                        zenko_core::TOOL_PROJECT_BRAIN => {
+                            zenko_core::is_brain_tool_args_mutating(eff_tool_args)
+                        }
+                        _ => false,
+                    };
+                if mutated_memory_surface {
+                    self.record_memory_delta(
+                        &session_id,
+                        compact_preview(&done.output.content, 160),
+                    );
                 }
                 if !was_phase_redirect && eff_tool_name == TOOL_PLAN_UPDATE && !done.output.is_error
                     && let Some(plan) = done
@@ -1823,6 +1832,21 @@ impl AgentRuntime {
                     done.output.is_error,
                 ) {
                     (false, TOOL_RECORD_BRAINSTORM, false) => {
+                        if done
+                            .output
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get("status"))
+                            .and_then(Value::as_str)
+                            == Some("committed")
+                            && zenko_memory::brain::has_project_brain(&tool_ctx.workspace_dir)
+                        {
+                            pending_orch_hints.push(format!(
+                                "<orchestrator_hint type=\"project_brain_capture\">This repo maintains a Project Brain (`{}/`). If this committed design introduces or reverses a durable architectural decision, persist it via `invoke_tool(tool=\"{}\", ...)` (`update_truth` or `create_page`).</orchestrator_hint>",
+                                zenko_core::BRAIN_DIR_NAME,
+                                zenko_core::TOOL_PROJECT_BRAIN,
+                            ));
+                        }
                         done.output.metadata.as_ref().map(|spec| {
                             json!({
                                 "note_kind": NOTE_KIND_BRAINSTORM_SPEC,

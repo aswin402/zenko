@@ -60,6 +60,8 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub nested_repo_docs: Vec<String>,
     #[serde(default)]
+    pub project_brain_pages_count: usize,
+    #[serde(default)]
     pub cache_stability_warnings: Vec<String>,
     #[serde(default)]
     pub tier1_prompt: String,
@@ -1149,6 +1151,8 @@ impl SnapshotManager {
         let (repo_rules_loaded, repo_rules_body) = self.discover_repo_rules(auto_repo_rules);
         let nested_docs = self.discover_nested_repo_docs(auto_repo_rules);
         let nested_repo_docs: Vec<String> = nested_docs.iter().map(|(p, _)| p.clone()).collect();
+        let (project_brain_pages_count, brain_root_slots, brain_index_lines) =
+            crate::brain::build_project_brain_index(&self.workspace_dir());
         let cache_stability_warnings = detect_tier1_volatility(&soul_md, &repo_rules_body);
 
         // ── Tier 1: Immutable Static Prefix (Cache Breakpoint Anchor) ────────
@@ -1199,6 +1203,21 @@ impl SnapshotManager {
             }
             tier2.push_str("</repo_doc_tree>");
         }
+        if !brain_index_lines.is_empty() || !brain_root_slots.is_empty() {
+            tier2.push_str("\n\n<project_brain_index>\n");
+            tier2.push_str(&format!(
+                "Git-tracked Project Brain active in this repository — inspect via `invoke_tool(tool=\"{}\", args={{\"action\":\"read_page\"|\"read_root\"|\"search\"|\"impact\"}})` and record settled decisions or reversals via `update_truth` / `create_page`:\n",
+                zenko_core::TOOL_PROJECT_BRAIN
+            ));
+            if !brain_root_slots.is_empty() {
+                tier2.push_str(&format!("Root slots: {}\n", brain_root_slots.join(", ")));
+            }
+            for line in &brain_index_lines {
+                tier2.push_str(line);
+                tier2.push('\n');
+            }
+            tier2.push_str("</project_brain_index>");
+        }
 
         let active_skills: Vec<&SkillDoc> = skills
             .iter()
@@ -1240,6 +1259,7 @@ impl SnapshotManager {
             skills,
             repo_rules_loaded,
             nested_repo_docs,
+            project_brain_pages_count,
             cache_stability_warnings,
             tier1_prompt: tier1,
             tier1_hash,

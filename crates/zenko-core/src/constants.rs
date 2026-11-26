@@ -568,6 +568,7 @@ pub const TOOL_LIST_DIR: &str = "list_dir";
 pub const TOOL_CODE_SEARCH: &str = "code_search";
 pub const TOOL_WEB_FETCH: &str = "web_fetch";
 pub const TOOL_MEMORY: &str = "memory_tool";
+pub const TOOL_PROJECT_BRAIN: &str = "project_brain";
 pub const TOOL_CRON: &str = "cron_tool";
 pub const TOOL_RECORD_BRAINSTORM: &str = "record_brainstorm";
 pub const TOOL_ASK_CLARIFICATION: &str = "ask_clarification";
@@ -1096,6 +1097,7 @@ pub const PLANNING_TOOLS: &[&str] = &[
 pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
     TOOL_MEMORY,
+    TOOL_PROJECT_BRAIN,
     TOOL_SPAWN_AGENT,
     TOOL_AGENT_WORKTREE,
     TOOL_GIT,
@@ -1132,6 +1134,7 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_ASK_CLARIFICATION,
     TOOL_ORCHESTRATE_CONTROL,
     TOOL_MEMORY,
+    TOOL_PROJECT_BRAIN,
     TOOL_SKILL_VIEW,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,
@@ -1730,3 +1733,62 @@ pub const DOX_SCOPED_RULES_TAG_CLOSE: &str = "</scoped_repo_rules>";
 pub const DOX_SCOPED_RULES_META_KEY: &str = "scoped_rules_injected";
 pub const DOX_DRIFT_MIN_ADDED_LINES: u64 = 12;
 pub const DOX_DRIFT_MAX_FINDINGS: usize = 6;
+
+// ── Repo-Native Project Brain (`mindmuxai/brain.md` open standard, zero regex)
+pub const BRAIN_DIR_NAME: &str = "brain";
+pub const BRAIN_PAGES_DIR_NAME: &str = "pages";
+pub const BRAIN_PROTOCOL_FILE: &str = "BRAIN.md";
+pub const BRAIN_PREFS_DIR_NAME: &str = ".mindmux";
+pub const BRAIN_PREFS_FILE_NAME: &str = "preferences.json";
+pub const BRAIN_PREFS_ROOT_KEY: &str = "brainRoot";
+pub const BRAIN_COMPILED_TRUTH_MARKER: &str = "<!-- compiled_truth -->";
+pub const BRAIN_TIMELINE_HEADING: &str = "## Timeline";
+pub const BRAIN_MAX_SLUG_CHARS: usize = 64;
+pub const BRAIN_MAX_TITLE_CHARS: usize = 160;
+pub const BRAIN_MAX_PAGE_BYTES: usize = 32 * 1024;
+pub const BRAIN_MAX_ROOT_BYTES: usize = 32 * 1024;
+pub const BRAIN_MAX_INDEX_PAGES: usize = 32;
+pub const BRAIN_MAX_TIMELINE_ENTRIES: usize = 128;
+pub const BRAIN_MAX_TAGS: usize = 12;
+pub const BRAIN_MAX_AFFECTS: usize = 16;
+pub const BRAIN_IMPACT_MAX_HOPS: usize = 3;
+pub const BRAIN_RECON_MAX_HITS: usize = 4;
+pub const BRAIN_DEFAULT_SEARCH_LIMIT: usize = 8;
+pub const BRAIN_MAX_SEARCH_LIMIT: usize = 24;
+pub const BRAIN_PAGE_CATEGORIES: &[&str] = &[
+    "project",
+    "concept",
+    "decision",
+    "person",
+    "organization",
+    "reference",
+];
+pub const BRAIN_PAGE_STATUSES: &[&str] = &["active", "draft", "archived"];
+pub const BRAIN_TIMELINE_KINDS: &[&str] = &[
+    "decision",
+    "evidence",
+    "update",
+    "reversal",
+    "archived",
+];
+pub const BRAIN_ROOT_SLOT_SLUGS: &[&str] = &[
+    "background",
+    "architecture",
+    "flow",
+    "mindmap",
+    "stack",
+    "roadmap",
+];
+pub const BRAIN_ACTIONS: &[&str] = &[
+    "init",
+    "list_pages",
+    "read_page",
+    "create_page",
+    "update_truth",
+    "append_timeline",
+    "archive_page",
+    "read_root",
+    "update_root",
+    "search",
+    "impact",
+];

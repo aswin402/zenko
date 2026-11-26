@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod batch;
 pub mod blocks;
+pub mod brain_tool;
 pub mod codex_patch;
 pub mod coerce;
 pub mod context_tools;
@@ -75,6 +76,7 @@ impl ToolRegistry {
             store.clone(),
             snapshots.clone(),
         )));
+        reg.register(Arc::new(brain_tool::ProjectBrainTool::new()));
         reg.register(Arc::new(memory_cron::SessionSearchTool::new(store.clone())));
         reg.register(Arc::new(memory_cron::CronTool::new(store, cron_notify)));
         reg.register(Arc::new(context_tools::SkillViewTool::new(snapshots)));
