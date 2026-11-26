@@ -8,17 +8,19 @@ use crate::policy::{PolicyVerdict, evaluate_policy, run_hooks};
 use crate::read_less;
 use crate::runtime::{ActiveSessionScopeGuard, ActiveToolGuard, AgentRuntime, ExecutedToolCall};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, HookEvent, MUTATING_FILE_TOOLS,
-    ORCH_STAGE_READ_LESS, ORCH_STAGE_TOOL_ACTIVATED, PermissionMode, Result, ScriptBlockAction,
-    SkillManageAction, TOOL_APPLY_PATCH, TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT,
-    TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_READ_FILE, TOOL_SCRIPT_BLOCK,
-    TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH,
-    TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec,
-    ZenkoConfig, ZenkoError, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
+    ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, DOX_MAX_SCOPED_RULE_BYTES, HookEvent,
+    MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS, ORCH_STAGE_TOOL_ACTIVATED, PermissionMode,
+    REPO_RULE_FILES, Result, ScriptBlockAction, SkillManageAction, TOOL_APPLY_PATCH,
+    TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_READ_FILE,
+    TOOL_SCRIPT_BLOCK, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
+    TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput,
+    ToolSpec, ZenkoConfig, ZenkoError, is_git_tool_args_mutating, is_lsp_tool_args_mutating,
 };
 use zenko_tools::coerce::{coerce_and_repair_args, format_compact_schema_hint};
 
@@ -302,6 +304,121 @@ pub(crate) fn extract_edited_rel_paths(
     out
 }
 
+/// Extracts workspace-relative file paths read or edited by `read_file`, `write_file`,
+/// `hash_edit`, or `apply_patch` (strictly skipping `artifact:` and `hub:` handles)
+/// so JIT hierarchical DOX / `AGENTS.md` ancestor rules can be injected on first access.
+pub(crate) fn extract_touched_rel_paths(
+    tool_name: &str,
+    args: &Value,
+    metadata: Option<&Value>,
+) -> Vec<String> {
+    match tool_name {
+        TOOL_READ_FILE => args
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| {
+                !p.is_empty()
+                    && !p.starts_with(ARTIFACT_PATH_PREFIX)
+                    && !p.starts_with("hub:")
+            })
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default(),
+        TOOL_WRITE_FILE | TOOL_HASH_EDIT | TOOL_APPLY_PATCH => {
+            extract_edited_rel_paths(tool_name, args, metadata)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Walks ancestor directories of `touched_rel_paths` strictly below `workspace_dir` (never
+/// re-injecting root docs already frozen in Tier 1), discovering nested `REPO_RULE_FILES`
+/// ordered outer-to-inner (`parent/AGENTS.md` before `parent/child/AGENTS.md`) and skipping
+/// self-reads when the caller directly opened that rule file.
+pub(crate) fn discover_ancestor_scoped_rules(
+    workspace_dir: &Path,
+    touched_rel_paths: &[String],
+) -> Vec<(String, PathBuf)> {
+    let canon_ws = std::fs::canonicalize(workspace_dir).unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    let mut seen_rel: BTreeSet<String> = BTreeSet::new();
+
+    for raw_rel in touched_rel_paths {
+        let candidate = match Path::new(raw_rel).is_absolute() {
+            true => PathBuf::from(raw_rel),
+            false => workspace_dir.join(raw_rel),
+        };
+        let parent_dir = match candidate.is_dir() {
+            true => candidate.clone(),
+            false => match candidate.parent() {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            },
+        };
+        let canon_dir = std::fs::canonicalize(&parent_dir).unwrap_or(parent_dir);
+        if !canon_dir.starts_with(&canon_ws) || canon_dir == canon_ws {
+            continue;
+        }
+        let touched_norm = std::fs::canonicalize(&candidate)
+            .ok()
+            .and_then(|c| c.strip_prefix(&canon_ws).ok().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from(raw_rel))
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut cursor = canon_dir.as_path();
+        while cursor != canon_ws && cursor.starts_with(&canon_ws) {
+            dirs.push(cursor.to_path_buf());
+            let Some(next) = cursor.parent() else {
+                break;
+            };
+            cursor = next;
+        }
+        dirs.reverse();
+
+        for dir in dirs {
+            for filename in REPO_RULE_FILES {
+                let doc_path = dir.join(filename);
+                if !doc_path.is_file() {
+                    continue;
+                }
+                let Ok(rel) = doc_path.strip_prefix(&canon_ws) else {
+                    continue;
+                };
+                let rel_posix = rel.to_string_lossy().replace('\\', "/");
+                if rel_posix == touched_norm {
+                    continue;
+                }
+                if seen_rel.insert(rel_posix.clone()) {
+                    found.push((rel_posix, doc_path));
+                }
+            }
+        }
+    }
+
+    found
+}
+
+fn read_capped_scoped_rule(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(match trimmed.len() <= DOX_MAX_SCOPED_RULE_BYTES {
+        true => trimmed.to_string(),
+        false => {
+            let cut = trimmed.floor_char_boundary(DOX_MAX_SCOPED_RULE_BYTES);
+            format!(
+                "{}\n... [truncated at {} KiB scoped-rule cap]",
+                &trimmed[..cut],
+                DOX_MAX_SCOPED_RULE_BYTES / 1024
+            )
+        }
+    })
+}
+
 /// Full 5-stage `ToolRouter` dispatch pipeline shared by top-level turns and `batch_tools`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_tool_call(
@@ -442,6 +559,39 @@ pub(crate) async fn dispatch_tool_call(
             Some(other) => Some(json!({ "data": other, "ccr_recovery": true })),
             None => Some(json!({ "ccr_recovery": true })),
         };
+    }
+
+    // Just-In-Time (JIT) hierarchical DOX / nested `AGENTS.md` ancestor auto-injection:
+    // on first read or edit inside any subdirectory governed by nested `REPO_RULE_FILES`,
+    // inject each unseen ancestor rule at most once per session (zero Tier-1 KV invalidation).
+    if !tool_output.is_error && cfg.context.auto_repo_rules && !is_ccr_recovery {
+        let touched = extract_touched_rel_paths(&tc.name, &tc.arguments, tool_output.metadata.as_ref());
+        if !touched.is_empty() {
+            let candidates = discover_ancestor_scoped_rules(&tool_ctx.workspace_dir, &touched);
+            let mut injected_paths: Vec<String> = Vec::new();
+            for (rel_doc, full_doc) in candidates {
+                if !rt.claim_unloaded_scoped_rule(session_id, &rel_doc) {
+                    continue;
+                }
+                if let Some(body) = read_capped_scoped_rule(&full_doc) {
+                    tool_output.content.push_str(&format!(
+                        "\n\n<scoped_repo_rules path=\"{rel_doc}\">\n{body}\n</scoped_repo_rules>"
+                    ));
+                    injected_paths.push(rel_doc);
+                }
+            }
+            if !injected_paths.is_empty() {
+                let val = Value::Array(injected_paths.into_iter().map(Value::String).collect());
+                tool_output.metadata = match tool_output.metadata {
+                    Some(Value::Object(mut map)) => {
+                        map.insert("scoped_rules_injected".into(), val);
+                        Some(Value::Object(map))
+                    }
+                    Some(other) => Some(json!({ "data": other, "scoped_rules_injected": val })),
+                    None => Some(json!({ "scoped_rules_injected": val })),
+                };
+            }
+        }
     }
 
     // Tier 1 (Session Output Dedup) -> Tier 2 (Custom Filters + Command-Aware Read-Less + Failure Tee) -> Tier 3 (Error-Salvaging Spill)
@@ -769,5 +919,55 @@ fn truncate_preview(s: &str, max: usize) -> String {
     match s.len() <= max {
         true => s.to_string(),
         false => format!("{}…", &s[..s.floor_char_boundary(max)]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jit_ancestor_scoped_rule_discovery_orders_outer_to_inner_and_skips_root_and_self() {
+        let ws = std::env::temp_dir().join(format!("zenko_jit_dox_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(ws.join("crates/api/src/handlers")).expect("mkdir");
+        std::fs::write(ws.join("AGENTS.md"), "# Root rules").expect("root");
+        std::fs::write(ws.join("crates/AGENTS.md"), "# Crates rules").expect("crates");
+        std::fs::write(ws.join("crates/api/ZENKO.md"), "# API rules").expect("api");
+        std::fs::write(ws.join("crates/api/src/handlers/auth.rs"), "pub fn ok() {}").expect("auth");
+
+        let touched = extract_touched_rel_paths(
+            TOOL_READ_FILE,
+            &json!({ "path": "crates/api/src/handlers/auth.rs" }),
+            None,
+        );
+        let found: Vec<String> = discover_ancestor_scoped_rules(&ws, &touched)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(found, vec!["crates/AGENTS.md", "crates/api/ZENKO.md"]);
+
+        // Direct self-read of `crates/api/ZENKO.md` must not duplicate itself, while still seeing outer parent.
+        let self_touched = extract_touched_rel_paths(
+            TOOL_READ_FILE,
+            &json!({ "path": "crates/api/ZENKO.md" }),
+            None,
+        );
+        let self_found: Vec<String> = discover_ancestor_scoped_rules(&ws, &self_touched)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(self_found, vec!["crates/AGENTS.md"]);
+
+        // Artifact and hub paths must never trigger workspace ancestor injection.
+        assert!(
+            extract_touched_rel_paths(
+                TOOL_READ_FILE,
+                &json!({ "path": "artifact:s1/c1.txt" }),
+                None
+            )
+            .is_empty()
+        );
+
+        let _ = std::fs::remove_dir_all(ws);
     }
 }

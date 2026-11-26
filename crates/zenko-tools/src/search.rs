@@ -137,6 +137,7 @@ impl Tool for CodeSearchTool {
                 .binary_detection(BinaryDetection::quit(b'\x00'))
                 .build();
             let mut rows = Vec::new();
+            let mut match_lines_emitted = 0usize;
 
             let mut walker = WalkBuilder::new(&root);
             walker
@@ -208,33 +209,41 @@ impl Tool for CodeSearchTool {
                         }
                     }
                     SearchOutputMode::Matches if context_lines == 0 => {
+                        let mut file_rows: Vec<String> = Vec::new();
+                        let remaining = max_results.saturating_sub(match_lines_emitted);
                         let _ = searcher.search_path(
                             &matcher,
                             file_path,
                             UTF8(|line_num, line| {
-                                if rows.len() >= max_results {
+                                if file_rows.len() >= remaining {
                                     return Ok(false);
                                 }
                                 let clean = line.trim_end_matches(['\r', '\n']);
                                 let formatted = match with_hashes {
                                     true => {
                                         let h = line_hash(clean);
-                                        format!("{display_rel}:{line_num}:{h}| {clean}")
+                                        format!("  {line_num}:{h}| {clean}")
                                     }
-                                    false => format!("{display_rel}:{line_num}: {clean}"),
+                                    false => format!("  {line_num}: {clean}"),
                                 };
-                                rows.push(formatted);
+                                file_rows.push(formatted);
                                 Ok(true)
                             }),
                         );
+                        if !file_rows.is_empty() {
+                            match_lines_emitted += file_rows.len();
+                            rows.push(format!("{display_rel}:"));
+                            rows.extend(file_rows);
+                        }
                     }
                     SearchOutputMode::Matches => {
+                        let remaining = max_results.saturating_sub(match_lines_emitted);
                         let mut hit_lines: Vec<usize> = Vec::new();
                         let _ = searcher.search_path(
                             &matcher,
                             file_path,
                             UTF8(|line_num, _| {
-                                if hit_lines.len() >= max_results {
+                                if hit_lines.len() >= remaining {
                                     return Ok(false);
                                 }
                                 hit_lines.push(line_num as usize);
@@ -245,19 +254,20 @@ impl Tool for CodeSearchTool {
                             && let Ok(raw_text) = std::fs::read_to_string(file_path)
                         {
                             let all_lines: Vec<&str> = raw_text.lines().collect();
+                            let mut file_rows: Vec<String> = Vec::new();
                             let mut emitted_up_to = 0usize;
                             for hit in hit_lines {
-                                if rows.len() >= max_results {
+                                if match_lines_emitted >= max_results {
                                     break;
                                 }
                                 let lo = hit.saturating_sub(context_lines).max(1);
                                 let hi = hit.saturating_add(context_lines).min(all_lines.len());
                                 if emitted_up_to > 0 && lo > emitted_up_to + 1 {
-                                    rows.push("--".to_string());
+                                    file_rows.push("  --".to_string());
                                 }
                                 let start = lo.max(emitted_up_to + 1);
                                 for ln in start..=hi {
-                                    if rows.len() >= max_results {
+                                    if match_lines_emitted >= max_results {
                                         break;
                                     }
                                     let text = all_lines.get(ln - 1).copied().unwrap_or("");
@@ -267,20 +277,31 @@ impl Tool for CodeSearchTool {
                                     };
                                     let row = match with_hashes {
                                         true => format!(
-                                            "{display_rel}{sep}{ln}:{}| {text}",
+                                            "  {ln}{sep}{}| {text}",
                                             line_hash(text)
                                         ),
-                                        false => format!("{display_rel}{sep}{ln}{sep} {text}"),
+                                        false => format!("  {ln}{sep} {text}"),
                                     };
-                                    rows.push(row);
+                                    file_rows.push(row);
+                                    match_lines_emitted += 1;
                                     emitted_up_to = ln;
                                 }
+                            }
+                            if !file_rows.is_empty() {
+                                rows.push(format!("{display_rel}:"));
+                                rows.extend(file_rows);
                             }
                         }
                     }
                 }
 
-                if rows.len() >= max_results {
+                let reached_limit = match output_mode {
+                    SearchOutputMode::Matches => match_lines_emitted >= max_results,
+                    SearchOutputMode::FilesOnly | SearchOutputMode::Count => {
+                        rows.len() >= max_results
+                    }
+                };
+                if reached_limit {
                     break;
                 }
             }
@@ -342,9 +363,35 @@ mod tests {
             .await
             .expect("search rs");
         assert!(!rs_only.is_error);
-        assert!(rs_only.content.contains("src/a.rs:2:"));
+        assert!(rs_only.content.contains("src/a.rs:\n"), "out={}", rs_only.content);
+        assert!(rs_only.content.contains("  2:"), "out={}", rs_only.content);
         assert!(rs_only.content.contains("|     let v: Vec<String>"));
+        assert_eq!(rs_only.content.matches("src/a.rs").count(), 1);
         assert!(!rs_only.content.contains("src/b.txt"));
+
+        // Lossless file-grouped output emits the file path once across multiple matches in the same file
+        std::fs::write(
+            dir.join("src/multi.rs"),
+            "let a = Vec<String>::new();\nlet b = 1;\nlet c = Vec<String>::new();\nlet d = Vec<String>::new();\n",
+        )
+        .expect("multi.rs");
+        let grouped = CodeSearchTool
+            .execute(
+                &ctx,
+                json!({
+                    "pattern": "Vec<String>",
+                    "fixed_strings": true,
+                    "file_glob": "**/multi.rs",
+                    "with_hashes": true
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("grouped");
+        assert_eq!(grouped.content.matches("src/multi.rs").count(), 1);
+        assert!(grouped.content.contains("  1:"));
+        assert!(grouped.content.contains("  3:"));
+        assert!(grouped.content.contains("  4:"));
 
         let files_only = CodeSearchTool
             .execute(

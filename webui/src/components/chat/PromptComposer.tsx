@@ -630,6 +630,16 @@ export const PromptComposer = memo(function PromptComposer({
                   ['Active History', `${formatCompactTokens(contextData.history_tokens)} tok`],
                   ['KV Cache Hit', `${contextData.cache_hit_pct.toFixed(1)}%`],
                   [
+                    'KV Prefix',
+                    (contextData.cache_stability_warnings?.length ?? 0) === 0
+                      ? 'stable'
+                      : `${contextData.cache_stability_warnings?.length ?? 0} volatile warn`,
+                  ],
+                  [
+                    'Scoped DOX',
+                    `${contextData.scoped_rules_loaded?.length ?? 0} loaded / ${contextData.nested_repo_docs_count ?? 0} indexed`,
+                  ],
+                  [
                     'Microcompacted',
                     `${contextData.microcompacted_tools_count} (${formatCompactTokens(contextData.microcompacted_tokens_saved)} saved)`,
                   ],
@@ -694,6 +704,18 @@ export const PromptComposer = memo(function PromptComposer({
               {contextData.repo_rules_loaded.length > 0 && (
                 <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10.5px] text-[var(--muted)]">
                   Rules: {contextData.repo_rules_loaded.join(', ')}
+                </div>
+              )}
+
+              {(contextData.scoped_rules_loaded?.length ?? 0) > 0 && (
+                <div className="font-mono text-[10.5px] text-[var(--muted)]">
+                  Scoped: {contextData.scoped_rules_loaded?.join(', ')}
+                </div>
+              )}
+
+              {(contextData.cache_stability_warnings?.length ?? 0) > 0 && (
+                <div className="rounded-md border border-[var(--accent)]/40 bg-[var(--card)] px-2 py-1.5 font-mono text-[10px] text-[var(--fg)]">
+                  {contextData.cache_stability_warnings?.[0]}
                 </div>
               )}
             </div>

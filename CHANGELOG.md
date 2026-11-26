@@ -4,6 +4,24 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.34] - 2026-11-26
+
+Implemented six native Rust Headroom- and DOX-inspired context-efficiency, KV-cache alignment, and hierarchical subtree documentation upgrades (zero ML/ONNX, zero regex, zero `/commands`).
+
+### Added
+- **SmartCrusher 2-Tier JSON Compressor (`crates/zenko-runtime/src/read_less/smart_crusher.rs`):**
+  - **Tier 1 (Lossless Tabular JSON → CSV):** Automatically converts uniform flat scalar object arrays (`6..=40` rows, `>= 80%` key overlap, `<= 2.4 KiB` saving `>= 30%` bytes) into lossless RFC-4180 CSV with zero dropped rows.
+  - **Tier 2 (Scored Keep/Drop):** Replaces blind head-only JSON array truncation with deterministic signal scoring keeping first 2 + last 2 items, 100% of error/failed/`status >= 400`/`ok == false` items (bounded), single-pass Welford `> 2σ` numeric outliers, and tool-argument query keyword matches while preserving `_total_items`, `_omitted_items`, `_item_keys`, `_kept_reasons`, and raw `artifact:` CCR handles.
+- **CacheAligner Schema Canonicalization & Tier-1 Prefix Volatility Guard (`zenko-providers/src/dialect.rs`, `zenko-memory/src/snapshot.rs`):**
+  - Deterministically sorts `ChatRequest.tools` and recursively `BTreeMap`-canonicalizes every `ToolSpec.parameters` JSON schema before wire serialization so dynamic MCP/tool definitions never churn provider KV caches.
+  - Added zero-regex Tier-1 volatility detection flagging ISO-8601 timestamps, RFC-4122 UUIDs, or mutable key headers inside `SOUL.md` / root `<repo_rules>`, surfaced in `ContextBreakdown`, `context_inspect`, and WebUI Context Breakdown.
+- **Lossless File-Grouped `code_search` Output (`crates/zenko-tools/src/search.rs`):**
+  - Groups matches and context lines under a single `<file>:` header (`  line:hash| text` / `  line- text`) instead of repeating full file paths on every line — 100% lossless with exact line numbers and hash anchors preserved.
+- **DOX Hierarchical `<repo_doc_tree>`, JIT Ancestor Auto-Injection, Drift Guard & `dox-tree` Skill (`zenko-memory/src/snapshot.rs`, `zenko-runtime/src/{runtime/mod,runtime/turn,tool_router}.rs`, `zenko-tools/src/minimalism.rs`, `zenko-core/src/registry.rs`):**
+  - Indexes nested `AGENTS.md`/`ZENKO.md`/`CLAUDE.md`/`RULES.md` subtree docs (depth `<= 4`, `.gitignore`-aware, purpose-summarized) into Tier-2 `<repo_doc_tree>` without invalidating Tier-1 KV prefixes.
+  - Automatically walks ancestor directories on `read_file`, `write_file`, `hash_edit`, and `apply_patch` and injects unseen nested `<scoped_repo_rules path="...">` once per session (cleared on Stage-B compaction and checkpoint rewind).
+  - Added deterministic `dox_drift` checks to `code_minimalism(action="audit_diff")` flagging untouched nested DOX docs after structural subtree edits, plus the built-in `dox-tree` skill encoding the 6-section DOX contract.
+
 ## [0.0.33] - 2026-11-26
 
 Implemented four native Rust `rtk-ai/rtk`-inspired tool-output optimization and analytics upgrades (zero regex, zero external shell hooks, zero `/commands`) fully integrated with `ZMode`, `token_economy`, WebUI, and CLI.

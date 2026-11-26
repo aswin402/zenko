@@ -316,6 +316,7 @@ pub(crate) struct SessionControl {
     zmode_override: Mutex<Option<zenko_core::ZMode>>,
     read_less_stats: Mutex<ReadLessSessionStats>,
     output_dedup: Mutex<crate::read_less::SessionOutputDedup>,
+    loaded_scoped_rules: Mutex<BTreeSet<String>>,
 }
 
 /// RAII guard binding the live `SessionToolScope` while a turn executes (restores previous scope on drop).
@@ -1621,6 +1622,9 @@ impl AgentRuntime {
             economy_lines_deleted: code_metrics.lines_deleted,
             zmode: active_zmode,
             zmode_customized: cfg.is_zmode_customized(),
+            cache_stability_warnings: snapshot.cache_stability_warnings.clone(),
+            scoped_rules_loaded: self.loaded_scoped_rules_for(session_id),
+            nested_repo_docs_count: snapshot.nested_repo_docs.len(),
         })
     }
 
@@ -2268,9 +2272,39 @@ impl AgentRuntime {
         }
     }
 
-    /// Executes 3-mode checkpoint rewind and atomically invalidates per-session output-dedup
-    /// (and file-freshness state when code is restored) so post-rewind calls never cite
-    /// abandoned future branches or stale file hashes.
+    /// Atomically claims a nested DOX/repo-rule relative path for single-injection in this session.
+    /// Returns `true` only the first time the scope is entered (bounded by `DOX_MAX_SCOPED_RULES_PER_SESSION`).
+    pub(crate) fn claim_unloaded_scoped_rule(&self, session_id: &str, rel_path: &str) -> bool {
+        let ctrl = self.session_control(session_id);
+        ctrl.loaded_scoped_rules
+            .lock()
+            .ok()
+            .is_some_and(|mut set| {
+                if set.len() >= zenko_core::DOX_MAX_SCOPED_RULES_PER_SESSION {
+                    return false;
+                }
+                set.insert(rel_path.to_string())
+            })
+    }
+
+    pub(crate) fn loaded_scoped_rules_for(&self, session_id: &str) -> Vec<String> {
+        let ctrl = self.session_control(session_id);
+        ctrl.loaded_scoped_rules
+            .lock()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn clear_session_scoped_rules(&self, session_id: &str) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut set) = ctrl.loaded_scoped_rules.lock() {
+            set.clear();
+        }
+    }
+
+    /// Executes 3-mode checkpoint rewind and atomically invalidates per-session output-dedup,
+    /// JIT scoped-rule state (and file-freshness state when code is restored) so post-rewind calls
+    /// never cite abandoned future branches or stale file hashes.
     pub async fn rewind_checkpoint(
         &self,
         req: &zenko_core::RewindRequest,
@@ -2278,6 +2312,7 @@ impl AgentRuntime {
         let cp_cfg = self.config().checkpoints;
         let report = self.checkpoints.rewind(&cp_cfg, req).await?;
         self.clear_session_output_dedup(&report.session_id);
+        self.clear_session_scoped_rules(&report.session_id);
         if matches!(
             req.mode,
             zenko_core::RewindMode::CodeAndConversation | zenko_core::RewindMode::CodeOnly

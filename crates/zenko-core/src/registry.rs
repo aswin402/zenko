@@ -893,6 +893,19 @@ enabled: true\n\
 - Group items by blast radius (safety/correctness first, structural duplication second, cosmetic last) and verify each marker is still relevant by reading its surrounding lines.\n\
 - Convert verified high-priority items into concrete `session_task` DAG steps when the user asks to pay down debt; never silently delete unresolved safety warnings.\n",
     },
+    DefaultSkillTemplate {
+        filename: "dox-tree.md",
+        content: "---\n\
+name: Hierarchical DOX Tree\n\
+description: Bootstrap, audit, and maintain compact hierarchical AGENTS.md / ZENKO.md subtree docs (6-section DOX contract) with zero drift.\n\
+enabled: true\n\
+---\n\n\
+- Zenko automatically indexes nested `AGENTS.md`/`ZENKO.md` files in `<repo_doc_tree>` and injects ancestor rules just-in-time on first file read/edit inside each subtree.\n\
+- Keep every subtree doc concise (< 4 KiB) using the 6-section DOX contract: `## Purpose`, `## Ownership`, `## Local Contracts`, `## Work Guidance`, `## Verification`, and `## Child DOX Index`.\n\
+- Never duplicate root rules or paste large code snippets; document only local invariants, entrypoints, non-obvious boundaries, and exact verification commands.\n\
+- Before bootstrapping or updating a subtree doc, map files cheaply via `glob_find`, `code_search(output_mode=\"files_only\")`, and `read_file(mode=\"outline\")`.\n\
+- After structural edits or new files in a documented subtree, run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_diff\"})` to check for `dox_drift` and update the owning subtree doc in the same change.\n",
+    },
 ];
 
 /// Declarative 7-rung Simplicity Ladder (inspired by DietrichGebert/ponytail; stop at first rung that works).
@@ -1401,7 +1414,12 @@ mod tests {
         assert!(full.contains("minimal-review"));
         assert!(!full.contains("/ponytail"), "Zenko must remain zero /commands");
 
-        for req_skill in ["minimal-review.md", "minimal-audit.md", "debt-harvest.md"] {
+        for req_skill in [
+            "minimal-review.md",
+            "minimal-audit.md",
+            "debt-harvest.md",
+            "dox-tree.md",
+        ] {
             assert!(
                 DEFAULT_SKILL_TEMPLATES
                     .iter()

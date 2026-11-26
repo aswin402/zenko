@@ -567,6 +567,12 @@ pub struct ContextBreakdown {
     pub zmode: ZMode,
     #[serde(default)]
     pub zmode_customized: bool,
+    #[serde(default)]
+    pub cache_stability_warnings: Vec<String>,
+    #[serde(default)]
+    pub scoped_rules_loaded: Vec<String>,
+    #[serde(default)]
+    pub nested_repo_docs_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4187,6 +4193,14 @@ pub struct DebtScanReport {
     pub items: Vec<DebtItem>,
 }
 
+/// Nearby nested repo-rule / DOX file whose governed subtree had structural edits without doc updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoxDriftFinding {
+    pub doc_path: String,
+    pub changed_files: Vec<String>,
+    pub new_files_count: usize,
+}
+
 /// Structured output of `code_minimalism(action="audit_diff")`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiffAuditReport {
@@ -4202,6 +4216,8 @@ pub struct DiffAuditReport {
     pub manifest_changes: Vec<String>,
     pub oversized_hunks: Vec<OversizedHunkFinding>,
     pub duplicate_symbols: Vec<DuplicateSymbolFinding>,
+    #[serde(default)]
+    pub dox_drift: Vec<DoxDriftFinding>,
     pub findings: Vec<String>,
 }
 

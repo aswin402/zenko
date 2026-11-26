@@ -1156,6 +1156,9 @@ export interface ContextBreakdown {
   minimalism_mode?: CodeMinimalismMode
   economy_lines_added?: number
   economy_lines_deleted?: number
+  cache_stability_warnings?: string[]
+  scoped_rules_loaded?: string[]
+  nested_repo_docs_count?: number
 }
 
 export type CodeMinimalismMode = 'off' | 'lite' | 'full' | 'ultra'
@@ -1232,6 +1235,12 @@ export interface OversizedHunkFinding {
   added_lines: number
 }
 
+export interface DoxDriftFinding {
+  doc_path: string
+  changed_files: string[]
+  new_files_count: number
+}
+
 export interface DiffAuditReport {
   files_changed: string[]
   new_files: string[]
@@ -1241,6 +1250,7 @@ export interface DiffAuditReport {
   manifest_changes: string[]
   oversized_hunks: OversizedHunkFinding[]
   duplicate_symbols: DuplicateSymbolFinding[]
+  dox_drift?: DoxDriftFinding[]
   findings: string[]
 }
 

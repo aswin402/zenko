@@ -870,6 +870,7 @@ impl AgentRuntime {
                     head_id = Some(ckpt_ev.id);
                     compacted_this_iter = true;
                     self.clear_session_output_dedup(&session_id);
+                    self.clear_session_scoped_rules(&session_id);
                     self.emit(AgentEvent::OrchestratorUpdated {
                         session_id: session_id.clone(),
                         stage: ORCH_STAGE_COMPACTION.into(),

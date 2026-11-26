@@ -17,9 +17,10 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    CodeMinimalismAction, CommentBloatFinding, DebtItem, DebtScanReport, DiffAuditReport,
-    DormantDependencyFinding, DuplicateSymbolFinding, EconomyBridge, LargeFileFinding,
-    LongFunctionFinding, MINIMALISM_ABSTRACTION_MIN_NAME_CHARS, MINIMALISM_AUDIT_MAX_FILE_BYTES,
+    CodeMinimalismAction, CommentBloatFinding, DOX_DRIFT_MAX_FINDINGS, DOX_DRIFT_MIN_ADDED_LINES,
+    DebtItem, DebtScanReport, DiffAuditReport, DormantDependencyFinding, DoxDriftFinding,
+    DuplicateSymbolFinding, EconomyBridge, LargeFileFinding, LongFunctionFinding,
+    MINIMALISM_ABSTRACTION_MIN_NAME_CHARS, MINIMALISM_AUDIT_MAX_FILE_BYTES,
     MINIMALISM_AUDIT_MAX_FILES, MINIMALISM_AUDIT_TOP_N, MINIMALISM_COMMENT_BLOAT_MIN_LINES,
     MINIMALISM_COMMENT_BLOAT_MIN_RATIO_PCT, MINIMALISM_COMMENT_BLOCK_MAX_LINES,
     MINIMALISM_DEBT_MARKERS, MINIMALISM_DEBT_MAX_ITEMS, MINIMALISM_DEBT_TEXT_MAX_CHARS,
@@ -28,9 +29,9 @@ use zenko_core::{
     MINIMALISM_IGNORED_DORMANT_DEPS, MINIMALISM_IGNORED_DUP_SYMBOLS, MINIMALISM_LARGE_FILE_LINES,
     MINIMALISM_LONG_FN_LINES, MINIMALISM_MANIFEST_FILES, MINIMALISM_SOURCE_EXTS,
     MINIMALISM_WRAPPER_MAX_LINES, MINIMALISM_WRAPPER_SUFFIXES, MinimalismGainReport,
-    OversizedHunkFinding, RepoAuditReport, Result, RiskLevel, SingleImplAbstractionFinding,
-    TOOL_CODE_MINIMALISM, ThinWrapperFinding, Tool, ToolConcurrency, ToolContext, ToolExposure,
-    ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    OversizedHunkFinding, REPO_RULE_FILES, RepoAuditReport, Result, RiskLevel,
+    SingleImplAbstractionFinding, TOOL_CODE_MINIMALISM, ThinWrapperFinding, Tool, ToolConcurrency,
+    ToolContext, ToolExposure, ToolOutput, ToolSet, ToolSpec, ZenkoError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1340,6 +1341,7 @@ fn analyze_unified_diff_with_untracked(
     let mut files_changed: BTreeSet<String> = BTreeSet::new();
     let mut new_files: BTreeSet<String> = BTreeSet::new();
     let mut manifest_changes: BTreeSet<String> = BTreeSet::new();
+    let mut added_by_file: BTreeMap<String, u64> = BTreeMap::new();
     let mut oversized_hunks: Vec<OversizedHunkFinding> = Vec::new();
     let mut added_fn_names: BTreeSet<String> = BTreeSet::new();
 
@@ -1410,6 +1412,9 @@ fn analyze_unified_diff_with_untracked(
             l if l.starts_with('\\') => {}
             l if l.starts_with('+') => {
                 lines_added = lines_added.saturating_add(1);
+                if !cur_file.is_empty() {
+                    *added_by_file.entry(cur_file.clone()).or_insert(0) += 1;
+                }
                 hunk_added += 1;
                 let code = &l[1..];
                 if MINIMALISM_SOURCE_EXTS.contains(&cur_ext.as_str()) {
@@ -1458,6 +1463,7 @@ fn analyze_unified_diff_with_untracked(
         }
         let line_count = content.lines().count();
         lines_added = lines_added.saturating_add(line_count as u64);
+        *added_by_file.entry(rel.clone()).or_insert(0) += line_count as u64;
         if line_count >= MINIMALISM_DIFF_LARGE_HUNK_LOC {
             oversized_hunks.push(OversizedHunkFinding {
                 path: rel.clone(),
@@ -1553,6 +1559,21 @@ fn analyze_unified_diff_with_untracked(
         ));
     }
 
+    let dox_drift = detect_dox_drift(
+        workspace_dir,
+        &files_changed,
+        &new_files,
+        &added_by_file,
+    );
+    if !dox_drift.is_empty() {
+        let docs: Vec<&str> = dox_drift.iter().take(4).map(|d| d.doc_path.as_str()).collect();
+        findings.push(format!(
+            "DOX drift risk: {} nested repo-rule doc(s) untouched despite structural edits in their subtree ({}) — update local contracts if ownership/invariants changed.",
+            dox_drift.len(),
+            docs.join(", ")
+        ));
+    }
+
     DiffAuditReport {
         files_changed: files_changed.into_iter().collect(),
         new_files: new_files.into_iter().collect(),
@@ -1564,8 +1585,85 @@ fn analyze_unified_diff_with_untracked(
         manifest_changes: manifest_changes.into_iter().collect(),
         oversized_hunks,
         duplicate_symbols,
+        dox_drift,
         findings,
     }
+}
+
+fn is_repo_rule_doc(rel_path: &str) -> bool {
+    let base = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    REPO_RULE_FILES.contains(&base)
+}
+
+/// Walks ancestor directories strictly below `workspace_dir` for every structurally modified file
+/// (new file, manifest edit, or `>= DOX_DRIFT_MIN_ADDED_LINES` added lines) to flag the nearest
+/// owning nested `AGENTS.md`/`ZENKO.md` when that doc was not updated in the same diff.
+fn detect_dox_drift(
+    workspace_dir: &Path,
+    files_changed: &BTreeSet<String>,
+    new_files: &BTreeSet<String>,
+    added_by_file: &BTreeMap<String, u64>,
+) -> Vec<DoxDriftFinding> {
+    if !workspace_dir.is_dir() {
+        return Vec::new();
+    }
+    let normalized_changed: BTreeSet<String> = files_changed
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .collect();
+    let mut by_doc: BTreeMap<String, (BTreeSet<String>, usize)> = BTreeMap::new();
+
+    for rel in files_changed {
+        let rel_norm = rel.replace('\\', "/");
+        if is_repo_rule_doc(&rel_norm) {
+            continue;
+        }
+        let is_new = new_files.contains(rel);
+        let added = added_by_file.get(rel).copied().unwrap_or(0);
+        if !is_new && !is_manifest_file(&rel_norm) && added < DOX_DRIFT_MIN_ADDED_LINES {
+            continue;
+        }
+
+        let mut dir_opt = Path::new(&rel_norm).parent();
+        let mut nearest_doc: Option<String> = None;
+        while let Some(rel_dir) = dir_opt {
+            if rel_dir.as_os_str().is_empty() {
+                break;
+            }
+            let full_dir = workspace_dir.join(rel_dir);
+            for rule_name in REPO_RULE_FILES {
+                let candidate = full_dir.join(rule_name);
+                if candidate.is_file() {
+                    let doc_rel = rel_dir.join(rule_name).to_string_lossy().replace('\\', "/");
+                    nearest_doc = Some(doc_rel);
+                    break;
+                }
+            }
+            if nearest_doc.is_some() {
+                break;
+            }
+            dir_opt = rel_dir.parent();
+        }
+
+        if let Some(doc_rel) = nearest_doc
+            && !normalized_changed.contains(&doc_rel)
+        {
+            let entry = by_doc.entry(doc_rel).or_default();
+            if entry.0.insert(rel_norm) && is_new {
+                entry.1 = entry.1.saturating_add(1);
+            }
+        }
+    }
+
+    by_doc
+        .into_iter()
+        .take(DOX_DRIFT_MAX_FINDINGS)
+        .map(|(doc_path, (files, new_files_count))| DoxDriftFinding {
+            doc_path,
+            changed_files: files.into_iter().take(6).collect(),
+            new_files_count,
+        })
+        .collect()
 }
 
 // ─── Deferred Read-Only `code_minimalism` Tool ────────────────────────────────
@@ -1696,6 +1794,13 @@ impl Tool for CodeMinimalismTool {
                         "  * duplicate `{}` -> {}",
                         d.symbol,
                         d.locations.join(", ")
+                    ));
+                }
+                for drift in report.dox_drift.iter().take(6) {
+                    lines.push(format!(
+                        "  * dox drift `{}` untouched (changed: {})",
+                        drift.doc_path,
+                        drift.changed_files.join(", ")
                     ));
                 }
                 Ok(ok_with_meta(
@@ -2125,6 +2230,44 @@ fn run() {
             "expected comment bloat diff finding in {:?}",
             diff_rep.findings
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_diff_detects_nested_dox_drift_and_clears_when_doc_updated() {
+        let dir = std::env::temp_dir().join(format!("zenko_dox_drift_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(dir.join("crates/api/src")).expect("mkdir");
+        std::fs::write(
+            dir.join("crates/api/AGENTS.md"),
+            "# API\n\n## Purpose\nHandles API routes.\n",
+        )
+        .expect("agents");
+
+        let diff_without_doc = "diff --git a/crates/api/src/routes.rs b/crates/api/src/routes.rs\n\
+--- /dev/null\n\
++++ b/crates/api/src/routes.rs\n\
+@@ -0,0 +1,4 @@\n\
++pub fn health() {}\n\
++pub fn metrics() {}\n\
++pub fn status() {}\n\
++pub fn ready() {}\n";
+
+        let rep = analyze_unified_diff(&dir, diff_without_doc);
+        assert_eq!(rep.dox_drift.len(), 1);
+        assert_eq!(rep.dox_drift[0].doc_path, "crates/api/AGENTS.md");
+        assert_eq!(rep.dox_drift[0].new_files_count, 1);
+        assert!(rep.findings.iter().any(|f| f.contains("DOX drift risk")));
+
+        let diff_with_doc = format!(
+            "{diff_without_doc}diff --git a/crates/api/AGENTS.md b/crates/api/AGENTS.md\n\
+--- a/crates/api/AGENTS.md\n\
++++ b/crates/api/AGENTS.md\n\
+@@ -3,0 +4,1 @@\n\
++- Added routes.rs endpoints.\n"
+        );
+        let clean = analyze_unified_diff(&dir, &diff_with_doc);
+        assert!(clean.dox_drift.is_empty(), "expected zero drift once doc updated: {:?}", clean.dox_drift);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

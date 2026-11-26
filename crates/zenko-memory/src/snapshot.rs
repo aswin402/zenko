@@ -3,6 +3,7 @@
 
 use crate::algorithms::{project_scope_for_workspace, sanitize_memory_text_with_secrets};
 use chrono::{DateTime, Utc};
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use similar::TextDiff;
@@ -10,12 +11,15 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use zenko_core::{
-    MAX_MEMORY_DOC_TOKENS, MAX_PROJECT_MEMORY_DOC_TOKENS, MAX_REPO_RULES_BYTES, MAX_SKILL_SUBFILE_BYTES, MAX_USER_DOC_TOKENS, MAX_ZENKO_DOC_TOKENS,
-    MEMORY_HISTORY_DIR_NAME, MEMORY_MAX_HISTORY_SNAPSHOTS, MEMORY_PROJECTS_DIR_NAME,
-    MEMORY_SCOPE_PROJECT_PREFIX, MemoryDocSnapshot, PROJECT_MEMORY_DOC_NAME, REPO_RULE_FILES,
-    Result, SKILL_DEFAULT_DESCRIPTION, SKILL_HISTORY_DIR_NAME, SKILL_MAX_CONTENT_BYTES,
-    SKILL_MAX_HISTORY_SNAPSHOTS, SKILL_REASON_MAX_CHARS, SKILL_SLUG_MAX_CHARS, SkillAuthor,
-    SkillStatus, SkillVersionSnapshot, TOOL_SKILL_VIEW, WORKSPACE_SKILL_DIRS, ZenkoError,
+    CACHE_VOLATILE_LABEL_KEYS, CACHE_VOLATILE_MAX_WARNINGS, DEFAULT_SEARCH_SKIP_DIRS,
+    DOX_MAX_TREE_DEPTH, DOX_MAX_TREE_DOCS, DOX_PURPOSE_MAX_CHARS, MAX_MEMORY_DOC_TOKENS,
+    MAX_PROJECT_MEMORY_DOC_TOKENS, MAX_REPO_RULES_BYTES, MAX_SKILL_SUBFILE_BYTES,
+    MAX_USER_DOC_TOKENS, MAX_ZENKO_DOC_TOKENS, MEMORY_HISTORY_DIR_NAME,
+    MEMORY_MAX_HISTORY_SNAPSHOTS, MEMORY_PROJECTS_DIR_NAME, MEMORY_SCOPE_PROJECT_PREFIX,
+    MemoryDocSnapshot, PROJECT_MEMORY_DOC_NAME, REPO_RULE_FILES, Result, SKILL_DEFAULT_DESCRIPTION,
+    SKILL_HISTORY_DIR_NAME, SKILL_MAX_CONTENT_BYTES, SKILL_MAX_HISTORY_SNAPSHOTS,
+    SKILL_REASON_MAX_CHARS, SKILL_SLUG_MAX_CHARS, SkillAuthor, SkillStatus, SkillVersionSnapshot,
+    TOOL_SKILL_VIEW, WORKSPACE_SKILL_DIRS, ZenkoError,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +57,10 @@ pub struct WorkspaceSnapshot {
     pub skills: Vec<SkillDoc>,
     #[serde(default)]
     pub repo_rules_loaded: Vec<String>,
+    #[serde(default)]
+    pub nested_repo_docs: Vec<String>,
+    #[serde(default)]
+    pub cache_stability_warnings: Vec<String>,
     #[serde(default)]
     pub tier1_prompt: String,
     #[serde(default)]
@@ -1052,6 +1060,75 @@ impl SnapshotManager {
         (loaded_names, combined)
     }
 
+    /// Walks the workspace up to `DOX_MAX_TREE_DEPTH` (respecting `.gitignore` and
+    /// `DEFAULT_SEARCH_SKIP_DIRS`, strictly excluding root files already loaded in Tier 1)
+    /// to build a compact `<repo_doc_tree>` index of nested `REPO_RULE_FILES` (`AGENTS.md`, `ZENKO.md`, etc.).
+    fn discover_nested_repo_docs(&self, auto_repo_rules: bool) -> Vec<(String, String)> {
+        if !auto_repo_rules {
+            return Vec::new();
+        }
+        let ws = self.workspace_dir();
+        if !ws.is_dir() {
+            return Vec::new();
+        }
+
+        let mut docs: BTreeMap<String, String> = BTreeMap::new();
+        let walker = WalkBuilder::new(&ws)
+            .hidden(true)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .require_git(false)
+            .max_depth(Some(DOX_MAX_TREE_DEPTH + 1))
+            .filter_entry(|dent| {
+                if dent.depth() == 0 {
+                    return true;
+                }
+                let is_dir = dent.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                if !is_dir {
+                    return true;
+                }
+                let name = dent.file_name().to_str().unwrap_or("");
+                !DEFAULT_SEARCH_SKIP_DIRS.contains(&name)
+            })
+            .build();
+
+        for entry in walker.flatten() {
+            // Depth 1 = workspace root (already loaded into Tier 1 by `discover_repo_rules`)
+            if entry.depth() <= 1 {
+                continue;
+            }
+            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let Some(file_name) = entry.file_name().to_str() else {
+                continue;
+            };
+            if !REPO_RULE_FILES.contains(&file_name) {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(rel) = path.strip_prefix(&ws) else {
+                continue;
+            };
+            let rel_posix = rel.to_string_lossy().replace('\\', "/");
+            if docs.contains_key(&rel_posix) {
+                continue;
+            }
+            let summary = std::fs::read_to_string(path)
+                .ok()
+                .map(|raw| extract_dox_purpose_summary(&raw))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Scoped subtree instructions".to_string());
+            docs.insert(rel_posix, summary);
+            if docs.len() >= DOX_MAX_TREE_DOCS {
+                break;
+            }
+        }
+
+        docs.into_iter().collect()
+    }
+
     /// Assembles a 3-Tier KV-cache-optimal prompt snapshot (with repo-rule auto-discovery on by default).
     pub fn load_snapshot(&self) -> Result<WorkspaceSnapshot> {
         self.load_snapshot_with_options(true)
@@ -1059,7 +1136,7 @@ impl SnapshotManager {
 
     /// Assembles a frozen 3-Tier KV-cache-optimal prompt:
     /// - **Tier 1 (Immutable Prefix):** `SOUL.md`, `<repo_rules>`, `<environment>` (tracked via `tier1_hash`)
-    /// - **Tier 2 (Session-Stable Block):** `<user_profile>`, `<memory_snapshot>`, Level-0 `<available_skills>` index
+    /// - **Tier 2 (Session-Stable Block):** `<user_profile>`, `<memory_snapshot>`, `<repo_doc_tree>`, Level-0 `<available_skills>` index
     /// - **Tier 3 (Volatile Tail):** injected strictly outside the system prompt via `<system_reminder>`
     pub fn load_snapshot_with_options(&self, auto_repo_rules: bool) -> Result<WorkspaceSnapshot> {
         self.ensure_defaults()?;
@@ -1070,6 +1147,9 @@ impl SnapshotManager {
         let zenko_md = self.read_doc("ZENKO.md")?;
         let skills = self.list_skills()?;
         let (repo_rules_loaded, repo_rules_body) = self.discover_repo_rules(auto_repo_rules);
+        let nested_docs = self.discover_nested_repo_docs(auto_repo_rules);
+        let nested_repo_docs: Vec<String> = nested_docs.iter().map(|(p, _)| p.clone()).collect();
+        let cache_stability_warnings = detect_tier1_volatility(&soul_md, &repo_rules_body);
 
         // ── Tier 1: Immutable Static Prefix (Cache Breakpoint Anchor) ────────
         let mut tier1 = String::with_capacity(2048);
@@ -1106,6 +1186,18 @@ impl SnapshotManager {
             tier2.push_str(&format!("\n\n<project_memory_snapshot scope=\"{proj_scope}\">\n"));
             tier2.push_str(project_memory_md.trim());
             tier2.push_str("\n</project_memory_snapshot>");
+        }
+        if !nested_docs.is_empty() {
+            tier2.push_str("\n\n<repo_doc_tree>\n");
+            tier2.push_str("Scoped subtree instructions (auto-injected once on first read/edit inside each directory):\n");
+            for (rel_path, summary) in &nested_docs {
+                tier2.push_str("- ");
+                tier2.push_str(rel_path);
+                tier2.push_str(": ");
+                tier2.push_str(summary);
+                tier2.push('\n');
+            }
+            tier2.push_str("</repo_doc_tree>");
         }
 
         let active_skills: Vec<&SkillDoc> = skills
@@ -1147,6 +1239,8 @@ impl SnapshotManager {
             zenko_md,
             skills,
             repo_rules_loaded,
+            nested_repo_docs,
+            cache_stability_warnings,
             tier1_prompt: tier1,
             tier1_hash,
             tier1_tokens,
@@ -1157,6 +1251,208 @@ impl SnapshotManager {
             total_tokens_estimate,
         })
     }
+}
+
+/// Extracts a concise single-line purpose summary from a nested DOX / `AGENTS.md` document.
+/// Prefers the first non-empty line under a `## Purpose` section; falls back to the first
+/// meaningful heading or sentence outside YAML frontmatter and HTML comments.
+pub fn extract_dox_purpose_summary(content: &str) -> String {
+    let mut lines = content.lines().peekable();
+    // Skip optional YAML frontmatter (`--- ... ---`)
+    if lines.peek().is_some_and(|l| l.trim() == "---") {
+        lines.next();
+        for l in lines.by_ref() {
+            if l.trim() == "---" {
+                break;
+            }
+        }
+    }
+
+    let mut in_purpose_section = false;
+    let mut fallback: Option<String> = None;
+
+    for raw in lines {
+        let t = raw.trim();
+        if t.is_empty() || t.starts_with("<!--") || t.starts_with("```") {
+            continue;
+        }
+        if let Some(heading) = t.strip_prefix('#') {
+            let h_clean = heading.trim_start_matches('#').trim();
+            if h_clean.eq_ignore_ascii_case("purpose") {
+                in_purpose_section = true;
+                continue;
+            }
+            if in_purpose_section {
+                in_purpose_section = false;
+            }
+            if fallback.is_none() && !h_clean.is_empty() {
+                fallback = Some(h_clean.to_string());
+            }
+            continue;
+        }
+        let cleaned = t
+            .trim_start_matches(['-', '*', '>'])
+            .trim()
+            .replace(['\r', '\n'], " ");
+        if cleaned.is_empty() {
+            continue;
+        }
+        if in_purpose_section {
+            return truncate_dox_summary(&cleaned);
+        }
+        if fallback.is_none() {
+            fallback = Some(cleaned);
+        }
+    }
+
+    fallback.map(|s| truncate_dox_summary(&s)).unwrap_or_default()
+}
+
+fn truncate_dox_summary(s: &str) -> String {
+    match s.chars().count() <= DOX_PURPOSE_MAX_CHARS {
+        true => s.to_string(),
+        false => format!("{}...", s.chars().take(DOX_PURPOSE_MAX_CHARS).collect::<String>()),
+    }
+}
+
+/// Zero-regex CacheAligner Tier-1 static-prefix volatility detector.
+/// Scans `SOUL.md` and root `<repo_rules>` for ISO timestamps, RFC-4122 UUIDs, or dynamic
+/// key-value headers (`updated_at:`, `session_id:`, etc.) that would invalidate provider KV caches
+/// if regenerated on every run. Never mutates prompt content (diagnostic warnings only).
+pub fn detect_tier1_volatility(soul_md: &str, repo_rules_body: &str) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    let mut seen_tags: HashSet<(&str, &str)> = HashSet::new();
+
+    for (source, text) in [("SOUL.md", soul_md), ("repo_rules", repo_rules_body)] {
+        if warnings.len() >= CACHE_VOLATILE_MAX_WARNINGS {
+            break;
+        }
+        if let Some(ts) = find_iso_timestamp_literal(text)
+            && seen_tags.insert((source, "iso_ts"))
+        {
+            warnings.push(format!(
+                "{source} contains ISO timestamp `{ts}` — move dynamic timestamps out of Tier-1 static docs to preserve KV cache."
+            ));
+        }
+        if warnings.len() >= CACHE_VOLATILE_MAX_WARNINGS {
+            break;
+        }
+        if let Some(uuid) = find_uuid_literal(text)
+            && seen_tags.insert((source, "uuid"))
+        {
+            warnings.push(format!(
+                "{source} contains UUID `{uuid}` — move per-run IDs out of Tier-1 static docs to preserve KV cache."
+            ));
+        }
+        for raw_line in text.lines() {
+            if warnings.len() >= CACHE_VOLATILE_MAX_WARNINGS {
+                break;
+            }
+            let t = raw_line
+                .trim()
+                .trim_start_matches(['#', '-', '*', '>'])
+                .trim();
+            if let Some((lhs, rhs)) = t.split_once(':').or_else(|| t.split_once('=')) {
+                let key = lhs.trim().trim_matches('`').to_ascii_lowercase();
+                let val = rhs.trim();
+                if !val.is_empty()
+                    && CACHE_VOLATILE_LABEL_KEYS.contains(&key.as_str())
+                    && seen_tags.insert((source, "volatile_key"))
+                {
+                    warnings.push(format!(
+                        "{source} declares volatile field `{key}` — move mutable metadata to Tier-2 memory to keep KV prefix frozen."
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings.truncate(CACHE_VOLATILE_MAX_WARNINGS);
+    warnings
+}
+
+fn find_iso_timestamp_literal(text: &str) -> Option<&str> {
+    let b = text.as_bytes();
+    if b.len() < 16 {
+        return None;
+    }
+    for i in 0..=b.len() - 16 {
+        let ok = b[i].is_ascii_digit()
+            && b[i + 1].is_ascii_digit()
+            && b[i + 2].is_ascii_digit()
+            && b[i + 3].is_ascii_digit()
+            && b[i + 4] == b'-'
+            && b[i + 5].is_ascii_digit()
+            && b[i + 6].is_ascii_digit()
+            && b[i + 7] == b'-'
+            && b[i + 8].is_ascii_digit()
+            && b[i + 9].is_ascii_digit()
+            && matches!(b[i + 10], b'T' | b't' | b' ')
+            && b[i + 11].is_ascii_digit()
+            && b[i + 12].is_ascii_digit()
+            && b[i + 13] == b':'
+            && b[i + 14].is_ascii_digit()
+            && b[i + 15].is_ascii_digit();
+        if !ok {
+            continue;
+        }
+        let year = std::str::from_utf8(&b[i..i + 4])
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        let month = std::str::from_utf8(&b[i + 5..i + 7])
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(0);
+        let day = std::str::from_utf8(&b[i + 8..i + 10])
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(0);
+        let hour = std::str::from_utf8(&b[i + 11..i + 13])
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(99);
+        let min = std::str::from_utf8(&b[i + 14..i + 16])
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(99);
+        if (1970..=2199).contains(&year)
+            && (1..=12).contains(&month)
+            && (1..=31).contains(&day)
+            && hour <= 23
+            && min <= 59
+        {
+            return text.get(i..i + 16);
+        }
+    }
+    None
+}
+
+fn find_uuid_literal(text: &str) -> Option<&str> {
+    let b = text.as_bytes();
+    if b.len() < 36 {
+        return None;
+    }
+    for i in 0..=b.len() - 36 {
+        let left_ok = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        let right_ok = i + 36 == b.len() || !b[i + 36].is_ascii_alphanumeric();
+        if !left_ok || !right_ok {
+            continue;
+        }
+        let seg = &b[i..i + 36];
+        let dashes_ok = seg[8] == b'-' && seg[13] == b'-' && seg[18] == b'-' && seg[23] == b'-';
+        if !dashes_ok {
+            continue;
+        }
+        let hex_ok = seg
+            .iter()
+            .enumerate()
+            .all(|(pos, &ch)| matches!(pos, 8 | 13 | 18 | 23) || ch.is_ascii_hexdigit());
+        if hex_ok {
+            return text.get(i..i + 36);
+        }
+    }
+    None
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -2096,6 +2392,46 @@ mod tests {
             .expect("create injected draft");
         assert_eq!(injected.status, SkillStatus::Draft);
         assert!(!injected.enabled);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn detects_tier1_volatility_and_indexes_nested_repo_doc_tree() {
+        let base = std::env::temp_dir().join(format!("zenko_dox_snap_{}", zenko_core::new_id()));
+        let data_dir = base.join("data");
+        let ws = base.join("ws");
+        std::fs::create_dir_all(ws.join("crates/api/src")).expect("api");
+        std::fs::create_dir_all(ws.join("webui")).expect("webui");
+        std::fs::write(ws.join("AGENTS.md"), "# Root Rules\nStatic guidelines only.\n")
+            .expect("root agents");
+        std::fs::write(
+            ws.join("crates/api/AGENTS.md"),
+            "# API Subtree\n\n## Purpose\nHandles HTTP routes and auth middleware contracts.\n",
+        )
+        .expect("api agents");
+        std::fs::write(
+            ws.join("webui/ZENKO.md"),
+            "# WebUI\nReact 19 obsidian vermilion frontend.\n",
+        )
+        .expect("webui zenko");
+
+        let mgr = SnapshotManager::new(&data_dir, &ws);
+        let snap = mgr.load_snapshot().expect("load snapshot");
+        assert!(snap.cache_stability_warnings.is_empty(), "clean Tier-1 should have zero warnings");
+        assert_eq!(
+            snap.nested_repo_docs,
+            vec!["crates/api/AGENTS.md", "webui/ZENKO.md"]
+        );
+        assert!(snap.tier2_prompt.contains("<repo_doc_tree>"));
+        assert!(snap.tier2_prompt.contains("Handles HTTP routes and auth middleware contracts."));
+        assert!(!snap.tier1_prompt.contains("crates/api/AGENTS.md"));
+
+        let warnings = detect_tier1_volatility(
+            "Updated: 2026-11-26T14:30:00Z\nsession_id: 550e8400-e29b-41d4-a716-446655440000\n",
+            "",
+        );
+        assert!(warnings.len() >= 3, "warnings={warnings:?}");
 
         let _ = std::fs::remove_dir_all(base);
     }

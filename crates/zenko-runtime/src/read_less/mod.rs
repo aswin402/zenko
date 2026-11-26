@@ -15,6 +15,7 @@
 
 pub mod command_shapers;
 pub mod custom_filters;
+pub mod smart_crusher;
 
 use command_shapers::{
     CommandFamily, classify_tool_command, command_family_label, normalize_carriage_returns,
@@ -22,8 +23,8 @@ use command_shapers::{
     shape_git_status, shape_package_install,
 };
 use custom_filters::try_apply_trusted_custom_filters;
-use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use zenko_core::{
     ARTIFACT_PATH_PREFIX, FNV1A_OFFSET_BASIS, FNV1A_PRIME, MCP_TOOL_PREFIX,
@@ -32,10 +33,8 @@ use zenko_core::{
     READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION, READ_LESS_DEDUP_MIN_BYTES,
     READ_LESS_DEDUP_MIN_REPEATS, READ_LESS_ELIGIBLE_TOOLS, READ_LESS_FAIL_PREFIXES,
     READ_LESS_FAIL_SUBSTRS, READ_LESS_GLOB_MAX_PER_DIR, READ_LESS_GLOB_MIN_LINES,
-    READ_LESS_JSON_FULL_DEPTH, READ_LESS_JSON_PRIORITY_KEYS, READ_LESS_JSON_SCHEMA_SCAN_ITEMS,
     READ_LESS_LOG_HEAD_KEEP, READ_LESS_LOG_MAX_KEPT_LINES, READ_LESS_LOG_MAX_MIDDLE_DIAGS,
-    READ_LESS_LOG_MAX_REPEAT_SAMPLES, READ_LESS_MAX_JSON_ARRAY_SAMPLE, READ_LESS_MAX_JSON_KEYS,
-    READ_LESS_MAX_SAMPLE_ROWS, READ_LESS_MAX_STRING_CHARS, READ_LESS_MAX_TAIL_LINES,
+    READ_LESS_LOG_MAX_REPEAT_SAMPLES, READ_LESS_MAX_SAMPLE_ROWS, READ_LESS_MAX_TAIL_LINES,
     READ_LESS_MIN_LINES, READ_LESS_MIN_SAVED_BYTES, READ_LESS_MIN_SAVINGS_PCT,
     READ_LESS_PASS_PREFIXES, READ_LESS_SCRUB_MIN_BYTES, READ_LESS_SCRUB_MIN_SAVED_BYTES,
     READ_LESS_SUMMARY_PREFIXES, READ_LESS_TAIL_ROWS, READ_LESS_TEST_MAX_KEPT_OTHER_LINES,
@@ -342,7 +341,7 @@ pub fn try_compress_tool_output_with_context(
         let heavy_eligible = original_bytes >= min_bytes || line_count >= READ_LESS_MIN_LINES;
         match heavy_eligible {
             true => compress_command_aware(cmd_family, &cleaned, zmode)
-                .or_else(|| compress_by_detected_shape(tool_name, &cleaned))
+                .or_else(|| compress_by_detected_shape(tool_name, tool_args, &cleaned, zmode))
                 .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))),
             false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
                 // Always fold huge lockfile diffs or apply lossless scrub on medium outputs
@@ -416,8 +415,13 @@ fn compress_command_aware(
     }
 }
 
-fn compress_by_detected_shape(tool_name: &str, text: &str) -> Option<(ReadLessShape, String)> {
-    if let Some(json_out) = try_compress_json_body(text) {
+fn compress_by_detected_shape(
+    tool_name: &str,
+    tool_args: &Value,
+    text: &str,
+    zmode: ZMode,
+) -> Option<(ReadLessShape, String)> {
+    if let Some(json_out) = smart_crusher::try_crush_json_body(text, tool_args, zmode) {
         return Some((ReadLessShape::Json, json_out));
     }
     if let Some(diff_out) = shape_git_diff(text) {
@@ -444,101 +448,6 @@ fn split_optional_exit_header(text: &str) -> (Option<&str>, &str) {
             None => (Some(text), ""),
         },
         None => (None, text),
-    }
-}
-
-fn try_compress_json_body(text: &str) -> Option<String> {
-    let (header, body) = split_optional_exit_header(text);
-    let trimmed = body.trim();
-    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[')) {
-        return None;
-    }
-    let parsed: Value = serde_json::from_str(trimmed).ok()?;
-    let compacted = compact_json_value(&parsed, 0);
-    let rendered = serde_json::to_string(&compacted).ok()?;
-    match header {
-        Some(h) => Some(format!("{h}\n{rendered}")),
-        None => Some(rendered),
-    }
-}
-
-fn compact_json_value(val: &Value, depth: usize) -> Value {
-    match val {
-        Value::String(s) => match s.len() > READ_LESS_MAX_STRING_CHARS {
-            true => {
-                let cut = s.floor_char_boundary(READ_LESS_MAX_STRING_CHARS);
-                let omitted = s.len().saturating_sub(cut);
-                Value::String(format!("{}... [+{omitted} chars]", &s[..cut]))
-            }
-            false => Value::String(s.clone()),
-        },
-        Value::Array(items) => {
-            if items.len() <= READ_LESS_MAX_JSON_ARRAY_SAMPLE {
-                return Value::Array(
-                    items
-                        .iter()
-                        .map(|v| compact_json_value(v, depth + 1))
-                        .collect(),
-                );
-            }
-            let sample: Vec<Value> = items
-                .iter()
-                .take(READ_LESS_MAX_JSON_ARRAY_SAMPLE)
-                .map(|v| compact_json_value(v, depth + 1))
-                .collect();
-            let mut schema_keys: BTreeSet<&str> = BTreeSet::new();
-            for item in items.iter().take(READ_LESS_JSON_SCHEMA_SCAN_ITEMS) {
-                if let Value::Object(map) = item {
-                    for k in map.keys() {
-                        if schema_keys.len() < READ_LESS_MAX_JSON_KEYS {
-                            schema_keys.insert(k.as_str());
-                        }
-                    }
-                }
-            }
-            let mut out = Map::new();
-            out.insert("_total_items".into(), json!(items.len()));
-            out.insert(
-                "_omitted_items".into(),
-                json!(items.len().saturating_sub(sample.len())),
-            );
-            if !schema_keys.is_empty() {
-                out.insert(
-                    "_item_keys".into(),
-                    Value::Array(
-                        schema_keys
-                            .into_iter()
-                            .map(|k| Value::String(k.to_string()))
-                            .collect(),
-                    ),
-                );
-            }
-            out.insert("_sample".into(), Value::Array(sample));
-            Value::Object(out)
-        }
-        Value::Object(map) => {
-            let mut out = Map::new();
-            let mut count = 0usize;
-            for (k, v) in map {
-                let is_priority = READ_LESS_JSON_PRIORITY_KEYS
-                    .iter()
-                    .any(|pk| k.eq_ignore_ascii_case(pk));
-                if depth >= READ_LESS_JSON_FULL_DEPTH
-                    && !is_priority
-                    && count >= READ_LESS_MAX_JSON_KEYS
-                {
-                    continue;
-                }
-                out.insert(k.clone(), compact_json_value(v, depth + 1));
-                count += 1;
-            }
-            let omitted = map.len().saturating_sub(out.len());
-            if omitted > 0 {
-                out.insert("_omitted_keys".into(), json!(omitted));
-            }
-            Value::Object(out)
-        }
-        other => other.clone(),
     }
 }
 
@@ -1023,6 +932,7 @@ fn try_compress_glob_list(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use zenko_core::{TOOL_READ_FILE, TOOL_SHELL_EXEC};
 
     #[test]

@@ -1388,6 +1388,115 @@
         assert!(gain_out.output.content.contains("mode=ultra"));
         assert!(gain_out.output.content.contains("+42 / -18 LOC"));
 
+        // Verify live JIT hierarchical DOX / nested AGENTS.md single-injection, ContextBreakdown
+        // reporting, and compaction/rewind reset behavior.
+        std::fs::create_dir_all(dir.join("crates/submod/src")).expect("mkdir submod");
+        std::fs::write(
+            dir.join("crates/submod/AGENTS.md"),
+            "# Submod DOX\n\n## Purpose\nHandles payment settlement state machines.\n",
+        )
+        .expect("submod agents");
+        std::fs::write(
+            dir.join("crates/submod/src/worker.rs"),
+            "pub fn settle() -> bool { true }\n",
+        )
+        .expect("worker.rs");
+
+        let first_read = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t17a".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "crates/submod/src/worker.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("first_read");
+        assert!(!first_read.output.is_error);
+        assert!(first_read
+            .output
+            .content
+            .contains("<scoped_repo_rules path=\"crates/submod/AGENTS.md\">"));
+        assert!(first_read
+            .output
+            .content
+            .contains("Handles payment settlement state machines."));
+
+        // Second read inside the same scope must NOT re-inject the already-loaded rule.
+        let second_read = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t17b".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "crates/submod/src/worker.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("second_read");
+        assert!(!second_read.output.is_error);
+        assert!(!second_read.output.content.contains("<scoped_repo_rules"));
+
+        let dox_ctx = rt
+            .inspect_session_context(&sess.id)
+            .await
+            .expect("dox_ctx");
+        assert_eq!(dox_ctx.scoped_rules_loaded, vec!["crates/submod/AGENTS.md"]);
+        assert!(dox_ctx.cache_stability_warnings.is_empty());
+
+        // A new session started after `crates/submod/AGENTS.md` exists immediately indexes it in Tier-2 `<repo_doc_tree>`.
+        let sess_dox = rt
+            .store
+            .create_session(
+                "dox-index",
+                "cli",
+                Some(&dir.display().to_string()),
+                None,
+                PermissionMode::Autonomous,
+            )
+            .expect("create sess_dox");
+        let fresh_dox_ctx = rt
+            .inspect_session_context(&sess_dox.id)
+            .await
+            .expect("fresh_dox_ctx");
+        assert!(fresh_dox_ctx.nested_repo_docs_count >= 1);
+        assert!(fresh_dox_ctx.cache_stability_warnings.is_empty());
+
+        // Compaction/rewind reset clears loaded_scoped_rules so next read re-injects cleanly.
+        rt.clear_session_scoped_rules(&sess.id);
+        let third_read = rt
+            .execute_single_tool_call(
+                &cfg_now,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t17c".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "crates/submod/src/worker.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("third_read");
+        assert!(!third_read.output.is_error);
+        assert!(third_read
+            .output
+            .content
+            .contains("<scoped_repo_rules path=\"crates/submod/AGENTS.md\">"));
+
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);
     }

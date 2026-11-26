@@ -379,6 +379,23 @@ impl Tool for ContextInspectTool {
             true => "none".to_string(),
             false => info.repo_rules_loaded.join(", "),
         };
+        let scoped_rules = match info.scoped_rules_loaded.is_empty() {
+            true => format!("0 active / {} nested indexed", info.nested_repo_docs_count),
+            false => format!(
+                "{} active / {} nested indexed [{}]",
+                info.scoped_rules_loaded.len(),
+                info.nested_repo_docs_count,
+                info.scoped_rules_loaded.join(", ")
+            ),
+        };
+        let kv_prefix_status = match info.cache_stability_warnings.is_empty() {
+            true => "stable".to_string(),
+            false => format!(
+                "{} warning(s): {}",
+                info.cache_stability_warnings.len(),
+                info.cache_stability_warnings[0]
+            ),
+        };
         let ckpt = info
             .active_checkpoint_id
             .as_deref()
@@ -386,8 +403,8 @@ impl Tool for ContextInspectTool {
         let summary = format!(
             "Context Budget (`{}` · model=`{}`)\n\
              - Window: {} / {} tok ({:.1}% used · KV cache hit {:.1}%)\n\
-             - Tier 1 (frozen prefix): {} tok (hash={} · repo_rules=[{rules}])\n\
-             - Tier 2 (session stable): {} tok\n\
+             - Tier 1 (frozen prefix): {} tok (hash={} · repo_rules=[{rules}] · kv_prefix={kv_prefix_status})\n\
+             - Tier 2 (session stable): {} tok (scoped_dox={scoped_rules})\n\
              - Tool schemas: {} tok (eager={}, deferred_active={}/{})\n\
              - History: {} tok (microcompacted={} tools, ~{} tok saved)\n\
              - Concise Mode: `{}` (auto_clarity={}) · Read-Less: {} ({} outputs compressed, {} B / ~{} tok saved)\n\

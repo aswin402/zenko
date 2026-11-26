@@ -3,10 +3,32 @@
 
 use reqwest::RequestBuilder;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use zenko_core::{
     ChatRequest, EventRole, MINIMAX_TEMP_MAX, MINIMAX_TEMP_MIN, PROVIDER_HTTP_REFERER,
-    PROVIDER_X_TITLE, ProviderDialect, find_provider,
+    PROVIDER_X_TITLE, ProviderDialect, ToolSpec, find_provider,
 };
+
+/// Recursively canonicalizes JSON object keys in deterministic lexicographical order
+/// (`CacheAligner`) so tool schemas (including dynamically discovered MCP schemas)
+/// produce byte-identical wire payloads across turns and restarts for provider KV caches.
+pub fn canonicalize_json_value(val: &Value) -> Value {
+    match val {
+        Value::Object(map) => {
+            let sorted: BTreeMap<&str, Value> = map
+                .iter()
+                .map(|(k, v)| (k.as_str(), canonicalize_json_value(v)))
+                .collect();
+            let mut out = serde_json::Map::with_capacity(sorted.len());
+            for (k, v) in sorted {
+                out.insert(k.to_string(), v);
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json_value).collect()),
+        other => other.clone(),
+    }
+}
 
 /// Resolves wire dialect from explicit provider ID, falling back to host inspection for `custom`.
 pub fn resolve_dialect(provider_id: &str, base_url: &str) -> ProviderDialect {
@@ -131,12 +153,15 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
         }
 
         if !req.tools.is_empty() {
-            let last_tool_idx = req.tools.len().saturating_sub(1);
+            // CacheAligner: sort tool specs deterministically by name and canonicalize every
+            // parameter schema's JSON keys so wire payloads stay byte-identical for KV caching.
+            let mut sorted_tools: Vec<&ToolSpec> = req.tools.iter().collect();
+            sorted_tools.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.description.cmp(&b.description)));
+            let last_tool_idx = sorted_tools.len().saturating_sub(1);
             let attach_tool_cache =
                 dialect == ProviderDialect::OpenRouter && req.enable_prompt_caching;
-            let tools: Vec<Value> = req
-                .tools
-                .iter()
+            let tools: Vec<Value> = sorted_tools
+                .into_iter()
                 .enumerate()
                 .map(|(idx, t)| {
                     let mut tool_val = json!({
@@ -144,7 +169,7 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                         "function": {
                             "name": t.name,
                             "description": t.description,
-                            "parameters": t.parameters
+                            "parameters": canonicalize_json_value(&t.parameters)
                         }
                     });
                     if attach_tool_cache && idx == last_tool_idx
@@ -379,5 +404,70 @@ mod tests {
             resolve_dialect("openrouter", "https://openrouter.ai/api/v1"),
             ProviderDialect::OpenRouter
         );
+    }
+
+    #[test]
+    fn cache_aligner_sorts_tools_and_canonicalizes_nested_schema_keys() {
+        let mut req_a = sample_request(0.2);
+        req_a.tools = vec![
+            ToolSpec {
+                name: "zeta_tool".into(),
+                description: "Zeta".into(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["b", "a"],
+                    "properties": {
+                        "z": { "type": "string", "description": "last" },
+                        "a": { "type": "integer", "minimum": 1 }
+                    }
+                }),
+                risk: zenko_core::RiskLevel::Safe,
+            },
+            ToolSpec {
+                name: "alpha_tool".into(),
+                description: "Alpha".into(),
+                parameters: json!({
+                    "properties": { "x": { "type": "boolean" } },
+                    "type": "object"
+                }),
+                risk: zenko_core::RiskLevel::Safe,
+            },
+        ];
+
+        let mut req_b = sample_request(0.2);
+        req_b.tools = vec![
+            ToolSpec {
+                name: "alpha_tool".into(),
+                description: "Alpha".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": { "x": { "type": "boolean" } }
+                }),
+                risk: zenko_core::RiskLevel::Safe,
+            },
+            ToolSpec {
+                name: "zeta_tool".into(),
+                description: "Zeta".into(),
+                parameters: json!({
+                    "properties": {
+                        "a": { "minimum": 1, "type": "integer" },
+                        "z": { "description": "last", "type": "string" }
+                    },
+                    "required": ["b", "a"],
+                    "type": "object"
+                }),
+                risk: zenko_core::RiskLevel::Safe,
+            },
+        ];
+
+        let body_a = build_request_body(ProviderDialect::OpenRouter, &req_a);
+        let body_b = build_request_body(ProviderDialect::OpenRouter, &req_b);
+        assert_eq!(
+            serde_json::to_string(&body_a["tools"]).expect("ser a"),
+            serde_json::to_string(&body_b["tools"]).expect("ser b"),
+        );
+        assert_eq!(body_a["tools"][0]["function"]["name"], "alpha_tool");
+        assert_eq!(body_a["tools"][1]["function"]["name"], "zeta_tool");
+        assert_eq!(body_a["tools"][1]["cache_control"]["type"], "ephemeral");
     }
 }

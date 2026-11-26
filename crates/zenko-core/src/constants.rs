@@ -1616,3 +1616,97 @@ pub const MINIMALISM_IGNORED_DORMANT_DEPS: &[&str] = &[
     "typescript",
     "vite",
 ];
+
+// ── SmartCrusher 2-Tier JSON Compressor (Headroom-inspired, zero ML/regex) ────
+pub const SMART_CRUSHER_TABULAR_MIN_ITEMS: usize = 6;
+pub const SMART_CRUSHER_TABULAR_MAX_ITEMS: usize = 40;
+pub const SMART_CRUSHER_TABULAR_MAX_BYTES: usize = 2_400;
+pub const SMART_CRUSHER_TABULAR_MIN_OVERLAP_PCT: usize = 80;
+pub const SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT: usize = 30;
+pub const SMART_CRUSHER_TABULAR_MAX_COLS: usize = 20;
+pub const SMART_CRUSHER_TABULAR_MAX_CELL_CHARS: usize = 120;
+pub const SMART_CRUSHER_HEAD_KEEP: usize = 2;
+pub const SMART_CRUSHER_TAIL_KEEP: usize = 2;
+pub const SMART_CRUSHER_MAX_KEPT_BALANCED: usize = 10;
+pub const SMART_CRUSHER_MAX_KEPT_HIGH: usize = 8;
+pub const SMART_CRUSHER_MAX_KEPT_ULTRA: usize = 6;
+pub const SMART_CRUSHER_MAX_ERROR_ITEMS: usize = 6;
+pub const SMART_CRUSHER_MAX_OUTLIER_ITEMS: usize = 4;
+pub const SMART_CRUSHER_OUTLIER_SIGMA: f64 = 2.0;
+pub const SMART_CRUSHER_MIN_NUMERIC_SAMPLES: usize = 5;
+pub const SMART_CRUSHER_MIN_QUERY_TOKEN_LEN: usize = 3;
+pub const SMART_CRUSHER_MAX_QUERY_TOKENS: usize = 12;
+pub const SMART_CRUSHER_ERROR_KEYS: &[&str] = &[
+    "error",
+    "err",
+    "exception",
+    "failure",
+    "failed",
+    "fatal",
+    "panic",
+    "traceback",
+    "stack",
+    "stack_trace",
+];
+pub const SMART_CRUSHER_STATUS_KEYS: &[&str] = &[
+    "status",
+    "status_code",
+    "statusCode",
+    "http_status",
+    "code",
+    "level",
+    "severity",
+    "state",
+    "result",
+    "outcome",
+];
+pub const SMART_CRUSHER_ERROR_STATUS_VALUES: &[&str] = &[
+    "error",
+    "err",
+    "fail",
+    "failed",
+    "failure",
+    "fatal",
+    "critical",
+    "panic",
+    "crash",
+    "crashed",
+    "timeout",
+    "timed_out",
+    "rejected",
+    "denied",
+    "unhealthy",
+    "degraded",
+    "broken",
+];
+pub const SMART_CRUSHER_OK_KEYS: &[&str] = &["ok", "success", "passed", "healthy", "valid"];
+pub const SMART_CRUSHER_QUERY_ARG_KEYS: &[&str] = &[
+    "query", "q", "filter", "search", "pattern", "command", "cmd", "url", "path", "topic",
+    "keyword", "grep", "jq",
+];
+pub const SMART_CRUSHER_QUERY_STOPWORDS: &[&str] = &[
+    "and", "arg", "cat", "cmd", "curl", "for", "from", "get", "http", "https", "json", "list",
+    "post", "run", "set", "the", "this", "true", "false", "with",
+];
+
+// ── CacheAligner Prefix Stability Guard (zero regex) ─────────────────────────
+pub const CACHE_VOLATILE_MAX_WARNINGS: usize = 6;
+pub const CACHE_VOLATILE_LABEL_KEYS: &[&str] = &[
+    "current_time",
+    "current_date",
+    "timestamp",
+    "generated_at",
+    "updated_at",
+    "request_id",
+    "session_id",
+    "trace_id",
+];
+
+// ── DOX Hierarchical Scoped Repo Rules & Drift Guard ─────────────────────────
+pub const DOX_MAX_TREE_DEPTH: usize = 4;
+pub const DOX_MAX_TREE_DOCS: usize = 24;
+pub const DOX_PURPOSE_MAX_CHARS: usize = 120;
+pub const DOX_MAX_SCOPED_RULE_BYTES: usize = 4 * 1024;
+pub const DOX_MAX_SCOPED_RULES_PER_SESSION: usize = 16;
+pub const DOX_DRIFT_MIN_ADDED_LINES: u64 = 12;
+pub const DOX_DRIFT_MAX_FINDINGS: usize = 6;
