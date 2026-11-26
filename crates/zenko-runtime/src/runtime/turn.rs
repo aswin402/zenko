@@ -549,6 +549,7 @@ impl AgentRuntime {
             .collect();
         let session_scope = SessionToolScope {
             role_id: active_role.map(|r| r.id.to_string()),
+            active_model: Some(model.clone()),
             permission: effective_permission,
             custom_read_only: effective_custom_read_only,
             custom_tool_subset: custom_tool_subset.clone(),
@@ -733,6 +734,7 @@ impl AgentRuntime {
                         && dec.model_id != model
                     {
                         model = dec.model_id;
+                        self.update_active_scope_model(&session_id, &model);
                         context_window = self.resolve_context_window(&model);
                         active_max_tokens = self.effective_output_budget(
                             cfg.provider.max_tokens,
@@ -1325,6 +1327,7 @@ impl AgentRuntime {
                             context_window = self.resolve_context_window(&next_model);
                         }
                         model = next_model;
+                        self.update_active_scope_model(&session_id, &model);
                         reasoning_effort = next_effort;
                         pending_orch_hints.push(format!(
                             "<orchestrator_hint type=\"text_doom_loop\">\n\
@@ -1776,6 +1779,7 @@ impl AgentRuntime {
                                 false => None,
                             };
                             model = next_model;
+                            self.update_active_scope_model(&session_id, &model);
                             reasoning_effort = next_effort;
                             self.emit(AgentEvent::OrchestratorUpdated {
                                 session_id: session_id.clone(),

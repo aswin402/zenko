@@ -1073,6 +1073,12 @@ impl SqliteStore {
                             .output_dedup_tokens_saved
                             .saturating_add(tok_sum.max(0) as u64);
                     }
+                    Some(EconomyLedgerKind::Shunt) => {
+                        summary.shunt_hits = summary.shunt_hits.saturating_add(count);
+                        summary.shunt_tokens_saved = summary
+                            .shunt_tokens_saved
+                            .saturating_add(tok_sum.max(0) as u64);
+                    }
                     Some(EconomyLedgerKind::ToolPrune) => {
                         summary.tool_prune_tokens_saved =
                             summary.tool_prune_tokens_saved.saturating_add(tok_sum.max(0) as u64);
@@ -1105,6 +1111,7 @@ impl SqliteStore {
             let gross_saved = summary
                 .read_less_tokens_saved
                 .saturating_add(summary.output_dedup_tokens_saved)
+                .saturating_add(summary.shunt_tokens_saved)
                 .saturating_add(summary.tool_prune_tokens_saved);
             summary.net_tokens_saved = (gross_saved as i64) - (summary.overhead_tokens as i64);
             let heuristic_usd = ((summary.net_tokens_saved as f64) / 1_000_000.0)

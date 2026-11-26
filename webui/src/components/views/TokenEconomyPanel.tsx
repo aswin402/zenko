@@ -332,7 +332,7 @@ export function TokenEconomyPanel({
     const delRatio = churnTotal > 0 ? (((m?.lines_deleted ?? 0) / churnTotal) * 100).toFixed(1) : '0.0'
     const md = [
       `### Zenko Efficiency Report (\`${report.repo_scope}\`)`,
-      `- **Net Token ROI:** ${s.net_tokens_saved >= 0 ? '+' : ''}${s.net_tokens_saved} tok (~$${s.estimated_usd_saved.toFixed(4)}) [Read-Less +${s.read_less_tokens_saved} · Output-Dedup +${s.output_dedup_tokens_saved ?? 0} (${s.output_dedup_hits ?? 0} hits) · Tool-Prune +${s.tool_prune_tokens_saved} · Overhead -${s.overhead_tokens} · CCR Recoveries ${s.ccr_recoveries ?? 0}]`,
+      `- **Net Token ROI:** ${s.net_tokens_saved >= 0 ? '+' : ''}${s.net_tokens_saved} tok (~$${s.estimated_usd_saved.toFixed(4)}) [Read-Less +${s.read_less_tokens_saved} · Output-Dedup +${s.output_dedup_tokens_saved ?? 0} (${s.output_dedup_hits ?? 0} hits) · Shunt +${s.shunt_tokens_saved ?? 0} (${s.shunt_hits ?? 0} hits) · Tool-Prune +${s.tool_prune_tokens_saved} · Overhead -${s.overhead_tokens} · CCR Recoveries ${s.ccr_recoveries ?? 0}]`,
       `- **Micro-Skills:** ${s.active_micro_skills} active, ${s.candidate_micro_skills} candidate, ${s.retired_micro_skills} retired (${s.micro_skill_injections} injections)`,
       `- **Tool Pruning & Loop Guard:** ${s.pruned_tools_count} soft-deferred · P90=${s.p90_turn_calls} (envelope ${s.envelope_calls}, ${s.loop_guard_interventions} redirects)`,
       `- **Code Minimalism (\`${report.config.minimalism_mode}\`):** +${m?.lines_added ?? 0} / -${m?.lines_deleted ?? 0} LOC (deletion ratio ${delRatio}%, ${m?.new_files_created ?? 0} new files, ${m?.bloat_hints_issued ?? 0} hints, ${m?.debt_markers_last_seen ?? 0} debt markers)`,
@@ -461,13 +461,14 @@ export function TokenEconomyPanel({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {[
             [
-              'Read-Less + Dedup',
+              'Read-Less + Shunt',
               `${formatCompactTokens(
                 sum.read_less_tokens_saved +
                   (sum.output_dedup_tokens_saved ?? 0) +
+                  (sum.shunt_tokens_saved ?? 0) +
                   sum.tool_prune_tokens_saved,
               )} tok`,
-              `${sum.output_dedup_hits ?? 0} dedup · ${sum.ccr_recoveries ?? 0} CCR · -${formatCompactTokens(sum.overhead_tokens)} oh`,
+              `${sum.output_dedup_hits ?? 0} dedup · ${sum.shunt_hits ?? 0} shunt · ${sum.ccr_recoveries ?? 0} CCR · -${formatCompactTokens(sum.overhead_tokens)} oh`,
             ],
             [
               'Micro-Skills',

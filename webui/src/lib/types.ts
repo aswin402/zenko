@@ -1383,6 +1383,8 @@ export interface EconomyLedgerSummary {
   read_less_tokens_saved: number
   output_dedup_tokens_saved?: number
   output_dedup_hits?: number
+  shunt_hits?: number
+  shunt_tokens_saved?: number
   ccr_recoveries?: number
   raw_bypasses?: number
   tool_prune_tokens_saved: number

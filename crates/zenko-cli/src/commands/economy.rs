@@ -44,10 +44,12 @@ pub async fn run_economy_gain(
         s.net_tokens_saved, s.estimated_usd_saved
     );
     println!(
-        "  Breakdown     : Read-Less +{} · Dedup +{} ({} hits) · Tool-Prune +{} · Overhead -{}",
+        "  Breakdown     : Read-Less +{} · Dedup +{} ({} hits) · Shunt +{} ({} hits) · Tool-Prune +{} · Overhead -{}",
         s.read_less_tokens_saved,
         s.output_dedup_tokens_saved,
         s.output_dedup_hits,
+        s.shunt_tokens_saved,
+        s.shunt_hits,
         s.tool_prune_tokens_saved,
         s.overhead_tokens
     );

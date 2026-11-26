@@ -448,6 +448,7 @@
         // 4. Scoped subagent catalog hides denied & unavailable tools (cron, goal_loop, mcp_resource).
         let explorer_scope = SessionToolScope {
             role_id: Some("explorer".into()),
+            active_model: None,
             permission: PermissionMode::Autonomous,
             custom_read_only: false,
             custom_tool_subset: HashSet::new(),
@@ -531,6 +532,7 @@
         // and `stop_on_error: true` short-circuits subsequent calls.
         let plan_scope = SessionToolScope {
             role_id: None,
+            active_model: None,
             permission: PermissionMode::Plan,
             custom_read_only: false,
             custom_tool_subset: HashSet::new(),
@@ -774,6 +776,7 @@
 
         let ro_scope = SessionToolScope {
             role_id: Some("explorer".into()),
+            active_model: None,
             permission: PermissionMode::Autonomous,
             custom_read_only: false,
             custom_tool_subset: HashSet::new(),
@@ -805,6 +808,7 @@
         // Trimmed Eager surface hides `skill_view` when 0 skills exist & defers `list_dir`/`record_brainstorm`/`plan_update`/`orchestrate_control`.
         let root_scope_no_skills = SessionToolScope {
             role_id: None,
+            active_model: None,
             permission: PermissionMode::Autonomous,
             custom_read_only: false,
             custom_tool_subset: HashSet::new(),
@@ -1894,6 +1898,158 @@
             plan_ref_mut.output.is_error,
             "Plan Mode must block mutating code_refactor replace without dry_run=true"
         );
+
+        // 20. Tier-aware Shunt gate in ToolRouter: redirects unconstrained large `read_file`
+        //     and unpiped `shell_exec("cat ...")`, bypasses on `raw: true` and `Fast` subagents.
+        let mut big_shunt_src = String::new();
+        for i in 0..90 {
+            big_shunt_src.push_str(&format!(
+                "pub fn shunt_fn_{i}(v: usize) -> usize {{\n    let a = v + {i};\n    let b = a * 3;\n    b + 1\n}}\n"
+            ));
+        }
+        std::fs::write(tool_ctx.workspace_dir.join("shunt_big.rs"), &big_shunt_src)
+            .expect("write shunt_big.rs");
+        let mut shunt_cfg = cfg_now.clone();
+        shunt_cfg.provider.lead_model = "anthropic/claude-sonnet-4".into();
+        shunt_cfg.provider.fast_model = "google/gemini-2.5-flash".into();
+
+        let lead_scope = SessionToolScope {
+            role_id: None,
+            active_model: Some("anthropic/claude-sonnet-4".into()),
+            permission: PermissionMode::Autonomous,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext::default(),
+        };
+        let _lead_guard = ActiveSessionScopeGuard::enter(rt.session_control(&sess.id), lead_scope);
+        let shunted_read = rt
+            .execute_single_tool_call(
+                &shunt_cfg,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t20a".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "shunt_big.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("shunted_read");
+        assert!(
+            !shunted_read.output.is_error
+                && shunted_read
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+                    .and_then(|s| s.get("action"))
+                    .and_then(Value::as_str)
+                    == Some("redirect")
+                && shunted_read.output.content.contains("shunt_fn_0"),
+            "Lead unconstrained read_file on 450-line file must be Shunt-redirected: {}",
+            shunted_read.output.content
+        );
+
+        let raw_read = rt
+            .execute_single_tool_call(
+                &shunt_cfg,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t20b".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "shunt_big.rs", "raw": true }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("raw_read");
+        assert!(
+            !raw_read.output.is_error
+                && raw_read
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+                    .is_none()
+                && raw_read.output.content.contains("1:"),
+            "Explicit raw=true must bypass Shunt cleanly: {}",
+            raw_read.output.content
+        );
+
+        let shunted_cat = rt
+            .execute_single_tool_call(
+                &shunt_cfg,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t20c".into(),
+                    name: TOOL_SHELL_EXEC.into(),
+                    arguments: json!({ "command": "cat shunt_big.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("shunted_cat");
+        assert!(
+            !shunted_cat.output.is_error
+                && shunted_cat
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+                    .and_then(|s| s.get("source_kind"))
+                    .and_then(Value::as_str)
+                    == Some("shell_read"),
+            "Unpiped `cat shunt_big.rs` must be Shunt-redirected: {}",
+            shunted_cat.output.content
+        );
+        drop(_lead_guard);
+
+        let fast_scope = SessionToolScope {
+            role_id: Some("explorer".into()),
+            active_model: Some("google/gemini-2.5-flash".into()),
+            permission: PermissionMode::Autonomous,
+            custom_read_only: false,
+            custom_tool_subset: HashSet::new(),
+            availability: ToolAvailabilityContext::default(),
+        };
+        let _fast_guard = ActiveSessionScopeGuard::enter(rt.session_control(&sess.id), fast_scope);
+        let fast_read = rt
+            .execute_single_tool_call(
+                &shunt_cfg,
+                &sess.id,
+                PermissionMode::Autonomous,
+                &tool_ctx,
+                true,
+                ToolCall {
+                    id: "t20d".into(),
+                    name: zenko_core::TOOL_READ_FILE.into(),
+                    arguments: json!({ "path": "shunt_big.rs" }),
+                },
+                &cancel,
+            )
+            .await
+            .expect("fast_read");
+        assert!(
+            !fast_read.output.is_error
+                && fast_read
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+                    .is_none(),
+            "Fast-tier explorer must bypass Shunt automatically: {}",
+            fast_read.output.content
+        );
+        drop(_fast_guard);
 
         rt.shutdown_external_tools().await;
         let _ = std::fs::remove_dir_all(dir);

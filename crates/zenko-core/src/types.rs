@@ -348,6 +348,8 @@ pub struct BatchToolStepOutcome {
     #[serde(default)]
     pub output_dedup_tokens_saved: u64,
     #[serde(default)]
+    pub shunt_tokens_saved: u64,
+    #[serde(default)]
     pub ccr_recovery: bool,
 }
 
@@ -2011,6 +2013,8 @@ pub struct ReconSummary {
     pub repo_markers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_brief: Option<String>,
     pub memory_hits: Vec<String>,
     #[serde(default)]
     pub session_hits: Vec<String>,
@@ -3888,6 +3892,7 @@ pub struct RepoToolUsage {
 pub enum EconomyLedgerKind {
     ReadLess,
     OutputDedup,
+    Shunt,
     ToolPrune,
     MicroSkill,
     LoopGuard,
@@ -3902,6 +3907,7 @@ impl EconomyLedgerKind {
         match self {
             Self::ReadLess => "read_less",
             Self::OutputDedup => "output_dedup",
+            Self::Shunt => "shunt",
             Self::ToolPrune => "tool_prune",
             Self::MicroSkill => "micro_skill",
             Self::LoopGuard => "loop_guard",
@@ -3916,6 +3922,7 @@ impl EconomyLedgerKind {
         match raw.trim().to_ascii_lowercase().as_str() {
             "read_less" => Some(Self::ReadLess),
             "output_dedup" => Some(Self::OutputDedup),
+            "shunt" => Some(Self::Shunt),
             "tool_prune" => Some(Self::ToolPrune),
             "micro_skill" => Some(Self::MicroSkill),
             "loop_guard" => Some(Self::LoopGuard),
@@ -3925,6 +3932,39 @@ impl EconomyLedgerKind {
             "overhead_judge" => Some(Self::OverheadJudge),
             _ => None,
         }
+    }
+}
+
+/// Declarative enforcement posture for Zenko's tier-aware Shunt large-read guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ShuntMode {
+    Off,
+    Advise,
+    #[default]
+    Redirect,
+}
+
+impl ShuntMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Advise => "advise",
+            Self::Redirect => "redirect",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "none" => Some(Self::Off),
+            "advise" | "soft" | "warn" => Some(Self::Advise),
+            "redirect" | "hard" | "gate" => Some(Self::Redirect),
+            _ => None,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Off)
     }
 }
 
@@ -3995,6 +4035,10 @@ pub struct EconomyLedgerSummary {
     pub output_dedup_tokens_saved: u64,
     #[serde(default)]
     pub output_dedup_hits: u64,
+    #[serde(default)]
+    pub shunt_hits: u64,
+    #[serde(default)]
+    pub shunt_tokens_saved: u64,
     #[serde(default)]
     pub ccr_recoveries: u64,
     #[serde(default)]

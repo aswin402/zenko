@@ -24,6 +24,7 @@ pub mod pty;
 pub mod refactor_tool;
 pub mod sandbox;
 pub mod search;
+pub mod service_brief;
 pub mod shell;
 pub mod struct_code;
 pub mod trigram;

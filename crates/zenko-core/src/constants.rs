@@ -1881,3 +1881,38 @@ pub const CODE_STATS_RECON_TOP_LANGS: usize = 4;
 pub const STRUCT_META_SINGLE_PREFIX: &str = "$";
 pub const STRUCT_META_VARIADIC_PREFIX: &str = "$$$";
 pub const STRUCT_META_WILDCARD: &str = "$_";
+
+// ── Tier-Aware Shunt Context Gate & Repo-Native Service Briefing (zero regex) ─
+pub const ORCH_STAGE_SHUNT: &str = "shunt";
+pub const SUBAGENT_ROLE_DRAFTER: &str = "drafter";
+pub const SHUNT_META_KEY: &str = "shunt";
+pub const SHUNT_DEFAULT_MIN_LINES: usize = 350;
+pub const SHUNT_MAX_SCAN_BYTES: u64 = 16 * 1024 * 1024;
+pub const SHUNT_SCAN_BUF_BYTES: usize = 16 * 1024;
+pub const SHUNT_OUTLINE_MAX_SYMBOLS: usize = 48;
+pub const SHUNT_MODES: &[&str] = &["off", "advise", "redirect"];
+pub const SHUNT_SHELL_FULL_DUMP_BINS: &[&str] = &["cat", "less", "more", "nl", "bat", "batcat"];
+pub const SHUNT_SHELL_SLICE_BINS: &[&str] = &["head", "tail"];
+pub const SHUNT_SHELL_VALUE_FLAGS: &[&str] = &[
+    "-n", "--lines", "-c", "--bytes", "-b", "-i", "-l", "-s", "-v", "-w",
+];
+pub const SERVICE_CATALOG_FILES: &[&str] = &["catalog-info.yaml", "catalog-info.yml"];
+pub const SERVICE_CODEOWNERS_PATHS: &[&str] = &[
+    ".github/CODEOWNERS",
+    "CODEOWNERS",
+    "docs/CODEOWNERS",
+    ".gitlab/CODEOWNERS",
+];
+pub const SERVICE_BRIEF_MAX_FILE_BYTES: u64 = 64 * 1024;
+pub const SERVICE_BRIEF_MAX_DEPS: usize = 6;
+pub const SERVICE_BRIEF_MAX_APIS: usize = 4;
+pub const SERVICE_BRIEF_MAX_OWNERS: usize = 4;
+pub const SERVICE_BRIEF_MAX_LINKS: usize = 3;
+pub const SERVICE_CATALOG_ANNOTATION_KEYS: &[(&str, &str)] = &[
+    ("backstage.io/techdocs-ref", "docs"),
+    ("pagerduty.com/service-id", "pagerduty"),
+    ("opsgenie.com/component-id", "opsgenie"),
+    ("github.com/project-slug", "repo"),
+    ("backstage.io/source-location", "src"),
+    ("runbook", "runbook"),
+];

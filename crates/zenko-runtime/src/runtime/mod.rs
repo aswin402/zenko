@@ -206,6 +206,7 @@ impl WakeupNotice {
 #[derive(Debug, Clone)]
 pub(crate) struct SessionToolScope {
     pub role_id: Option<String>,
+    pub active_model: Option<String>,
     pub permission: PermissionMode,
     pub custom_read_only: bool,
     pub custom_tool_subset: HashSet<String>,
@@ -2666,8 +2667,20 @@ impl AgentRuntime {
             .as_deref()
             .and_then(find_subagent_role)
             .is_some_and(|r| r.read_only);
+        let active_model = sess
+            .as_ref()
+            .and_then(|s| s.model_override.clone())
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| {
+                let lead = self.config().provider.lead_model.trim().to_string();
+                match lead.is_empty() {
+                    true => None,
+                    false => Some(lead),
+                }
+            });
         SessionToolScope {
             role_id: role_id.clone(),
+            active_model,
             permission,
             custom_read_only: false,
             custom_tool_subset: HashSet::new(),
@@ -2677,6 +2690,15 @@ impl AgentRuntime {
                 is_subagent: role_id.is_some(),
                 read_only: permission == PermissionMode::Plan || role_ro,
             },
+        }
+    }
+
+    pub(crate) fn update_active_scope_model(&self, session_id: &str, model_id: &str) {
+        let ctrl = self.session_control(session_id);
+        if let Ok(mut slot) = ctrl.active_scope.lock()
+            && let Some(ref mut scope) = *slot
+        {
+            scope.active_model = Some(model_id.to_string());
         }
     }
 

@@ -16,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 use zenko_core::{
     ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, DOX_MAX_SCOPED_RULE_BYTES,
     DOX_SCOPED_RULES_META_KEY, DOX_SCOPED_RULES_TAG_CLOSE, DOX_SCOPED_RULES_TAG_PREFIX, HookEvent,
-    MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS, ORCH_STAGE_TOOL_ACTIVATED, PermissionMode,
-    REPO_RULE_FILES, Result, ScriptBlockAction, SkillManageAction, TOOL_APPLY_PATCH,
+    MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS, ORCH_STAGE_SHUNT, ORCH_STAGE_TOOL_ACTIVATED,
+    PermissionMode, REPO_RULE_FILES, Result, SHUNT_META_KEY, ScriptBlockAction, SkillManageAction,
+    TOOL_APPLY_PATCH,
     TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_PROJECT_BRAIN,
     TOOL_READ_FILE, TOOL_SCRIPT_BLOCK, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC,
     TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency,
@@ -230,6 +231,91 @@ async fn authorize_and_invoke(
     }
 
     activate_deferred_if_needed(rt, session_id, &tc.name);
+
+    let scope_now = rt.effective_session_scope(session_id);
+    match crate::shunt::evaluate_shunt_pre_tool(
+        cfg,
+        &tool_ctx.workspace_dir,
+        &tool_ctx.hub_dir,
+        &tool_ctx.data_dir,
+        scope_now.active_model.as_deref(),
+        scope_now.role_id.as_deref(),
+        &tc.name,
+        &tc.arguments,
+    ) {
+        crate::shunt::ShuntDecision::Redirect(outcome) => {
+            rt.emit(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: ORCH_STAGE_SHUNT.into(),
+                tier: zenko_core::ExecutionTier::Standard,
+                detail: format!(
+                    "Shunt redirected `{}` ({}, {} lines): {} -> {} B (~{} tok saved)",
+                    tc.name,
+                    outcome.target_path,
+                    outcome.total_lines,
+                    outcome.original_bytes,
+                    outcome.returned_bytes,
+                    outcome.tokens_saved,
+                ),
+                model: scope_now.active_model.clone(),
+            });
+            return Ok(ToolOutput {
+                content: outcome.content,
+                is_error: false,
+                diff: None,
+                metadata: Some(json!({
+                    SHUNT_META_KEY: {
+                        "action": "redirect",
+                        "source_kind": outcome.source_kind,
+                        "target_path": outcome.target_path,
+                        "total_lines": outcome.total_lines,
+                        "original_bytes": outcome.original_bytes,
+                        "returned_bytes": outcome.returned_bytes,
+                        "tokens_saved": outcome.tokens_saved,
+                    }
+                })),
+            });
+        }
+        crate::shunt::ShuntDecision::Advise {
+            target_path,
+            source_kind,
+            total_lines,
+            note,
+        } => {
+            let mut out = match tool
+                .execute(tool_ctx, tc.arguments.clone(), cancel.clone())
+                .await
+            {
+                Ok(out) => out,
+                Err(ZenkoError::Cancelled) => return Err(ZenkoError::Cancelled),
+                Err(err) => return Ok(format_tool_error_with_schema(spec, err)),
+            };
+            if !out.is_error {
+                if !out.content.ends_with('\n') {
+                    out.content.push('\n');
+                }
+                out.content.push_str(&note);
+                let shunt_meta = json!({
+                    "action": "advise",
+                    "source_kind": source_kind,
+                    "target_path": target_path,
+                    "total_lines": total_lines,
+                    "tokens_saved": 0,
+                });
+                out.metadata = match out.metadata {
+                    Some(Value::Object(mut map)) => {
+                        map.insert(SHUNT_META_KEY.into(), shunt_meta);
+                        Some(Value::Object(map))
+                    }
+                    Some(other) => Some(json!({ "data": other, SHUNT_META_KEY: shunt_meta })),
+                    None => Some(json!({ SHUNT_META_KEY: shunt_meta })),
+                };
+            }
+            return Ok(out);
+        }
+        crate::shunt::ShuntDecision::PassThrough => {}
+    }
+
     match tool
         .execute(tool_ctx, tc.arguments.clone(), cancel.clone())
         .await
@@ -503,7 +589,15 @@ pub(crate) async fn dispatch_tool_call(
     .await?;
 
     // Stage 5: Post-execution enrichers (mutation watermark, warm LSP diagnostics, Read-Less + CCR, artifact spill, telemetry).
+    let is_shunt_redirected = tool_output
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get(SHUNT_META_KEY))
+        .and_then(|s| s.get("action"))
+        .and_then(Value::as_str)
+        == Some("redirect");
     let mutated_workspace = !tool_output.is_error
+        && !is_shunt_redirected
         && (MUTATING_FILE_TOOLS.contains(&tc.name.as_str())
             || (tc.name == TOOL_GIT && is_git_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_LSP && is_lsp_tool_args_mutating(&tc.arguments))
@@ -597,6 +691,7 @@ pub(crate) async fn dispatch_tool_call(
     }
 
     let raw_for_dedup_handle = match !raw_bypass
+        && !is_shunt_redirected
         && cfg.context.read_less
         && !tool_output.is_error
         && read_less::is_read_less_eligible(&tc.name)
@@ -607,6 +702,7 @@ pub(crate) async fn dispatch_tool_call(
 
     let mut deduped_this_call = false;
     if !raw_bypass
+        && !is_shunt_redirected
         && cfg.context.read_less
         && let Some(hit) = rt.check_or_record_output_dedup(
             session_id,
@@ -664,7 +760,7 @@ pub(crate) async fn dispatch_tool_call(
     }
 
     let mut shaped_this_call = false;
-    if !raw_bypass && !deduped_this_call && cfg.context.read_less {
+    if !raw_bypass && !is_shunt_redirected && !deduped_this_call && cfg.context.read_less {
         let active_zmode = rt.effective_zmode(session_id, cfg, &[]);
         let repo_scope = rt.resolve_repo_scope(Some(&tool_ctx.workspace_dir));
         let custom_ctx = read_less::CustomFilterContext {

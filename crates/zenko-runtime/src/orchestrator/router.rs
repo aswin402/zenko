@@ -75,7 +75,7 @@ pub fn select_turn_model(
 
 /// Computes deterministic ascending capability rank across configured model slots
 /// (`Fast = 0 < Lead = 1 < Plan = 2 < Advisor = 3`) so escalation NEVER silently downgrades.
-fn model_slot_rank(cfg: &ZenkoConfig, model_id: &str) -> u8 {
+pub fn model_slot_rank(cfg: &ZenkoConfig, model_id: &str) -> u8 {
     let cur = model_id.trim();
     let advisor = cfg.provider.advisor_model.trim();
     let plan = cfg.provider.plan_model.trim();

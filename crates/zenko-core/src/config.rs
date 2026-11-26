@@ -994,6 +994,33 @@ fn default_mcp_idle_timeout() -> u64 {
     MCP_IDLE_TIMEOUT_SECS
 }
 
+/// Tier-aware Shunt context-protection settings (inspired by Spotify `portal-ai-plugins/shunt`).
+/// Intercepts unconstrained full-file reads and unpiped bulk shell dumps (`cat`/`less`/`nl`...)
+/// on expensive model tiers while automatically yielding on `fast_model` / Fast-tier subagents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShuntConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: crate::types::ShuntMode,
+    #[serde(default = "default_shunt_min_lines")]
+    pub min_lines: usize,
+}
+
+impl Default for ShuntConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: crate::types::ShuntMode::default(),
+            min_lines: default_shunt_min_lines(),
+        }
+    }
+}
+
+fn default_shunt_min_lines() -> usize {
+    SHUNT_DEFAULT_MIN_LINES
+}
+
 /// Experience-driven cross-session Token Economy settings (inspired by Microsoft TokenEconomizer).
 /// All core mechanisms run deterministically with zero extra LLM calls by default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1022,6 +1049,8 @@ pub struct EconomyConfig {
     pub minimalism_mode: crate::types::CodeMinimalismMode,
     #[serde(default = "default_true")]
     pub auto_bloat_hint: bool,
+    #[serde(default)]
+    pub shunt: ShuntConfig,
 }
 
 impl Default for EconomyConfig {
@@ -1039,6 +1068,7 @@ impl Default for EconomyConfig {
             p90_multiplier: default_economy_p90_multiplier(),
             minimalism_mode: crate::types::CodeMinimalismMode::default(),
             auto_bloat_hint: true,
+            shunt: ShuntConfig::default(),
         }
     }
 }

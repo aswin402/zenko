@@ -185,6 +185,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         raw_output_preview: None,
                         read_less_tokens_saved: 0,
                         output_dedup_tokens_saved: 0,
+                        shunt_tokens_saved: 0,
                         ccr_recovery: false,
                     });
                     continue;
@@ -214,6 +215,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         raw_output_preview: None,
                         read_less_tokens_saved: 0,
                         output_dedup_tokens_saved: 0,
+                        shunt_tokens_saved: 0,
                         ccr_recovery: false,
                     });
                     if req.stop_on_error {
@@ -268,6 +270,14 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
                 };
+                let shunt_tokens_saved = exec
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+                    .and_then(|s| s.get("tokens_saved"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let ccr_recovery = exec
                     .output
                     .metadata
@@ -301,6 +311,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     raw_output_preview,
                     read_less_tokens_saved,
                     output_dedup_tokens_saved,
+                    shunt_tokens_saved,
                     ccr_recovery,
                 });
             }
@@ -333,6 +344,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     raw_output_preview: None,
                     read_less_tokens_saved: 0,
                     output_dedup_tokens_saved: 0,
+                    shunt_tokens_saved: 0,
                     ccr_recovery: false,
                 });
             } else {
@@ -407,6 +419,14 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
                 };
+                let shunt_tokens_saved = exec
+                    .output
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+                    .and_then(|s| s.get("tokens_saved"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let ccr_recovery = exec
                     .output
                     .metadata
@@ -435,6 +455,7 @@ impl ToolBatchBridge for RuntimeBatchBridge {
                     raw_output_preview,
                     read_less_tokens_saved,
                     output_dedup_tokens_saved,
+                    shunt_tokens_saved,
                     ccr_recovery,
                 });
             }

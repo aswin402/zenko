@@ -79,9 +79,9 @@ pub fn inspect_shell_policy(
 }
 
 #[derive(Debug, Clone, Default)]
-struct ParsedShell {
-    tokens: Vec<String>,
-    has_control_ops: bool,
+pub(crate) struct ParsedShell {
+    pub(crate) tokens: Vec<String>,
+    pub(crate) has_control_ops: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -93,7 +93,7 @@ enum LexState {
 
 /// Deterministic finite-state shell lexer that extracts tokens while detecting EVERY
 /// control/redirection/substitution operator (`\n`, `\r`, `;`, `|`, `&`, `<`, `>`, `` ` ``, `$(`).
-fn tokenize_shell(cmd: &str) -> ParsedShell {
+pub(crate) fn tokenize_shell(cmd: &str) -> ParsedShell {
     let mut out = ParsedShell::default();
     let mut cur = String::new();
     let mut state = LexState::Normal;
@@ -236,7 +236,7 @@ const SHELL_WRAPPER_SPECS: &[ShellWrapperSpec] = &[
     },
 ];
 
-fn strip_shell_wrappers(tokens: &[String]) -> &[String] {
+pub(crate) fn strip_shell_wrappers(tokens: &[String]) -> &[String] {
     let mut i = 0usize;
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -521,7 +521,7 @@ pub fn is_tool_allowed_in_plan_schema(spec: &ToolSpec) -> bool {
         || (name.starts_with(MCP_TOOL_PREFIX) && spec.risk == RiskLevel::Safe)
 }
 
-fn segment_bin_name(tok: &str) -> String {
+pub(crate) fn segment_bin_name(tok: &str) -> String {
     tok.rsplit('/').next().unwrap_or(tok).to_ascii_lowercase()
 }
 

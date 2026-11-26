@@ -4,6 +4,23 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.42] - 2026-11-27
+
+Added a native pure-Rust **Tier-Aware Shunt Context-Protection Gate**, fast-tier **`drafter`** boilerplate subagent role, zero-LLM **Repo-Native Service & Ownership Briefing** (`catalog-info.yaml` + `CODEOWNERS`), and built-in **`shunt-delegation.md`** skill inspired by **`spotify/portal-ai-plugins`** (`shunt`, `service`, and `fleetshift`) — with zero `/commands`, zero new external crates, zero hardcoding, zero regex, and zero `if/else` ladders.
+
+### Added
+- **Tier-Aware Shunt Context-Protection Gate (`crates/zenko-runtime/src/{shunt,tool_router,policy}.rs`, `crates/zenko-core/src/{constants,config,types}.rs`):**
+  - Added declarative `ShuntConfig` (`[economy.shunt]`: `enabled`, `mode: ShuntMode::Off | Advise | Redirect`, `min_lines = 350`), centralized `SHUNT_*` constants, `ORCH_STAGE_SHUNT`, and explicit `read_file(raw=true)` opt-out.
+  - Built a zero-regex unpiped shell bulk-read detector (`detect_shell_bulk_read`) reusing `policy.rs`'s single-pass POSIX shell lexer + exact `ShellSliceBound` arithmetic (`FullFile`, `ExplicitLines`, `FromStartLine`) so piped commands (`cat f | grep ...`) and small slices (`head -n 40`, `tail -n +550`) pass untouched while unpiped dumps (`cat`, `less`, `more`, `nl`, `bat`, `head -500`, `tail -n +1`) and unconstrained large `read_file` calls are intercepted on expensive `Lead`/`Plan`/`Advisor` tiers.
+  - Enforced automatic tier-awareness (`is_fast_tier_context` via `model_slot_rank` + `SubagentModelTier::Fast`), kernel `openat(O_NOFOLLOW)` bounded line counting, "Never Worse" byte-savings verification, zero-symbol fail-open protection for plain logs/CSV/prose `read_file`, and `artifact:` CCR immunity.
+  - Added `EconomyLedgerKind::Shunt` (`shunt_hits`, `shunt_tokens_saved`) across SQLite (`zenko-memory`), `TurnEconomyTrace` & `batch_tools` (`zenko-runtime`), `token_economy` (`zenko-tools`), `zenko economy gain` (`zenko-cli`), and WebUI `TokenEconomyPanel`.
+- **Fast-Tier `drafter` Subagent Role & `shunt-delegation.md` Skill (`crates/zenko-core/src/registry.rs`):**
+  - Added the `drafter` role (`SubagentModelTier::Fast`, `max_iterations: 6`, scoped strictly to FS/search/edit tools with zero shell/git/network/spawning) for cheap mechanical boilerplate, DTOs, fixtures, and unit-test scaffolds.
+  - Added the pure-ASCII built-in `shunt-delegation.md` skill and updated `<token_economy>` prompt directives to guide automatic `explorer`/`drafter` cost-tier delegation and 4-stage Fleetshift-style dry-run migration loops without `/commands`.
+- **Zero-LLM Repo-Native Service & Ownership Briefing (`crates/zenko-tools/src/service_brief.rs`, `crates/zenko-runtime/src/orchestrator/recon.rs`):**
+  - Built a deterministic indentation-stack YAML subset parser for CNCF Backstage `catalog-info.yaml`/`catalog-info.yml` (kind, name, owner, lifecycle, system, type, `providesApis`, `dependsOn`, and runbook/TechDocs annotations) plus a single-pass `CODEOWNERS` scanner over kernel-confined `openat(O_NOFOLLOW)` handles.
+  - Wired into Turn-1 parallel read-only recon as a compact `service_brief:` line (0 bytes emitted when neither file exists).
+
 ## [0.0.41] - 2026-11-26
 
 Added a unified pure-Rust **Structural Code Intelligence, Trigram Search, Atomic Refactor, Semantic Diff & Event-Driven Watcher** suite inspired by **`tokei`**, **`tgrep`**, **`ast-grep`**, **`sd`**, **`ripide`**, **`difftastic`**, and **`watchexec`** — with zero new external crates, zero C/tree-sitter bloat, zero `/commands`, zero hardcoding, zero regex, and zero `if/else` ladders.

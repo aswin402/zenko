@@ -424,7 +424,8 @@ impl Tool for ReadFileTool {
                             "required": ["start_line"]
                         }
                     },
-                    "max_symbols": { "type": "integer", "description": format!("Optional symbol cap when `mode=\"outline\"` (default {OUTLINE_MAX_ENTRIES})") }
+                    "max_symbols": { "type": "integer", "description": format!("Optional symbol cap when `mode=\"outline\"` (default {OUTLINE_MAX_ENTRIES})") },
+                    "raw": { "type": "boolean", "description": "Optional Shunt bypass: read raw lines directly even when the file exceeds the Shunt large-file threshold" }
                 },
                 "required": ["path"]
             }),

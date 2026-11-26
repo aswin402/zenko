@@ -15,6 +15,7 @@ pub mod policy;
 pub mod read_less;
 pub mod runtime;
 pub mod scheduler;
+pub mod shunt;
 pub mod telemetry;
 pub mod tool_router;
 pub mod watchers;

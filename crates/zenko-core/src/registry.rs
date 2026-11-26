@@ -6,7 +6,8 @@ use crate::{
     CodeMinimalismMode, ConciseMode, MINIMALISM_BLOAT_HINT_NET_LOC_FULL,
     MINIMALISM_BLOAT_HINT_NET_LOC_LITE, MINIMALISM_BLOAT_HINT_NET_LOC_ULTRA,
     MINIMALISM_BLOAT_HINT_NEW_FILES_FULL, MINIMALISM_BLOAT_HINT_NEW_FILES_LITE,
-    MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA, SUBAGENT_ROLE_CUSTOM, TOOL_AGENT_KILL, TOOL_AGENT_LIST,
+    MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA, SUBAGENT_ROLE_CUSTOM, SUBAGENT_ROLE_DRAFTER,
+    TOOL_AGENT_KILL, TOOL_AGENT_LIST,
     TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH,
     TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM, TOOL_CODE_REFACTOR,
     TOOL_CODE_SEARCH,
@@ -334,6 +335,44 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_AGENT_WORKTREE,
         ],
         system_addendum: "You are a Zenko Coder subagent working in an isolated workspace. Implement the assigned goal cleanly following repo rules, run targeted verification checks/tests, and return a concise report listing modified files, verification output, and any remaining caveats.",
+    },
+    SubagentRoleDescriptor {
+        id: SUBAGENT_ROLE_DRAFTER,
+        label: "Drafter",
+        description: "Fast-tier mechanical code, boilerplate, test-matrix, and fixture drafter (files/edits only; zero shell/git/network)",
+        model_tier: SubagentModelTier::Fast,
+        default_workspace: SubagentWorkspaceDefault::Inherit,
+        max_iterations: 6,
+        read_only: false,
+        can_spawn_children: false,
+        allowed_tools: &[
+            TOOL_READ_FILE,
+            TOOL_WRITE_FILE,
+            TOOL_HASH_EDIT,
+            TOOL_APPLY_PATCH,
+            TOOL_LIST_DIR,
+            TOOL_GLOB_FIND,
+            TOOL_CODE_SEARCH,
+            TOOL_BATCH_TOOLS,
+            TOOL_INVOKE_TOOL,
+            TOOL_AGENT_MESSAGE,
+        ],
+        denied_tools: &[
+            TOOL_SHELL_EXEC,
+            TOOL_SCRIPT_BLOCK,
+            TOOL_GIT,
+            TOOL_CRON,
+            TOOL_GOAL_LOOP,
+            TOOL_SKILL_MANAGE,
+            TOOL_ORCHESTRATE_CONTROL,
+            TOOL_ASK_CLARIFICATION,
+            TOOL_SPAWN_AGENT,
+            TOOL_AGENT_KILL,
+            TOOL_AGENT_WORKTREE,
+            TOOL_WEB_FETCH,
+            TOOL_WEB_SEARCH,
+        ],
+        system_addendum: "You are a fast Zenko Drafter subagent for mechanical code, test scaffolds, DTOs, fixtures, and repetitive edits following referenced sibling patterns. Read only the specified reference files, write clean code directly to disk with zero markdown fence wrappers inside files, never invoke shell or network tools, and return a terse list of written paths with line counts.",
     },
     SubagentRoleDescriptor {
         id: "verifier",
@@ -941,6 +980,18 @@ enabled: true\n\
 - When moving a module file referenced by relative imports, use `code_refactor(action=\"move_imports\", path=..., move_to=..., dry_run=true)` to preview both the move and every updated import across the workspace before applying.\n\
 - When reviewing noisy reformatted diffs or verifying zero-semantic-change refactors, run `git_tool(action=\"diff\", structural=true)` or `code_refactor(action=\"struct_diff\", ...)` to filter out whitespace and formatting noise.\n",
     },
+    DefaultSkillTemplate {
+        filename: "shunt-delegation.md",
+        content: "---\n\
+name: Shunt Cost-Tier Delegation & Safe Shift Campaigns\n\
+description: Protect frontier model context by offloading bulk multi-file reads to `explorer`, mechanical boilerplate/tests to `drafter`, and executing multi-file migrations via dry-run preview before apply.\n\
+enabled: true\n\
+---\n\n\
+- Never dump large (>350 line) source files wholesale into Lead/Plan context via `cat` or unconstrained `read_file`; inspect structure via `read_file(mode=\"outline\")` and pull exact spans via `read_file(symbol=\"...\")` or `ranges` (or pass `raw: true` only when raw full text is strictly required).\n\
+- For multi-file codebase discovery or answering cross-file questions, delegate to `spawn_agent(role=\"explorer\", ...)` so the configured `fast_model` absorbs raw file tokens and returns a compact file:line summary.\n\
+- For repetitive mechanical output (unit-test matrices, DTO structs, fixtures, config variants following an existing sibling file), delegate to `spawn_agent(role=\"drafter\", ...)` citing the exact reference file path and target output path.\n\
+- For multi-file or multi-crate migration campaigns (Fleetshift discipline), follow the 4-stage loop: (1) scope exact targets via `code_search`/`glob_find`, (2) preview via `code_refactor(..., dry_run=true)`, (3) apply atomically or inside isolated worktrees, and (4) verify via `git_tool(action=\"diff\", structural=true)` plus targeted tests.\n",
+    },
 ];
 
 /// Declarative per-language lexical syntax specification powering Zenko's pure-Rust
@@ -1519,12 +1570,14 @@ pub fn render_economy_prompt_block(
     }
     let body = match read_only_plan {
         true => format!(
-            "- Background micro-skills, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, and P90 loop guard are active under your current ZMode.\n\
-             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})`, adjust gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
+            "- Background micro-skills, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, tier-aware Shunt large-read protection, and P90 loop guard are active under your current ZMode.\n\
+             - Cost-tier discipline: offload wide multi-file scans to `spawn_agent(role=\"explorer\")` (`fast_model`) and prefer `read_file(mode=\"outline\"|symbol=\"...\"|ranges=[...])` on large files.\n\
+             - Read-only inspection: use `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"status\"|\"micro_skills\"|\"prune_report\"|\"ledger\"}})` or `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"|\"gain\"}})`, adjust gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `shunt-delegation` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
         false => format!(
-            "- Background micro-skill mining, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, diff-LOC tracking, and P90 loop guard run automatically under your current ZMode.\n\
-             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` via `retire_micro_skill`, audit code bloat/debt via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"}})`, shift overall context gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
+            "- Background micro-skill mining, soft tool pruning, 3-tier Read-Less/Dedup/Scrub compression, tier-aware Shunt large-read protection, diff-LOC tracking, and P90 loop guard run automatically under your current ZMode.\n\
+             - Cost-tier discipline: offload wide multi-file scans to `spawn_agent(role=\"explorer\")` and mechanical boilerplate/test matrices to `spawn_agent(role=\"{SUBAGENT_ROLE_DRAFTER}\")` (`fast_model`); prefer `read_file(mode=\"outline\"|symbol=\"...\"|ranges=[...])` on large files (pass `raw: true` only when raw full text is strictly required).\n\
+             - Proactive hygiene: persist verified non-shell repo workarounds via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_TOKEN_ECONOMY}\", args={{\"action\":\"add_micro_skill\",\"fact\":\"...\"}})`, retire stale `<repo_micro_skills>` via `retire_micro_skill`, audit code bloat/debt via `{TOOL_INVOKE_TOOL}(tool=\"{TOOL_CODE_MINIMALISM}\", args={{\"action\":\"audit_diff\"|\"audit_repo\"|\"debt_scan\"}})`, shift overall context gear via `{TOOL_ORCHESTRATE_CONTROL}(zmode=\"lite|balanced|high|ultra\")`, or load `token-economy-audit` / `shunt-delegation` / `minimal-review` via `{TOOL_SKILL_VIEW}`."
         ),
     };
     Some(format!("<token_economy>\n{body}\n</token_economy>"))
@@ -1677,6 +1730,19 @@ mod tests {
         assert!(verifier.permits_tool("shell_exec"));
         assert!(!verifier.permits_tool("write_file"));
         assert!(!verifier.permits_tool("apply_patch"));
+
+        let drafter = find_subagent_role(SUBAGENT_ROLE_DRAFTER).expect("drafter");
+        assert_eq!(drafter.model_tier, SubagentModelTier::Fast);
+        assert!(!drafter.read_only);
+        assert!(!drafter.can_spawn_children);
+        assert!(drafter.permits_tool(TOOL_READ_FILE));
+        assert!(drafter.permits_tool(TOOL_WRITE_FILE));
+        assert!(drafter.permits_tool(TOOL_HASH_EDIT));
+        assert!(drafter.permits_tool(TOOL_APPLY_PATCH));
+        assert!(!drafter.permits_tool(TOOL_SHELL_EXEC));
+        assert!(!drafter.permits_tool(TOOL_GIT));
+        assert!(!drafter.permits_tool(TOOL_WEB_FETCH));
+        assert!(!drafter.permits_tool(TOOL_SPAWN_AGENT));
 
         for role in SUBAGENT_ROLE_REGISTRY {
             assert!(

@@ -149,7 +149,7 @@ impl Tool for TokenEconomyTool {
                 };
                 let text = format!(
                     "Token Economy ({scope}) · enabled={enabled}\n\
-                     - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · Tool-Prune +{tp} · Overhead -{oh}]\n\
+                     - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · Shunt +{sh} ({sh_hits} hits) · Tool-Prune +{tp} · Overhead -{oh}]\n\
                      - Compression Health: {ccr} CCR recovery read(s) · {raw} raw bypass(es)\n\
                      - By Command Family: {cmd_summary}\n\
                      - Custom Filters: {filter_line}\n\
@@ -163,6 +163,8 @@ impl Tool for TokenEconomyTool {
                     rl = s.read_less_tokens_saved,
                     od = s.output_dedup_tokens_saved,
                     od_hits = s.output_dedup_hits,
+                    sh = s.shunt_tokens_saved,
+                    sh_hits = s.shunt_hits,
                     tp = s.tool_prune_tokens_saved,
                     oh = s.overhead_tokens,
                     ccr = s.ccr_recoveries,
@@ -323,6 +325,7 @@ impl Tool for TokenEconomyTool {
                     "Net Economy Ledger ({}):\n\
                      - Read-Less saved: {} tok\n\
                      - Output-Dedup saved: {} tok ({} hits)\n\
+                     - Shunt large-read saved: {} tok ({} hits)\n\
                      - Tool-Prune saved: {} tok\n\
                      - CCR recoveries: {} | Raw bypasses: {}\n\
                      - Micro-Skill injections: {}\n\
@@ -333,6 +336,8 @@ impl Tool for TokenEconomyTool {
                     s.read_less_tokens_saved,
                     s.output_dedup_tokens_saved,
                     s.output_dedup_hits,
+                    s.shunt_tokens_saved,
+                    s.shunt_hits,
                     s.tool_prune_tokens_saved,
                     s.ccr_recoveries,
                     s.raw_bypasses,

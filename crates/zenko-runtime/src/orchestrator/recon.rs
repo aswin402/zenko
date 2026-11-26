@@ -35,7 +35,9 @@ fn extract_recon_query(prompt: &str) -> String {
         .join(" ")
 }
 
-fn scan_workspace_sync(workspace_dir: &Path) -> (Vec<String>, Vec<String>, Option<String>) {
+fn scan_workspace_sync(
+    workspace_dir: &Path,
+) -> (Vec<String>, Vec<String>, Option<String>, Option<String>) {
     let mut entries = Vec::new();
     let mut markers = Vec::new();
 
@@ -74,8 +76,9 @@ fn scan_workspace_sync(workspace_dir: &Path) -> (Vec<String>, Vec<String>, Optio
         &lang_stats,
         CODE_STATS_RECON_TOP_LANGS,
     );
+    let service_brief = zenko_tools::service_brief::scan_workspace_service_brief(workspace_dir);
 
-    (entries, markers, language_summary)
+    (entries, markers, language_summary, service_brief)
 }
 
 fn probe_mentioned_files_sync(
@@ -311,7 +314,8 @@ pub async fn run_parallel_recon(
 
     let (ws_res, git_res, probe_res, mem_res, tasks_res) =
         tokio::join!(ws_fut, git_fut, probe_fut, mem_fut, tasks_fut);
-    let (workspace_entries, repo_markers, language_summary) = ws_res.unwrap_or_default();
+    let (workspace_entries, repo_markers, language_summary, service_brief) =
+        ws_res.unwrap_or_default();
     let (git_branch, git_dirty_files) = git_res;
     let mentioned_files = probe_res.unwrap_or_default();
     let (memory_hits, session_hits, prior_plan_summary, brain_hits) = mem_res.unwrap_or_default();
@@ -321,6 +325,7 @@ pub async fn run_parallel_recon(
         workspace_entries,
         repo_markers,
         language_summary,
+        service_brief,
         memory_hits,
         session_hits,
         brain_hits,
@@ -334,12 +339,15 @@ pub async fn run_parallel_recon(
 }
 
 pub fn format_recon_context(summary: &ReconSummary) -> String {
-    let mut lines = Vec::with_capacity(9);
+    let mut lines = Vec::with_capacity(10);
     if !summary.repo_markers.is_empty() {
         lines.push(format!("repo_stack: {}", summary.repo_markers.join(", ")));
     }
     if let Some(ref langs) = summary.language_summary {
         lines.push(format!("languages: {langs}"));
+    }
+    if let Some(ref brief) = summary.service_brief {
+        lines.push(format!("service_brief: {brief}"));
     }
     if let Some(ref br) = summary.git_branch {
         let dirty_suffix = match summary.git_dirty_files.is_empty() {
@@ -417,6 +425,36 @@ mod tests {
         let probed = probe_mentioned_files_sync(&ws, &hub, "Inspect safe.rs and escape.rs");
         assert_eq!(probed.len(), 1, "escaped symlink must be skipped, got {probed:?}");
         assert!(probed[0].starts_with("safe.rs (2 lines,"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn recon_emits_service_brief_only_when_catalog_or_codeowners_present() {
+        let base = std::env::temp_dir().join(format!("zenko_recon_svc_{}", zenko_core::new_id()));
+        let ws = base.join("ws");
+        let _ = std::fs::create_dir_all(ws.join(".github"));
+
+        let (_, _, _, none_brief) = scan_workspace_sync(&ws);
+        assert!(none_brief.is_none(), "empty repo must emit zero service_brief bytes");
+
+        let _ = std::fs::write(
+            ws.join("catalog-info.yaml"),
+            "kind: Component\nmetadata:\n  name: billing-api\nspec:\n  owner: @billing-team\n  lifecycle: production\n",
+        );
+        let _ = std::fs::write(ws.join(".github/CODEOWNERS"), "* @billing-team\n");
+
+        let (_, _, _, brief) = scan_workspace_sync(&ws);
+        let brief_str = brief.expect("service brief populated");
+        assert!(brief_str.contains("Component/billing-api"));
+        assert!(brief_str.contains("owner=@billing-team"));
+        assert!(brief_str.contains("codeowners=@billing-team"));
+
+        let formatted = format_recon_context(&ReconSummary {
+            service_brief: Some(brief_str),
+            ..ReconSummary::default()
+        });
+        assert!(formatted.contains("service_brief: Component/billing-api"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -34,6 +34,9 @@ pub struct TurnEconomyTrace {
     pub output_dedup_hits: usize,
     pub output_dedup_tokens_saved: usize,
     pub output_dedup_by_cmd: Vec<(String, usize)>,
+    pub shunt_hits: usize,
+    pub shunt_tokens_saved: usize,
+    pub shunt_by_source: Vec<(String, usize)>,
     pub raw_bypasses: Vec<String>,
     pub ccr_recoveries: usize,
     pub loop_guard_interventions: usize,
@@ -118,6 +121,18 @@ pub fn record_tool_outcome_in_economy_trace(
                 {
                     trace.ccr_recoveries = trace.ccr_recoveries.saturating_add(1);
                 }
+                if let Some(shunt_tok) = step
+                    .get("shunt_tokens_saved")
+                    .and_then(Value::as_u64)
+                    .filter(|&v| v > 0)
+                {
+                    trace.shunt_hits = trace.shunt_hits.saturating_add(1);
+                    trace.shunt_tokens_saved =
+                        trace.shunt_tokens_saved.saturating_add(shunt_tok as usize);
+                    trace
+                        .shunt_by_source
+                        .push(("batch".to_string(), shunt_tok as usize));
+                }
                 if let Some(dedup_tok) = step
                     .get("output_dedup_tokens_saved")
                     .and_then(Value::as_u64)
@@ -165,6 +180,27 @@ pub fn record_tool_outcome_in_economy_trace(
             .and_then(Value::as_str)
             .unwrap_or("shell");
         trace.raw_bypasses.push(fam.to_string());
+    }
+    if let Some(shunt_tok) = output
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+        .and_then(|s| s.get("tokens_saved"))
+        .and_then(Value::as_u64)
+        .filter(|&v| v > 0)
+    {
+        let src = output
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get(zenko_core::SHUNT_META_KEY))
+            .and_then(|s| s.get("source_kind"))
+            .and_then(Value::as_str)
+            .unwrap_or("shunt");
+        trace.shunt_hits = trace.shunt_hits.saturating_add(1);
+        trace.shunt_tokens_saved = trace.shunt_tokens_saved.saturating_add(shunt_tok as usize);
+        trace
+            .shunt_by_source
+            .push((src.to_string(), shunt_tok as usize));
     }
     if let Some(dedup_tok) = output
         .metadata
@@ -421,6 +457,19 @@ pub fn after_turn_update(
             }
         }
         update.net_tokens_delta += trace.output_dedup_tokens_saved as i64;
+    }
+    if trace.shunt_hits > 0 {
+        for (src, tok) in &trace.shunt_by_source {
+            let _ = store.record_economy_ledger_event_with_cmd(
+                scope,
+                EconomyLedgerKind::Shunt,
+                *tok as i64,
+                0.0,
+                src,
+                &format!("Shunt large-read redirect ({src})"),
+            );
+        }
+        update.net_tokens_delta += trace.shunt_tokens_saved as i64;
     }
     for fam in &trace.raw_bypasses {
         let _ = store.record_economy_ledger_event_with_cmd(
@@ -801,6 +850,47 @@ mod tests {
             discovered.iter().any(|d| d.command_prefix == "bazel build" && d.estimated_missed_tokens > 200),
             "expected bazel build in discovered opportunities: {discovered:?}"
         );
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn shunt_savings_persist_in_sqlite_economy_ledger() {
+        let db_path =
+            std::env::temp_dir().join(format!("zenko_econ_shunt_{}.db", zenko_core::new_id()));
+        let store = SqliteStore::open(&db_path).expect("open db");
+        let cfg = EconomyConfig::default();
+        let mut trace = TurnEconomyTrace::new("project:shunt".into());
+
+        let shunt_out = ToolOutput {
+            content: "File: big.rs (outline)\n[shunt: redirected]".into(),
+            is_error: false,
+            diff: None,
+            metadata: Some(json!({
+                zenko_core::SHUNT_META_KEY: {
+                    "action": "redirect",
+                    "source_kind": "read_file",
+                    "target_path": "big.rs",
+                    "total_lines": 500,
+                    "tokens_saved": 1_250
+                }
+            })),
+        };
+        record_tool_outcome_in_economy_trace(&mut trace, "read_file", &json!({ "path": "big.rs" }), &shunt_out);
+
+        assert_eq!(trace.shunt_hits, 1);
+        assert_eq!(trace.shunt_tokens_saved, 1_250);
+        assert_eq!(trace.read_less_tokens_saved, 0);
+
+        let upd = after_turn_update(&store, &cfg, "sess_s1", &[], &trace, 1, true);
+        assert_eq!(upd.net_tokens_delta, 1_250);
+
+        let sum = store
+            .summarize_economy_ledger("project:shunt", cfg.p90_multiplier)
+            .expect("summary");
+        assert_eq!(sum.shunt_hits, 1);
+        assert_eq!(sum.shunt_tokens_saved, 1_250);
+        assert_eq!(sum.net_tokens_saved, 1_250);
 
         let _ = std::fs::remove_file(&db_path);
     }

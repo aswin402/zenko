@@ -465,6 +465,12 @@ impl Tool for BatchToolsTool {
                         Value::Number(step.output_dedup_tokens_saved.into()),
                     );
                 }
+                if step.shunt_tokens_saved > 0 {
+                    obj.insert(
+                        "shunt_tokens_saved".into(),
+                        Value::Number(step.shunt_tokens_saved.into()),
+                    );
+                }
                 if step.ccr_recovery {
                     obj.insert("ccr_recovery".into(), Value::Bool(true));
                 }
@@ -611,6 +617,7 @@ mod tests {
                     raw_output_preview: None,
                     read_less_tokens_saved: 0,
                     output_dedup_tokens_saved: 0,
+                    shunt_tokens_saved: 0,
                     ccr_recovery: false,
                 })
                 .collect())
