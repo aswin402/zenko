@@ -16,6 +16,7 @@
 pub mod command_shapers;
 pub mod custom_filters;
 pub mod smart_crusher;
+pub mod toon;
 
 use command_shapers::{
     CommandFamily, classify_tool_command, command_family_label, normalize_carriage_returns,
@@ -53,6 +54,7 @@ pub enum ReadLessShape {
     GitStatus,
     PackageInstall,
     ContainerLog,
+    Toon,
     Json,
     Csv,
     GlobList,
@@ -71,6 +73,7 @@ impl ReadLessShape {
             Self::GitStatus => "git_status",
             Self::PackageInstall => "pkg_install",
             Self::ContainerLog => "container_log",
+            Self::Toon => "toon",
             Self::Json => "json",
             Self::Csv => "csv",
             Self::GlobList => "glob_list",
@@ -344,16 +347,16 @@ pub fn try_compress_tool_output_with_context(
                 .or_else(|| compress_by_detected_shape(tool_name, tool_args, &cleaned, zmode))
                 .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))),
             false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
-                // Always fold huge lockfile diffs, apply lossless Tier-1 tabular JSON -> CSV on
-                // medium uniform arrays, or run lossless scrub on medium outputs.
+                // Always fold huge lockfile diffs, apply strictly lossless Tier-1 TOON on
+                // medium structured JSON, or run lossless scrub on medium outputs.
                 if cmd_family == CommandFamily::GitDiff
                     && let Some(diff_out) = shape_git_diff(&cleaned)
                 {
                     Some((ReadLessShape::GitDiff, diff_out))
-                } else if let Some(tabular_json) =
-                    smart_crusher::try_crush_json_tabular_only(&cleaned)
+                } else if let Some(toon_out) =
+                    smart_crusher::try_crush_json_toon_only(&cleaned)
                 {
-                    Some((ReadLessShape::Json, tabular_json))
+                    Some((ReadLessShape::Toon, toon_out))
                 } else {
                     try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))
                 }
@@ -370,9 +373,10 @@ pub fn try_compress_tool_output_with_context(
     let bytes_saved = original_bytes.saturating_sub(compressed_bytes);
     let pct_whole = (bytes_saved * 100) / original_bytes.max(1);
     let meets_threshold = match shape {
-        ReadLessShape::Scrub | ReadLessShape::CustomFilter | ReadLessShape::GitStatus => {
-            bytes_saved >= READ_LESS_SCRUB_MIN_SAVED_BYTES
-        }
+        ReadLessShape::Scrub
+        | ReadLessShape::CustomFilter
+        | ReadLessShape::GitStatus
+        | ReadLessShape::Toon => bytes_saved >= READ_LESS_SCRUB_MIN_SAVED_BYTES,
         _ => bytes_saved >= READ_LESS_MIN_SAVED_BYTES && pct_whole >= READ_LESS_MIN_SAVINGS_PCT,
     };
     if !meets_threshold {
@@ -426,8 +430,12 @@ fn compress_by_detected_shape(
     text: &str,
     zmode: ZMode,
 ) -> Option<(ReadLessShape, String)> {
-    if let Some(json_out) = smart_crusher::try_crush_json_body(text, tool_args, zmode) {
-        return Some((ReadLessShape::Json, json_out));
+    if let Some(crushed) = smart_crusher::try_crush_json_body(text, tool_args, zmode) {
+        let shape = match crushed.kind {
+            smart_crusher::JsonCrushKind::ToonLossless => ReadLessShape::Toon,
+            smart_crusher::JsonCrushKind::JsonScored => ReadLessShape::Json,
+        };
+        return Some((shape, crushed.rendered));
     }
     if let Some(diff_out) = shape_git_diff(text) {
         return Some((ReadLessShape::GitDiff, diff_out));
@@ -1129,9 +1137,9 @@ mod tests {
     }
 
     #[test]
-    fn medium_minified_json_array_uses_lossless_tabular_csv_below_min_bytes() {
+    fn medium_minified_json_array_uses_lossless_toon_below_min_bytes() {
         // Single-line minified 16-row JSON (~1.3 KiB): below Balanced `min_bytes` (2048) and
-        // `READ_LESS_MIN_LINES`, yet Tier-1 lossless CSV still fires with zero dropped rows.
+        // `READ_LESS_MIN_LINES`, yet Tier-1 lossless TOON still fires with zero dropped rows.
         let items: Vec<Value> = (0..16)
             .map(|i| {
                 json!({
@@ -1146,9 +1154,9 @@ mod tests {
         let raw = serde_json::to_string(&Value::Array(items)).expect("minified json");
         assert!(raw.len() < 2048, "raw_len={}", raw.len());
         let res = try_compress_tool_output("mcp__ops__list_services", &raw, 2048)
-            .expect("lossless tabular CSV should fire below min_bytes");
-        assert_eq!(res.shape, ReadLessShape::Json);
-        assert!(res.compressed.starts_with("# lossless-tabular-json (rows=16, cols=5)"));
+            .expect("lossless TOON should fire below min_bytes");
+        assert_eq!(res.shape, ReadLessShape::Toon);
+        assert!(res.compressed.starts_with("[16]{"), "out={}", res.compressed);
         for i in 0..16 {
             assert!(res.compressed.contains(&format!("worker-{i}")));
         }

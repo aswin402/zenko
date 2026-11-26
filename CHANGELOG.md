@@ -4,6 +4,19 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.36] - 2026-11-26
+
+Upgraded SmartCrusher's lossless Tier-1 JSON compressor with a native pure-Rust **TOON (Token-Oriented Object Notation)** encoder (`toon-format/toon`-inspired; zero external crates, zero regex, mathematically round-trip verified).
+
+### Added
+- **Native Pure-Rust TOON Encoder & Round-Trip Verifier (`crates/zenko-runtime/src/read_less/toon.rs`):**
+  - Implements indented objects, safe single-key chain folding (`meta.pagination:`), inline primitive arrays (`tags[5|]: ...`), tabular uniform arrays (`items[N]{...}:`) with automatic `,` vs `|` delimiter selection to avoid quote bloat, 1-level uniform nested field groups (`author{login,role}`), keyed tabular maps (`services[4:]{ms,status}:`), and minimal quoting rules preserving exact JSON types (including leading-zero strings like `"05"` and literal dotted keys).
+  - Enforces O(1) early-abort byte caps (`SMART_CRUSHER_TOON_MAX_BYTES = 3.2 KiB`) and a pure-Rust round-trip decoder in unit tests proving `decode_toon(encode_toon(v)) == v` losslessness.
+- **SmartCrusher Tier-1 TOON + "Never Worse vs Minified JSON" Gate (`smart_crusher.rs`, `read_less/mod.rs`, `constants.rs`):**
+  - Replaced flat-only Tier-1 CSV with full lossless TOON covering wrapped API/MCP objects, nested sub-object columns, keyed maps, and medium minified JSON (`>= 256 B`, even below `read_less_min_bytes`).
+  - Strictly gates TOON output against minified JSON (`serde_json::to_string`), emitting TOON only when it beats minified JSON (`>= 20%` vs minified or `>= 30%` vs pretty raw while still beating minified) and handing off oversized (`> 40` rows) or irregular payloads to Tier-2 Scored Keep/Drop.
+  - Added `ReadLessShape::Toon` (`[read-less: toon (<family>), ...]`) so `token_economy` and tool-result metadata track TOON savings cleanly.
+
 ## [0.0.35] - 2026-11-26
 
 Closed all seven end-to-end wiring seams across JIT scoped DOX rules, Stage-A microcompaction, daemon-restart hydration, medium-JSON SmartCrusher, CLI `zenko context`, WebUI `TokenEconomyPanel`, and provider wire canonicalization.

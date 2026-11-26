@@ -1,33 +1,45 @@
-//! SmartCrusher 2-Tier Pure-Rust JSON Compressor (Headroom-inspired, zero ML, zero regex).
+//! SmartCrusher 2-Tier Pure-Rust JSON Compressor (Headroom + TOON inspired, zero ML, zero regex).
 //!
-//! - **Tier 1 (Lossless Tabular JSON -> Compact CSV):** When a JSON array of objects has
-//!   consistent flat scalar keys (`SMART_CRUSHER_TABULAR_MIN_ITEMS..=SMART_CRUSHER_TABULAR_MAX_ITEMS`,
-//!   `>= 80%` key overlap, compact CSV `<= 2.4 KiB` and saving `>= 30%` bytes with zero truncated
-//!   cells), emits a 100% lossless tabular representation preserving every row.
-//! - **Tier 2 (Scored Keep/Drop Fallback):** Replaces blind head-only truncation with deterministic
-//!   signal scoring preserving:
+//! - **Tier 1 (Lossless TOON — Token-Oriented Object Notation):** Converts uniform arrays,
+//!   wrapped API/MCP objects (`{"meta":{...},"items":[...]}`), 1-level nested field groups
+//!   (`author{login,id}`), keyed tabular maps (`services[N:]{...}:`), and inline primitive arrays
+//!   into 100% lossless TOON whenever it stays within `SMART_CRUSHER_TOON_MAX_BYTES` (`3.2 KiB`)
+//!   AND strictly beats minified JSON ("Never Worse vs Minified JSON" gate).
+//! - **Tier 2 (Scored Keep/Drop Fallback):** Replaces blind head-only truncation on oversized or
+//!   irregular arrays with deterministic signal scoring preserving:
 //!   1) Structural anchors: first 2 + last 2 items,
 //!   2) 100% of error / failed / `status >= 400` / `ok == false` items (bounded),
 //!   3) Statistical numeric outliers (`> 2σ` via single-pass Welford online variance),
 //!   4) Query-relevant keyword matches extracted from tool arguments,
 //!   while preserving `_total_items`, `_omitted_items`, `_item_keys`, `_kept_reasons`, and `_sample`.
 
+use super::toon::{encode_toon_bounded, max_nested_array_len};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use zenko_core::{
     READ_LESS_JSON_FULL_DEPTH, READ_LESS_JSON_PRIORITY_KEYS, READ_LESS_JSON_SCHEMA_SCAN_ITEMS,
-    READ_LESS_MAX_JSON_KEYS, READ_LESS_MAX_STRING_CHARS, SMART_CRUSHER_ERROR_KEYS,
-    SMART_CRUSHER_ERROR_STATUS_VALUES, SMART_CRUSHER_HEAD_KEEP, SMART_CRUSHER_MAX_ERROR_ITEMS,
-    SMART_CRUSHER_MAX_KEPT_BALANCED, SMART_CRUSHER_MAX_KEPT_HIGH, SMART_CRUSHER_MAX_KEPT_ULTRA,
-    SMART_CRUSHER_MAX_OUTLIER_ITEMS, SMART_CRUSHER_MAX_QUERY_TOKENS,
+    READ_LESS_MAX_JSON_KEYS, READ_LESS_MAX_STRING_CHARS, READ_LESS_SCRUB_MIN_BYTES,
+    SMART_CRUSHER_ERROR_KEYS, SMART_CRUSHER_ERROR_STATUS_VALUES, SMART_CRUSHER_HEAD_KEEP,
+    SMART_CRUSHER_MAX_ERROR_ITEMS, SMART_CRUSHER_MAX_KEPT_BALANCED, SMART_CRUSHER_MAX_KEPT_HIGH,
+    SMART_CRUSHER_MAX_KEPT_ULTRA, SMART_CRUSHER_MAX_OUTLIER_ITEMS, SMART_CRUSHER_MAX_QUERY_TOKENS,
     SMART_CRUSHER_MIN_NUMERIC_SAMPLES, SMART_CRUSHER_MIN_QUERY_TOKEN_LEN, SMART_CRUSHER_OK_KEYS,
     SMART_CRUSHER_OUTLIER_SIGMA, SMART_CRUSHER_QUERY_ARG_KEYS, SMART_CRUSHER_QUERY_STOPWORDS,
-    SMART_CRUSHER_STATUS_KEYS, SMART_CRUSHER_TABULAR_MAX_BYTES,
-    SMART_CRUSHER_TABULAR_MAX_CELL_CHARS, SMART_CRUSHER_TABULAR_MAX_COLS,
-    SMART_CRUSHER_TABULAR_MAX_ITEMS, SMART_CRUSHER_TABULAR_MIN_ITEMS,
-    SMART_CRUSHER_TABULAR_MIN_OVERLAP_PCT, SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT,
-    SMART_CRUSHER_TAIL_KEEP, ZMode,
+    SMART_CRUSHER_STATUS_KEYS, SMART_CRUSHER_TABULAR_MAX_ITEMS,
+    SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT, SMART_CRUSHER_TAIL_KEEP,
+    SMART_CRUSHER_TOON_MAX_BYTES, SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT, ZMode,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonCrushKind {
+    ToonLossless,
+    JsonScored,
+}
+
+#[derive(Debug, Clone)]
+pub struct JsonCrushOutput {
+    pub kind: JsonCrushKind,
+    pub rendered: String,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 struct WelfordStats {
@@ -105,45 +117,67 @@ fn split_optional_exit_header(text: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Tier-1 strictly lossless JSON tabular compressor (safe to run below `read_less_min_bytes`
-/// because zero rows or cells are dropped). Handles both top-level uniform arrays and objects
-/// containing uniform scalar arrays when compact CSV saves `>= 30%` bytes.
-pub fn try_crush_json_tabular_only(text: &str) -> Option<String> {
+/// Tier-1 strictly lossless TOON compressor (safe to run below `read_less_min_bytes` because
+/// zero rows, keys, or cells are dropped). Handles top-level arrays, wrapped API/MCP objects,
+/// 1-level nested uniform field groups, keyed maps, and inline arrays, gated strictly against
+/// **minified JSON** so irregular/tiny payloads never incur TOON syntax overhead ("Never Worse").
+pub fn try_crush_json_toon_only(text: &str) -> Option<String> {
     let (header, body) = split_optional_exit_header(text);
     let trimmed = body.trim();
-    if !matches!(trimmed.as_bytes().first(), Some(b'[')) {
+    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[')) {
         return None;
     }
     let parsed: Value = serde_json::from_str(trimmed).ok()?;
-    let Value::Array(items) = &parsed else {
-        return None;
-    };
-    let (cols, csv_body) = try_render_lossless_tabular_csv(items)?;
-    let table = format!(
-        "# lossless-tabular-json (rows={}, cols={})\n{csv_body}",
-        items.len(),
-        cols
-    );
-    let compact_raw_len = serde_json::to_string(&parsed)
-        .map(|s| s.len())
-        .unwrap_or(trimmed.len());
-    let saved_pct = compact_raw_len
-        .saturating_sub(table.len())
-        .saturating_mul(100)
-        / compact_raw_len.max(1);
-    if table.len() >= compact_raw_len || saved_pct < SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT {
+
+    // Oversized arrays (> 40 rows) skip lossless Tier-1 so Tier-2 Scored Keep/Drop crushes them cleanly.
+    if max_nested_array_len(&parsed, 0) > SMART_CRUSHER_TABULAR_MAX_ITEMS {
         return None;
     }
+
+    let minified_len = serde_json::to_string(&parsed).ok()?.len();
+    if minified_len < READ_LESS_SCRUB_MIN_BYTES {
+        return None;
+    }
+    let toon = encode_toon_bounded(&parsed, SMART_CRUSHER_TOON_MAX_BYTES)?;
+
+    // Strict "Never Worse vs Minified JSON" gate:
+    // - Always strictly smaller than minified JSON.
+    // - Must save >= 20% vs minified JSON, OR (>= 30% vs pretty raw AND still beat minified JSON).
+    if toon.len() >= minified_len {
+        return None;
+    }
+    let saved_vs_min_pct = minified_len
+        .saturating_sub(toon.len())
+        .saturating_mul(100)
+        / minified_len.max(1);
+    let saved_vs_raw_pct = trimmed
+        .len()
+        .saturating_sub(toon.len())
+        .saturating_mul(100)
+        / trimmed.len().max(1);
+    let beats_gate = saved_vs_min_pct >= SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT
+        || (trimmed.len() > minified_len && saved_vs_raw_pct >= SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT);
+    if !beats_gate {
+        return None;
+    }
+
     Some(match header {
-        Some(h) => format!("{h}\n{table}"),
-        None => table,
+        Some(h) => format!("{h}\n{toon}"),
+        None => toon,
     })
 }
 
 /// Top-level 2-tier SmartCrusher entry point for JSON tool outputs.
-pub fn try_crush_json_body(text: &str, tool_args: &Value, zmode: ZMode) -> Option<String> {
-    if let Some(lossless) = try_crush_json_tabular_only(text) {
-        return Some(lossless);
+pub fn try_crush_json_body(
+    text: &str,
+    tool_args: &Value,
+    zmode: ZMode,
+) -> Option<JsonCrushOutput> {
+    if let Some(lossless) = try_crush_json_toon_only(text) {
+        return Some(JsonCrushOutput {
+            kind: JsonCrushKind::ToonLossless,
+            rendered: lossless,
+        });
     }
     let (header, body) = split_optional_exit_header(text);
     let trimmed = body.trim();
@@ -156,108 +190,14 @@ pub fn try_crush_json_body(text: &str, tool_args: &Value, zmode: ZMode) -> Optio
     let max_kept = max_kept_for_zmode(zmode);
     let compacted = compact_json_value(&parsed, 0, &query_tokens, max_kept);
     let rendered = serde_json::to_string(&compacted).ok()?;
-    Some(match header {
+    let final_str = match header {
         Some(h) => format!("{h}\n{rendered}"),
         None => rendered,
-    })
-}
-
-fn format_csv_cell(val: &Value) -> Option<String> {
-    let raw = match val {
-        Value::Null => String::new(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => {
-            if s.len() > SMART_CRUSHER_TABULAR_MAX_CELL_CHARS {
-                return None;
-            }
-            s.clone()
-        }
-        // Non-scalar nested objects/arrays cannot be losslessly flattened into plain CSV cells.
-        Value::Array(_) | Value::Object(_) => return None,
     };
-    let needs_quote = raw.bytes().any(|b| matches!(b, b',' | b'"' | b'\n' | b'\r'));
-    Some(match needs_quote {
-        true => format!("\"{}\"", raw.replace('"', "\"\"")),
-        false => raw,
+    Some(JsonCrushOutput {
+        kind: JsonCrushKind::JsonScored,
+        rendered: final_str,
     })
-}
-
-/// Tier 1: Attempts 100% lossless tabular CSV rendering for uniform flat JSON object arrays.
-/// Returns `Some((col_count, csv_text))` only when every item is a flat scalar object, key overlap
-/// is `>= 80%`, total rows are within `6..=40`, and rendered CSV fits within `2.4 KiB`.
-fn try_render_lossless_tabular_csv(items: &[Value]) -> Option<(usize, String)> {
-    if items.len() < SMART_CRUSHER_TABULAR_MIN_ITEMS
-        || items.len() > SMART_CRUSHER_TABULAR_MAX_ITEMS
-    {
-        return None;
-    }
-
-    let mut cols: Vec<&str> = Vec::new();
-    let mut seen_cols: BTreeSet<&str> = BTreeSet::new();
-    let mut present_cells = 0usize;
-
-    for item in items {
-        let obj = item.as_object()?;
-        if obj.is_empty() {
-            return None;
-        }
-        present_cells = present_cells.saturating_add(obj.len());
-        for (k, v) in obj {
-            if matches!(v, Value::Array(_) | Value::Object(_)) {
-                return None;
-            }
-            if seen_cols.insert(k.as_str()) {
-                cols.push(k.as_str());
-                if cols.len() > SMART_CRUSHER_TABULAR_MAX_COLS {
-                    return None;
-                }
-            }
-        }
-    }
-
-    if cols.is_empty() {
-        return None;
-    }
-    let total_cells = items.len().saturating_mul(cols.len());
-    let overlap_pct = present_cells.saturating_mul(100) / total_cells.max(1);
-    if overlap_pct < SMART_CRUSHER_TABULAR_MIN_OVERLAP_PCT {
-        return None;
-    }
-
-    let mut lines: Vec<String> = Vec::with_capacity(items.len() + 1);
-    let header_cells: Vec<String> = cols
-        .iter()
-        .map(|c| {
-            let needs_quote = c.bytes().any(|b| matches!(b, b',' | b'"' | b'\n' | b'\r'));
-            match needs_quote {
-                true => format!("\"{}\"", c.replace('"', "\"\"")),
-                false => (*c).to_string(),
-            }
-        })
-        .collect();
-    lines.push(header_cells.join(","));
-
-    let mut total_bytes = lines[0].len();
-    for item in items {
-        let obj = item.as_object()?;
-        let mut row: Vec<String> = Vec::with_capacity(cols.len());
-        for &col in &cols {
-            let cell = match obj.get(col) {
-                Some(v) => format_csv_cell(v)?,
-                None => String::new(),
-            };
-            row.push(cell);
-        }
-        let line = row.join(",");
-        total_bytes = total_bytes.saturating_add(line.len() + 1);
-        if total_bytes > SMART_CRUSHER_TABULAR_MAX_BYTES {
-            return None;
-        }
-        lines.push(line);
-    }
-
-    Some((cols.len(), lines.join("\n")))
 }
 
 fn value_is_error_signal(val: &Value, depth: usize) -> bool {
@@ -413,22 +353,6 @@ fn compact_json_value(val: &Value, depth: usize, query_tokens: &[String], max_ke
             false => Value::String(s.clone()),
         },
         Value::Array(items) => {
-            // Tier 1 (nested): lossless CSV when compact and saving >= 30% bytes.
-            if let Some((cols, csv_body)) = try_render_lossless_tabular_csv(items) {
-                let raw_len = serde_json::to_string(items).map(|s| s.len()).unwrap_or(0);
-                let candidate = json!({
-                    "_format": "lossless_csv",
-                    "_rows": items.len(),
-                    "_cols": cols,
-                    "_csv": csv_body,
-                });
-                let cand_len = serde_json::to_string(&candidate).map(|s| s.len()).unwrap_or(raw_len);
-                let saved_pct = raw_len.saturating_sub(cand_len).saturating_mul(100) / raw_len.max(1);
-                if raw_len > 0 && cand_len < raw_len && saved_pct >= SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT {
-                    return candidate;
-                }
-            }
-
             if items.len() <= max_kept {
                 return Value::Array(
                     items
@@ -580,29 +504,57 @@ fn compact_json_value(val: &Value, depth: usize, query_tokens: &[String], max_ke
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::read_less::toon::decode_toon;
 
     #[test]
-    fn tier1_lossless_tabular_csv_keeps_every_row_and_saves_over_30_pct() {
-        let items: Vec<Value> = (0..18)
-            .map(|i| {
-                json!({
-                    "service_id": i,
-                    "service_name": format!("svc-{i}"),
-                    "region": "us-east-1",
-                    "status": "healthy",
-                    "latency_ms": 12 + (i % 5),
-                    "owner": "Smith, Alice"
+    fn tier1_lossless_toon_keeps_every_row_with_pipe_delimiter_and_nested_groups() {
+        let payload = json!({
+            "ok": true,
+            "meta": { "page": 1, "total": 18 },
+            "items": (0..18)
+                .map(|i| {
+                    json!({
+                        "service_id": i,
+                        "service_name": format!("svc-{i}"),
+                        "region": "us-east-1",
+                        "status": "healthy",
+                        "latency_ms": 12 + (i % 5),
+                        "owner": { "name": "Smith, Alice", "team": "core" }
+                    })
                 })
-            })
-            .collect();
-        let raw = serde_json::to_string_pretty(&Value::Array(items)).expect("json");
+                .collect::<Vec<_>>()
+        });
+        let raw = serde_json::to_string(&payload).expect("minified json");
         let crushed = try_crush_json_body(&raw, &Value::Null, ZMode::Balanced).expect("crushed");
-        assert!(crushed.starts_with("# lossless-tabular-json (rows=18, cols=6)"));
-        assert!(crushed.contains("\"Smith, Alice\""));
-        for i in 0..18 {
-            assert!(crushed.contains(&format!("svc-{i}")), "missing row svc-{i}");
-        }
-        assert!(crushed.len() * 100 <= raw.len() * 65);
+        assert_eq!(crushed.kind, JsonCrushKind::ToonLossless);
+        assert!(crushed.rendered.contains("items[18|]{"), "out={}", crushed.rendered);
+        assert!(crushed.rendered.contains("owner{name|team}"), "out={}", crushed.rendered);
+        assert!(crushed.rendered.len() * 100 <= raw.len() * 65);
+        assert_eq!(decode_toon(&crushed.rendered).expect("lossless decode"), payload);
+    }
+
+    #[test]
+    fn never_worse_gate_skips_tiny_and_irregular_minified_json() {
+        let tiny = r#"{"a":1,"b":"x"}"#;
+        assert!(try_crush_json_toon_only(tiny).is_none());
+
+        // Deeply irregular mixed array with syntax-heavy values where indented list form is
+        // strictly larger than minified JSON: TOON gate must decline cleanly.
+        let irregular = serde_json::to_string(&json!([
+            {"a": "x:y", "b": [1, {"c": "[z]", "d": {"e": "1:2"}}]},
+            {"f": "p:q", "g": [2, {"h": "{w}", "i": {"j": "3:4"}}]},
+            {"k": "m:n", "l": [3, {"m": "[v]", "n": {"o": "5:6"}}]},
+            {"p": "r:s", "q": [4, {"r": "{u}", "s": {"t": "7:8"}}]},
+            {"u": "a:b", "v": [5, {"w": "[t]", "x": {"y": "9:0"}}]},
+            {"aa": "q:w", "bb": [6, {"cc": "{r}", "dd": {"ee": "1:3"}}]},
+            {"ff": "z:x", "gg": [7, {"hh": "[s]", "ii": {"jj": "2:4"}}]}
+        ]))
+        .expect("irregular json");
+        assert!(irregular.len() >= READ_LESS_SCRUB_MIN_BYTES);
+        assert!(
+            try_crush_json_toon_only(&irregular).is_none(),
+            "irregular minified JSON where TOON is larger must be skipped"
+        );
     }
 
     #[test]
@@ -629,7 +581,8 @@ mod tests {
         let raw = serde_json::to_string(&Value::Array(items)).expect("json");
         let args = json!({ "command": "curl -s https://api.local/jobs?filter=payment_webhook" });
         let crushed = try_crush_json_body(&raw, &args, ZMode::Balanced).expect("crushed");
-        let parsed: Value = serde_json::from_str(&crushed).expect("valid json");
+        assert_eq!(crushed.kind, JsonCrushKind::JsonScored);
+        let parsed: Value = serde_json::from_str(&crushed.rendered).expect("valid json");
         assert_eq!(parsed["_total_items"], json!(80));
         let sample = parsed["_sample"].as_array().expect("sample array");
         let ids: Vec<i64> = sample

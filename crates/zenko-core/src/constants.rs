@@ -1617,14 +1617,17 @@ pub const MINIMALISM_IGNORED_DORMANT_DEPS: &[&str] = &[
     "vite",
 ];
 
-// ── SmartCrusher 2-Tier JSON Compressor (Headroom-inspired, zero ML/regex) ────
-pub const SMART_CRUSHER_TABULAR_MIN_ITEMS: usize = 6;
+// ── SmartCrusher 2-Tier JSON / TOON Compressor (Headroom + TOON, zero ML/regex)
 pub const SMART_CRUSHER_TABULAR_MAX_ITEMS: usize = 40;
-pub const SMART_CRUSHER_TABULAR_MAX_BYTES: usize = 2_400;
-pub const SMART_CRUSHER_TABULAR_MIN_OVERLAP_PCT: usize = 80;
 pub const SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT: usize = 30;
 pub const SMART_CRUSHER_TABULAR_MAX_COLS: usize = 20;
 pub const SMART_CRUSHER_TABULAR_MAX_CELL_CHARS: usize = 120;
+pub const SMART_CRUSHER_TOON_MAX_BYTES: usize = 3_200;
+pub const SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT: usize = 20;
+pub const SMART_CRUSHER_TOON_KEYED_MAP_MIN_ENTRIES: usize = 4;
+pub const SMART_CRUSHER_TOON_MAX_DEPTH: usize = 8;
+pub const SMART_CRUSHER_TOON_INLINE_MAX_ITEMS: usize = 24;
+pub const SMART_CRUSHER_TOON_INLINE_MAX_CHARS: usize = 160;
 pub const SMART_CRUSHER_HEAD_KEEP: usize = 2;
 pub const SMART_CRUSHER_TAIL_KEEP: usize = 2;
 pub const SMART_CRUSHER_MAX_KEPT_BALANCED: usize = 10;
