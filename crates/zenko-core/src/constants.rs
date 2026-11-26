@@ -1618,16 +1618,29 @@ pub const MINIMALISM_IGNORED_DORMANT_DEPS: &[&str] = &[
 ];
 
 // ── SmartCrusher 2-Tier JSON / TOON Compressor (Headroom + TOON, zero ML/regex)
+pub const READ_LESS_EXIT_CODE_PREFIX: &str = "exit_code:";
 pub const SMART_CRUSHER_TABULAR_MAX_ITEMS: usize = 40;
 pub const SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT: usize = 30;
 pub const SMART_CRUSHER_TABULAR_MAX_COLS: usize = 20;
 pub const SMART_CRUSHER_TABULAR_MAX_CELL_CHARS: usize = 120;
+pub const SMART_CRUSHER_TOON_TABULAR_MIN_ITEMS: usize = 2;
+pub const SMART_CRUSHER_TOON_INIT_CAP_BYTES: usize = 2_048;
 pub const SMART_CRUSHER_TOON_MAX_BYTES: usize = 3_200;
 pub const SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT: usize = 20;
 pub const SMART_CRUSHER_TOON_KEYED_MAP_MIN_ENTRIES: usize = 4;
 pub const SMART_CRUSHER_TOON_MAX_DEPTH: usize = 8;
 pub const SMART_CRUSHER_TOON_INLINE_MAX_ITEMS: usize = 24;
 pub const SMART_CRUSHER_TOON_INLINE_MAX_CHARS: usize = 160;
+pub const SMART_CRUSHER_ERROR_HTTP_MIN_CODE: i64 = 400;
+pub const SMART_CRUSHER_NULL_ERROR_VALUES: &[&str] = &["none", "null", "nil", "ok"];
+pub const SMART_CRUSHER_OUTLIER_SKIP_KEYS: &[&str] = &[
+    "id",
+    "index",
+    "timestamp",
+    "ts",
+    "created_at",
+    "updated_at",
+];
 pub const SMART_CRUSHER_HEAD_KEEP: usize = 2;
 pub const SMART_CRUSHER_TAIL_KEEP: usize = 2;
 pub const SMART_CRUSHER_MAX_KEPT_BALANCED: usize = 10;
@@ -1711,5 +1724,9 @@ pub const DOX_MAX_TREE_DOCS: usize = 24;
 pub const DOX_PURPOSE_MAX_CHARS: usize = 120;
 pub const DOX_MAX_SCOPED_RULE_BYTES: usize = 4 * 1024;
 pub const DOX_MAX_SCOPED_RULES_PER_SESSION: usize = 16;
+pub const DOX_SCOPED_RULES_TAG_OPEN: &str = "<scoped_repo_rules ";
+pub const DOX_SCOPED_RULES_TAG_PREFIX: &str = "<scoped_repo_rules path=\"";
+pub const DOX_SCOPED_RULES_TAG_CLOSE: &str = "</scoped_repo_rules>";
+pub const DOX_SCOPED_RULES_META_KEY: &str = "scoped_rules_injected";
 pub const DOX_DRIFT_MIN_ADDED_LINES: u64 = 12;
 pub const DOX_DRIFT_MAX_FINDINGS: usize = 6;

@@ -2311,7 +2311,7 @@ impl AgentRuntime {
             }
             if let Some(arr) = ev
                 .content_json
-                .get("scoped_rules_injected")
+                .get(zenko_core::DOX_SCOPED_RULES_META_KEY)
                 .and_then(Value::as_array)
             {
                 for path in arr.iter().filter_map(Value::as_str).map(str::trim) {
@@ -2321,10 +2321,10 @@ impl AgentRuntime {
                 }
             }
             if let Some(content) = ev.content_json.get("content").and_then(Value::as_str) {
-                const PREFIX: &str = "<scoped_repo_rules path=\"";
+                let prefix = zenko_core::DOX_SCOPED_RULES_TAG_PREFIX;
                 let mut cursor = 0usize;
-                while let Some(rel) = content[cursor..].find(PREFIX) {
-                    let start = cursor + rel + PREFIX.len();
+                while let Some(rel) = content[cursor..].find(prefix) {
+                    let start = cursor + rel + prefix.len();
                     let Some(end_rel) = content[start..].find("\">") else {
                         break;
                     };

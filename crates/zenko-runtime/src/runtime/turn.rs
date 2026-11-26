@@ -1801,10 +1801,10 @@ impl AgentRuntime {
                     .output
                     .metadata
                     .as_ref()
-                    .and_then(|m| m.get("scoped_rules_injected"))
+                    .and_then(|m| m.get(zenko_core::DOX_SCOPED_RULES_META_KEY))
                     && let Some(obj) = tool_payload.as_object_mut()
                 {
-                    obj.insert("scoped_rules_injected".into(), scoped_meta.clone());
+                    obj.insert(zenko_core::DOX_SCOPED_RULES_META_KEY.into(), scoped_meta.clone());
                 }
                 let ev = self.store.append_event(
                     &session_id,

@@ -162,16 +162,14 @@ fn extract_artifact_handle(content: &str) -> Option<&str> {
 }
 
 fn extract_scoped_repo_rules_blocks(content: &str) -> Vec<&str> {
-    const OPEN: &str = "<scoped_repo_rules ";
-    const CLOSE: &str = "</scoped_repo_rules>";
     let mut blocks = Vec::new();
     let mut cursor = 0usize;
-    while let Some(rel_start) = content[cursor..].find(OPEN) {
+    while let Some(rel_start) = content[cursor..].find(zenko_core::DOX_SCOPED_RULES_TAG_OPEN) {
         let start = cursor + rel_start;
-        let Some(rel_end) = content[start..].find(CLOSE) else {
+        let Some(rel_end) = content[start..].find(zenko_core::DOX_SCOPED_RULES_TAG_CLOSE) else {
             break;
         };
-        let end = start + rel_end + CLOSE.len();
+        let end = start + rel_end + zenko_core::DOX_SCOPED_RULES_TAG_CLOSE.len();
         blocks.push(&content[start..end]);
         cursor = end;
     }

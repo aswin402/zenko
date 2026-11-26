@@ -13,20 +13,22 @@
 //!   4) Query-relevant keyword matches extracted from tool arguments,
 //!   while preserving `_total_items`, `_omitted_items`, `_item_keys`, `_kept_reasons`, and `_sample`.
 
+use super::split_optional_exit_header;
 use super::toon::{encode_toon_bounded, max_nested_array_len};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use zenko_core::{
     READ_LESS_JSON_FULL_DEPTH, READ_LESS_JSON_PRIORITY_KEYS, READ_LESS_JSON_SCHEMA_SCAN_ITEMS,
     READ_LESS_MAX_JSON_KEYS, READ_LESS_MAX_STRING_CHARS, READ_LESS_SCRUB_MIN_BYTES,
-    SMART_CRUSHER_ERROR_KEYS, SMART_CRUSHER_ERROR_STATUS_VALUES, SMART_CRUSHER_HEAD_KEEP,
-    SMART_CRUSHER_MAX_ERROR_ITEMS, SMART_CRUSHER_MAX_KEPT_BALANCED, SMART_CRUSHER_MAX_KEPT_HIGH,
-    SMART_CRUSHER_MAX_KEPT_ULTRA, SMART_CRUSHER_MAX_OUTLIER_ITEMS, SMART_CRUSHER_MAX_QUERY_TOKENS,
-    SMART_CRUSHER_MIN_NUMERIC_SAMPLES, SMART_CRUSHER_MIN_QUERY_TOKEN_LEN, SMART_CRUSHER_OK_KEYS,
-    SMART_CRUSHER_OUTLIER_SIGMA, SMART_CRUSHER_QUERY_ARG_KEYS, SMART_CRUSHER_QUERY_STOPWORDS,
-    SMART_CRUSHER_STATUS_KEYS, SMART_CRUSHER_TABULAR_MAX_ITEMS,
-    SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT, SMART_CRUSHER_TAIL_KEEP,
-    SMART_CRUSHER_TOON_MAX_BYTES, SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT, ZMode,
+    SMART_CRUSHER_ERROR_HTTP_MIN_CODE, SMART_CRUSHER_ERROR_KEYS, SMART_CRUSHER_ERROR_STATUS_VALUES,
+    SMART_CRUSHER_HEAD_KEEP, SMART_CRUSHER_MAX_ERROR_ITEMS, SMART_CRUSHER_MAX_KEPT_BALANCED,
+    SMART_CRUSHER_MAX_KEPT_HIGH, SMART_CRUSHER_MAX_KEPT_ULTRA, SMART_CRUSHER_MAX_OUTLIER_ITEMS,
+    SMART_CRUSHER_MAX_QUERY_TOKENS, SMART_CRUSHER_MIN_NUMERIC_SAMPLES,
+    SMART_CRUSHER_MIN_QUERY_TOKEN_LEN, SMART_CRUSHER_NULL_ERROR_VALUES, SMART_CRUSHER_OK_KEYS,
+    SMART_CRUSHER_OUTLIER_SIGMA, SMART_CRUSHER_OUTLIER_SKIP_KEYS, SMART_CRUSHER_QUERY_ARG_KEYS,
+    SMART_CRUSHER_QUERY_STOPWORDS, SMART_CRUSHER_STATUS_KEYS, SMART_CRUSHER_TABULAR_MAX_ITEMS,
+    SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT, SMART_CRUSHER_TAIL_KEEP, SMART_CRUSHER_TOON_MAX_BYTES,
+    SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT, ZMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,38 +109,28 @@ fn max_kept_for_zmode(zmode: ZMode) -> usize {
     }
 }
 
-fn split_optional_exit_header(text: &str) -> (Option<&str>, &str) {
-    match text.strip_prefix("exit_code:") {
-        Some(_) => match text.find('\n') {
-            Some(pos) => (Some(&text[..pos]), &text[pos + 1..]),
-            None => (Some(text), ""),
-        },
-        None => (None, text),
-    }
-}
-
-/// Tier-1 strictly lossless TOON compressor (safe to run below `read_less_min_bytes` because
-/// zero rows, keys, or cells are dropped). Handles top-level arrays, wrapped API/MCP objects,
-/// 1-level nested uniform field groups, keyed maps, and inline arrays, gated strictly against
-/// **minified JSON** so irregular/tiny payloads never incur TOON syntax overhead ("Never Worse").
-pub fn try_crush_json_toon_only(text: &str) -> Option<String> {
+fn parse_json_payload(text: &str) -> Option<(Option<&str>, usize, Value)> {
     let (header, body) = split_optional_exit_header(text);
     let trimmed = body.trim();
     if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[')) {
         return None;
     }
     let parsed: Value = serde_json::from_str(trimmed).ok()?;
+    Some((header, trimmed.len(), parsed))
+}
 
+/// Core Tier-1 TOON encoder operating directly on an already-parsed `Value` (zero double parsing).
+fn try_encode_toon_value(parsed: &Value, raw_trimmed_len: usize) -> Option<String> {
     // Oversized arrays (> 40 rows) skip lossless Tier-1 so Tier-2 Scored Keep/Drop crushes them cleanly.
-    if max_nested_array_len(&parsed, 0) > SMART_CRUSHER_TABULAR_MAX_ITEMS {
+    if max_nested_array_len(parsed, 0) > SMART_CRUSHER_TABULAR_MAX_ITEMS {
         return None;
     }
 
-    let minified_len = serde_json::to_string(&parsed).ok()?.len();
+    let minified_len = serde_json::to_string(parsed).ok()?.len();
     if minified_len < READ_LESS_SCRUB_MIN_BYTES {
         return None;
     }
-    let toon = encode_toon_bounded(&parsed, SMART_CRUSHER_TOON_MAX_BYTES)?;
+    let toon = encode_toon_bounded(parsed, SMART_CRUSHER_TOON_MAX_BYTES)?;
 
     // Strict "Never Worse vs Minified JSON" gate:
     // - Always strictly smaller than minified JSON.
@@ -150,53 +142,57 @@ pub fn try_crush_json_toon_only(text: &str) -> Option<String> {
         .saturating_sub(toon.len())
         .saturating_mul(100)
         / minified_len.max(1);
-    let saved_vs_raw_pct = trimmed
-        .len()
+    let saved_vs_raw_pct = raw_trimmed_len
         .saturating_sub(toon.len())
         .saturating_mul(100)
-        / trimmed.len().max(1);
+        / raw_trimmed_len.max(1);
     let beats_gate = saved_vs_min_pct >= SMART_CRUSHER_TOON_MIN_SAVINGS_VS_MINIFIED_PCT
-        || (trimmed.len() > minified_len && saved_vs_raw_pct >= SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT);
-    if !beats_gate {
-        return None;
+        || (raw_trimmed_len > minified_len
+            && saved_vs_raw_pct >= SMART_CRUSHER_TABULAR_MIN_SAVINGS_PCT);
+    match beats_gate {
+        true => Some(toon),
+        false => None,
     }
-
-    Some(match header {
-        Some(h) => format!("{h}\n{toon}"),
-        None => toon,
-    })
 }
 
-/// Top-level 2-tier SmartCrusher entry point for JSON tool outputs.
+fn attach_optional_header(header: Option<&str>, body: String) -> String {
+    match header {
+        Some(h) => format!("{h}\n{body}"),
+        None => body,
+    }
+}
+
+/// Tier-1 strictly lossless TOON compressor (safe to run below `read_less_min_bytes` because
+/// zero rows, keys, or cells are dropped). Handles top-level arrays, wrapped API/MCP objects,
+/// 1-level nested uniform field groups, keyed maps, and inline arrays, gated strictly against
+/// **minified JSON** so irregular/tiny payloads never incur TOON syntax overhead ("Never Worse").
+pub fn try_crush_json_toon_only(text: &str) -> Option<String> {
+    let (header, raw_len, parsed) = parse_json_payload(text)?;
+    let toon = try_encode_toon_value(&parsed, raw_len)?;
+    Some(attach_optional_header(header, toon))
+}
+
+/// Top-level 2-tier SmartCrusher entry point for JSON tool outputs (single JSON parse).
 pub fn try_crush_json_body(
     text: &str,
     tool_args: &Value,
     zmode: ZMode,
 ) -> Option<JsonCrushOutput> {
-    if let Some(lossless) = try_crush_json_toon_only(text) {
+    let (header, raw_len, parsed) = parse_json_payload(text)?;
+    if let Some(toon) = try_encode_toon_value(&parsed, raw_len) {
         return Some(JsonCrushOutput {
             kind: JsonCrushKind::ToonLossless,
-            rendered: lossless,
+            rendered: attach_optional_header(header, toon),
         });
     }
-    let (header, body) = split_optional_exit_header(text);
-    let trimmed = body.trim();
-    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[')) {
-        return None;
-    }
-    let parsed: Value = serde_json::from_str(trimmed).ok()?;
 
     let query_tokens = extract_query_tokens(tool_args);
     let max_kept = max_kept_for_zmode(zmode);
     let compacted = compact_json_value(&parsed, 0, &query_tokens, max_kept);
     let rendered = serde_json::to_string(&compacted).ok()?;
-    let final_str = match header {
-        Some(h) => format!("{h}\n{rendered}"),
-        None => rendered,
-    };
     Some(JsonCrushOutput {
         kind: JsonCrushKind::JsonScored,
-        rendered: final_str,
+        rendered: attach_optional_header(header, rendered),
     })
 }
 
@@ -218,7 +214,11 @@ fn value_is_error_signal(val: &Value, depth: usize) -> bool {
                 }
                 Value::String(s) => {
                     let t = s.trim();
-                    if !t.is_empty() && !t.eq_ignore_ascii_case("none") && !t.eq_ignore_ascii_case("null") {
+                    if !t.is_empty()
+                        && !SMART_CRUSHER_NULL_ERROR_VALUES
+                            .iter()
+                            .any(|nv| t.eq_ignore_ascii_case(nv))
+                    {
                         return true;
                     }
                 }
@@ -252,7 +252,9 @@ fn value_is_error_signal(val: &Value, depth: usize) -> bool {
         {
             match v {
                 Value::Number(n) => {
-                    if n.as_i64().is_some_and(|code| code >= 400) {
+                    if n.as_i64()
+                        .is_some_and(|code| code >= SMART_CRUSHER_ERROR_HTTP_MIN_CODE)
+                    {
                         return true;
                     }
                 }
@@ -284,8 +286,11 @@ fn find_numeric_outliers(items: &[Value]) -> Vec<(usize, f64)> {
             continue;
         };
         for (k, v) in obj {
-            // Skip monotonically increasing IDs / indices / timestamps by avoiding purely uniform sequences
-            if k.eq_ignore_ascii_case("id") || k.eq_ignore_ascii_case("index") {
+            // Skip monotonically increasing IDs / indices / timestamps via declarative table
+            if SMART_CRUSHER_OUTLIER_SKIP_KEYS
+                .iter()
+                .any(|sk| k.eq_ignore_ascii_case(sk))
+            {
                 continue;
             }
             if let Some(num) = v.as_f64() {

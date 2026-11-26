@@ -4,6 +4,15 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.37] - 2026-11-26
+
+Hardened `v0.0.34–v0.0.36` modules against Zenko's zero-hardcoding, zero-duplication, and pure `match`/pipeline engineering standards.
+
+### Changed
+- **Centralized Constants (`crates/zenko-core/src/constants.rs`):** Extracted all remaining inline literals (`READ_LESS_EXIT_CODE_PREFIX`, `SMART_CRUSHER_TOON_TABULAR_MIN_ITEMS`, `SMART_CRUSHER_TOON_INIT_CAP_BYTES`, `SMART_CRUSHER_ERROR_HTTP_MIN_CODE`, `SMART_CRUSHER_NULL_ERROR_VALUES`, `SMART_CRUSHER_OUTLIER_SKIP_KEYS`, `DOX_SCOPED_RULES_TAG_OPEN`, `DOX_SCOPED_RULES_TAG_PREFIX`, `DOX_SCOPED_RULES_TAG_CLOSE`, `DOX_SCOPED_RULES_META_KEY`) and shared them across `tool_router.rs`, `compaction.rs`, `runtime/mod.rs`, `runtime/turn.rs`, `read_less/mod.rs`, `smart_crusher.rs`, and `toon.rs`.
+- **Single-Parse SmartCrusher & Shared Helper (`smart_crusher.rs`, `read_less/mod.rs`):** Deduplicated `split_optional_exit_header` across `read_less` and eliminated redundant double JSON parsing on Tier-1 -> Tier-2 handoff.
+- **Pure `match` & Combinator Pipelines (`toon.rs`, `read_less/mod.rs`):** Replaced all remaining `if / else if` chains in TOON encoding, round-trip decoding, and Read-Less dispatch with exhaustive `match` state transitions and `.or_else()` pipelines.
+
 ## [0.0.36] - 2026-11-26
 
 Upgraded SmartCrusher's lossless Tier-1 JSON compressor with a native pure-Rust **TOON (Token-Oriented Object Notation)** encoder (`toon-format/toon`-inspired; zero external crates, zero regex, mathematically round-trip verified).

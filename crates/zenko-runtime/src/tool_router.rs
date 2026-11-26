@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, DOX_MAX_SCOPED_RULE_BYTES, HookEvent,
+    ARTIFACT_PATH_PREFIX, AgentEvent, ApprovalDecision, DOX_MAX_SCOPED_RULE_BYTES,
+    DOX_SCOPED_RULES_META_KEY, DOX_SCOPED_RULES_TAG_CLOSE, DOX_SCOPED_RULES_TAG_PREFIX, HookEvent,
     MUTATING_FILE_TOOLS, ORCH_STAGE_READ_LESS, ORCH_STAGE_TOOL_ACTIVATED, PermissionMode,
     REPO_RULE_FILES, Result, ScriptBlockAction, SkillManageAction, TOOL_APPLY_PATCH,
     TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_READ_FILE,
@@ -836,7 +837,7 @@ pub(crate) async fn dispatch_tool_call(
                 }
                 if let Some(body) = read_capped_scoped_rule(&full_doc) {
                     tool_output.content.push_str(&format!(
-                        "\n\n<scoped_repo_rules path=\"{rel_doc}\">\n{body}\n</scoped_repo_rules>"
+                        "\n\n{DOX_SCOPED_RULES_TAG_PREFIX}{rel_doc}\">\n{body}\n{DOX_SCOPED_RULES_TAG_CLOSE}"
                     ));
                     injected_paths.push(rel_doc);
                 }
@@ -845,11 +846,11 @@ pub(crate) async fn dispatch_tool_call(
                 let val = Value::Array(injected_paths.into_iter().map(Value::String).collect());
                 tool_output.metadata = match tool_output.metadata {
                     Some(Value::Object(mut map)) => {
-                        map.insert("scoped_rules_injected".into(), val);
+                        map.insert(DOX_SCOPED_RULES_META_KEY.into(), val);
                         Some(Value::Object(map))
                     }
-                    Some(other) => Some(json!({ "data": other, "scoped_rules_injected": val })),
-                    None => Some(json!({ "scoped_rules_injected": val })),
+                    Some(other) => Some(json!({ "data": other, DOX_SCOPED_RULES_META_KEY: val })),
+                    None => Some(json!({ DOX_SCOPED_RULES_META_KEY: val })),
                 };
             }
         }

@@ -11,9 +11,10 @@ use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use zenko_core::{
     SMART_CRUSHER_TABULAR_MAX_CELL_CHARS, SMART_CRUSHER_TABULAR_MAX_COLS,
-    SMART_CRUSHER_TABULAR_MAX_ITEMS, SMART_CRUSHER_TOON_INLINE_MAX_CHARS,
-    SMART_CRUSHER_TOON_INLINE_MAX_ITEMS, SMART_CRUSHER_TOON_KEYED_MAP_MIN_ENTRIES,
-    SMART_CRUSHER_TOON_MAX_DEPTH,
+    SMART_CRUSHER_TABULAR_MAX_ITEMS, SMART_CRUSHER_TOON_INIT_CAP_BYTES,
+    SMART_CRUSHER_TOON_INLINE_MAX_CHARS, SMART_CRUSHER_TOON_INLINE_MAX_ITEMS,
+    SMART_CRUSHER_TOON_KEYED_MAP_MIN_ENTRIES, SMART_CRUSHER_TOON_MAX_DEPTH,
+    SMART_CRUSHER_TOON_TABULAR_MIN_ITEMS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +74,7 @@ struct ToonWriter {
 impl ToonWriter {
     fn new(max_bytes: usize) -> Self {
         Self {
-            buf: String::with_capacity(max_bytes.min(2048)),
+            buf: String::with_capacity(max_bytes.min(SMART_CRUSHER_TOON_INIT_CAP_BYTES)),
             max_bytes,
             overflowed: false,
         }
@@ -306,7 +307,9 @@ fn pick_delimiter_for_strings<'a>(iter: impl Iterator<Item = &'a str>) -> ToonDe
 /// Detects whether `items` is a uniform tabular object array (with optional 1-level uniform
 /// nested scalar sub-objects like `author{login,id}`) eligible for TOON Tabular Form.
 fn detect_tabular_schema<'a>(items: &'a [Value]) -> Option<(Vec<TabularCol<'a>>, ToonDelimiter)> {
-    if items.len() < 2 || items.len() > SMART_CRUSHER_TABULAR_MAX_ITEMS {
+    if items.len() < SMART_CRUSHER_TOON_TABULAR_MIN_ITEMS
+        || items.len() > SMART_CRUSHER_TABULAR_MAX_ITEMS
+    {
         return None;
     }
     let first_obj = items[0].as_object()?;
@@ -335,52 +338,53 @@ fn detect_tabular_schema<'a>(items: &'a [Value]) -> Option<(Vec<TabularCol<'a>>,
     let mut string_samples: Vec<&'a str> = Vec::new();
 
     for &top_key in &expected_top {
-        let first_val = first_obj.get(top_key)?;
-        if is_scalar(first_val) {
-            for item in items {
-                let v = item.as_object()?.get(top_key)?;
-                if !scalar_within_cell_cap(v) {
-                    return None;
-                }
-                if let Value::String(s) = v {
-                    string_samples.push(s.as_str());
-                }
-            }
-            leaf_total += 1;
-            if leaf_total > SMART_CRUSHER_TABULAR_MAX_COLS {
-                return None;
-            }
-            cols.push(TabularCol::Scalar(top_key));
-        } else if let Value::Object(sub_first) = first_val {
-            // 1-level uniform nested field group: `author{login,id}`
-            if sub_first.is_empty() || !is_safe_unquoted_key(top_key) {
-                return None;
-            }
-            let sub_keys: Vec<&'a str> = sub_first.keys().map(String::as_str).collect();
-            let sub_key_set: BTreeSet<&'a str> = sub_keys.iter().copied().collect();
-            for item in items {
-                let Value::Object(sub_obj) = item.as_object()?.get(top_key)? else {
-                    return None;
-                };
-                if sub_obj.len() != sub_keys.len() {
-                    return None;
-                }
-                for (sk, sv) in sub_obj {
-                    if !sub_key_set.contains(sk.as_str()) || !scalar_within_cell_cap(sv) {
+        match first_obj.get(top_key)? {
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                for item in items {
+                    let v = item.as_object()?.get(top_key)?;
+                    if !scalar_within_cell_cap(v) {
                         return None;
                     }
-                    if let Value::String(s) = sv {
+                    if let Value::String(s) = v {
                         string_samples.push(s.as_str());
                     }
                 }
+                leaf_total += 1;
+                if leaf_total > SMART_CRUSHER_TABULAR_MAX_COLS {
+                    return None;
+                }
+                cols.push(TabularCol::Scalar(top_key));
             }
-            leaf_total += sub_keys.len();
-            if leaf_total > SMART_CRUSHER_TABULAR_MAX_COLS {
-                return None;
+            Value::Object(sub_first) => {
+                // 1-level uniform nested field group: `author{login,id}`
+                if sub_first.is_empty() || !is_safe_unquoted_key(top_key) {
+                    return None;
+                }
+                let sub_keys: Vec<&'a str> = sub_first.keys().map(String::as_str).collect();
+                let sub_key_set: BTreeSet<&'a str> = sub_keys.iter().copied().collect();
+                for item in items {
+                    let Value::Object(sub_obj) = item.as_object()?.get(top_key)? else {
+                        return None;
+                    };
+                    if sub_obj.len() != sub_keys.len() {
+                        return None;
+                    }
+                    for (sk, sv) in sub_obj {
+                        if !sub_key_set.contains(sk.as_str()) || !scalar_within_cell_cap(sv) {
+                            return None;
+                        }
+                        if let Value::String(s) = sv {
+                            string_samples.push(s.as_str());
+                        }
+                    }
+                }
+                leaf_total += sub_keys.len();
+                if leaf_total > SMART_CRUSHER_TABULAR_MAX_COLS {
+                    return None;
+                }
+                cols.push(TabularCol::NestedGroup(top_key, sub_keys));
             }
-            cols.push(TabularCol::NestedGroup(top_key, sub_keys));
-        } else {
-            return None;
+            Value::Array(_) => return None,
         }
     }
 
@@ -646,24 +650,28 @@ fn write_object_entries(
             Value::Object(child_map) => {
                 w.push_newline();
                 w.push_indent(indent);
-                if child_map.is_empty() {
-                    w.push_str(&key_expr);
-                    w.push_str(": {}");
-                } else if let Some((cols, delim)) = detect_keyed_tabular(child_map) {
-                    w.push_str(&format!(
-                        "{key_expr}[{}{}:]{{{}}}:",
-                        child_map.len(),
-                        delim.header_suffix(),
-                        format_cols_header(&cols, delim)
-                    ));
-                    if !write_keyed_tabular_rows(w, child_map, &cols, delim, indent + 1) {
-                        return false;
+                match (child_map.is_empty(), detect_keyed_tabular(child_map)) {
+                    (true, _) => {
+                        w.push_str(&key_expr);
+                        w.push_str(": {}");
                     }
-                } else {
-                    w.push_str(&key_expr);
-                    w.push_char(':');
-                    if !write_object_entries(w, child_map, indent + 1, next_depth + 1) {
-                        return false;
+                    (false, Some((cols, delim))) => {
+                        w.push_str(&format!(
+                            "{key_expr}[{}{}:]{{{}}}:",
+                            child_map.len(),
+                            delim.header_suffix(),
+                            format_cols_header(&cols, delim)
+                        ));
+                        if !write_keyed_tabular_rows(w, child_map, &cols, delim, indent + 1) {
+                            return false;
+                        }
+                    }
+                    (false, None) => {
+                        w.push_str(&key_expr);
+                        w.push_char(':');
+                        if !write_object_entries(w, child_map, indent + 1, next_depth + 1) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -852,19 +860,15 @@ fn find_unquoted_bracket(s: &str) -> Option<usize> {
     let mut i = 0usize;
     let mut in_quotes = false;
     while i < bytes.len() {
-        let b = bytes[i];
-        if in_quotes {
-            if b == b'\\' {
+        match (in_quotes, bytes[i]) {
+            (true, b'\\') => {
                 i += 2;
                 continue;
             }
-            if b == b'"' {
-                in_quotes = false;
-            }
-        } else if b == b'"' {
-            in_quotes = true;
-        } else if b == b'[' {
-            return Some(i);
+            (true, b'"') => in_quotes = false,
+            (false, b'"') => in_quotes = true,
+            (false, b'[') => return Some(i),
+            _ => {}
         }
         i += 1;
     }
@@ -920,29 +924,26 @@ fn split_header_and_rest(s: &str) -> std::result::Result<(CollectionHeader, &str
 fn split_delimited_respecting_quotes_and_braces(s: &str, delim: char) -> Vec<&str> {
     let mut out = Vec::new();
     let bytes = s.as_bytes();
+    let delim_byte = delim as u8;
     let mut start = 0usize;
     let mut i = 0usize;
     let mut in_quotes = false;
     let mut braces = 0usize;
     while i < bytes.len() {
-        let b = bytes[i];
-        if in_quotes {
-            if b == b'\\' {
+        match (in_quotes, bytes[i]) {
+            (true, b'\\') => {
                 i += 2;
                 continue;
             }
-            if b == b'"' {
-                in_quotes = false;
+            (true, b'"') => in_quotes = false,
+            (false, b'"') => in_quotes = true,
+            (false, b'{') => braces += 1,
+            (false, b'}') => braces = braces.saturating_sub(1),
+            (false, b) if braces == 0 && b == delim_byte => {
+                out.push(&s[start..i]);
+                start = i + 1;
             }
-        } else if b == b'"' {
-            in_quotes = true;
-        } else if b == b'{' {
-            braces += 1;
-        } else if b == b'}' {
-            braces = braces.saturating_sub(1);
-        } else if braces == 0 && b as char == delim {
-            out.push(&s[start..i]);
-            start = i + 1;
+            _ => {}
         }
         i += 1;
     }
@@ -1071,20 +1072,24 @@ fn parse_object_block(
         let lhs = &txt[..colon];
         let rhs = txt[colon + 1..].trim_start();
 
-        if let Some(br_idx) = find_unquoted_bracket(lhs) {
-            let key_expr = &lhs[..br_idx];
-            let (hdr, rest) = split_header_and_rest(&txt[br_idx..])?;
-            *pos += 1;
-            let val = parse_collection_from_header(&hdr, rest, lines, pos, indent)?;
-            insert_folded(&mut map, key_expr, val)?;
-        } else if rhs.is_empty() {
-            *pos += 1;
-            let child = parse_object_block(lines, pos, indent + 1)?;
-            insert_folded(&mut map, lhs, child)?;
-        } else {
-            *pos += 1;
-            let val = parse_scalar_token(rhs)?;
-            insert_folded(&mut map, lhs, val)?;
+        match (find_unquoted_bracket(lhs), rhs.is_empty()) {
+            (Some(br_idx), _) => {
+                let key_expr = &lhs[..br_idx];
+                let (hdr, rest) = split_header_and_rest(&txt[br_idx..])?;
+                *pos += 1;
+                let val = parse_collection_from_header(&hdr, rest, lines, pos, indent)?;
+                insert_folded(&mut map, key_expr, val)?;
+            }
+            (None, true) => {
+                *pos += 1;
+                let child = parse_object_block(lines, pos, indent + 1)?;
+                insert_folded(&mut map, lhs, child)?;
+            }
+            (None, false) => {
+                *pos += 1;
+                let val = parse_scalar_token(rhs)?;
+                insert_folded(&mut map, lhs, val)?;
+            }
         }
     }
     Ok(Value::Object(map))
@@ -1156,23 +1161,22 @@ fn parse_collection_from_header(
         }
         let item_txt = lines[*pos].text;
         *pos += 1;
-        if item_txt == "-" {
-            items.push(parse_object_block(lines, pos, indent + 2)?);
-        } else if let Some(after_dash) = item_txt.strip_prefix("- ") {
-            if after_dash.starts_with('[') {
-                let (sub_hdr, sub_rest) = split_header_and_rest(after_dash)?;
-                items.push(parse_collection_from_header(
-                    &sub_hdr,
-                    sub_rest,
-                    lines,
-                    pos,
-                    indent + 1,
-                )?);
-            } else {
-                items.push(parse_scalar_token(after_dash)?);
-            }
-        } else {
-            return Err(format!("expected list item `-`, got `{item_txt}`"));
+        match item_txt {
+            "-" => items.push(parse_object_block(lines, pos, indent + 2)?),
+            _ => match item_txt.strip_prefix("- ") {
+                Some(after_dash) if after_dash.starts_with('[') => {
+                    let (sub_hdr, sub_rest) = split_header_and_rest(after_dash)?;
+                    items.push(parse_collection_from_header(
+                        &sub_hdr,
+                        sub_rest,
+                        lines,
+                        pos,
+                        indent + 1,
+                    )?);
+                }
+                Some(after_dash) => items.push(parse_scalar_token(after_dash)?),
+                None => return Err(format!("expected list item `-`, got `{item_txt}`")),
+            },
         }
     }
     Ok(Value::Array(items))

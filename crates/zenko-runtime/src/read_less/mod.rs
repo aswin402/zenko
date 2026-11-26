@@ -32,8 +32,9 @@ use zenko_core::{
     READ_LESS_BUILD_PROGRESS_PREFIXES, READ_LESS_CSV_MIN_COLS, READ_LESS_CSV_MIN_ROWS,
     READ_LESS_CSV_SAMPLE_SCAN_LINES, READ_LESS_DEDUP_MAX_CALL_GAP,
     READ_LESS_DEDUP_MAX_ENTRIES_PER_SESSION, READ_LESS_DEDUP_MIN_BYTES,
-    READ_LESS_DEDUP_MIN_REPEATS, READ_LESS_ELIGIBLE_TOOLS, READ_LESS_FAIL_PREFIXES,
-    READ_LESS_FAIL_SUBSTRS, READ_LESS_GLOB_MAX_PER_DIR, READ_LESS_GLOB_MIN_LINES,
+    READ_LESS_DEDUP_MIN_REPEATS, READ_LESS_ELIGIBLE_TOOLS, READ_LESS_EXIT_CODE_PREFIX,
+    READ_LESS_FAIL_PREFIXES, READ_LESS_FAIL_SUBSTRS, READ_LESS_GLOB_MAX_PER_DIR,
+    READ_LESS_GLOB_MIN_LINES,
     READ_LESS_LOG_HEAD_KEEP, READ_LESS_LOG_MAX_KEPT_LINES, READ_LESS_LOG_MAX_MIDDLE_DIAGS,
     READ_LESS_LOG_MAX_REPEAT_SAMPLES, READ_LESS_MAX_SAMPLE_ROWS, READ_LESS_MAX_TAIL_LINES,
     READ_LESS_MIN_LINES, READ_LESS_MIN_SAVED_BYTES, READ_LESS_MIN_SAVINGS_PCT,
@@ -349,17 +350,15 @@ pub fn try_compress_tool_output_with_context(
             false if original_bytes >= READ_LESS_SCRUB_MIN_BYTES => {
                 // Always fold huge lockfile diffs, apply strictly lossless Tier-1 TOON on
                 // medium structured JSON, or run lossless scrub on medium outputs.
-                if cmd_family == CommandFamily::GitDiff
-                    && let Some(diff_out) = shape_git_diff(&cleaned)
-                {
-                    Some((ReadLessShape::GitDiff, diff_out))
-                } else if let Some(toon_out) =
-                    smart_crusher::try_crush_json_toon_only(&cleaned)
-                {
-                    Some((ReadLessShape::Toon, toon_out))
-                } else {
-                    try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s))
+                match cmd_family == CommandFamily::GitDiff {
+                    true => shape_git_diff(&cleaned).map(|s| (ReadLessShape::GitDiff, s)),
+                    false => None,
                 }
+                .or_else(|| {
+                    smart_crusher::try_crush_json_toon_only(&cleaned)
+                        .map(|s| (ReadLessShape::Toon, s))
+                })
+                .or_else(|| try_lossless_scrub(&cleaned).map(|s| (ReadLessShape::Scrub, s)))
             }
             false => None,
         }
@@ -430,32 +429,26 @@ fn compress_by_detected_shape(
     text: &str,
     zmode: ZMode,
 ) -> Option<(ReadLessShape, String)> {
-    if let Some(crushed) = smart_crusher::try_crush_json_body(text, tool_args, zmode) {
-        let shape = match crushed.kind {
-            smart_crusher::JsonCrushKind::ToonLossless => ReadLessShape::Toon,
-            smart_crusher::JsonCrushKind::JsonScored => ReadLessShape::Json,
-        };
-        return Some((shape, crushed.rendered));
-    }
-    if let Some(diff_out) = shape_git_diff(text) {
-        return Some((ReadLessShape::GitDiff, diff_out));
-    }
-    if let Some(test_out) = try_compress_test_output(text) {
-        return Some((ReadLessShape::TestOutput, test_out));
-    }
-    if let Some(csv_out) = try_compress_csv(text) {
-        return Some((ReadLessShape::Csv, csv_out));
-    }
-    if tool_name == TOOL_GLOB_FIND
-        && let Some(glob_out) = try_compress_glob_list(text)
-    {
-        return Some((ReadLessShape::GlobList, glob_out));
-    }
-    try_compress_build_or_log(text).map(|out| (ReadLessShape::BuildOrLog, out))
+    smart_crusher::try_crush_json_body(text, tool_args, zmode)
+        .map(|crushed| {
+            let shape = match crushed.kind {
+                smart_crusher::JsonCrushKind::ToonLossless => ReadLessShape::Toon,
+                smart_crusher::JsonCrushKind::JsonScored => ReadLessShape::Json,
+            };
+            (shape, crushed.rendered)
+        })
+        .or_else(|| shape_git_diff(text).map(|s| (ReadLessShape::GitDiff, s)))
+        .or_else(|| try_compress_test_output(text).map(|s| (ReadLessShape::TestOutput, s)))
+        .or_else(|| try_compress_csv(text).map(|s| (ReadLessShape::Csv, s)))
+        .or_else(|| match tool_name == TOOL_GLOB_FIND {
+            true => try_compress_glob_list(text).map(|s| (ReadLessShape::GlobList, s)),
+            false => None,
+        })
+        .or_else(|| try_compress_build_or_log(text).map(|s| (ReadLessShape::BuildOrLog, s)))
 }
 
-fn split_optional_exit_header(text: &str) -> (Option<&str>, &str) {
-    match text.strip_prefix("exit_code:") {
+pub(crate) fn split_optional_exit_header(text: &str) -> (Option<&str>, &str) {
+    match text.strip_prefix(READ_LESS_EXIT_CODE_PREFIX) {
         Some(_) => match text.find('\n') {
             Some(pos) => (Some(&text[..pos]), &text[pos + 1..]),
             None => (Some(text), ""),
