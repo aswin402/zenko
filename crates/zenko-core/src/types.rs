@@ -5168,3 +5168,315 @@ pub struct PrefixCacheEvaluation {
     pub hit_ratio_pct: u8,
     pub drift_reason: PrefixDriftReason,
 }
+
+// ── ZPowers Native Plan-First Orchestration & Session Workspace Types ─────────
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZPowersMode {
+    Off,
+    Advisory,
+    #[default]
+    Guided,
+    Strict,
+}
+
+impl ZPowersMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Advisory => "advisory",
+            Self::Guided => "guided",
+            Self::Strict => "strict",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" => Some(Self::Off),
+            "advisory" | "soft" => Some(Self::Advisory),
+            "guided" | "default" => Some(Self::Guided),
+            "strict" | "hard" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZPowersPhase {
+    #[default]
+    Idle,
+    Recon,
+    Spec,
+    Plan,
+    Execute,
+    Debug,
+    Verify,
+    Review,
+    Done,
+}
+
+impl ZPowersPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Recon => "recon",
+            Self::Spec => "spec",
+            Self::Plan => "plan",
+            Self::Execute => "execute",
+            Self::Debug => "debug",
+            Self::Verify => "verify",
+            Self::Review => "review",
+            Self::Done => "done",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "idle" => Some(Self::Idle),
+            "recon" => Some(Self::Recon),
+            "spec" => Some(Self::Spec),
+            "plan" => Some(Self::Plan),
+            "execute" => Some(Self::Execute),
+            "debug" => Some(Self::Debug),
+            "verify" => Some(Self::Verify),
+            "review" => Some(Self::Review),
+            "done" => Some(Self::Done),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZPowersReviewStage {
+    Spec,
+    Quality,
+}
+
+impl ZPowersReviewStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spec => "spec",
+            Self::Quality => "quality",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "spec" | "spec_compliance" => Some(Self::Spec),
+            "quality" | "code_quality" => Some(Self::Quality),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZPowersReviewVerdict {
+    Approved,
+    ChangesRequested,
+    Blocked,
+}
+
+impl ZPowersReviewVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes_requested",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "approved" | "approve" | "pass" => Some(Self::Approved),
+            "changes_requested" | "changes" | "revise" => Some(Self::ChangesRequested),
+            "blocked" | "fail" | "reject" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZPowersAction {
+    Status,
+    WriteSpec,
+    WritePlan,
+    LogDebug,
+    RecordReview,
+    WriteWalkthrough,
+    FastTrack,
+    Promote,
+}
+
+impl ZPowersAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "status" => Some(Self::Status),
+            "write_spec" => Some(Self::WriteSpec),
+            "write_plan" => Some(Self::WritePlan),
+            "log_debug" => Some(Self::LogDebug),
+            "record_review" => Some(Self::RecordReview),
+            "write_walkthrough" => Some(Self::WriteWalkthrough),
+            "fast_track" => Some(Self::FastTrack),
+            "promote" => Some(Self::Promote),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersReviewReceipt {
+    pub number: usize,
+    pub stage: ZPowersReviewStage,
+    pub verdict: ZPowersReviewVerdict,
+    pub summary: String,
+    pub file: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersVerificationReceipt {
+    pub command: String,
+    pub passed: bool,
+    pub summary: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersDebugEntry {
+    pub strike: usize,
+    pub hypothesis: String,
+    pub evidence: String,
+    pub outcome: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersState {
+    #[serde(default = "default_zpowers_schema_version")]
+    pub schema_version: u8,
+    pub session_id: String,
+    #[serde(default)]
+    pub phase: ZPowersPhase,
+    #[serde(default)]
+    pub mode: ZPowersMode,
+    #[serde(default)]
+    pub spec_recorded: bool,
+    #[serde(default)]
+    pub plan_recorded: bool,
+    #[serde(default)]
+    pub fast_track_reason: Option<String>,
+    #[serde(default)]
+    pub debug_strikes: usize,
+    #[serde(default)]
+    pub debug_entries: Vec<ZPowersDebugEntry>,
+    #[serde(default)]
+    pub mutated_files: Vec<String>,
+    #[serde(default)]
+    pub last_verification: Option<ZPowersVerificationReceipt>,
+    #[serde(default)]
+    pub reviews: Vec<ZPowersReviewReceipt>,
+    #[serde(default)]
+    pub walkthrough_recorded: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+fn default_zpowers_schema_version() -> u8 {
+    crate::constants::ZPOWERS_STATE_SCHEMA_VERSION
+}
+
+impl ZPowersState {
+    pub fn new(session_id: impl Into<String>, mode: ZPowersMode) -> Self {
+        Self {
+            schema_version: crate::constants::ZPOWERS_STATE_SCHEMA_VERSION,
+            session_id: session_id.into(),
+            phase: ZPowersPhase::Idle,
+            mode,
+            spec_recorded: false,
+            plan_recorded: false,
+            fast_track_reason: None,
+            debug_strikes: 0,
+            debug_entries: Vec::new(),
+            mutated_files: Vec::new(),
+            last_verification: None,
+            reviews: Vec::new(),
+            walkthrough_recorded: false,
+            updated_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersWorkspaceManifest {
+    pub session_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    pub workspace_dir: String,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub phase: ZPowersPhase,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersArtifactDoc {
+    pub name: String,
+    pub rel_path: String,
+    pub bytes: u64,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersSessionView {
+    pub session_id: String,
+    pub workspace_rel_dir: String,
+    pub materialized: bool,
+    pub state: ZPowersState,
+    pub docs: Vec<ZPowersArtifactDoc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersActionRequest {
+    pub action: ZPowersAction,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub hypothesis: Option<String>,
+    #[serde(default)]
+    pub evidence: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub stage: Option<ZPowersReviewStage>,
+    #[serde(default)]
+    pub verdict: Option<ZPowersReviewVerdict>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub findings: Vec<String>,
+    #[serde(default)]
+    pub files_changed: Vec<String>,
+    #[serde(default)]
+    pub verification: Vec<String>,
+    #[serde(default)]
+    pub next_steps: Vec<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub doc_name: Option<String>,
+    #[serde(default)]
+    pub dest_path: Option<String>,
+    #[serde(default)]
+    pub include_content: bool,
+}

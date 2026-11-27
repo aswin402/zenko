@@ -750,3 +750,49 @@ impl EconomyBridge for RuntimeEconomyBridge {
     }
 }
 
+/// Leak-free `Weak<AgentRuntime>` bridge connecting the deferred `zpowers` tool in
+/// `zenko-tools` to `AgentRuntime`'s per-session `.zenko/sessions/<id>/zpowers/` workspace.
+pub(super) struct RuntimeZPowersBridge {
+    runtime: OnceLock<Weak<AgentRuntime>>,
+}
+
+impl RuntimeZPowersBridge {
+    pub(super) fn new() -> Self {
+        Self {
+            runtime: OnceLock::new(),
+        }
+    }
+
+    pub(super) fn bind(&self, weak: Weak<AgentRuntime>) {
+        let _ = self.runtime.set(weak);
+    }
+
+    fn upgrade(&self) -> Result<Arc<AgentRuntime>> {
+        self.runtime
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| ZenkoError::Config("runtime zpowers bridge unavailable".into()))
+    }
+}
+
+#[async_trait]
+impl zenko_core::ZPowersBridge for RuntimeZPowersBridge {
+    async fn execute_zpowers(
+        &self,
+        ctx: &ToolContext,
+        req: zenko_core::ZPowersActionRequest,
+    ) -> Result<ToolOutput> {
+        let rt = self.upgrade()?;
+        rt.execute_zpowers_action(ctx, req)
+    }
+
+    fn inspect_session_zpowers(
+        &self,
+        session_id: &str,
+        include_content: bool,
+    ) -> Result<zenko_core::ZPowersSessionView> {
+        let rt = self.upgrade()?;
+        rt.inspect_session_zpowers(session_id, include_content)
+    }
+}
+

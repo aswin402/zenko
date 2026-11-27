@@ -164,6 +164,7 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/sessions/{id}/stop", post(api::api_stop_session))
         .route("/api/sessions/{id}/branch", post(api::api_switch_branch))
         .route("/api/sessions/{id}/context", get(api::api_get_session_context))
+        .route("/api/sessions/{id}/zpowers", get(api::api_get_session_zpowers))
         .route("/api/sessions/{id}/export", get(api::api_export_session))
         .route("/api/export", get(api::api_export_batch))
         // Phase 6: Durable SQLite Task DAG, Plan Approval & Shadow-Git Checkpoints / Rewind

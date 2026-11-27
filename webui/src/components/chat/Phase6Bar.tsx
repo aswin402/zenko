@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, FileCode2, History, ListChecks, RotateCcw, ShieldCheck, X } from 'lucide-react'
+import { Check, FileCode2, History, Layers, ListChecks, RotateCcw, ShieldCheck, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/motion/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/motion/popover'
@@ -13,6 +13,7 @@ import type {
   SessionTask,
   SessionTaskStatus,
   WorkspaceCheckpoint,
+  ZPowersSessionView,
 } from '@/lib/types'
 
 const MAX_VISIBLE_CHECKPOINTS = 12
@@ -418,102 +419,277 @@ export function CheckpointMenuButton({
 }
 
 /**
- * Quiet composer-toolbar BeUI Popover for Session Tasks DAG (Checkpoints now live cleanly
- * at the end of assistant messages so the chat composer stays uncluttered on one row).
+ * Quiet composer-toolbar BeUI Popovers for Session ZPowers workspace (`.zenko/sessions/<id>/zpowers/`)
+ * and Session Tasks DAG. Both stay completely hidden on trivial/unmaterialized sessions.
  */
 export function WorkspaceToolsPopovers({
   sessionId,
   tasks,
+  zpowersRefreshKey = 0,
   popoverStyle = 'gooey',
 }: {
   sessionId: string | null
   tasks: SessionTask[]
+  zpowersRefreshKey?: number
   popoverStyle?: 'gooey' | 'crisp'
 }) {
   const [tasksOpen, setTasksOpen] = useState(false)
+  const [zpOpen, setZpOpen] = useState(false)
+  const [zpView, setZpView] = useState<ZPowersSessionView | null>(null)
+  const [selectedDoc, setSelectedDoc] = useState<string>('')
+  const [loadingDoc, setLoadingDoc] = useState(false)
 
   useEffect(() => {
     setTasksOpen(false)
+    setZpOpen(false)
+    setZpView(null)
+    setSelectedDoc('')
   }, [sessionId])
 
-  if (tasks.length === 0) {
+  useEffect(() => {
+    if (!sessionId) {
+      setZpView(null)
+      return
+    }
+    let cancelled = false
+    api<ZPowersSessionView>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/zpowers?include_content=${zpOpen ? 'true' : 'false'}`,
+    )
+      .then((view) => {
+        if (cancelled) return
+        setZpView(view)
+        setSelectedDoc((cur) => {
+          if (cur && view.docs.some((d) => d.name === cur)) return cur
+          return view.docs[0]?.name || ''
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setZpView(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, zpowersRefreshKey, tasks.length, zpOpen])
+
+  useEffect(() => {
+    if (!zpOpen || !sessionId) return
+    let cancelled = false
+    setLoadingDoc(true)
+    api<ZPowersSessionView>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/zpowers?include_content=true`,
+    )
+      .then((view) => {
+        if (cancelled) return
+        setZpView(view)
+        setSelectedDoc((cur) => {
+          if (cur && view.docs.some((d) => d.name === cur)) return cur
+          return view.docs[0]?.name || ''
+        })
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingDoc(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [zpOpen, sessionId])
+
+  const hasZPowers = Boolean(zpView && zpView.materialized && zpView.docs.length > 0)
+  const activeDoc = zpView?.docs.find((d) => d.name === selectedDoc) || zpView?.docs[0] || null
+
+  if (tasks.length === 0 && !hasZPowers) {
     return null
   }
 
   const doneCount = tasks.filter((t) => t.status === 'done').length
 
   return (
-    <ZenkoTooltip
-      label={`Tracked Task DAG (${doneCount}/${tasks.length} done)`}
-      side="top"
-      disabled={tasksOpen}
-    >
-      <Popover
-        open={tasksOpen}
-        onOpenChange={setTasksOpen}
-        side="top"
-        align="end"
-        sideOffset={10}
-        panelRadius={14}
-        gooStrength={popoverStyle === 'gooey' ? 7 : 0}
-      >
-        <PopoverTrigger>
-          <button
-            type="button"
-            aria-label={`Tracked Task DAG (${doneCount}/${tasks.length} done)`}
-            className="hidden h-7 cursor-pointer items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg)]/80 px-2 font-mono text-[10.5px] text-[var(--muted)] transition-colors hover:border-[var(--accent)]/45 hover:text-[var(--fg)] sm:inline-flex"
+    <div className="inline-flex items-center gap-1">
+      {hasZPowers && zpView && (
+        <ZenkoTooltip
+          label={`ZPowers (${zpView.state.phase} · ${zpView.docs.length} artifact${zpView.docs.length === 1 ? '' : 's'})`}
+          side="top"
+          disabled={zpOpen}
+        >
+          <Popover
+            open={zpOpen}
+            onOpenChange={setZpOpen}
+            side="top"
+            align="end"
+            sideOffset={10}
+            panelRadius={14}
+            gooStrength={popoverStyle === 'gooey' ? 7 : 0}
           >
-            <ListChecks size={12} className="text-[var(--accent)]" />
-            <span>
-              {doneCount}/{tasks.length}
-            </span>
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[380px] max-w-[90vw] rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-2xl">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--fg)]">
-              <ListChecks size={13} className="text-[var(--accent)]" />
-              Session Tasks ({doneCount}/{tasks.length})
-            </span>
-            <button
-              type="button"
-              aria-label="Close session tasks"
-              onClick={() => setTasksOpen(false)}
-              className="cursor-pointer text-[var(--muted)] hover:text-[var(--fg)]"
-            >
-              <X size={12} />
-            </button>
-          </div>
-          <CompactScrollArea autoHeight viewportClassName="max-h-64 pr-2.5">
-            <div className="flex flex-col gap-1.5">
-              {tasks.map((t) => {
-                const meta = TASK_STATUS_STYLE[t.status] || TASK_STATUS_STYLE.pending
-                return (
-                  <div
-                    key={t.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border)]/70 bg-[var(--bg)] px-2.5 py-1.5 text-[11.5px]"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span
-                        className="shrink-0 font-mono text-[10px] uppercase"
-                        style={{ color: meta.color }}
-                      >
-                        [{meta.label}]
-                      </span>
-                      <span className="truncate font-medium text-[var(--fg)]">{t.title}</span>
-                    </div>
-                    {t.owner_agent && (
-                      <span className="rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-px font-mono text-[9.5px] text-[var(--muted)]">
-                        {t.owner_agent.slice(0, 10)}
-                      </span>
-                    )}
+            <PopoverTrigger>
+              <button
+                type="button"
+                aria-label={`ZPowers workspace (${zpView.state.phase})`}
+                className="hidden h-7 cursor-pointer items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg)]/80 px-2 font-mono text-[10.5px] text-[var(--muted)] transition-colors hover:border-[var(--accent)]/45 hover:text-[var(--fg)] sm:inline-flex"
+              >
+                <Layers size={12} className="text-[var(--accent)]" />
+                <span>{zpView.state.phase}</span>
+                <span className="text-[var(--muted)]/75">·{zpView.docs.length}</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[480px] max-w-[92vw] rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-2xl">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--fg)]">
+                    <Layers size={13} className="shrink-0 text-[var(--accent)]" />
+                    <span>ZPowers</span>
+                    <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-px font-mono text-[10px] uppercase text-[var(--accent)]">
+                      {zpView.state.phase}
+                    </span>
+                    <span className="font-mono text-[10px] text-[var(--muted)]">
+                      {zpView.state.mode}
+                    </span>
                   </div>
-                )
-              })}
-            </div>
-          </CompactScrollArea>
-        </PopoverContent>
-      </Popover>
-    </ZenkoTooltip>
+                  <div className="mt-0.5 truncate font-mono text-[10px] text-[var(--muted)]">
+                    {zpView.workspace_rel_dir}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close ZPowers panel"
+                  onClick={() => setZpOpen(false)}
+                  className="cursor-pointer text-[var(--muted)] hover:text-[var(--fg)]"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+
+              <div className="mb-2 flex flex-wrap items-center gap-1">
+                {zpView.docs.map((doc) => {
+                  const active = activeDoc?.name === doc.name
+                  return (
+                    <button
+                      key={doc.name}
+                      type="button"
+                      onClick={() => setSelectedDoc(doc.name)}
+                      className={cn(
+                        'cursor-pointer rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors',
+                        active
+                          ? 'border-[var(--accent)]/60 bg-[var(--bg)] text-[var(--accent)]'
+                          : 'border-[var(--border)] bg-[var(--bg)]/50 text-[var(--muted)] hover:text-[var(--fg)]',
+                      )}
+                    >
+                      {doc.name}
+                    </button>
+                  )
+                })}
+              </div>
+
+              <CompactScrollArea
+                autoHeight
+                className="rounded-md border border-[var(--border)] bg-[var(--bg)]"
+                viewportClassName="max-h-72 p-2.5 pr-3"
+              >
+                {loadingDoc && !activeDoc?.content ? (
+                  <div className="font-mono text-[11px] text-[var(--muted)]">Loading artifact...</div>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[var(--fg)]/90">
+                    {activeDoc?.content || '(Empty document)'}
+                  </pre>
+                )}
+              </CompactScrollArea>
+
+              {zpView.state.last_verification && (
+                <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-[var(--border)]/70 bg-[var(--bg)]/70 px-2 py-1 font-mono text-[10px] text-[var(--muted)]">
+                  <span className="truncate">
+                    Verify: {zpView.state.last_verification.command}
+                  </span>
+                  <span
+                    className={cn(
+                      'shrink-0 uppercase',
+                      zpView.state.last_verification.passed
+                        ? 'text-[var(--fg)]'
+                        : 'text-[var(--accent)]',
+                    )}
+                  >
+                    {zpView.state.last_verification.passed ? 'passed' : 'failed'}
+                  </span>
+                </div>
+              )}
+            </PopoverContent>
+          </Popover>
+        </ZenkoTooltip>
+      )}
+
+      {tasks.length > 0 && (
+        <ZenkoTooltip
+          label={`Tracked Task DAG (${doneCount}/${tasks.length} done)`}
+          side="top"
+          disabled={tasksOpen}
+        >
+          <Popover
+            open={tasksOpen}
+            onOpenChange={setTasksOpen}
+            side="top"
+            align="end"
+            sideOffset={10}
+            panelRadius={14}
+            gooStrength={popoverStyle === 'gooey' ? 7 : 0}
+          >
+            <PopoverTrigger>
+              <button
+                type="button"
+                aria-label={`Tracked Task DAG (${doneCount}/${tasks.length} done)`}
+                className="hidden h-7 cursor-pointer items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg)]/80 px-2 font-mono text-[10.5px] text-[var(--muted)] transition-colors hover:border-[var(--accent)]/45 hover:text-[var(--fg)] sm:inline-flex"
+              >
+                <ListChecks size={12} className="text-[var(--accent)]" />
+                <span>
+                  {doneCount}/{tasks.length}
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[380px] max-w-[90vw] rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-2xl">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--fg)]">
+                  <ListChecks size={13} className="text-[var(--accent)]" />
+                  Session Tasks ({doneCount}/{tasks.length})
+                </span>
+                <button
+                  type="button"
+                  aria-label="Close session tasks"
+                  onClick={() => setTasksOpen(false)}
+                  className="cursor-pointer text-[var(--muted)] hover:text-[var(--fg)]"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              <CompactScrollArea autoHeight viewportClassName="max-h-64 pr-2.5">
+                <div className="flex flex-col gap-1.5">
+                  {tasks.map((t) => {
+                    const meta = TASK_STATUS_STYLE[t.status] || TASK_STATUS_STYLE.pending
+                    return (
+                      <div
+                        key={t.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border)]/70 bg-[var(--bg)] px-2.5 py-1.5 text-[11.5px]"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span
+                            className="shrink-0 font-mono text-[10px] uppercase"
+                            style={{ color: meta.color }}
+                          >
+                            [{meta.label}]
+                          </span>
+                          <span className="truncate font-medium text-[var(--fg)]">{t.title}</span>
+                        </div>
+                        {t.owner_agent && (
+                          <span className="rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-px font-mono text-[9.5px] text-[var(--muted)]">
+                            {t.owner_agent.slice(0, 10)}
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </CompactScrollArea>
+            </PopoverContent>
+          </Popover>
+        </ZenkoTooltip>
+      )}
+    </div>
   )
 }

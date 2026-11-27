@@ -162,6 +162,7 @@ export default function App() {
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([])
   const [sessionTasks, setSessionTasks] = useState<SessionTask[]>([])
   const [sessionCheckpoints, setSessionCheckpoints] = useState<WorkspaceCheckpoint[]>([])
+  const [zpowersRev, setZpowersRev] = useState(0)
   const [logCategories, setLogCategories] = useState<LogCategoryMeta[]>([])
   const [logCounts, setLogCounts] = useState<Record<string, number>>({})
   const [logsDir, setLogsDir] = useState<string>('')
@@ -579,13 +580,18 @@ export default function App() {
           detail: ev.detail || '',
           model: ev.model || null,
         })
+        if (ev.stage === 'zpowers') {
+          setZpowersRev((n) => n + 1)
+        }
       },
       brainstorm_recorded: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
+        setZpowersRev((n) => n + 1)
         loadSession(sid)
       },
       plan_updated: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
+        setZpowersRev((n) => n + 1)
         loadSession(sid)
       },
       clarification_requested: (ev, sid) => {
@@ -618,6 +624,7 @@ export default function App() {
       session_tasks_updated: (ev, sid) => {
         if (!sid || ev.session_id !== sid || !Array.isArray(ev.tasks)) return
         setSessionTasks(ev.tasks)
+        setZpowersRev((n) => n + 1)
       },
       checkpoint_created: (ev, sid) => {
         if (!sid || !ev.checkpoint || ev.checkpoint.session_id !== sid) return
@@ -1340,6 +1347,7 @@ export default function App() {
                 <WorkspaceToolsPopovers
                   sessionId={activeSessionId}
                   tasks={sessionTasks}
+                  zpowersRefreshKey={zpowersRev}
                   popoverStyle={ui.surface.popover_style || 'gooey'}
                 />
               }

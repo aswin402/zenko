@@ -18,7 +18,7 @@ use crate::{
     TOOL_SCRIPT_BLOCK,
     TOOL_SESSION_SEARCH, TOOL_SESSION_TASK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SKILL_VIEW,
     TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_TOOL_SEARCH, TOOL_WEB_FETCH, TOOL_WEB_SEARCH,
-    TOOL_WRITE_FILE, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
+    TOOL_WRITE_FILE, TOOL_ZPOWERS, ToolSet, VAULT_KEY_BRAVE_SEARCH, VAULT_KEY_CUSTOM_PROVIDER,
     VAULT_KEY_DEEPSEEK, VAULT_KEY_GEMINI, VAULT_KEY_MINIMAX, VAULT_KEY_OLLAMA, VAULT_KEY_OPENAI,
     VAULT_KEY_OPENROUTER, VAULT_KEY_TAVILY_SEARCH, VAULT_KEY_TELEGRAM, VAULT_KEY_WEBHOOK_SECRET,
     ZMODE_BALANCED_COMPACTION_RATIO, ZMODE_BALANCED_MICROCOMPACT_RATIO,
@@ -300,6 +300,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_RECORD_BRAINSTORM,
             TOOL_PLAN_UPDATE,
             TOOL_SESSION_TASK,
+            TOOL_ZPOWERS,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_LIST,
             TOOL_AGENT_MESSAGE,
@@ -433,6 +434,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_CODE_MINIMALISM,
             TOOL_RECORD_BRAINSTORM,
             TOOL_SESSION_TASK,
+            TOOL_ZPOWERS,
             TOOL_AGENT_LIST,
             TOOL_AGENT_MESSAGE,
         ],
@@ -996,6 +998,100 @@ enabled: true\n\
 - For multi-file codebase discovery or answering cross-file questions, delegate to `spawn_agent(role=\"explorer\", ...)` so the configured `fast_model` absorbs raw file tokens and returns a compact file:line summary.\n\
 - For repetitive mechanical output (unit-test matrices, DTO structs, fixtures, config variants following an existing sibling file), delegate to `spawn_agent(role=\"drafter\", ...)` citing the exact reference file path and target output path.\n\
 - For multi-file or multi-crate migration campaigns (Fleetshift discipline), follow the 4-stage loop: (1) scope exact targets via `code_search`/`glob_find`, (2) preview via `code_refactor(..., dry_run=true)`, (3) apply atomically or inside isolated worktrees, and (4) verify via `git_tool(action=\"diff\", structural=true)` plus targeted tests.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-brainstorm.md",
+        content: "---\n\
+name: ZPowers Brainstorm & Spec\n\
+description: Plan-first design exploration that writes a signed-off design spec to .zenko/sessions/<id>/zpowers/spec.md before any implementation edits.\n\
+enabled: true\n\
+---\n\n\
+- HARD GATE: Before implementing any non-trivial feature, UI change, or architectural refactor, inspect the relevant files cheaply (`glob_find`, `code_search`, `read_file(mode=\"outline\")`) and frame the problem first.\n\
+- Surface explicit invariants, assumptions, blind spots, and 2-3 candidate options with blast-radius and reversibility tradeoffs via `record_brainstorm` (which auto-syncs `.zenko/sessions/<id>/zpowers/spec.md`) or `invoke_tool(tool=\"zpowers\", args={\"action\":\"write_spec\",...})`.\n\
+- Resolve genuine architectural ambiguity cleanly with `ask_clarification` (1 focused question at a time with a recommended default) rather than guessing silently.\n\
+- Do not write production code until the chosen design direction is recorded in `spec.md` and broken into an actionable plan in `plan.md`.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-plan.md",
+        content: "---\n\
+name: ZPowers Bite-Sized Plan\n\
+description: Translate a design spec or user goal into a cycle-free, bite-sized DAG implementation plan in .zenko/sessions/<id>/zpowers/plan.md with exact file paths and verification commands.\n\
+enabled: true\n\
+---\n\n\
+- Break work into 2-5 minute verifiable tasks ordered by dependency (no cycles), each naming exact files to create/modify, concrete invariants, and an exact verification command.\n\
+- Persist the plan via `plan_update` or `session_task` (both automatically mirror live checkboxes into `.zenko/sessions/<id>/zpowers/plan.md`) or refine prose details with `invoke_tool(tool=\"zpowers\", args={\"action\":\"write_plan\",...})`.\n\
+- For trivial 1-line surgical edits where a full plan is unnecessary overhead, explicitly declare `invoke_tool(tool=\"zpowers\", args={\"action\":\"fast_track\",\"reason\":\"...\"})` so the bypass stays auditable.\n\
+- Keep tasks independently verifiable so isolated `coder` subagents or subsequent turns after compaction can execute them cold without re-deriving context.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-execute.md",
+        content: "---\n\
+name: ZPowers Subagent-Driven Execution\n\
+description: Execute plan.md tasks sequentially or across parallel worktree-isolated subagents with per-task progress sync and two-stage review.\n\
+enabled: true\n\
+---\n\n\
+- Read `.zenko/sessions/<id>/zpowers/plan.md` (and `spec.md` if present) and pick ready DAG tasks via `session_task(action=\"ready\")`.\n\
+- For independent parallel workstreams or high-blast-radius changes, spawn fresh `coder` subagents via `spawn_agent(role=\"coder\", ...)` (which defaults to an isolated `agent_worktree`) and pass the exact task scope plus `.zenko/sessions/<id>/zpowers/` paths.\n\
+- Update task status (`in_progress` -> `done`) with verification evidence as each step completes so `plan.md` stays live on disk across compactions.\n\
+- After completing major tasks, run two-stage review (`zpowers-review`) before merging worktrees via `agent_worktree(action=\"diff\" | \"merge\")`.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-tdd.md",
+        content: "---\n\
+name: ZPowers Test-Driven Development\n\
+description: Disciplined Red-Green-Refactor test-first implementation proving every behavior fails before fixing and passes cleanly afterward.\n\
+enabled: true\n\
+---\n\n\
+- RED: Write the smallest failing unit or integration test capturing the exact requirement or bug reproduction first; run it via `shell_exec` and verify it fails for the expected reason.\n\
+- GREEN: Write the minimal, clean production code needed to make the failing test pass without over-engineering or duplicating existing helpers.\n\
+- REFACTOR: Clean up duplication, enforce zero hardcoding / zero regex / zero `else if` ladders, and re-run the test suite to confirm 100% green.\n\
+- Never claim a bug is fixed without first observing a failing reproduction or deterministic test proving the broken invariant.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-debug.md",
+        content: "---\n\
+name: ZPowers Systematic Debugging & 3-Strike Breaker\n\
+description: Four-phase scientific debugging with a 3-strike architectural circuit breaker logged to .zenko/sessions/<id>/zpowers/debug.md.\n\
+enabled: true\n\
+---\n\n\
+- Phase 1 (Reproduce & Inspect): Read the full error/stack trace, check exact failing lines via `read_file`, and isolate a minimal reproduction command.\n\
+- Phase 2 (Pattern Diff): Compare the failing path against a working sibling path using `code_search` and `git_tool(action=\"diff\")`.\n\
+- Phase 3 (Single-Variable Hypothesis): Form one falsifiable hypothesis, log it via `invoke_tool(tool=\"zpowers\", args={\"action\":\"log_debug\",\"hypothesis\":\"...\",\"evidence\":\"...\"})`, and test minimally.\n\
+- Phase 4 (3-Strike Architectural Breaker): If 3 consecutive fix attempts fail, STOP patching symptoms immediately. Re-read `.zenko/sessions/<id>/zpowers/debug.md`, question the underlying design/assumptions, and either redesign in `spec.md` or ask the user via `ask_clarification`.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-verify.md",
+        content: "---\n\
+name: ZPowers Verification Before Completion\n\
+description: Iron Law verification gate requiring fresh post-edit build/test command output and a walkthrough summary before any completion claim.\n\
+enabled: true\n\
+---\n\n\
+- IRON LAW: Zero completion, pass, or \"fixed\" claims without fresh verification output run AFTER the final edit.\n\
+- Run the repository's full verification command (build, typecheck, lint, tests) via `shell_exec`, read the actual exit code and pass/fail counts, and never extrapolate from pre-edit runs.\n\
+- Record a crisp final handoff via `invoke_tool(tool=\"zpowers\", args={\"action\":\"write_walkthrough\",...})` capturing changed files, exact verification commands/results, and any remaining caveats.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-review.md",
+        content: "---\n\
+name: ZPowers Two-Stage Review\n\
+description: Separate Spec Compliance Review followed by Code Quality & Minimalism Review saved under .zenko/sessions/<id>/zpowers/reviews/.\n\
+enabled: true\n\
+---\n\n\
+- Stage 1 (Spec Compliance): Compare `git_tool(action=\"diff\")` against `.zenko/sessions/<id>/zpowers/spec.md` and `plan.md`. Verify every required invariant is satisfied with zero silent scope drift or missing edge cases; persist verdict via `invoke_tool(tool=\"zpowers\", args={\"action\":\"record_review\",\"stage\":\"spec\",...})`.\n\
+- Stage 2 (Code Quality & Minimalism): Run `invoke_tool(tool=\"code_minimalism\", args={\"action\":\"audit_diff\"})` or spawn a read-only `critic` subagent to check safety, error handling, lifetimes, concurrency, and bloat; persist verdict via `record_review(stage=\"quality\", ...)`.\n\
+- Receiving Review: Verify every critique against actual code before accepting or pushing back -- zero performative agreement, fix root causes cleanly, then re-verify.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-finish.md",
+        content: "---\n\
+name: ZPowers Finish Branch\n\
+description: Clean delivery workflow verifying tests, auditing diffs, writing walkthrough.md, and resolving worktree/branch merge or cleanup.\n\
+enabled: true\n\
+---\n\n\
+- Confirm fresh verification passed and all `plan.md` DAG tasks are closed (`session_task(action=\"list\")`).\n\
+- Inspect `git_tool(action=\"status\")` and `git_tool(action=\"diff\")` to confirm `.zenko/sessions/` is excluded and zero unintended files or debug leftovers are staged.\n\
+- Write `.zenko/sessions/<id>/zpowers/walkthrough.md` (and optionally `promote` durable specs to `docs/` or `knowledge/` only if requested).\n\
+- For worktree subagents, inspect `agent_worktree(action=\"diff\")` and cleanly merge or discard; never force-push or commit without explicit user intent.\n",
     },
 ];
 

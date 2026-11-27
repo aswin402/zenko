@@ -31,6 +31,7 @@ pub mod struct_code;
 pub mod trigram;
 pub mod web;
 pub mod web_search;
+pub mod zpowers_tool;
 
 use reqwest::Client;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -41,7 +42,7 @@ use zenko_core::{
     SkillsConfig, SubagentBridge, TOOL_BM25_B, TOOL_BM25_EXACT_NAME_BOOST, TOOL_BM25_K1,
     TOOL_BM25_PREFIX_TF_WEIGHT, TOOL_BM25_SUBSTR_NAME_BOOST, TOOL_INVOKE_TOOL, TOOL_TOOL_SEARCH,
     Tool, ToolAvailabilityContext, ToolBatchBridge, ToolExposure, ToolSet, ToolSetSummary, ToolSpec,
-    WebSearchConfig, find_toolset_descriptor,
+    WebSearchConfig, ZPowersBridge, find_toolset_descriptor,
 };
 use zenko_memory::{SnapshotManager, SqliteStore};
 
@@ -155,6 +156,11 @@ impl ToolRegistry {
     pub fn register_context_tools(&self, bridge: Arc<dyn ContextBridge>) {
         self.register(Arc::new(context_tools::ToolSearchTool::new(bridge.clone())));
         self.register(Arc::new(context_tools::ContextInspectTool::new(bridge)));
+    }
+
+    /// Registers the deferred `zpowers` plan-first orchestration tool backed by `ZPowersBridge`.
+    pub fn register_zpowers_tool(&self, bridge: Arc<dyn ZPowersBridge>) {
+        self.register(Arc::new(zpowers_tool::ZPowersTool::new(bridge)));
     }
 
     /// Registers the deferred `token_economy` and `code_minimalism` tools backed by `EconomyBridge`.

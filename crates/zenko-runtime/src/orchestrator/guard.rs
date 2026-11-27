@@ -12,18 +12,20 @@ use zenko_core::{
     MUTATING_FILE_TOOLS, ORCH_ITER_WRAPUP_REMAINING, ORCH_LOOP_REPEAT_THRESHOLD,
     ORCH_LOOP_WINDOW_SIZE, ORCH_MAX_CONSECUTIVE_ERRORS, ORCH_MAX_PIVOTS_BEFORE_ESCALATE,
     ORCH_MAX_PLAN_CONTINUATION_NUDGES, ORCH_MAX_TOTAL_CONTINUATION_NUDGES,
-    ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD, ORCH_TEXT_DOOM_MIN_LINE_CHARS,
-    ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD, OrchestratorPhase, PLANNING_TOOLS,
-    READ_ONLY_FIND_MUTATING_FLAGS, READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS,
-    ScriptBlockAction, TOOL_AGENT_KILL, TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS,
-    TOOL_CODE_REFACTOR, TOOL_CRON, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_JOB_WAIT,
-    TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE, TOOL_PROJECT_BRAIN, TOOL_RECORD_BRAINSTORM,
-    TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY,
+    ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD, ORCH_STAGE_PHASE_GATE,
+    ORCH_TEXT_DOOM_MIN_LINE_CHARS, ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD,
+    OrchestratorPhase, PLANNING_TOOLS, READ_ONLY_FIND_MUTATING_FLAGS,
+    READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, ScriptBlockAction, TOOL_AGENT_KILL,
+    TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_CODE_REFACTOR, TOOL_CRON, TOOL_GIT,
+    TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE,
+    TOOL_PROJECT_BRAIN, TOOL_RECORD_BRAINSTORM, TOOL_SCRIPT_BLOCK, TOOL_SESSION_TASK,
+    TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_ZPOWERS,
     VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
-    VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, compact_preview, find_subagent_role,
+    VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, ZPOWERS_DEFAULT_DEBUG_STRIKE_LIMIT,
+    ZPowersAction, ZPowersMode, ZPowersState, compact_preview, find_subagent_role,
     is_brain_tool_args_mutating, is_code_refactor_args_mutating, is_economy_args_mutating,
     is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
-    is_memory_mutating_action, is_skill_manage_args_mutating,
+    is_memory_mutating_action, is_skill_manage_args_mutating, is_zpowers_args_mutating,
 };
 
 use zenko_core::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
@@ -72,6 +74,7 @@ fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
         TOOL_TOKEN_ECONOMY => is_economy_args_mutating(arguments),
         TOOL_PROJECT_BRAIN => is_brain_tool_args_mutating(arguments),
         zenko_core::TOOL_KNOWLEDGE_CATALOG => zenko_core::is_okf_tool_args_mutating(arguments),
+        TOOL_ZPOWERS => is_zpowers_args_mutating(arguments),
         TOOL_CODE_REFACTOR => is_code_refactor_args_mutating(arguments),
         TOOL_MEMORY => {
             let action = arguments.get("action").and_then(Value::as_str).unwrap_or("");
@@ -220,6 +223,15 @@ pub struct ExecutionGuard {
     p90_redirect_sent: bool,
     total_tool_calls: usize,
     total_tool_errors: usize,
+    zpowers_mode: ZPowersMode,
+    short_trivial_turn: bool,
+    fast_track_reason: Option<String>,
+    debug_strike_limit: usize,
+    zpowers_debug_triggered: bool,
+    reviews_recorded: usize,
+    walkthrough_recorded: bool,
+    active_session_id: Option<String>,
+    workspace_dir: Option<std::path::PathBuf>,
 }
 
 impl ExecutionGuard {
@@ -232,8 +244,57 @@ impl ExecutionGuard {
             intent,
             deliberation,
             phase: initial_phase,
+            zpowers_mode: ZPowersMode::Advisory,
+            debug_strike_limit: ZPOWERS_DEFAULT_DEBUG_STRIKE_LIMIT,
             ..Self::default()
         }
+    }
+
+    /// Configures ZPowers enforcement mode and hydrates persisted session-level progress
+    /// (`spec.md`, `plan.md`, `fast_track`, `reviews`, `walkthrough`) so multi-turn tasks
+    /// never re-trigger the plan-first gate once a plan is already recorded.
+    pub fn configure_zpowers(
+        &mut self,
+        mode: ZPowersMode,
+        short_trivial_turn: bool,
+        strike_limit: usize,
+        workspace_dir: std::path::PathBuf,
+        session_id: String,
+        state: &ZPowersState,
+    ) {
+        self.zpowers_mode = mode;
+        self.short_trivial_turn = short_trivial_turn;
+        self.debug_strike_limit = strike_limit.max(1);
+        self.workspace_dir = Some(workspace_dir);
+        self.active_session_id = Some(session_id);
+        if state.spec_recorded {
+            self.brainstorm_recorded = true;
+        }
+        if state.plan_recorded {
+            self.plan_recorded = true;
+            self.read_or_planned = true;
+        }
+        if state.fast_track_reason.is_some() {
+            self.fast_track_reason = state.fast_track_reason.clone();
+        }
+        self.reviews_recorded = state.reviews.len();
+        self.walkthrough_recorded = state.walkthrough_recorded;
+    }
+
+    pub fn zpowers_debug_triggered(&self) -> bool {
+        self.zpowers_debug_triggered
+    }
+
+    pub fn clear_zpowers_debug_triggered(&mut self) {
+        self.zpowers_debug_triggered = false;
+    }
+
+    pub fn mutated_files_set(&self) -> &BTreeSet<String> {
+        &self.mutated_files
+    }
+
+    pub fn verification_state(&self) -> (bool, bool) {
+        (self.verification_ran, self.last_verification_failed)
     }
 
     pub fn phase(&self) -> OrchestratorPhase {
@@ -261,6 +322,7 @@ impl ExecutionGuard {
             self.plan_nudges = 0;
         }
         self.read_or_planned = true;
+        self.plan_recorded = true;
         self.phase = match self.phase {
             OrchestratorPhase::Recon => OrchestratorPhase::Plan,
             other => other,
@@ -299,16 +361,101 @@ impl ExecutionGuard {
         self.p90_redirect_sent
     }
 
-    /// LLM-sovereign pre-tool evaluation: never blocks tool calls based on guessed prompt keywords
-    /// or artificial phase ordering. Explicit user-selected `PermissionMode::Plan` and security
-    /// rules are enforced cleanly by `ExecPolicy` and schema filtering.
+    fn is_mutation_inside_own_session_dir(&self, tool_name: &str, arguments: &Value) -> bool {
+        let (Some(ws), Some(sid)) = (self.workspace_dir.as_deref(), self.active_session_id.as_deref())
+        else {
+            return false;
+        };
+        match tool_name {
+            zenko_core::TOOL_WRITE_FILE | zenko_core::TOOL_HASH_EDIT => arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|p| crate::zpowers::is_path_inside_active_session_workspace(ws, p, sid)),
+            _ => false,
+        }
+    }
+
+    /// ZPowers Plan-First Pre-Tool Gate:
+    /// - Never interrupts trivial/read-only turns, `Off`/`Advisory` mode, or writes into the
+    ///   session's own `.zenko/sessions/<id>/` folder.
+    /// - In `Guided` mode: redirects the first premature workspace mutation once until a bite-sized
+    ///   plan (`plan_update` / `session_task` / `zpowers.write_plan`) or explicit `zpowers.fast_track`
+    ///   is recorded.
+    /// - In `Strict` mode: requires `spec.md` (on non-fast deliberation) and `plan.md` before code edits.
     pub fn check_pre_tool_phase_gate(
         &self,
-        _enabled: bool,
-        _tool_name: &str,
-        _arguments: &Value,
+        enabled: bool,
+        tool_name: &str,
+        arguments: &Value,
     ) -> PhaseGateDecision {
-        PhaseGateDecision::Allow
+        if !enabled
+            || self.short_trivial_turn
+            || self.fast_track_reason.is_some()
+            || matches!(self.zpowers_mode, ZPowersMode::Off | ZPowersMode::Advisory)
+        {
+            return PhaseGateDecision::Allow;
+        }
+        let category = classify_tool_category(tool_name, arguments);
+        if category != ToolCategory::Mutation {
+            return PhaseGateDecision::Allow;
+        }
+        if self.is_mutation_inside_own_session_dir(tool_name, arguments) {
+            return PhaseGateDecision::Allow;
+        }
+
+        let zp_dir = self
+            .active_session_id
+            .as_deref()
+            .map(crate::zpowers::workspace_rel_zpowers_dir)
+            .unwrap_or_else(|| ".zenko/sessions/<id>/zpowers".to_string());
+
+        match self.zpowers_mode {
+            ZPowersMode::Off | ZPowersMode::Advisory => PhaseGateDecision::Allow,
+            ZPowersMode::Guided => match !self.plan_recorded && self.phase_gate_nudges == 0 {
+                true => PhaseGateDecision::Redirect {
+                    stage: ORCH_STAGE_PHASE_GATE,
+                    reason: format!(
+                        "ZPowers plan-first gate: record a bite-sized plan before editing (`{tool_name}`)"
+                    ),
+                    hint: format!(
+                        "<orchestrator_hint type=\"zpowers_plan_first\">\n\
+                         ZPowers Plan-First Gate: before modifying workspace files, inspect the relevant files and record a concise bite-sized plan via `plan_update`, `session_task`, or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_plan\",...}})` (auto-saved to `{zp_dir}/plan.md`).\n\
+                         If this is genuinely a tiny 1-line surgical edit, call `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"fast_track\",\"reason\":\"...\"}})` to proceed immediately.\n\
+                         </orchestrator_hint>"
+                    ),
+                },
+                false => PhaseGateDecision::Allow,
+            },
+            ZPowersMode::Strict => match (
+                self.deliberation == DeliberationDepth::Deliberate && !self.brainstorm_recorded,
+                !self.plan_recorded,
+                self.phase_gate_nudges < 2,
+            ) {
+                (true, _, true) => PhaseGateDecision::Redirect {
+                    stage: ORCH_STAGE_PHASE_GATE,
+                    reason: format!(
+                        "ZPowers strict spec gate: record a design spec before editing (`{tool_name}`)"
+                    ),
+                    hint: format!(
+                        "<orchestrator_hint type=\"zpowers_spec_first\">\n\
+                         ZPowers Strict Gate: record a concise design spec first via `record_brainstorm` or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_spec\",...}})` (saved to `{zp_dir}/spec.md`), then create a bite-sized plan in `{zp_dir}/plan.md`.\n\
+                         </orchestrator_hint>"
+                    ),
+                },
+                (false, true, true) => PhaseGateDecision::Redirect {
+                    stage: ORCH_STAGE_PHASE_GATE,
+                    reason: format!(
+                        "ZPowers strict plan gate: record an implementation plan before editing (`{tool_name}`)"
+                    ),
+                    hint: format!(
+                        "<orchestrator_hint type=\"zpowers_plan_first\">\n\
+                         ZPowers Strict Gate: translate your spec into bite-sized DAG tasks via `plan_update`, `session_task`, or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_plan\",...}})` (saved to `{zp_dir}/plan.md`) before modifying files.\n\
+                         </orchestrator_hint>"
+                    ),
+                },
+                _ => PhaseGateDecision::Allow,
+            },
+        }
     }
 
     fn advance_phase(&mut self, category: ToolCategory, is_error: bool) {
@@ -382,11 +529,41 @@ impl ExecutionGuard {
         let category = classify_tool_category(tool_name, arguments);
         self.advance_phase(category, is_error);
 
-        // Track structured planning artifacts recorded during the turn
+        // Track structured planning & ZPowers artifacts recorded during the turn
         if !is_error {
             match tool_name {
                 TOOL_RECORD_BRAINSTORM => self.brainstorm_recorded = true,
                 TOOL_PLAN_UPDATE => self.plan_recorded = true,
+                TOOL_SESSION_TASK => {
+                    let act = arguments.get("action").and_then(Value::as_str).unwrap_or("");
+                    if matches!(act, "create" | "update" | "claim") {
+                        self.plan_recorded = true;
+                    }
+                }
+                TOOL_ZPOWERS => {
+                    let act = arguments
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .and_then(ZPowersAction::parse);
+                    match act {
+                        Some(ZPowersAction::WriteSpec) => self.brainstorm_recorded = true,
+                        Some(ZPowersAction::WritePlan) => self.plan_recorded = true,
+                        Some(ZPowersAction::FastTrack) => {
+                            let reason = arguments
+                                .get("reason")
+                                .and_then(Value::as_str)
+                                .unwrap_or("fast_track");
+                            self.fast_track_reason = Some(reason.to_string());
+                        }
+                        Some(ZPowersAction::RecordReview) => {
+                            self.reviews_recorded = self.reviews_recorded.saturating_add(1);
+                        }
+                        Some(ZPowersAction::WriteWalkthrough) => {
+                            self.walkthrough_recorded = true;
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -710,16 +887,47 @@ impl ExecutionGuard {
                 }
             }
 
-        // 4. Consecutive error streak across tools
-        if self.consecutive_errors >= ORCH_MAX_CONSECUTIVE_ERRORS {
+        // 4. Consecutive error streak & ZPowers 3-Strike Systematic Debugging Breaker
+        let zpowers_debug_enforced =
+            matches!(self.zpowers_mode, ZPowersMode::Guided | ZPowersMode::Strict);
+        let strike_threshold = match zpowers_debug_enforced {
+            false => ORCH_MAX_CONSECUTIVE_ERRORS,
+            true => self.debug_strike_limit.max(1).min(ORCH_MAX_CONSECUTIVE_ERRORS),
+        };
+        if self.consecutive_errors >= strike_threshold {
             let count = self.consecutive_errors;
             self.consecutive_errors = 0;
-            let reason = format!("{count} consecutive failing tool calls");
-            let hint = format!(
-                "<orchestrator_hint type=\"error_streak\">\n\
-                 Circuit breaker triggered after {count} consecutive tool errors. Pause mutations, summarize what failed, inspect ground truth with read-only tools, and pivot strategy.\n\
-                 </orchestrator_hint>"
-            );
+            let zp_dir = self
+                .active_session_id
+                .as_deref()
+                .map(crate::zpowers::workspace_rel_zpowers_dir)
+                .unwrap_or_else(|| ".zenko/sessions/<id>/zpowers".to_string());
+            let (reason, hint) = match zpowers_debug_enforced {
+                false => (
+                    format!("{count} consecutive failing tool calls"),
+                    format!(
+                        "<orchestrator_hint type=\"error_streak\">\n\
+                         Circuit breaker triggered after {count} consecutive tool errors. Pause mutations, summarize what failed, inspect ground truth with read-only tools, and pivot strategy.\n\
+                         </orchestrator_hint>"
+                    ),
+                ),
+                true => {
+                    self.zpowers_debug_triggered = true;
+                    (
+                        format!(
+                            "ZPowers {count}-strike systematic debugging breaker triggered"
+                        ),
+                        format!(
+                            "<orchestrator_hint type=\"zpowers_debug_breaker\">\n\
+                             ZPowers 3-Strike Systematic Debugging Breaker ({count} consecutive failures): STOP patching symptoms immediately.\n\
+                             1. Read the full error/stack trace and inspect ground-truth code with read-only tools.\n\
+                             2. Log one falsifiable root-cause hypothesis via `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"log_debug\",...}})` (recorded in `{zp_dir}/debug.md`).\n\
+                             3. Question the underlying architecture/assumptions before making another edit, or consult the user via `ask_clarification` if genuinely blocked.\n\
+                             </orchestrator_hint>"
+                        ),
+                    )
+                }
+            };
             return self.escalate_or_pivot(reason, hint);
         }
 
@@ -805,6 +1013,11 @@ impl ExecutionGuard {
         let needs_verify = !self.mutated_files.is_empty()
             && !self.verification_ran
             && self.verify_nudges == 0;
+        let needs_strict_handoff = self.zpowers_mode == ZPowersMode::Strict
+            && self.mutated_files.len() >= 2
+            && self.verification_ran
+            && !self.walkthrough_recorded
+            && self.verify_nudges < 2;
         let unfinished_plan: Vec<String> = self
             .active_plan
             .as_ref()
@@ -820,48 +1033,68 @@ impl ExecutionGuard {
             && self.total_continuation_nudges < ORCH_MAX_TOTAL_CONTINUATION_NUDGES;
 
         let fail_note = match self.last_verification_failed {
-            true => " Your last verification command FAILED — consider fixing the root cause and re-checking.",
+            true => " Your last verification command FAILED — fix the root cause and re-run verification before claiming completion.",
             false => "",
         };
+        let iron_law_enforced = matches!(self.zpowers_mode, ZPowersMode::Guided | ZPowersMode::Strict);
 
-        match (needs_verify, needs_plan_continue) {
-            (false, false) => {
+        match (needs_verify, needs_plan_continue, needs_strict_handoff) {
+            (false, false, false) => {
                 self.phase = OrchestratorPhase::Done;
                 None
             }
-            (true, false) => {
+            (false, false, true) => {
                 self.verify_nudges += 1;
-                let files: Vec<&str> = self.mutated_files.iter().map(String::as_str).collect();
                 Some(format!(
-                    "<orchestrator_hint type=\"advisory_check\">\n\
-                     Advisory: {} file(s) were modified ({}) with no passing check recorded yet.{fail_note} \
-                     Run a relevant verification check if appropriate, or respond directly if verification is unnecessary.\n\
+                    "<orchestrator_hint type=\"zpowers_strict_handoff\">\n\
+                     ZPowers Strict Gate: {} files were modified and verified. Before concluding, record your two-stage review (`{TOOL_ZPOWERS}(action=\"record_review\")`) and final handoff (`{TOOL_ZPOWERS}(action=\"write_walkthrough\")`).\n\
                      </orchestrator_hint>",
-                    files.len(),
-                    files.join(", ")
+                    self.mutated_files.len()
                 ))
             }
-            (false, true) => {
+            (true, false, _) => {
+                self.verify_nudges += 1;
+                let files: Vec<&str> = self.mutated_files.iter().map(String::as_str).collect();
+                Some(match iron_law_enforced {
+                    true => format!(
+                        "<orchestrator_hint type=\"zpowers_iron_law\">\n\
+                         ZPowers Verification Iron Law: {} file(s) were modified ({}) with NO fresh passing verification run after your last edit.{fail_note} \
+                         Run the relevant build, typecheck, or test command now and confirm a passing exit code before claiming completion.\n\
+                         </orchestrator_hint>",
+                        files.len(),
+                        files.join(", ")
+                    ),
+                    false => format!(
+                        "<orchestrator_hint type=\"advisory_check\">\n\
+                         Advisory: {} file(s) were modified ({}) with no passing check recorded yet.{fail_note} \
+                         Run a relevant verification check if appropriate, or respond directly if verification is unnecessary.\n\
+                         </orchestrator_hint>",
+                        files.len(),
+                        files.join(", ")
+                    ),
+                })
+            }
+            (false, true, _) => {
                 self.plan_nudges += 1;
                 self.total_continuation_nudges += 1;
                 Some(format!(
                     "<orchestrator_hint type=\"advisory_check\">\n\
-                     Advisory: your active DAG still lists {} open step(s): {}. \
-                     Continue executing or update/close them via `plan_update`/`session_task`, or conclude directly if done.\n\
+                     Active plan still lists {} open step(s): {}. \
+                     Continue executing or update/close them via `plan_update`/`session_task` before concluding.\n\
                      </orchestrator_hint>",
                     unfinished_plan.len(),
                     unfinished_plan.join(", ")
                 ))
             }
-            (true, true) => {
+            (true, true, _) => {
                 self.verify_nudges += 1;
                 self.plan_nudges += 1;
                 self.total_continuation_nudges += 1;
                 let files: Vec<&str> = self.mutated_files.iter().map(String::as_str).collect();
                 Some(format!(
-                    "<orchestrator_hint type=\"advisory_check\">\n\
-                     Advisory: (1) modified file(s) ({}) have no passing check yet{fail_note}, and \
-                     (2) active DAG still has {} open step(s) ({}). Verify/update if needed, or conclude directly.\n\
+                    "<orchestrator_hint type=\"zpowers_iron_law\">\n\
+                     ZPowers Gate: (1) modified file(s) ({}) have no fresh passing post-edit verification check yet{fail_note}, and \
+                     (2) active plan still has {} open step(s) ({}). Verify your edits and update/close the plan steps before concluding.\n\
                      </orchestrator_hint>",
                     files.join(", "),
                     unfinished_plan.len(),
@@ -1711,5 +1944,189 @@ mod tests {
             updated_at: Utc::now(),
         });
         assert!(pguard.check_completion_gate(true).is_some(), "progress unlocks next advisory note");
+    }
+
+    #[test]
+    fn zpowers_guided_enforces_plan_first_fast_track_3_strike_debug_and_iron_law() {
+        let ws = std::env::temp_dir().join("zenko_guard_zp_guided");
+        let zp_state = ZPowersState::new("sess_g", ZPowersMode::Guided);
+        let mut guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        guard.configure_zpowers(
+            ZPowersMode::Guided,
+            false,
+            3,
+            ws.clone(),
+            "sess_g".into(),
+            &zp_state,
+        );
+
+        // Read-only recon and own-session scratch writes are ALWAYS allowed
+        assert_eq!(
+            guard.check_pre_tool_phase_gate(true, "read_file", &json!({"path": "src/main.rs"})),
+            PhaseGateDecision::Allow
+        );
+        assert_eq!(
+            guard.check_pre_tool_phase_gate(
+                true,
+                "write_file",
+                &json!({"path": ".zenko/sessions/sess_g/scratch/notes.md"})
+            ),
+            PhaseGateDecision::Allow
+        );
+
+        // Premature workspace mutation before any plan triggers plan-first redirect
+        assert!(matches!(
+            guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/lib.rs"})),
+            PhaseGateDecision::Redirect { ref hint, .. } if hint.contains("zpowers_plan_first")
+        ));
+
+        // Recording a plan via `zpowers(action="write_plan")` unlocks mutations immediately
+        guard.record_tool_outcome(
+            TOOL_ZPOWERS,
+            &json!({"action": "write_plan", "content": "- [ ] edit src/lib.rs"}),
+            false,
+            "Saved ZPowers plan",
+            None,
+        );
+        assert_eq!(
+            guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/lib.rs"})),
+            PhaseGateDecision::Allow
+        );
+
+        // Mutating a file without verification triggers Iron Law completion gate
+        guard.record_tool_outcome(
+            "write_file",
+            &json!({"path": "src/lib.rs"}),
+            false,
+            "ok",
+            None,
+        );
+        let iron_law = guard
+            .check_completion_gate(true)
+            .expect("expected Iron Law verification gate");
+        assert!(iron_law.contains("zpowers_iron_law"));
+
+        // 3 consecutive failing tool calls trigger the ZPowers 3-strike systematic debugging breaker
+        for i in 0..2 {
+            assert_eq!(
+                guard.record_tool_outcome(
+                    "shell_exec",
+                    &json!({"command": format!("cargo test case_{i}")}),
+                    true,
+                    &format!("failed case {i}"),
+                    None,
+                ),
+                GuardVerdict::Continue
+            );
+        }
+        let strike3 = guard.record_tool_outcome(
+            "shell_exec",
+            &json!({"command": "cargo test case_2"}),
+            true,
+            "failed case 2",
+            None,
+        );
+        assert!(matches!(
+            strike3,
+            GuardVerdict::Pivot { ref hint, .. } if hint.contains("zpowers_debug_breaker")
+        ));
+        assert!(guard.zpowers_debug_triggered());
+
+        // Fast-track bypass unlocks a fresh Guided guard immediately
+        let mut ft_guard = ExecutionGuard::new(
+            ExecutionTier::Standard,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        ft_guard.configure_zpowers(
+            ZPowersMode::Guided,
+            false,
+            3,
+            ws,
+            "sess_ft".into(),
+            &ZPowersState::new("sess_ft", ZPowersMode::Guided),
+        );
+        ft_guard.record_tool_outcome(
+            TOOL_ZPOWERS,
+            &json!({"action": "fast_track", "reason": "1-line typo fix"}),
+            false,
+            "fast-track recorded",
+            None,
+        );
+        assert_eq!(
+            ft_guard.check_pre_tool_phase_gate(true, "hash_edit", &json!({"path": "src/main.rs"})),
+            PhaseGateDecision::Allow
+        );
+    }
+
+    #[test]
+    fn zpowers_strict_enforces_spec_then_plan_and_trivial_turns_bypass_gates() {
+        let ws = std::env::temp_dir().join("zenko_guard_zp_strict");
+        let mut strict = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Deliberate,
+        );
+        strict.configure_zpowers(
+            ZPowersMode::Strict,
+            false,
+            3,
+            ws.clone(),
+            "sess_s".into(),
+            &ZPowersState::new("sess_s", ZPowersMode::Strict),
+        );
+
+        // Strict mode asks for spec first on non-fast tasks
+        assert!(matches!(
+            strict.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
+            PhaseGateDecision::Redirect { ref hint, .. } if hint.contains("zpowers_spec_first")
+        ));
+        strict.record_tool_outcome(
+            TOOL_ZPOWERS,
+            &json!({"action": "write_spec", "content": "# Spec"}),
+            false,
+            "saved spec",
+            None,
+        );
+        // After spec, asks for plan
+        assert!(matches!(
+            strict.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
+            PhaseGateDecision::Redirect { ref hint, .. } if hint.contains("zpowers_plan_first")
+        ));
+        strict.record_tool_outcome(
+            TOOL_SESSION_TASK,
+            &json!({"action": "create", "title": "Implement a.rs"}),
+            false,
+            "created task",
+            None,
+        );
+        // After spec + plan, mutation is allowed
+        assert_eq!(
+            strict.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
+            PhaseGateDecision::Allow
+        );
+
+        // Short trivial turn NEVER triggers plan-first ceremony even in Strict mode
+        let mut trivial = ExecutionGuard::new(
+            ExecutionTier::Instant,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        trivial.configure_zpowers(
+            ZPowersMode::Strict,
+            true,
+            3,
+            ws,
+            "sess_t".into(),
+            &ZPowersState::new("sess_t", ZPowersMode::Strict),
+        );
+        assert_eq!(
+            trivial.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
+            PhaseGateDecision::Allow
+        );
     }
 }

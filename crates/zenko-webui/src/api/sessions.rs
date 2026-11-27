@@ -156,12 +156,40 @@ pub async fn api_get_session_context(
     }
 }
 
+#[derive(Deserialize)]
+pub struct ZPowersQuery {
+    #[serde(default)]
+    include_content: bool,
+}
+
+pub async fn api_get_session_zpowers(
+    State(state): State<WebState>,
+    Path(id): Path<String>,
+    Query(q): Query<ZPowersQuery>,
+) -> Response {
+    match state
+        .runtime
+        .inspect_session_zpowers(&id, q.include_content)
+    {
+        Ok(view) => Json(view).into_response(),
+        Err(zenko_core::ZenkoError::NotFound(msg)) => {
+            (StatusCode::NOT_FOUND, Json(json!({"error": msg}))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn api_clear_session(
     State(state): State<WebState>,
     Path(id): Path<String>,
 ) -> Response {
     let _ = state.runtime.cancel_session(&id);
     state.runtime.clear_session_deferred_tools(&id);
+    state.runtime.cleanup_session_zpowers(&id);
     state.runtime.notify_session_ended(&id).await;
     match state.runtime.store.clear_session_events(&id) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -179,6 +207,7 @@ pub async fn api_delete_session(
 ) -> Response {
     let _ = state.runtime.cancel_session(&id);
     state.runtime.clear_session_deferred_tools(&id);
+    state.runtime.cleanup_session_zpowers(&id);
     state.runtime.notify_session_ended(&id).await;
     match state.runtime.store.delete_session(&id) {
         Ok(deleted) => Json(json!({"deleted": deleted})).into_response(),

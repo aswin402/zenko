@@ -239,8 +239,89 @@ impl ClarificationHub {
         cur
     }
 
+    fn sync_zpowers_tasks(&self, board_sid: &str, tasks: &[SessionTask]) {
+        let Some(rt) = self.runtime.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let cfg = rt.config();
+        if !cfg.orchestrator.zpowers.sync_artifacts_to_workspace {
+            return;
+        }
+        let ws = rt.session_workspace_dir(board_sid);
+        let (title, parent) = self
+            .store
+            .get_session(board_sid)
+            .ok()
+            .flatten()
+            .map(|s| (s.title, s.parent_session_id))
+            .unwrap_or_else(|| (String::new(), None));
+        let _ = crate::zpowers::sync_session_tasks_plan(
+            &ws,
+            board_sid,
+            &title,
+            parent.as_deref(),
+            tasks,
+            &cfg.orchestrator.zpowers,
+        );
+    }
+
+    fn sync_zpowers_spec(&self, session_id: &str, spec: &BrainstormSpec) {
+        let Some(rt) = self.runtime.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let cfg = rt.config();
+        if !cfg.orchestrator.zpowers.sync_artifacts_to_workspace {
+            return;
+        }
+        let board_sid = self.resolve_board_session_id(session_id);
+        let ws = rt.session_workspace_dir(&board_sid);
+        let (title, parent) = self
+            .store
+            .get_session(&board_sid)
+            .ok()
+            .flatten()
+            .map(|s| (s.title, s.parent_session_id))
+            .unwrap_or_else(|| (String::new(), None));
+        let _ = crate::zpowers::sync_brainstorm_spec(
+            &ws,
+            &board_sid,
+            &title,
+            parent.as_deref(),
+            spec,
+            &cfg.orchestrator.zpowers,
+        );
+    }
+
+    fn sync_zpowers_plan(&self, session_id: &str, plan: &ExecutionPlan) {
+        let Some(rt) = self.runtime.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let cfg = rt.config();
+        if !cfg.orchestrator.zpowers.sync_artifacts_to_workspace {
+            return;
+        }
+        let board_sid = self.resolve_board_session_id(session_id);
+        let ws = rt.session_workspace_dir(&board_sid);
+        let (title, parent) = self
+            .store
+            .get_session(&board_sid)
+            .ok()
+            .flatten()
+            .map(|s| (s.title, s.parent_session_id))
+            .unwrap_or_else(|| (String::new(), None));
+        let _ = crate::zpowers::sync_execution_plan(
+            &ws,
+            &board_sid,
+            &title,
+            parent.as_deref(),
+            plan,
+            &cfg.orchestrator.zpowers,
+        );
+    }
+
     fn emit_tasks_updated(&self, board_sid: &str) {
         if let Ok(tasks) = self.store.list_session_tasks(board_sid) {
+            self.sync_zpowers_tasks(board_sid, &tasks);
             let _ = self.events.send(AgentEvent::SessionTasksUpdated {
                 session_id: board_sid.to_string(),
                 tasks,
@@ -339,6 +420,7 @@ impl ClarificationHub {
 impl OrchestratorBridge for ClarificationHub {
     fn record_brainstorm(&self, session_id: &str, spec: &BrainstormSpec) -> Result<BrainstormSpec> {
         let normalized = finalize_brainstorm_spec(spec.clone());
+        self.sync_zpowers_spec(session_id, &normalized);
         let _ = self.events.send(AgentEvent::BrainstormRecorded {
             session_id: session_id.to_string(),
             spec: normalized.clone(),
@@ -401,6 +483,7 @@ impl OrchestratorBridge for ClarificationHub {
                 tasks: synced_tasks,
             });
         }
+        self.sync_zpowers_plan(session_id, &normalized);
         let _ = self.events.send(AgentEvent::PlanUpdated {
             session_id: session_id.to_string(),
             plan: normalized.clone(),

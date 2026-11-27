@@ -432,6 +432,13 @@ impl SubagentSupervisor {
         if let Some(ctx_notes) = req.context.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             child_prompt.push_str(&format!("\n\nFocused Parent Handoff Context:\n{ctx_notes}"));
         }
+        if let Some(zp_recall) = crate::zpowers::build_zpowers_recall_block(
+            &parent_ws,
+            &parent_sid,
+            cfg.orchestrator.zpowers.mode,
+        ) {
+            child_prompt.push_str(&format!("\n\n{zp_recall}"));
+        }
         if req.fork_context
             && let Some(fork_digest) = build_forked_parent_context(&rt.store, &parent_sid) {
                 child_prompt.push_str(&format!(

@@ -500,6 +500,7 @@ pub const MEMORY_INJECTION_BLOCKED_TAGS: &[&str] = &[
     "file_ledger",
     "branch_summary",
     "session_vars",
+    "zpowers_state",
     "active_execution_plan",
     "active_task_dag",
     "plan_mode",
@@ -1148,11 +1149,13 @@ pub const PLANNING_TOOLS: &[&str] = &[
     TOOL_PLAN_UPDATE,
     TOOL_SESSION_TASK,
     TOOL_ORCHESTRATE_CONTROL,
+    TOOL_ZPOWERS,
 ];
 /// Tools that are conditionally permitted in Read-Only Plan Mode (enforced per-argument by ExecPolicy):
 /// read-only shell commands, read-only memory actions, read-only subagent roles, worktree diff,
 /// read-only git actions, read-only LSP actions (plus `rename` with `dry_run: true`), read-only
 /// `skill_manage` queries, read-only `goal_loop` queries, read-only `token_economy` inspections,
+/// `zpowers` planning/status actions (excluding workspace-mutating `promote`),
 /// and `batch_tools` (each inner call individually policy-enforced).
 pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
@@ -1170,6 +1173,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_INVOKE_TOOL,
     TOOL_SCRIPT_BLOCK,
     TOOL_TOKEN_ECONOMY,
+    TOOL_ZPOWERS,
 ];
 pub const MUTATING_FILE_TOOLS: &[&str] = &[TOOL_WRITE_FILE, TOOL_HASH_EDIT, TOOL_APPLY_PATCH];
 pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];
@@ -1197,6 +1201,7 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_SESSION_TASK,
     TOOL_ASK_CLARIFICATION,
     TOOL_ORCHESTRATE_CONTROL,
+    TOOL_ZPOWERS,
     TOOL_MEMORY,
     TOOL_PROJECT_BRAIN,
     TOOL_SKILL_VIEW,
@@ -2123,3 +2128,71 @@ pub const PREFIX_CACHE_CHUNK_REF_META_KEY: &str = "prefix_chunk_ref";
 pub const PREFIX_CACHE_CHUNK_REF_TOKENS_SAVED_KEY: &str = "prefix_chunk_ref_tokens_saved";
 pub const PREFIX_CACHE_TAIL_BLOCK_TAG_OPEN: &str = "<session_runtime_context>";
 pub const PREFIX_CACHE_TAIL_BLOCK_TAG_CLOSE: &str = "</session_runtime_context>";
+
+// ── ZPowers Native Plan-First Orchestration & Per-Session Workspace (.zenko/sessions/) ──
+pub const TOOL_ZPOWERS: &str = "zpowers";
+pub const ORCH_STAGE_ZPOWERS: &str = "zpowers";
+pub const ZENKO_PROJECT_DIR: &str = ".zenko";
+pub const ZENKO_PROJECT_CONFIG_FILE: &str = "config.toml";
+pub const ZENKO_PROJECT_FILTERS_DIR: &str = "filters";
+pub const ZENKO_PROJECT_SESSIONS_DIR: &str = "sessions";
+pub const ZENKO_PROJECT_LATEST_SESSION_FILE: &str = "latest.json";
+pub const ZENKO_SESSION_MANIFEST_FILE: &str = "session.json";
+pub const ZENKO_SESSION_ZPOWERS_DIR: &str = "zpowers";
+pub const ZENKO_SESSION_ARTIFACTS_DIR: &str = "artifacts";
+pub const ZENKO_SESSION_SCRATCH_DIR: &str = "scratch";
+pub const ZENKO_GIT_EXCLUDE_REL_PATH: &str = ".git/info/exclude";
+pub const ZENKO_GIT_EXCLUDE_ENTRY: &str = ".zenko/sessions/";
+/// Project-level `.zenko/` configuration paths kept read-only to autonomous agent writes (Codex pattern).
+pub const ZENKO_PROTECTED_PROJECT_SUBPATHS: &[&str] = &[
+    ".zenko/config.toml",
+    ".zenko/filters",
+];
+pub const ZPOWERS_STATE_SCHEMA_VERSION: u8 = 1;
+pub const ZPOWERS_STATE_FILE: &str = "state.json";
+pub const ZPOWERS_SPEC_FILE: &str = "spec.md";
+pub const ZPOWERS_PLAN_FILE: &str = "plan.md";
+pub const ZPOWERS_DEBUG_FILE: &str = "debug.md";
+pub const ZPOWERS_WALKTHROUGH_FILE: &str = "walkthrough.md";
+pub const ZPOWERS_REVIEWS_DIR: &str = "reviews";
+pub const ZPOWERS_ACTIONS: &[&str] = &[
+    "status",
+    "write_spec",
+    "write_plan",
+    "log_debug",
+    "record_review",
+    "write_walkthrough",
+    "fast_track",
+    "promote",
+];
+pub const ZPOWERS_MODES: &[&str] = &["off", "advisory", "guided", "strict"];
+pub const ZPOWERS_PHASES: &[&str] = &[
+    "idle",
+    "recon",
+    "spec",
+    "plan",
+    "execute",
+    "debug",
+    "verify",
+    "review",
+    "done",
+];
+pub const ZPOWERS_REVIEW_STAGES: &[&str] = &["spec", "quality"];
+pub const ZPOWERS_REVIEW_VERDICTS: &[&str] = &["approved", "changes_requested", "blocked"];
+pub const ZPOWERS_PROMOTE_ALLOWED_ROOTS: &[&str] = &["docs", "knowledge"];
+pub const ZPOWERS_DEFAULT_MAX_SESSIONS_PER_WORKSPACE: usize = 25;
+pub const ZPOWERS_DEFAULT_RETENTION_DAYS: u64 = 30;
+pub const ZPOWERS_DEFAULT_DEBUG_STRIKE_LIMIT: usize = 3;
+pub const ZPOWERS_MAX_DOC_BYTES: usize = 64 * 1024;
+pub const ZPOWERS_MAX_REVIEWS: usize = 16;
+pub const ZPOWERS_MAX_DEBUG_ENTRIES: usize = 24;
+pub const ZPOWERS_FAST_TRACK_REASON_MAX_CHARS: usize = 200;
+
+/// Returns `true` only for `zpowers` actions that mutate tracked workspace files outside
+/// `.zenko/sessions/<id>/` (currently `promote`). Planning/spec/review writes inside the
+/// active session's isolated `zpowers/` folder remain permitted in Read-Only Plan Mode.
+pub fn is_zpowers_args_mutating(args: &serde_json::Value) -> bool {
+    args.get("action")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|a| a.trim().eq_ignore_ascii_case("promote"))
+}

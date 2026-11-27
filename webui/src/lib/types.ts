@@ -1616,6 +1616,67 @@ export interface BootstrapResponse {
   subagents?: SubagentRecord[]
 }
 
+export type ZPowersMode = 'off' | 'advisory' | 'guided' | 'strict'
+
+export type ZPowersPhase =
+  | 'idle'
+  | 'recon'
+  | 'spec'
+  | 'plan'
+  | 'execute'
+  | 'debug'
+  | 'verify'
+  | 'review'
+  | 'done'
+
+export interface ZPowersReviewReceipt {
+  number: number
+  stage: 'spec' | 'quality'
+  verdict: 'approved' | 'changes_requested' | 'blocked'
+  summary: string
+  file: string
+  recorded_at: string
+}
+
+export interface ZPowersVerificationReceipt {
+  command: string
+  passed: boolean
+  summary: string
+  recorded_at: string
+}
+
+export interface ZPowersState {
+  schema_version: number
+  session_id: string
+  phase: ZPowersPhase
+  mode: ZPowersMode
+  spec_recorded: boolean
+  plan_recorded: boolean
+  fast_track_reason?: string | null
+  debug_strikes: number
+  mutated_files: string[]
+  last_verification?: ZPowersVerificationReceipt | null
+  reviews: ZPowersReviewReceipt[]
+  walkthrough_recorded: boolean
+  updated_at: string
+}
+
+export interface ZPowersArtifactDoc {
+  name: string
+  rel_path: string
+  bytes: number
+  updated_at: string
+  content?: string
+}
+
+export interface ZPowersSessionView {
+  session_id: string
+  workspace_rel_dir: string
+  materialized: boolean
+  state: ZPowersState
+  docs: ZPowersArtifactDoc[]
+}
+
 export type ActiveView =
   | 'chat'
   | 'telemetry'

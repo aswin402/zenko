@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.47] - 2026-11-27
+
+Introduced **ZPowers** — Zenko's native Rust plan-first orchestration workflow and per-session project workspace (`.zenko/sessions/<id>/zpowers/`), synthesizing the strongest patterns from `obra/superpowers`, Antigravity, Codex CLI, Crush, Hermes Agent, and Prime Agent with zero git pollution, zero hardcoding, zero `if/else` ladders, and zero regex.
+
+### Added
+- **Per-Session Workspace & ZPowers Artifact Engine (`crates/zenko-runtime/src/zpowers.rs`, `crates/zenko-core/src/{constants,types,config,traits}.rs`):**
+  - Dual-zone isolation keeping secrets, global SQLite DB, and git worktrees in `~/.zenko/`, while lazily materializing per-session working memory under `<workspace>/.zenko/sessions/<id>/{session.json, zpowers/{state.json, spec.md, plan.md, debug.md, reviews/, walkthrough.md}, artifacts/, scratch/}`.
+  - Automatic zero-pollution Git exclusion: idempotently appends `.zenko/sessions/` to local `.git/info/exclude` (supporting normal repos and linked worktrees via `gitdir:`/`commondir`) without ever modifying the repository's tracked `.gitignore`.
+  - Codex-style tamper guard (`check_protected_project_zenko_write` wired into `tool_router.rs`): keeps `.zenko/config.toml` and `.zenko/filters/` read-only to autonomous agent writes and prevents cross-session writes into sibling `.zenko/sessions/<other>/` folders.
+  - Bounded retention GC (`max_sessions_per_workspace = 25`, `retention_days = 30`) on startup plus cascade cleanup on session clear/delete.
+  - Auto-syncs `record_brainstorm`, `plan_update`, and `session_task` DAG changes live to `spec.md` and `plan.md`, injects compact Tier-3 `<zpowers_state>` recall blocks post-compaction and on subagent spawn (zero Tier-1 KV-cache bust).
+- **Plan-First Pre-Tool Gate, 3-Strike Systematic Debugging & Verification Iron Law (`crates/zenko-runtime/src/orchestrator/guard.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Configurable `OrchestratorConfig.zpowers.mode` (`off`, `advisory`, `guided` [default], `strict`): `guided` intercepts premature workspace mutations once until a bite-sized plan (`plan_update` / `session_task` / `zpowers.write_plan`) or auditable `zpowers.fast_track` is recorded, while trivial/read-only turns bypass ceremony with zero overhead.
+  - Wired 3-strike systematic debugging circuit breaker auto-logging to `.zenko/sessions/<id>/zpowers/debug.md`, automatic verification receipt tracking on build/test commands, and Iron-Law completion gating requiring fresh post-edit verification evidence.
+- **Unified Deferred `zpowers` Tool & 8 Built-In Progressive `zpowers-*` Skills (`crates/zenko-tools/src/zpowers_tool.rs`, `crates/zenko-core/src/registry.rs`):**
+  - Added single deferred `zpowers` tool (`status`, `write_spec`, `write_plan`, `log_debug`, `record_review`, `write_walkthrough`, `fast_track`, `promote` to `docs/` or `knowledge/`).
+  - Shipped 8 progressive built-in skills (`zpowers-brainstorm`, `zpowers-plan`, `zpowers-execute`, `zpowers-tdd`, `zpowers-debug`, `zpowers-verify`, `zpowers-review`, `zpowers-finish`) tailored to Zenko's native toolset.
+- **WebUI ZPowers Artifact Popover & Session API (`crates/zenko-webui/src/api/sessions.rs`, `webui/src/components/chat/Phase6Bar.tsx`, `webui/src/App.tsx`):**
+  - Added `GET /api/sessions/{id}/zpowers?include_content=true|false` and a quiet, strictly 60/30/10 theme-native ZPowers artifact inspector popover beside Session Tasks (hidden on trivial/unmaterialized sessions, live-refreshed via SSE).
+
 ## [0.0.46] - 2026-11-27
 
 Hardened Zenko's entire context-management pipeline against long-session failure modes — fixing 8 real bugs uncovered via comparative audit against Hermes Agent, Claude Code, Codex CLI, Prime Agent, and Oh My Pi, while adding calibrated token budgeting, reactive overflow auto-recovery, cumulative file ledgers, Turn-1 goal anchors, compaction-surviving `session_vars`, and abandoned-branch summarization.

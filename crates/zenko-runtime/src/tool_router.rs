@@ -149,6 +149,54 @@ fn activate_deferred_if_needed(rt: &AgentRuntime, session_id: &str, tool_name: &
     }
 }
 
+/// Enforces Codex-style tamper protection for `.zenko/config.toml`, `.zenko/filters/`,
+/// and sibling `.zenko/sessions/<other>/` folders on file-mutating tool calls.
+fn check_zenko_project_tamper_guard(
+    workspace_dir: &Path,
+    session_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> Option<String> {
+    match tool_name {
+        TOOL_WRITE_FILE | TOOL_HASH_EDIT => arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .and_then(|p| {
+                crate::zpowers::check_protected_project_zenko_write(
+                    workspace_dir,
+                    p,
+                    Some(session_id),
+                )
+            }),
+        TOOL_APPLY_PATCH => {
+            let patch = arguments.get("patch").and_then(Value::as_str).unwrap_or("");
+            const PATCH_PREFIXES: &[&str] = &[
+                zenko_core::CODEX_PATCH_ADD_FILE,
+                zenko_core::CODEX_PATCH_UPDATE_FILE,
+                zenko_core::CODEX_PATCH_DELETE_FILE,
+                zenko_core::UNIFIED_DIFF_NEW_PREFIX,
+            ];
+            for line in patch.lines() {
+                let trimmed = line.trim();
+                for prefix in PATCH_PREFIXES {
+                    if let Some(rest) = trimmed.strip_prefix(prefix) {
+                        let candidate = rest.trim().trim_start_matches("b/");
+                        if let Some(err) = crate::zpowers::check_protected_project_zenko_write(
+                            workspace_dir,
+                            candidate,
+                            Some(session_id),
+                        ) {
+                            return Some(err);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Stage 3 + 4: Execute `PreToolUse` hook, `ExecPolicy`, optional HITL approval, post-approval
 /// deferred activation, and the tool implementation itself.
 #[allow(clippy::too_many_arguments)]
@@ -177,6 +225,12 @@ async fn authorize_and_invoke(
         return Ok(ToolOutput::err(format!(
             "Blocked by PreToolUse hook: {blocked}"
         )));
+    }
+
+    if let Some(tamper_err) =
+        check_zenko_project_tamper_guard(&tool_ctx.workspace_dir, session_id, &tc.name, &tc.arguments)
+    {
+        return Ok(ToolOutput::err(tamper_err));
     }
 
     let allowed_set = rt.snapshot_always_allowed();

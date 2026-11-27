@@ -600,6 +600,21 @@ impl AgentRuntime {
         {
             orch.guard.set_p90_envelope(envelope_calls);
         }
+        let zpowers_sid = self.resolve_zpowers_root_session_id(&session_id);
+        let zpowers_ws = match zpowers_sid == session_id {
+            true => workspace_dir.clone(),
+            false => self.session_workspace_dir(&zpowers_sid),
+        };
+        let initial_zp_state =
+            crate::zpowers::load_state(&zpowers_ws, &zpowers_sid, cfg.orchestrator.zpowers.mode);
+        orch.guard.configure_zpowers(
+            cfg.orchestrator.zpowers.mode,
+            orch.short_trivial_turn,
+            cfg.orchestrator.zpowers.debug_strike_limit,
+            zpowers_ws.clone(),
+            zpowers_sid.clone(),
+            &initial_zp_state,
+        );
         let mut economy_trace = crate::economy::TurnEconomyTrace::new(repo_scope.clone());
         economy_trace.injected_skills = active_micro_skills.clone();
         let unpruned_eager_specs = self.tools.specs_for_session_filtered(
@@ -1074,6 +1089,23 @@ impl AgentRuntime {
                         TOOL_MEMORY
                     ));
                 }
+                if let Some(zp_recall) = crate::zpowers::build_zpowers_recall_block(
+                    &zpowers_ws,
+                    &zpowers_sid,
+                    cfg.orchestrator.zpowers.mode,
+                ) {
+                    tail_reminders.push(zp_recall);
+                }
+            }
+            if iter_idx == 0
+                && !compacted_now
+                && let Some(zp_recall) = crate::zpowers::build_zpowers_recall_block(
+                    &zpowers_ws,
+                    &zpowers_sid,
+                    cfg.orchestrator.zpowers.mode,
+                )
+            {
+                tail_reminders.push(zp_recall);
             }
             if !pending_orch_hints.is_empty() {
                 tail_reminders.append(&mut pending_orch_hints);
@@ -1960,8 +1992,47 @@ impl AgentRuntime {
                         &done.output.content,
                         done.output.metadata.as_ref(),
                     ) {
-                        GuardVerdict::Continue => {}
+                        GuardVerdict::Continue => {
+                            if done.tool_name == TOOL_SHELL_EXEC {
+                                let cmd = done
+                                    .arguments
+                                    .get("command")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                if crate::orchestrator::is_verification_command(cmd) {
+                                    crate::zpowers::record_verification_if_materialized(
+                                        &zpowers_ws,
+                                        &zpowers_sid,
+                                        &session.title,
+                                        session.parent_session_id.as_deref(),
+                                        cmd,
+                                        !done.output.is_error,
+                                        &done.output.content,
+                                        orch.guard.mutated_files_set(),
+                                        &cfg.orchestrator.zpowers,
+                                    );
+                                }
+                            }
+                        }
                         GuardVerdict::Pivot { reason, mut hint } => {
+                            if orch.guard.zpowers_debug_triggered() {
+                                orch.guard.clear_zpowers_debug_triggered();
+                                let _ = crate::zpowers::log_debug_entry(
+                                    &zpowers_ws,
+                                    &zpowers_sid,
+                                    &session.title,
+                                    session.parent_session_id.as_deref(),
+                                    &format!("Auto-captured 3-strike pivot: {reason}"),
+                                    &format!(
+                                        "Last failing tool `{}`: {}",
+                                        done.tool_name,
+                                        compact_preview(&done.output.content, 260)
+                                    ),
+                                    "Circuit breaker paused mutations; re-evaluate root cause.",
+                                    true,
+                                    &cfg.orchestrator.zpowers,
+                                );
+                            }
                             if !had_p90_redirect && orch.guard.p90_redirect_triggered() {
                                 economy_trace.loop_guard_interventions =
                                     economy_trace.loop_guard_interventions.saturating_add(1);

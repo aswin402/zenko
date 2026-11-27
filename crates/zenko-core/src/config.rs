@@ -533,6 +533,54 @@ fn default_denied_shell_patterns() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZPowersConfig {
+    /// Enforcement discipline for Zenko's native plan-first & Iron-Law verification workflow
+    /// (`off`, `advisory`, `guided` [default], `strict`).
+    #[serde(default)]
+    pub mode: crate::types::ZPowersMode,
+    /// Idempotently append `.zenko/sessions/` to local `.git/info/exclude` (never mutates `.gitignore`).
+    #[serde(default = "default_true")]
+    pub auto_git_exclude: bool,
+    /// Maximum per-workspace `.zenko/sessions/<id>/` directories retained before pruning oldest entries.
+    #[serde(default = "default_zpowers_max_sessions")]
+    pub max_sessions_per_workspace: usize,
+    /// Maximum age in days before stale `.zenko/sessions/<id>/` folders are pruned.
+    #[serde(default = "default_zpowers_retention_days")]
+    pub retention_days: u64,
+    /// Consecutive failing verification/mutation strikes before triggering `zpowers` systematic Debug mode.
+    #[serde(default = "default_zpowers_debug_strike_limit")]
+    pub debug_strike_limit: usize,
+    /// Automatically mirror `record_brainstorm`, `plan_update`, and `session_task` into `.zenko/sessions/<id>/zpowers/`.
+    #[serde(default = "default_true")]
+    pub sync_artifacts_to_workspace: bool,
+}
+
+fn default_zpowers_max_sessions() -> usize {
+    crate::constants::ZPOWERS_DEFAULT_MAX_SESSIONS_PER_WORKSPACE
+}
+
+fn default_zpowers_retention_days() -> u64 {
+    crate::constants::ZPOWERS_DEFAULT_RETENTION_DAYS
+}
+
+fn default_zpowers_debug_strike_limit() -> usize {
+    crate::constants::ZPOWERS_DEFAULT_DEBUG_STRIKE_LIMIT
+}
+
+impl Default for ZPowersConfig {
+    fn default() -> Self {
+        Self {
+            mode: crate::types::ZPowersMode::Guided,
+            auto_git_exclude: true,
+            max_sessions_per_workspace: default_zpowers_max_sessions(),
+            retention_days: default_zpowers_retention_days(),
+            debug_strike_limit: default_zpowers_debug_strike_limit(),
+            sync_artifacts_to_workspace: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -550,6 +598,8 @@ pub struct OrchestratorConfig {
     pub loop_circuit_breaker: bool,
     #[serde(default = "default_true")]
     pub verification_gate: bool,
+    #[serde(default)]
+    pub zpowers: ZPowersConfig,
 }
 
 impl Default for OrchestratorConfig {
@@ -563,6 +613,7 @@ impl Default for OrchestratorConfig {
             adaptive_effort: true,
             loop_circuit_breaker: true,
             verification_gate: true,
+            zpowers: ZPowersConfig::default(),
         }
     }
 }

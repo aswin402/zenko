@@ -427,6 +427,23 @@ pub trait EconomyBridge: Send + Sync {
     ) -> Result<crate::types::CustomFilterVerifyReport>;
 }
 
+/// Bridge connecting the deferred `zpowers` tool in `zenko-tools` to `AgentRuntime`'s
+/// per-session `.zenko/sessions/<id>/zpowers/` workspace & plan-first state machine.
+#[async_trait]
+pub trait ZPowersBridge: Send + Sync {
+    async fn execute_zpowers(
+        &self,
+        ctx: &ToolContext,
+        req: crate::types::ZPowersActionRequest,
+    ) -> Result<ToolOutput>;
+
+    fn inspect_session_zpowers(
+        &self,
+        session_id: &str,
+        include_content: bool,
+    ) -> Result<crate::types::ZPowersSessionView>;
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ChannelCapabilities {
     pub streaming_draft: bool,

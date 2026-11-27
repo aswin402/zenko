@@ -21,6 +21,7 @@ pub mod telemetry;
 pub mod tool_router;
 pub mod watchers;
 pub mod worktree;
+pub mod zpowers;
 
 pub use activity_logger::{ActivityTracker, RenderedActivity, run_activity_logger};
 pub use agents::{

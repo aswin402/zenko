@@ -555,6 +555,7 @@ impl AgentRuntime {
         let subagent_bridge = Arc::new(RuntimeSubagentBridge::new());
         let goal_bridge = Arc::new(RuntimeGoalLoopBridge::new());
         let economy_bridge = Arc::new(RuntimeEconomyBridge::new());
+        let zpowers_bridge = Arc::new(RuntimeZPowersBridge::new());
         let web_search_cfg = Arc::new(RwLock::new(config.web_search.clone()));
         let lsp_cfg = Arc::new(RwLock::new(config.lsp.clone()));
         let mcp_servers_cfg = Arc::new(RwLock::new(config.mcp_servers.clone()));
@@ -589,6 +590,7 @@ impl AgentRuntime {
             goal_bridge.clone() as Arc<dyn GoalLoopBridge>,
         );
         tool_reg.register_context_tools(ctx_bridge.clone() as Arc<dyn ContextBridge>);
+        tool_reg.register_zpowers_tool(zpowers_bridge.clone() as Arc<dyn zenko_core::ZPowersBridge>);
         tool_reg.register_economy_tool(economy_bridge.clone() as Arc<dyn EconomyBridge>);
         tool_reg.register_batch_tool(batch_bridge.clone() as Arc<dyn ToolBatchBridge>);
         tool_reg.register_subagent_tools(subagent_bridge.clone() as Arc<dyn SubagentBridge>);
@@ -667,15 +669,23 @@ impl AgentRuntime {
         subagent_bridge.bind(Arc::downgrade(&rt));
         goal_bridge.bind(Arc::downgrade(&rt));
         economy_bridge.bind(Arc::downgrade(&rt));
+        zpowers_bridge.bind(Arc::downgrade(&rt));
         rt.clarifications.bind_runtime(Arc::downgrade(&rt));
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let art_dir = data_dir.clone();
             let cp_mgr = rt.checkpoints.clone();
             let cp_cfg = rt.config().checkpoints;
+            let zp_cfg = rt.config().orchestrator.zpowers;
+            let zp_ws = rt.config().resolved_workspace_dir();
             let bg_store = rt.store.clone();
             handle.spawn(async move {
                 artifacts::prune_old_artifacts(&art_dir).await;
+                let _ = crate::zpowers::prune_workspace_sessions(
+                    &zp_ws,
+                    zp_cfg.max_sessions_per_workspace,
+                    zp_cfg.retention_days,
+                );
                 if cp_cfg.enabled {
                     let _ = cp_mgr.prune_checkpoints(&cp_cfg).await;
                 }
@@ -1742,6 +1752,277 @@ impl AgentRuntime {
             .filter(|w| !w.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| cfg.resolved_workspace_dir())
+    }
+
+    pub(crate) fn resolve_zpowers_root_session_id(&self, session_id: &str) -> String {
+        let mut cur = session_id.to_string();
+        let mut seen = HashSet::new();
+        seen.insert(cur.clone());
+        while let Ok(Some(sess)) = self.store.get_session(&cur) {
+            let Some(parent) = sess.parent_session_id.filter(|p| !p.trim().is_empty()) else {
+                break;
+            };
+            if !seen.insert(parent.clone()) {
+                break;
+            }
+            cur = parent;
+        }
+        cur
+    }
+
+    pub fn cleanup_session_zpowers(&self, session_id: &str) {
+        let ws = self.session_workspace_dir(session_id);
+        let _ = crate::zpowers::remove_session_workspace(&ws, session_id);
+    }
+
+    pub fn inspect_session_zpowers(
+        &self,
+        session_id: &str,
+        include_content: bool,
+    ) -> Result<zenko_core::ZPowersSessionView> {
+        let cfg = self.config();
+        let _ = self
+            .store
+            .get_session(session_id)?
+            .ok_or_else(|| ZenkoError::NotFound(format!("session `{session_id}` not found")))?;
+        let root_sid = self.resolve_zpowers_root_session_id(session_id);
+        let ws = self.session_workspace_dir(&root_sid);
+        Ok(crate::zpowers::inspect_session_zpowers(
+            &ws,
+            &root_sid,
+            cfg.orchestrator.zpowers.mode,
+            include_content,
+        ))
+    }
+
+    pub fn execute_zpowers_action(
+        &self,
+        ctx: &ToolContext,
+        req: zenko_core::ZPowersActionRequest,
+    ) -> Result<ToolOutput> {
+        let cfg = self.config();
+        let zp_cfg = &cfg.orchestrator.zpowers;
+        let root_sid = self.resolve_zpowers_root_session_id(&ctx.session_id);
+        let ws = match root_sid == ctx.session_id {
+            true => ctx.workspace_dir.clone(),
+            false => self.session_workspace_dir(&root_sid),
+        };
+        let (title, parent_id) = self
+            .store
+            .get_session(&root_sid)
+            .ok()
+            .flatten()
+            .map(|s| (s.title, s.parent_session_id))
+            .unwrap_or_else(|| (String::new(), None));
+
+        match req.action {
+            zenko_core::ZPowersAction::Status => {
+                let view = crate::zpowers::inspect_session_zpowers(
+                    &ws,
+                    &root_sid,
+                    zp_cfg.mode,
+                    req.include_content,
+                );
+                let out = serde_json::to_string_pretty(&view)
+                    .unwrap_or_else(|_| format!("ZPowers phase={}", view.state.phase.as_str()));
+                Ok(ToolOutput::ok(out))
+            }
+            zenko_core::ZPowersAction::WriteSpec => {
+                let content = req.content.as_deref().unwrap_or("");
+                let (path, state) = crate::zpowers::write_spec_doc(
+                    &ws,
+                    &root_sid,
+                    &title,
+                    parent_id.as_deref(),
+                    req.title.as_deref(),
+                    content,
+                    zp_cfg,
+                )?;
+                let rel = path
+                    .strip_prefix(&ws)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.display().to_string());
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: root_sid,
+                    stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                    tier: zenko_core::ExecutionTier::Orchestrated,
+                    detail: format!("Recorded design spec -> `{rel}` (phase={})", state.phase.as_str()),
+                    model: None,
+                });
+                Ok(ToolOutput::ok(format!("Saved ZPowers spec to `{rel}`.")))
+            }
+            zenko_core::ZPowersAction::WritePlan => {
+                let content = req.content.as_deref().unwrap_or("");
+                let (path, state) = crate::zpowers::write_plan_doc(
+                    &ws,
+                    &root_sid,
+                    &title,
+                    parent_id.as_deref(),
+                    req.title.as_deref(),
+                    content,
+                    zp_cfg,
+                )?;
+                let rel = path
+                    .strip_prefix(&ws)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.display().to_string());
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: root_sid,
+                    stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                    tier: zenko_core::ExecutionTier::Orchestrated,
+                    detail: format!("Recorded implementation plan -> `{rel}` (phase={})", state.phase.as_str()),
+                    model: None,
+                });
+                Ok(ToolOutput::ok(format!("Saved ZPowers plan to `{rel}`.")))
+            }
+            zenko_core::ZPowersAction::LogDebug => {
+                let hyp = req.hypothesis.as_deref().unwrap_or("");
+                let ev = req.evidence.as_deref().unwrap_or("");
+                let out_txt = req.outcome.as_deref().unwrap_or("investigating");
+                let (path, state) = crate::zpowers::log_debug_entry(
+                    &ws,
+                    &root_sid,
+                    &title,
+                    parent_id.as_deref(),
+                    hyp,
+                    ev,
+                    out_txt,
+                    false,
+                    zp_cfg,
+                )?;
+                let rel = path
+                    .strip_prefix(&ws)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.display().to_string());
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: root_sid,
+                    stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                    tier: zenko_core::ExecutionTier::Standard,
+                    detail: format!(
+                        "Logged debug hypothesis -> `{rel}` (strikes={}/{})",
+                        state.debug_strikes, zp_cfg.debug_strike_limit
+                    ),
+                    model: None,
+                });
+                Ok(ToolOutput::ok(format!(
+                    "Logged systematic debugging entry to `{rel}` (strikes={}/{}).",
+                    state.debug_strikes, zp_cfg.debug_strike_limit
+                )))
+            }
+            zenko_core::ZPowersAction::RecordReview => {
+                let stage = req.stage.ok_or_else(|| {
+                    ZenkoError::Tool("`stage` (`spec` or `quality`) is required for `record_review`".into())
+                })?;
+                let verdict = req.verdict.ok_or_else(|| {
+                    ZenkoError::Tool(
+                        "`verdict` (`approved`, `changes_requested`, or `blocked`) is required for `record_review`"
+                            .into(),
+                    )
+                })?;
+                let summary = req.summary.as_deref().or(req.content.as_deref()).unwrap_or("");
+                let (path, receipt, _state) = crate::zpowers::record_review(
+                    &ws,
+                    &root_sid,
+                    &title,
+                    parent_id.as_deref(),
+                    stage,
+                    verdict,
+                    summary,
+                    &req.findings,
+                    zp_cfg,
+                )?;
+                let rel = path
+                    .strip_prefix(&ws)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.display().to_string());
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: root_sid,
+                    stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                    tier: zenko_core::ExecutionTier::Orchestrated,
+                    detail: format!(
+                        "Review #{} ({}) -> {} (`{rel}`)",
+                        receipt.number,
+                        receipt.stage.as_str(),
+                        receipt.verdict.as_str()
+                    ),
+                    model: None,
+                });
+                Ok(ToolOutput::ok(format!(
+                    "Recorded {} review #{} ({}) to `{rel}`.",
+                    receipt.stage.as_str(),
+                    receipt.number,
+                    receipt.verdict.as_str()
+                )))
+            }
+            zenko_core::ZPowersAction::WriteWalkthrough => {
+                let summary = req.summary.as_deref().or(req.content.as_deref()).unwrap_or("");
+                let (path, _state) = crate::zpowers::write_walkthrough(
+                    &ws,
+                    &root_sid,
+                    &title,
+                    parent_id.as_deref(),
+                    req.title.as_deref(),
+                    summary,
+                    &req.files_changed,
+                    &req.verification,
+                    &req.next_steps,
+                    zp_cfg,
+                )?;
+                let rel = path
+                    .strip_prefix(&ws)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.display().to_string());
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: root_sid,
+                    stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                    tier: zenko_core::ExecutionTier::Orchestrated,
+                    detail: format!("Recorded final walkthrough -> `{rel}`"),
+                    model: None,
+                });
+                Ok(ToolOutput::ok(format!("Saved ZPowers walkthrough to `{rel}`.")))
+            }
+            zenko_core::ZPowersAction::FastTrack => {
+                let reason = req.reason.as_deref().unwrap_or("");
+                let state = crate::zpowers::record_fast_track(
+                    &ws,
+                    &root_sid,
+                    &title,
+                    parent_id.as_deref(),
+                    reason,
+                    zp_cfg,
+                )?;
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: root_sid,
+                    stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                    tier: zenko_core::ExecutionTier::Instant,
+                    detail: format!(
+                        "Fast-track approved: {}",
+                        state.fast_track_reason.as_deref().unwrap_or(reason)
+                    ),
+                    model: None,
+                });
+                Ok(ToolOutput::ok(format!(
+                    "ZPowers fast-track recorded ({}). Plan-first gate unlocked for this session.",
+                    state.fast_track_reason.as_deref().unwrap_or(reason)
+                )))
+            }
+            zenko_core::ZPowersAction::Promote => {
+                let doc_name = req.doc_name.as_deref().ok_or_else(|| {
+                    ZenkoError::Tool("`doc_name` is required for `promote`".into())
+                })?;
+                let dest_path = req.dest_path.as_deref().ok_or_else(|| {
+                    ZenkoError::Tool("`dest_path` is required for `promote`".into())
+                })?;
+                let promoted = crate::zpowers::promote_doc(&ws, &root_sid, doc_name, dest_path)?;
+                let rel = promoted
+                    .strip_prefix(&ws)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| promoted.display().to_string());
+                Ok(ToolOutput::ok(format!(
+                    "Promoted ZPowers `{doc_name}` to tracked `{rel}`."
+                )))
+            }
+        }
     }
 
     pub(crate) fn economy_demoted_tools_for_session(&self, session_id: &str) -> BTreeSet<String> {
