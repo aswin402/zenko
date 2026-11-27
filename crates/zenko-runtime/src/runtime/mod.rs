@@ -7,11 +7,12 @@ use crate::checkpoint::CheckpointManager;
 use crate::compaction::{
     CheckpointPlan, build_abandoned_branch_summary, build_compaction_prompt,
     build_deterministic_checkpoint, compact_messages_to_budget_calibrated,
-    estimate_messages_tokens_calibrated, estimate_text_tokens, estimate_text_tokens_calibrated,
-    estimate_tool_specs_tokens, estimate_tool_specs_tokens_calibrated,
-    is_provider_context_overflow_error, message_raw_bytes, microcompact_messages_calibrated,
-    plan_checkpoint_split_calibrated, prepend_checkpoint_to_messages, sanitize_message_tool_pairs,
-    slice_from_latest_checkpoint, tool_specs_raw_bytes, usable_input_window,
+    effective_compaction_window, estimate_messages_tokens_calibrated, estimate_text_tokens,
+    estimate_text_tokens_calibrated, estimate_tool_specs_tokens,
+    estimate_tool_specs_tokens_calibrated, is_provider_context_overflow_error, message_raw_bytes,
+    microcompact_messages_calibrated, plan_checkpoint_split_calibrated,
+    prepend_checkpoint_to_messages, sanitize_message_tool_pairs, slice_from_latest_checkpoint,
+    tool_specs_raw_bytes, usable_input_window,
 };
 use crate::file_state::SessionFileTracker;
 use crate::jobs::LocalJobSupervisor;
@@ -1115,18 +1116,39 @@ impl AgentRuntime {
     }
 
     fn resolve_context_window(&self, model_id: &str) -> u64 {
-        self.cached_models
-            .lock()
-            .ok()
-            .and_then(|guard| {
-                guard.as_ref().and_then(|(_, list)| {
-                    list.iter()
-                        .find(|m| m.id == model_id)
-                        .and_then(|m| m.context_length)
-                })
+        let from_mem = self.cached_models.lock().ok().and_then(|guard| {
+            guard.as_ref().and_then(|(_, list)| {
+                list.iter()
+                    .find(|m| m.id == model_id)
+                    .and_then(|m| m.context_length)
             })
-            .filter(|&n| n >= 4_096)
-            .unwrap_or(DEFAULT_CONTEXT_WINDOW_FALLBACK)
+        });
+        if let Some(len) = from_mem.filter(|&n| n >= 4_096) {
+            return len;
+        }
+        // Cold-start SQLite kv_state hydration so CLI / Telegram / subagent turns immediately know
+        // the exact model context window even before `/api/models` is fetched.
+        let desc = find_provider(&self.config().provider.kind);
+        let kv_key = format!("{MODEL_KV_PROVIDER_PREFIX}{}", desc.id);
+        if let Ok(Some(cached_json)) = self.store.get_kv(&kv_key)
+            && let Ok(list) = serde_json::from_str::<Vec<ModelInfo>>(&cached_json)
+            && !list.is_empty()
+        {
+            let found = list
+                .iter()
+                .find(|m| m.id == model_id)
+                .and_then(|m| m.context_length)
+                .filter(|&n| n >= 4_096);
+            if let Ok(mut guard) = self.cached_models.lock()
+                && guard.is_none()
+            {
+                *guard = Some((Instant::now(), list));
+            }
+            if let Some(len) = found {
+                return len;
+            }
+        }
+        DEFAULT_CONTEXT_WINDOW_FALLBACK
     }
 
     /// Returns `Some(true|false)` when `model_id` is hydrated in `cached_models`, else `None`.
@@ -1626,10 +1648,14 @@ impl AgentRuntime {
         if let Some(ref ckpt) = ckpt_slice.checkpoint {
             prepend_checkpoint_to_messages(&mut raw_messages, ckpt);
         }
+        let proactive_window = effective_compaction_window(
+            context_window,
+            zenko_core::find_zmode(active_zmode).compaction_window_cap,
+        );
         let (mc_messages, mc_stats) = match cfg.context.enabled {
             true => microcompact_messages_calibrated(
                 raw_messages,
-                context_window,
+                proactive_window,
                 active_output_reserve,
                 prefix_tokens,
                 cfg.context.microcompact_trigger_ratio,

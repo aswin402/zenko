@@ -263,7 +263,7 @@ pub const SUBAGENT_TITLE_PREVIEW_CHARS: usize = 42;
 pub const SUBAGENT_MAIL_REPORT_PREVIEW_CHARS: usize = 800;
 pub const SUBAGENT_CANCEL_GRACE_SECS: u64 = 2;
 pub const SUBAGENT_TIMEOUT_HARD_GRACE_SECS: u64 = 5;
-pub const SUBAGENT_SUMMARY_MAX_CHARS: usize = 2_400;
+pub const SUBAGENT_SUMMARY_MAX_CHARS: usize = 6_000;
 pub const SUBAGENT_DIFF_PREVIEW_MAX_CHARS: usize = 8_000;
 pub const SUBAGENT_MAILBOX_MAX_MESSAGES: usize = 32;
 pub const SUBAGENT_LIST_DEFAULT_LIMIT: usize = 30;
@@ -1059,6 +1059,36 @@ pub const ZMODE_LITE_COMPACTION_RATIO: f64 = 0.90;
 pub const ZMODE_BALANCED_COMPACTION_RATIO: f64 = DEFAULT_COMPACTION_TRIGGER_RATIO;
 pub const ZMODE_HIGH_COMPACTION_RATIO: f64 = 0.78;
 pub const ZMODE_ULTRA_COMPACTION_RATIO: f64 = 0.70;
+
+/// Practical proactive compaction ceiling per ZMode so 1M–2M context models still auto-compact
+/// before context rot & runaway token costs (hard physical overflow still uses raw context_window).
+pub const ZMODE_LITE_COMPACTION_WINDOW_CAP: u64 = 200_000;
+pub const ZMODE_BALANCED_COMPACTION_WINDOW_CAP: u64 = 128_000;
+pub const ZMODE_HIGH_COMPACTION_WINDOW_CAP: u64 = 96_000;
+pub const ZMODE_ULTRA_COMPACTION_WINDOW_CAP: u64 = 72_000;
+
+/// Structural minimum word count on a non-Plan, pathless single-line Turn 1 before attaching
+/// workspace recon (keeps tiny greetings fast and prevents Turn-1 ephemeral reminder cache bust).
+pub const FIRST_TURN_RECON_MIN_WORDS: usize = 4;
+
+/// Live Todo-DAG drift guard: after this many mutating iterations with open todos and zero
+/// task status transitions, surface one cache-safe `<active_task_dag>` reminder (bounded per turn).
+pub const TODO_DRIFT_MUTATION_ITERS: usize = 2;
+pub const TODO_DRIFT_MAX_NUDGES: usize = 2;
+
+/// POSIX signal exit base (`128 + sig`) and declarative signal name table for clear shell diagnostics.
+pub const POSIX_SIGNAL_EXIT_BASE: i32 = 128;
+pub const UNIX_SIGNAL_NAMES: &[(i32, &str)] = &[
+    (1, "SIGHUP"),
+    (2, "SIGINT"),
+    (3, "SIGQUIT"),
+    (6, "SIGABRT"),
+    (9, "SIGKILL"),
+    (11, "SIGSEGV"),
+    (13, "SIGPIPE"),
+    (14, "SIGALRM"),
+    (15, "SIGTERM"),
+];
 
 pub const ZMODE_LITE_P90_MULTIPLIER: f64 = 1.40;
 pub const ZMODE_BALANCED_P90_MULTIPLIER: f64 = ECONOMY_LOOP_P90_MULTIPLIER;
@@ -2216,7 +2246,7 @@ pub const ZPOWERS_REVIEW_CONTEXT_MAX_CHARS: usize = 8_000;
 pub const ZPOWERS_REVIEW_ROLE_ID: &str = "critic";
 pub const ZPOWERS_REVIEW_PROMPT_SPEC: &str = "Stage-1 Spec Compliance Review (independent read-only audit): Compare the live workspace diff strictly against the session design spec and implementation plan. Verify every requirement, invariant, and edge case is implemented with nothing missing and no unintended scope drift. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
 pub const ZPOWERS_REVIEW_PROMPT_QUALITY: &str = "Stage-2 Code Quality & Minimalism Review (independent read-only audit): Inspect the live workspace diff for correctness, safety, error handling, zero hardcoding, zero regex/if-else bloat, concurrency bugs, and architectural simplicity. Run `code_minimalism(action=\"audit_diff\")` if helpful. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
-pub const ZPOWERS_ENVIRONMENT_POLICY: &str = "zpowers_workflow: You own strategy dynamically with full freedom (no rigid turn rules). Answer questions or explore directly with zero ceremony; before mutating workspace code on a new task, decide whether to frame a spec (`record_brainstorm`/`zpowers.write_spec`), create a bite-sized plan + live todo checklist (`plan_update`, `session_task`, or `zpowers.write_plan` -- all bidirectionally synced to `.zenko/sessions/<id>/zpowers/plan.md` and the live Todo DAG), or explicitly `zpowers.fast_track` for a tiny surgical fix. Work through your todo items step-by-step marking each done with fresh post-edit verification evidence (run test/build commands directly without piping through `| tail` or `| head` so exit codes stay authentic), use `zpowers.run_review` for independent fresh-subagent two-stage review on substantial changes, and load any `using-zpowers` / `zpowers-*` skill via `skill_view` whenever helpful.";
+pub const ZPOWERS_ENVIRONMENT_POLICY: &str = "zpowers_workflow: You own strategy dynamically with full freedom (no rigid turn rules). Answer questions or explore directly with zero ceremony; before mutating workspace code on a new task, decide whether to frame a spec (`record_brainstorm`/`zpowers.write_spec`), create a bite-sized plan + live todo checklist (`session_task(action=\"batch\", tasks=[...])`, `plan_update`, or `zpowers.write_plan` -- all bidirectionally synced to `.zenko/sessions/<id>/zpowers/plan.md` and the live Todo DAG), or explicitly `zpowers.fast_track` for a tiny surgical fix. Keep todos live as you work -- mark the active task `in_progress` and completed tasks `done` (batching updates via `session_task(action=\"batch\", tasks=[...])` alongside edits/verification so zero iterations are wasted), attach fresh post-edit verification evidence (run test/build commands directly without piping through `| tail` or `| head` and never `pkill -f` a pattern present in the current shell command), use `zpowers.run_review` for independent fresh-subagent two-stage review on substantial changes, and load any `using-zpowers` / `zpowers-*` skill via `skill_view` whenever helpful.";
 
 // ── Sovereign Epistemic `ask_user` Interactive Protocol (rpiv + micode + octto + assistant-ui) ──
 pub const ASK_USER_KINDS: &[&str] = &[

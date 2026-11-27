@@ -2848,6 +2848,7 @@ pub fn new_session_task_id() -> String {
 pub enum SessionTaskAction {
     Create,
     Update,
+    Batch,
     Claim,
     List,
     Ready,
@@ -2858,6 +2859,7 @@ pub enum SessionTaskAction {
 pub const SESSION_TASK_ACTIONS: &[&str] = &[
     "create",
     "update",
+    "batch",
     "claim",
     "list",
     "ready",
@@ -2870,6 +2872,7 @@ impl SessionTaskAction {
         match s.trim().to_ascii_lowercase().as_str() {
             "create" | "add" => Some(Self::Create),
             "update" | "edit" | "set" => Some(Self::Update),
+            "batch" | "sync" | "bulk" | "upsert" => Some(Self::Batch),
             "claim" | "take" => Some(Self::Claim),
             "list" | "all" => Some(Self::List),
             "ready" | "next" => Some(Self::Ready),

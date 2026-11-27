@@ -373,6 +373,14 @@ impl AgentRuntime {
             })
             .count();
 
+        // Treat a session that only had tiny ungrounded chat turns (no prior tools or notes)
+        // as still needing initial grounding once a substantive request arrives.
+        let is_ungrounded_turn = is_first_turn
+            || !initial_branch.iter().any(|ev| {
+                ev.role == EventRole::Tool
+                    || (ev.role == EventRole::System && ev.kind == EventKind::SystemNote)
+            });
+
         let mut orch = orchestrator::prepare_turn(
             cfg,
             &session_id,
@@ -380,7 +388,7 @@ impl AgentRuntime {
             workspace_dir.clone(),
             cfg.resolved_hub_dir(),
             effective_permission,
-            is_first_turn,
+            is_ungrounded_turn,
             prior_turn_errors,
             opts.model_override.as_deref(),
             session.model_override.as_deref(),
@@ -652,6 +660,7 @@ impl AgentRuntime {
         };
         let mut active_minimalism_mode =
             self.effective_minimalism_mode(&session_id, cfg, &initial_branch);
+        let mut active_zmode = self.effective_zmode(&session_id, cfg, &initial_branch);
         let mut effective_system_prompt = snapshot.compose_system_prompt(deferred_catalog.as_deref());
         if let Some(concise_block) = render_concise_prompt_block(
             active_concise_mode,
@@ -736,6 +745,7 @@ impl AgentRuntime {
         let mut pending_orch_hints: Vec<String> = Vec::new();
         let mut last_prompt_cache_key: Option<String> = None;
         let mut last_active_tool_specs: Vec<ToolSpec> = Vec::new();
+        let mut last_iter_microcompacted = false;
         let turn_checkpoint_event_id = parent_for_user.clone();
         let turn_checkpoint_label =
             format!("Before: {}", compact_preview(user_text, CHECKPOINT_LABEL_MAX_CHARS));
@@ -785,6 +795,7 @@ impl AgentRuntime {
                         reasoning_effort = Some(eff);
                     }
                     if let Some(zm) = shift.zmode {
+                        active_zmode = zm;
                         let d = zenko_core::find_zmode(zm);
                         pending_orch_hints.push(format!(
                             "Live ZMode shifted to `{}` ({}): prose=`{}`, minicode=`{}`, Read-Less >= {} B. Preserve all safety invariants.",
@@ -861,11 +872,17 @@ impl AgentRuntime {
                 prepend_checkpoint_to_messages(&mut raw_messages, ckpt);
             }
 
-            // Stage A: Zero-cost quantized selective microcompaction (unwraps invoke_tool/batch_tools)
+            let proactive_window = effective_compaction_window(
+                context_window,
+                zenko_core::find_zmode(active_zmode).compaction_window_cap,
+            );
+
+            // Stage A: Zero-cost quantized selective microcompaction (clamped to ZMode proactive ceiling
+            // so 1M–2M context models still reclaim stale read/shell bloat before context rot!)
             let (mut messages, mc_stats) = match cfg.context.enabled {
                 true => microcompact_messages_calibrated(
                     raw_messages,
-                    context_window,
+                    proactive_window,
                     active_max_tokens,
                     prefix_tokens,
                     cfg.context.microcompact_trigger_ratio,
@@ -873,6 +890,7 @@ impl AgentRuntime {
                 ),
                 false => (raw_messages, Default::default()),
             };
+            last_iter_microcompacted = mc_stats.compacted_tools > 0;
             if mc_stats.compacted_tools > 0 {
                 self.emit(AgentEvent::OrchestratorUpdated {
                     session_id: session_id.clone(),
@@ -886,8 +904,8 @@ impl AgentRuntime {
                 });
             }
 
-            // Stage B: Persisted iterative-merge CompactionCheckpoint (subtracting output reserve)
-            let usable_window = usable_input_window(context_window, active_max_tokens);
+            // Stage B: Persisted iterative-merge CompactionCheckpoint (proactive ZMode window cap)
+            let usable_window = usable_input_window(proactive_window, active_max_tokens);
             let stage_b_budget =
                 ((usable_window as f64) * cfg.context.compaction_trigger_ratio.clamp(0.45, 0.94))
                     as usize;
@@ -897,7 +915,7 @@ impl AgentRuntime {
                     > stage_b_budget
                 && let Some(plan) = plan_checkpoint_split_calibrated(
                     &ckpt_slice,
-                    context_window,
+                    proactive_window,
                     active_max_tokens,
                     prefix_tokens,
                     cfg.context.compaction_trigger_ratio,
@@ -949,15 +967,16 @@ impl AgentRuntime {
                     if let Some(ref ckpt) = ckpt_slice.checkpoint {
                         prepend_checkpoint_to_messages(&mut rebuilt, ckpt);
                     }
-                    messages = microcompact_messages_calibrated(
+                    let (rebuilt_mc, rebuilt_stats) = microcompact_messages_calibrated(
                         rebuilt,
-                        context_window,
+                        proactive_window,
                         active_max_tokens,
                         prefix_tokens,
                         cfg.context.microcompact_trigger_ratio,
                         live_bpt,
-                    )
-                    .0;
+                    );
+                    last_iter_microcompacted = rebuilt_stats.compacted_tools > 0;
+                    messages = rebuilt_mc;
                 }
 
             // Emergency pair-preserving hard ceiling (honors ZMode ratio + shrinks giant single waves)
@@ -1840,6 +1859,9 @@ impl AgentRuntime {
 
             let mut escalate_trigger: Option<(String, String)> = None;
             let mut wave_had_plan_or_mutation = false;
+            let mut wave_mutated_files = false;
+            let mut wave_updated_tasks = false;
+            let mut wave_emitted_plan_note = false;
 
             for (mut done, was_phase_redirect) in ordered_results.into_iter().flatten() {
                 if !was_phase_redirect && !done.output.is_error {
@@ -1849,6 +1871,9 @@ impl AgentRuntime {
                         orchestrator::ToolCategory::Planning | orchestrator::ToolCategory::Mutation
                     ) {
                         wave_had_plan_or_mutation = true;
+                    }
+                    if cat == orchestrator::ToolCategory::Mutation {
+                        wave_mutated_files = true;
                     }
                 }
                 // Unwrap KV-cache-safe `invoke_tool` proxy so memory deltas, plan updates,
@@ -1908,6 +1933,8 @@ impl AgentRuntime {
                         .and_then(|v| serde_json::from_value::<ExecutionPlan>(v.clone()).ok())
                     {
                         orch.guard.update_active_plan(plan);
+                        wave_updated_tasks = true;
+                        wave_emitted_plan_note = true;
                     }
                 let batch_touched_tasks = eff_tool_name == TOOL_BATCH_TOOLS
                     && eff_tool_args
@@ -1935,6 +1962,7 @@ impl AgentRuntime {
                             execution_plan_from_session_tasks(&session.title, &live_tasks)
                         {
                             orch.guard.update_active_plan(plan);
+                            wave_updated_tasks = true;
                         }
 
                 if !was_phase_redirect && !done.output.is_error
@@ -2320,6 +2348,41 @@ impl AgentRuntime {
                 }
             }
 
+            // Persist one unified per-turn `execution_plan` snapshot whenever `session_task` or
+            // `zpowers.write_plan` mutated the DAG without `plan_update`, so historical turns in
+            // WebUI always retain their exact inline todo checklist across multi-turn sessions.
+            if wave_updated_tasks && !wave_emitted_plan_note
+                && let Some(plan) = orch.guard.active_plan()
+                && let Ok(plan_val) = serde_json::to_value(plan)
+                && let Ok(note_ev) = self.store.append_event(
+                    &session_id,
+                    head_id.as_deref(),
+                    EventRole::System,
+                    EventKind::SystemNote,
+                    json!({
+                        "note_kind": NOTE_KIND_EXECUTION_PLAN,
+                        "plan": plan_val,
+                    }),
+                    &UsageStats::default(),
+                )
+            {
+                head_id = Some(note_ev.id);
+            }
+
+            // Live Todo-DAG drift guard: gently remind the orchestrator after consecutive
+            // mutating waves with open todos and zero task status updates.
+            if cfg.orchestrator.enabled
+                && (wave_mutated_files || wave_updated_tasks)
+                && let Ok(live_tasks) = self.clarifications.list_session_tasks(&session_id)
+                && let Some(drift_hint) = orch.guard.check_todo_drift(
+                    wave_mutated_files,
+                    wave_updated_tasks,
+                    &live_tasks,
+                )
+            {
+                pending_orch_hints.push(drift_hint);
+            }
+
             if let Some((detail, hint)) = orch.guard.check_iteration_pacing(
                 cfg.orchestrator.enabled,
                 iter_idx,
@@ -2354,30 +2417,72 @@ impl AgentRuntime {
                 prepend_checkpoint_to_messages(&mut raw_messages, ckpt);
             }
             let synth_bpt = self.prefix_cache.calibrated_bpt(&session_id);
-            let synth_sys_tokens =
-                estimate_text_tokens_calibrated(&effective_system_prompt, synth_bpt);
-            let (mc_messages, _) = microcompact_messages_calibrated(
-                raw_messages,
+            let synth_prefix_tokens =
+                estimate_text_tokens_calibrated(&effective_system_prompt, synth_bpt)
+                    + estimate_tool_specs_tokens_calibrated(&last_active_tool_specs, synth_bpt);
+            let synth_proactive_window = effective_compaction_window(
                 context_window,
-                active_max_tokens,
-                synth_sys_tokens,
-                cfg.context.microcompact_trigger_ratio,
-                synth_bpt,
+                zenko_core::find_zmode(active_zmode).compaction_window_cap,
             );
+            // Keep message prefix byte-identical with the preceding iteration on synthesis: only
+            // replay microcompaction when it was already active on the previous iteration.
+            let mc_messages = match cfg.context.enabled && last_iter_microcompacted {
+                true => microcompact_messages_calibrated(
+                    raw_messages,
+                    synth_proactive_window,
+                    active_max_tokens,
+                    synth_prefix_tokens,
+                    cfg.context.microcompact_trigger_ratio,
+                    synth_bpt,
+                )
+                .0,
+                false => raw_messages,
+            };
             let mut messages = compact_messages_to_budget_calibrated(
                 mc_messages,
                 context_window,
                 active_max_tokens,
-                synth_sys_tokens,
+                synth_prefix_tokens,
                 cfg.context.compaction_trigger_ratio,
                 synth_bpt,
             );
+            let synth_live_tasks = self
+                .clarifications
+                .list_session_tasks(&session_id)
+                .unwrap_or_default();
+            let open_synth_tasks = synth_live_tasks
+                .iter()
+                .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
+                .count();
+            let (verify_ok, verify_failed) = orch.guard.verification_state();
+            let mut honesty_notes: Vec<String> = Vec::new();
+            if open_synth_tasks > 0 {
+                honesty_notes.push(format!(
+                    "Tracked todos status: {}/{} completed ({open_synth_tasks} still open).",
+                    synth_live_tasks.len().saturating_sub(open_synth_tasks),
+                    synth_live_tasks.len()
+                ));
+            }
+            if orch.guard.mutated_files_count() > 0 && !verify_ok {
+                let reason = match verify_failed {
+                    true => "your latest verification check FAILED",
+                    false => "no passing post-edit verification has been recorded yet",
+                };
+                honesty_notes.push(format!(
+                    "Verification warning: {} file(s) were modified and {reason}. Do NOT claim full completion — state clearly what succeeded, what failed or remains unverified, and the exact next step.",
+                    orch.guard.mutated_files_count()
+                ));
+            }
+            let honesty_suffix = match honesty_notes.is_empty() {
+                true => String::new(),
+                false => format!("\n{}", honesty_notes.join("\n")),
+            };
             append_cache_safe_reminder(
                 &mut messages,
                 format!(
                     "<orchestrator_hint type=\"final_synthesis\">\n\
-                     Tool iteration budget ({max_iters}) reached after {tool_calls_count} tool call(s). Tools are now disabled for this wrap-up turn. \
-                     Synthesize a complete, clear final answer directly from all evidence and tool results gathered above.\n\
+                     Tool iteration budget ({max_iters}) reached after {tool_calls_count} tool call(s). Tools are disabled for this wrap-up turn — do NOT emit any tool calls.\n\
+                     Synthesize a clear, honest final Markdown answer directly from the evidence above.{honesty_suffix}\n\
                      </orchestrator_hint>"
                 ),
             );

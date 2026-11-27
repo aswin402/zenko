@@ -4,6 +4,26 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.52] - 2026-11-27
+
+Resolved six runtime, auto-compaction, todo-system, KV-cache, and shell-diagnostic bugs uncovered in forensic analysis of real-world session `01M8EZDHMM54PGBHYZ0SNK3NDB`.
+
+### Fixed
+- **Proactive Auto-Compaction on 1M–2M Context Models & Cold-Start Window Hydration (`crates/zenko-core/src/{constants,registry}.rs`, `crates/zenko-runtime/src/{compaction,runtime/mod,runtime/turn}.rs`):**
+  - Added declarative per-`ZMode` soft compaction window ceilings (`compaction_window_cap`: Lite `200K`, Balanced `128K`, High `96K`, Ultra `72K`) via `effective_compaction_window`, so ultra-large context models like `MiniMax-M3.1-Flash` (1M window) actively trigger Stage-A microcompaction (~61K on Balanced) and Stage-B auto-compaction (~87K) before context rot and runaway token spend instead of waiting until 541K/767K (physical overflow recovery still uses the raw model window).
+  - Updated `resolve_context_window` to lazily hydrate from SQLite `kv_state` (`models_cache_v1:<provider>`) on cold boot so CLI, Telegram, headless, and subagent runs always resolve exact model metadata before `/api/models` is hit.
+- **Todo System Overhaul — Native Batching, Live Drift Guard, Unified Turn Persistence & Honest Wrap-Up Synthesis (`crates/zenko-core/src/{constants,types}.rs`, `crates/zenko-tools/src/orchestrator_tools.rs`, `crates/zenko-runtime/src/{orchestrator/guard,runtime/turn}.rs`, `webui/src/components/chat/ChatStream.tsx`):**
+  - Added `session_task(action="batch", tasks=[...])` (also accepting `tasks` arrays on `create`/`update`) so the orchestrator creates and transitions multiple todos in ONE tool call, and returns a live `Progress (done/total)` checklist on every task mutation.
+  - Added `ExecutionGuard::check_todo_drift` (`TODO_DRIFT_MUTATION_ITERS = 2`, capped at `2` nudges/turn) to surface a cache-safe `<active_task_dag>` reminder whenever workspace mutations progress across iterations without updating open todos.
+  - Persisted one unified per-turn `execution_plan` snapshot whenever `session_task` or `zpowers.write_plan` updates the DAG, surfaced live `done/total todos` progress inline inside `ChatStream` activity headers, and injected live open-todo & unverified-edit status into wrap-up synthesis so Zenko never claims `"Done"` when todos remain open or verification failed.
+- **MiniMax Synthesis KV-Cache Preservation (`crates/zenko-providers/src/dialect.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Kept `"tool_choice": "auto"` for `ProviderDialect::MiniMax` on tool-free wrap-up synthesis (MiniMax's server strips `tools[]` whenever `tool_choice == "none"`, busting ~94% of the conversation KV cache after the system prompt), included tool-spec tokens in synthesis prefix sizing, and avoided triggering a fresh microcompaction epoch on the final synthesis pass.
+- **Clear POSIX Shell Signal Diagnostics & `pkill -f` Self-Kill Hint (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/jobs.rs`, `crates/zenko-tools/src/shell.rs`):**
+  - Mapped Unix signal-terminated child processes (`st.code() == None`) to standard POSIX `128 + signal` codes (`exit_code: 143 (terminated by signal 15: SIGTERM)`) instead of opaque `exit_code: -1`, and surfaced a concise hint when `pkill -f` kills its own subshell command line.
+- **Subagent Explorer Budget & Turn-1 Structural Greeting Guard (`crates/zenko-core/src/{constants,registry}.rs`, `crates/zenko-runtime/src/{orchestrator/triage,runtime/turn}.rs`):**
+  - Raised `SUBAGENT_SUMMARY_MAX_CHARS` (`2,400` -> `6,000`) and bumped `explorer` / `architect` iteration caps (`8`/`10` -> `12`) so reconnaissance subagents finish cleanly without dropping half their citations.
+  - Skipped unnecessary Turn-1 disk recon on short greetings (`< 4` words, single line, zero paths, non-Plan mode) and deferred initial workspace grounding to the first substantive turn, eliminating Turn 1 -> Turn 2 ephemeral reminder cache busts.
+
 ## [0.0.51] - 2026-11-27
 
 Resolved three runtime bugs uncovered in forensic analysis of real-world session `01M8EVBZ05N3E006N5SSBADVT6` and streamlined the WebUI chat experience so plans, todos, brainstorms, and user-input receipts render borderlessly inside Agent Activity while keeping the prompt composer toolbar clean.

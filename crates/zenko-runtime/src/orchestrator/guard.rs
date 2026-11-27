@@ -233,6 +233,8 @@ pub struct ExecutionGuard {
     walkthrough_recorded: bool,
     active_session_id: Option<String>,
     workspace_dir: Option<std::path::PathBuf>,
+    mutating_iters_since_task_update: usize,
+    todo_drift_nudges: usize,
 }
 
 impl ExecutionGuard {
@@ -513,8 +515,19 @@ impl ExecutionGuard {
             TOOL_RECORD_BRAINSTORM => self.brainstorm_recorded = true,
             TOOL_PLAN_UPDATE => self.plan_recorded = true,
             TOOL_SESSION_TASK => {
-                let act = arguments.get("action").and_then(Value::as_str).unwrap_or("");
-                if matches!(act, "create" | "update" | "claim") {
+                let act = arguments
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .and_then(zenko_core::SessionTaskAction::parse);
+                if matches!(
+                    act,
+                    Some(
+                        zenko_core::SessionTaskAction::Create
+                            | zenko_core::SessionTaskAction::Update
+                            | zenko_core::SessionTaskAction::Batch
+                            | zenko_core::SessionTaskAction::Claim
+                    )
+                ) {
                     self.plan_recorded = true;
                 }
             }
@@ -1134,6 +1147,50 @@ impl ExecutionGuard {
 
     pub fn mutated_files_count(&self) -> usize {
         self.mutated_files.len()
+    }
+
+    /// Detects silent Todo-DAG drift during execution: if the agent mutates workspace files across
+    /// `TODO_DRIFT_MUTATION_ITERS` consecutive waves while open todos exist and zero task updates
+    /// were recorded, emits one bounded cache-safe `<active_task_dag>` reminder so todos stay live.
+    pub fn check_todo_drift(
+        &mut self,
+        wave_mutated: bool,
+        wave_updated_tasks: bool,
+        tasks: &[zenko_core::SessionTask],
+    ) -> Option<String> {
+        if wave_updated_tasks {
+            self.mutating_iters_since_task_update = 0;
+            return None;
+        }
+        if !wave_mutated {
+            return None;
+        }
+        let open_count = tasks
+            .iter()
+            .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
+            .count();
+        if open_count == 0 {
+            self.mutating_iters_since_task_update = 0;
+            return None;
+        }
+        self.mutating_iters_since_task_update =
+            self.mutating_iters_since_task_update.saturating_add(1);
+        if self.mutating_iters_since_task_update < zenko_core::TODO_DRIFT_MUTATION_ITERS
+            || self.todo_drift_nudges >= zenko_core::TODO_DRIFT_MAX_NUDGES
+        {
+            return None;
+        }
+        self.mutating_iters_since_task_update = 0;
+        self.todo_drift_nudges = self.todo_drift_nudges.saturating_add(1);
+        let dag = super::plan::format_session_tasks_prompt_block(tasks)?;
+        Some(format!(
+            "<orchestrator_hint type=\"todo_sync\">\n\
+             Live Todo Check: you have mutated files across multiple iterations without updating your tracked todos ({open_count}/{} still open). \
+             Batch-mark completed steps `done` and the active step `in_progress` in ONE call via `session_task(action=\"batch\", tasks=[...])` alongside your next tool call:\n\
+             {dag}\n\
+             </orchestrator_hint>",
+            tasks.len()
+        ))
     }
 }
 
@@ -2221,5 +2278,55 @@ mod tests {
             batched.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "index.html"})),
             PhaseGateDecision::Allow
         );
+
+        // Native `session_task(action="batch")` unlocks plan-first gate & drift guard catches stale todos
+        let mut drift_guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        drift_guard.configure_zpowers(
+            ZPowersMode::Guided,
+            false,
+            3,
+            std::env::temp_dir(),
+            "sess_drift".into(),
+            &ZPowersState::new("sess_drift", ZPowersMode::Guided),
+        );
+        drift_guard.record_tool_outcome(
+            TOOL_SESSION_TASK,
+            &json!({ "action": "batch", "tasks": [{ "title": "Edit main.js" }] }),
+            false,
+            "Batch synced tasks (1 created, 0 updated).",
+            None,
+        );
+        assert_eq!(
+            drift_guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "main.js"})),
+            PhaseGateDecision::Allow
+        );
+        let open_tasks = vec![zenko_core::SessionTask {
+            id: "task_1".into(),
+            session_id: "sess_drift".into(),
+            branch_event_id: None,
+            title: "Edit main.js".into(),
+            description: String::new(),
+            active_label: None,
+            status: zenko_core::SessionTaskStatus::Pending,
+            depends_on: Vec::new(),
+            owner_agent: None,
+            verification_cmd: None,
+            verification_evidence: None,
+            notes: None,
+            priority: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }];
+        assert!(drift_guard.check_todo_drift(true, false, &open_tasks).is_none());
+        let nudge = drift_guard
+            .check_todo_drift(true, false, &open_tasks)
+            .expect("must nudge after 2 mutating waves with stale todos");
+        assert!(nudge.contains("task_1"));
+        assert!(nudge.contains("action=\"batch\""));
+        assert!(drift_guard.check_todo_drift(false, true, &open_tasks).is_none());
     }
 }

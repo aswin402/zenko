@@ -8,8 +8,9 @@
 //! `record_brainstorm`, `ask_clarification`, `plan_update`, `session_task`, and `spawn_agent`.
 
 use zenko_core::{
-    DeliberationDepth, ExecutionTier, IntentKind, ModelRoutingRole, PermissionMode,
-    ReasoningEffort, SHORT_TASK_MAX_NONEMPTY_LINES, SHORT_TASK_MAX_PROMPT_CHARS, TriageReport,
+    DeliberationDepth, ExecutionTier, FIRST_TURN_RECON_MIN_WORDS, IntentKind, ModelRoutingRole,
+    PermissionMode, ReasoningEffort, SHORT_TASK_MAX_NONEMPTY_LINES, SHORT_TASK_MAX_PROMPT_CHARS,
+    TriageReport,
 };
 
 #[derive(Debug, Clone)]
@@ -79,14 +80,20 @@ pub fn extract_path_like_tokens(prompt: &str) -> Vec<String> {
 pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
     let trimmed = input.prompt.trim();
     let line_count = trimmed.lines().filter(|l| !l.trim().is_empty()).count();
+    let word_count = tokenize_words(trimmed).len();
     let path_count = extract_path_like_tokens(trimmed).len();
     let is_explicit_plan_mode = input.permission_mode == PermissionMode::Plan;
+    let first_turn_substantive = input.is_first_turn
+        && (is_explicit_plan_mode
+            || path_count > 0
+            || line_count >= 2
+            || word_count >= FIRST_TURN_RECON_MIN_WORDS);
 
     let mut matched_signals: Vec<String> = Vec::with_capacity(6);
     if is_explicit_plan_mode {
         matched_signals.push("explicit_plan_mode".into());
     }
-    if input.is_first_turn {
+    if first_turn_substantive {
         matched_signals.push("first_turn_grounding".into());
     }
     if path_count > 0 {
@@ -99,8 +106,10 @@ pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
         matched_signals.push(format!("multiline({line_count})"));
     }
 
-    let needs_recon =
-        is_explicit_plan_mode || input.is_first_turn || path_count > 0 || input.prior_turn_errors > 0;
+    let needs_recon = is_explicit_plan_mode
+        || first_turn_substantive
+        || path_count > 0
+        || input.prior_turn_errors > 0;
 
     let tier = match is_explicit_plan_mode || needs_recon || line_count >= 4 {
         true => ExecutionTier::Orchestrated,
@@ -280,5 +289,29 @@ mod tests {
             false,
             PermissionMode::Plan
         ));
+
+        // Tiny Turn-1 greeting skips unnecessary disk recon & stays Standard (zero Turn-1->2 KV bust)
+        let greeting = classify_turn(&TriageInput {
+            prompt: "hii",
+            prior_turn_errors: 0,
+            is_first_turn: true,
+            permission_mode: PermissionMode::Autonomous,
+            has_fast_model: true,
+            has_plan_model: false,
+        });
+        assert!(!greeting.needs_recon);
+        assert_eq!(greeting.tier, ExecutionTier::Standard);
+
+        // First substantive task prompt gets full Orchestrated + lightweight recon
+        let substantive = classify_turn(&TriageInput {
+            prompt: "create an intro website for zenko",
+            prior_turn_errors: 0,
+            is_first_turn: true,
+            permission_mode: PermissionMode::Autonomous,
+            has_fast_model: true,
+            has_plan_model: false,
+        });
+        assert!(substantive.needs_recon);
+        assert_eq!(substantive.tier, ExecutionTier::Orchestrated);
     }
 }

@@ -36,7 +36,8 @@ pub use checkpoint::CheckpointManager;
 pub use compaction::{
     CheckpointPlan, CheckpointSlice, MicrocompactStats, build_abandoned_branch_summary,
     build_compaction_prompt, build_deterministic_checkpoint, calibrate_bytes_per_token,
-    compact_messages_to_budget, compact_messages_to_budget_calibrated, estimate_messages_tokens,
+    compact_messages_to_budget, compact_messages_to_budget_calibrated, effective_compaction_window,
+    estimate_messages_tokens,
     estimate_messages_tokens_calibrated, estimate_text_tokens, estimate_text_tokens_calibrated,
     estimate_tool_specs_tokens, estimate_tool_specs_tokens_calibrated,
     extract_compaction_file_ledger, is_provider_context_overflow_error, message_raw_bytes,

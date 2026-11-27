@@ -183,9 +183,14 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                 })
                 .collect();
             obj.insert("tools".into(), Value::Array(tools));
-            let tool_choice = match req.disable_tool_calls {
-                true => "none",
-                false => "auto",
+            // MiniMax strips `tools[]` server-side whenever `tool_choice == "none"`, invalidating
+            // the entire conversation KV cache after the system prompt (~94% cache miss on wrap-up
+            // synthesis). Keep `"auto"` on MiniMax so the frozen tool prefix stays byte-identical
+            // while synthesis prompt instructions + runtime stream consumer suppress tool execution.
+            let tool_choice = match (dialect, req.disable_tool_calls) {
+                (ProviderDialect::MiniMax, _) => "auto",
+                (_, true) => "none",
+                (_, false) => "auto",
             };
             obj.insert("tool_choice".into(), Value::String(tool_choice.into()));
         }
@@ -518,14 +523,22 @@ mod tests {
         let mut synth_req = active_req.clone();
         synth_req.disable_tool_calls = true;
 
-        let active_body = build_request_body(ProviderDialect::MiniMax, &active_req);
-        let synth_body = build_request_body(ProviderDialect::MiniMax, &synth_req);
-
-        assert_eq!(active_body["tool_choice"], "auto");
-        assert_eq!(synth_body["tool_choice"], "none");
+        let active_mm = build_request_body(ProviderDialect::MiniMax, &active_req);
+        let synth_mm = build_request_body(ProviderDialect::MiniMax, &synth_req);
+        assert_eq!(active_mm["tool_choice"], "auto");
+        assert_eq!(synth_mm["tool_choice"], "auto");
         assert_eq!(
-            serde_json::to_string(&active_body["tools"]).expect("ser active tools"),
-            serde_json::to_string(&synth_body["tools"]).expect("ser synth tools"),
+            serde_json::to_string(&active_mm["tools"]).expect("ser active mm tools"),
+            serde_json::to_string(&synth_mm["tools"]).expect("ser synth mm tools"),
+        );
+
+        let active_or = build_request_body(ProviderDialect::OpenRouter, &active_req);
+        let synth_or = build_request_body(ProviderDialect::OpenRouter, &synth_req);
+        assert_eq!(active_or["tool_choice"], "auto");
+        assert_eq!(synth_or["tool_choice"], "none");
+        assert_eq!(
+            serde_json::to_string(&active_or["tools"]).expect("ser active or tools"),
+            serde_json::to_string(&synth_or["tools"]).expect("ser synth or tools"),
         );
     }
 }

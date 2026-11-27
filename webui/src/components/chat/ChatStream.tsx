@@ -673,8 +673,14 @@ const AssistantTurnView = memo(function AssistantTurnView({
 
   const completedSummaryText = useMemo(() => {
     const stepWord = `${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`
-    return `Completed ${stepWord}`
-  }, [stepCount])
+    const todoTotal = fallbackTasks.length > 0 ? fallbackTasks.length : (group.plan?.steps.length ?? 0)
+    const todoDone =
+      fallbackTasks.length > 0
+        ? fallbackTasks.filter((t) => t.status === 'done').length
+        : (group.plan?.steps.filter((s) => s.status === 'completed').length ?? 0)
+    const todoTag = todoTotal > 0 ? ` · ${todoDone}/${todoTotal} todos` : ''
+    return `Completed ${stepWord}${todoTag}`
+  }, [stepCount, fallbackTasks, group.plan])
 
   return (
     <motion.div
@@ -1227,13 +1233,24 @@ function LiveAssistantTurn({
   }, [liveOrchestrator, mergedTools])
 
   const runningTool = mergedTools.find((t) => t.status === 'running')
+  const liveTodoTag = useMemo(() => {
+    const total = sessionTasks.length > 0 ? sessionTasks.length : (persistedGroup?.plan?.steps.length ?? 0)
+    if (total === 0) return ''
+    const done =
+      sessionTasks.length > 0
+        ? sessionTasks.filter((t) => t.status === 'done').length
+        : (persistedGroup?.plan?.steps.filter((s) => s.status === 'completed').length ?? 0)
+    return ` · ${done}/${total} todos`
+  }, [sessionTasks, persistedGroup?.plan])
   const liveStatusText = useMemo(() => {
-    if (runningTool) return `Running ${runningTool.tool_name}...`
-    if (liveText) return `Writing response · ${mergedTools.length} ${mergedTools.length === 1 ? 'tool' : 'tools'}`
-    if (mergedThinking) return 'Thinking...'
-    if (liveOrchestrator?.stage) return `${liveOrchestrator.stage}...`
-    return 'Thinking...'
-  }, [runningTool, liveText, mergedTools.length, mergedThinking, liveOrchestrator?.stage])
+    if (runningTool) return `Running ${runningTool.tool_name}...${liveTodoTag}`
+    if (liveText) {
+      return `Writing response · ${mergedTools.length} ${mergedTools.length === 1 ? 'tool' : 'tools'}${liveTodoTag}`
+    }
+    if (mergedThinking) return `Thinking...${liveTodoTag}`
+    if (liveOrchestrator?.stage) return `${liveOrchestrator.stage}...${liveTodoTag}`
+    return `Thinking...${liveTodoTag}`
+  }, [runningTool, liveText, mergedTools.length, mergedThinking, liveOrchestrator?.stage, liveTodoTag])
 
   const hasLivePlan = Boolean(persistedGroup?.plan) || sessionTasks.length > 0
   const liveBrainstorms = persistedGroup?.brainstorms || []

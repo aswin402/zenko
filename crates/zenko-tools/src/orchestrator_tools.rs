@@ -1329,16 +1329,37 @@ impl Tool for SessionTaskTool {
             .collect();
         ToolSpec {
             name: TOOL_SESSION_TASK.into(),
-            description: "Manage the durable SQLite Session Task DAG (survives compaction, daemon restarts, and coordinates parallel subagents via atomic `claim`). Actions: `create`, `update`, `claim`, `list`, `ready` (unblocked pending queue), `delete`, `clear`.".into(),
+            description: "Manage the durable SQLite Session Task DAG (survives compaction, daemon restarts, and coordinates parallel subagents via atomic `claim`). Actions: `batch` (create and/or update multiple tasks in ONE call via `tasks: [...]`), `create`, `update`, `claim`, `list`, `ready` (unblocked pending queue), `delete`, `clear`.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": action_enum,
-                        "description": "Task DAG operation."
+                        "description": "Task DAG operation (`batch` creates/updates multiple items in `tasks` in one call)."
                     },
-                    "id": { "type": "string", "description": "Task ID (optional on create; required on update/claim/delete)." },
+                    "tasks": {
+                        "type": "array",
+                        "description": "Batch of task items for `action=\"batch\"` (or bulk `create`/`update`). Items matching an existing `id` are patched in place; items with a new or omitted `id` are created.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "title": { "type": "string" },
+                                "description": { "type": "string" },
+                                "active_label": { "type": "string" },
+                                "status": { "type": "string", "enum": status_enum },
+                                "depends_on": { "type": "array", "items": { "type": "string" } },
+                                "add_depends_on": { "type": "array", "items": { "type": "string" } },
+                                "owner_agent": { "type": "string" },
+                                "verification_cmd": { "type": "string" },
+                                "verification_evidence": { "type": "string" },
+                                "notes": { "type": "string" },
+                                "priority": { "type": "integer" }
+                            }
+                        }
+                    },
+                    "id": { "type": "string", "description": "Task ID (optional on create; required on single update/claim/delete)." },
                     "title": { "type": "string", "description": "Concise task title." },
                     "description": { "type": "string", "description": "Optional detailed specification." },
                     "active_label": { "type": "string", "description": "Optional live progress spinner label." },
@@ -1385,16 +1406,97 @@ impl Tool for SessionTaskTool {
             ))
         })?;
 
-        let opt_str = |key: &str| -> Option<String> {
-            args.get(key)
+        let opt_str_in = |obj: &Value, key: &str| -> Option<String> {
+            obj.get(key)
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from)
         };
-        let task_id_opt = || opt_str("id").or_else(|| opt_str("task_id"));
+        let task_id_in = |obj: &Value| opt_str_in(obj, "id").or_else(|| opt_str_in(obj, "task_id"));
+        let build_patch = |obj: &Value| SessionTaskPatch {
+            title: opt_str_in(obj, "title"),
+            description: obj
+                .get("description")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string()),
+            active_label: obj.get("active_label").map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }),
+            status: obj
+                .get("status")
+                .and_then(Value::as_str)
+                .map(SessionTaskStatus::from_str_loose),
+            depends_on: obj.get("depends_on").map(|v| parse_string_vec(Some(v))),
+            add_depends_on: parse_string_vec(obj.get("add_depends_on")),
+            owner_agent: obj.get("owner_agent").map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }),
+            verification_cmd: obj.get("verification_cmd").map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }),
+            verification_evidence: obj.get("verification_evidence").map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }),
+            notes: obj.get("notes").map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }),
+            priority: obj.get("priority").and_then(Value::as_i64).map(|v| v as i32),
+        };
+        let build_new_task = |obj: &Value| -> Result<SessionTask> {
+            let title = opt_str_in(obj, "title")
+                .ok_or_else(|| ZenkoError::Tool("`title` is required to create a task".into()))?;
+            let now = Utc::now();
+            Ok(SessionTask {
+                id: task_id_in(obj).unwrap_or_else(new_session_task_id),
+                session_id: ctx.session_id.clone(),
+                branch_event_id: None,
+                title,
+                description: opt_str_in(obj, "description").unwrap_or_default(),
+                active_label: opt_str_in(obj, "active_label"),
+                status: obj
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(SessionTaskStatus::from_str_loose)
+                    .unwrap_or(SessionTaskStatus::Pending),
+                depends_on: parse_string_vec(obj.get("depends_on")),
+                owner_agent: opt_str_in(obj, "owner_agent"),
+                verification_cmd: opt_str_in(obj, "verification_cmd"),
+                verification_evidence: opt_str_in(obj, "verification_evidence"),
+                notes: opt_str_in(obj, "notes"),
+                priority: obj.get("priority").and_then(Value::as_i64).unwrap_or(0) as i32,
+                created_at: now,
+                updated_at: now,
+            })
+        };
 
-        match action {
+        let batch_items = args
+            .get("tasks")
+            .or_else(|| args.get("updates"))
+            .and_then(Value::as_array);
+        let effective_action = match (action, batch_items.is_some()) {
+            (SessionTaskAction::Create | SessionTaskAction::Update, true) => {
+                SessionTaskAction::Batch
+            }
+            (other, _) => other,
+        };
+
+        match effective_action {
             SessionTaskAction::List => {
                 let tasks = self.bridge.list_session_tasks(&ctx.session_id)?;
                 let mut out = ToolOutput::ok(format_task_list("Session Task DAG", &tasks));
@@ -1407,34 +1509,57 @@ impl Tool for SessionTaskTool {
                 out.metadata = serde_json::to_value(&tasks).ok();
                 Ok(out)
             }
-            SessionTaskAction::Create => {
-                let title = opt_str("title")
-                    .ok_or_else(|| ZenkoError::Tool("`title` is required for `create`".into()))?;
-                let now = Utc::now();
-                let task = SessionTask {
-                    id: task_id_opt().unwrap_or_else(new_session_task_id),
-                    session_id: ctx.session_id.clone(),
-                    branch_event_id: None,
-                    title,
-                    description: opt_str("description").unwrap_or_default(),
-                    active_label: opt_str("active_label"),
-                    status: args
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .map(SessionTaskStatus::from_str_loose)
-                        .unwrap_or(SessionTaskStatus::Pending),
-                    depends_on: parse_string_vec(args.get("depends_on")),
-                    owner_agent: opt_str("owner_agent"),
-                    verification_cmd: opt_str("verification_cmd"),
-                    verification_evidence: opt_str("verification_evidence"),
-                    notes: opt_str("notes"),
-                    priority: args.get("priority").and_then(Value::as_i64).unwrap_or(0) as i32,
-                    created_at: now,
-                    updated_at: now,
-                };
-                let saved = self.bridge.create_session_task(&ctx.session_id, task)?;
+            SessionTaskAction::Batch => {
+                let items = batch_items
+                    .filter(|arr| !arr.is_empty())
+                    .ok_or_else(|| {
+                        ZenkoError::Tool(
+                            "`tasks` (non-empty array of task objects) is required for `batch`".into(),
+                        )
+                    })?;
+                let mut existing_ids: std::collections::HashSet<String> = self
+                    .bridge
+                    .list_session_tasks(&ctx.session_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect();
+                let mut created = 0usize;
+                let mut updated = 0usize;
+                for item in items {
+                    let maybe_id = task_id_in(item);
+                    match maybe_id.as_deref() {
+                        Some(id) if existing_ids.contains(id) => {
+                            let patch = build_patch(item);
+                            self.bridge.update_session_task(&ctx.session_id, id, patch)?;
+                            updated += 1;
+                        }
+                        _ => {
+                            let task = build_new_task(item)?;
+                            let saved = self.bridge.create_session_task(&ctx.session_id, task)?;
+                            existing_ids.insert(saved.id);
+                            created += 1;
+                        }
+                    }
+                }
+                let all = self.bridge.list_session_tasks(&ctx.session_id)?;
                 let mut out = ToolOutput::ok(format!(
-                    "Created task `{}` [{}]: {}",
+                    "Batch synced tasks ({created} created, {updated} updated).\n{}",
+                    format_task_progress_summary(&all)
+                ));
+                out.metadata = serde_json::to_value(&all).ok();
+                Ok(out)
+            }
+            SessionTaskAction::Create => {
+                let task = build_new_task(&args)?;
+                let saved = self.bridge.create_session_task(&ctx.session_id, task)?;
+                let all = self.bridge.list_session_tasks(&ctx.session_id).unwrap_or_default();
+                let progress = match all.is_empty() {
+                    true => String::new(),
+                    false => format!("\n{}", format_task_progress_summary(&all)),
+                };
+                let mut out = ToolOutput::ok(format!(
+                    "Created task `{}` [{}]: {}{progress}",
                     saved.id,
                     saved.status.as_str(),
                     saved.title
@@ -1443,40 +1568,17 @@ impl Tool for SessionTaskTool {
                 Ok(out)
             }
             SessionTaskAction::Update => {
-                let id = task_id_opt()
+                let id = task_id_in(&args)
                     .ok_or_else(|| ZenkoError::Tool("`id` is required for `update`".into()))?;
-                let patch = SessionTaskPatch {
-                    title: opt_str("title"),
-                    description: args
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .map(|s| s.trim().to_string()),
-                    active_label: args
-                        .get("active_label")
-                        .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)),
-                    status: args
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .map(SessionTaskStatus::from_str_loose),
-                    depends_on: args.get("depends_on").map(|v| parse_string_vec(Some(v))),
-                    add_depends_on: parse_string_vec(args.get("add_depends_on")),
-                    owner_agent: args
-                        .get("owner_agent")
-                        .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)),
-                    verification_cmd: args
-                        .get("verification_cmd")
-                        .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)),
-                    verification_evidence: args
-                        .get("verification_evidence")
-                        .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)),
-                    notes: args
-                        .get("notes")
-                        .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)),
-                    priority: args.get("priority").and_then(Value::as_i64).map(|v| v as i32),
-                };
+                let patch = build_patch(&args);
                 let updated = self.bridge.update_session_task(&ctx.session_id, &id, patch)?;
+                let all = self.bridge.list_session_tasks(&ctx.session_id).unwrap_or_default();
+                let progress = match all.is_empty() {
+                    true => String::new(),
+                    false => format!("\n{}", format_task_progress_summary(&all)),
+                };
                 let mut out = ToolOutput::ok(format!(
-                    "Updated task `{}` [{}]: {}",
+                    "Updated task `{}` [{}]: {}{progress}",
                     updated.id,
                     updated.status.as_str(),
                     updated.title
@@ -1485,9 +1587,9 @@ impl Tool for SessionTaskTool {
                 Ok(out)
             }
             SessionTaskAction::Claim => {
-                let id = task_id_opt()
+                let id = task_id_in(&args)
                     .ok_or_else(|| ZenkoError::Tool("`id` is required for `claim`".into()))?;
-                let owner = opt_str("owner_agent").unwrap_or_else(|| ctx.session_id.clone());
+                let owner = opt_str_in(&args, "owner_agent").unwrap_or_else(|| ctx.session_id.clone());
                 let claimed = self.bridge.claim_session_task(&ctx.session_id, &id, &owner)?;
                 let mut out = ToolOutput::ok(format!(
                     "Claimed task `{}` for `{}` (status={}).",
@@ -1499,7 +1601,7 @@ impl Tool for SessionTaskTool {
                 Ok(out)
             }
             SessionTaskAction::Delete => {
-                let id = task_id_opt()
+                let id = task_id_in(&args)
                     .ok_or_else(|| ZenkoError::Tool("`id` is required for `delete`".into()))?;
                 let deleted = self.bridge.delete_session_task(&ctx.session_id, &id)?;
                 Ok(ToolOutput::ok(match deleted {
@@ -1513,6 +1615,26 @@ impl Tool for SessionTaskTool {
             }
         }
     }
+}
+
+fn format_task_progress_summary(tasks: &[SessionTask]) -> String {
+    let done = tasks
+        .iter()
+        .filter(|t| t.status == SessionTaskStatus::Done)
+        .count();
+    let lines: Vec<String> = tasks
+        .iter()
+        .map(|t| {
+            let mark = match t.status {
+                SessionTaskStatus::Done => "x",
+                SessionTaskStatus::InProgress => "/",
+                SessionTaskStatus::Blocked | SessionTaskStatus::Failed => "!",
+                SessionTaskStatus::Pending => " ",
+            };
+            format!("- [{mark}] `{}` ({}): {}", t.id, t.status.as_str(), t.title)
+        })
+        .collect();
+    format!("Progress ({done}/{} done):\n{}", tasks.len(), lines.join("\n"))
 }
 
 fn format_task_list(header: &str, tasks: &[SessionTask]) -> String {
@@ -1764,5 +1886,138 @@ mod tests {
         let flow_no_q_meta = out_flow_no_q.metadata.expect("flow no q meta");
         assert_eq!(flow_no_q_meta["kind"], "question_flow");
         assert_eq!(flow_no_q_meta["question"], "calc.py onboarding");
+    }
+
+    struct InMemTaskBridge {
+        tasks: std::sync::Mutex<Vec<SessionTask>>,
+    }
+
+    impl InMemTaskBridge {
+        fn new() -> Self {
+            Self {
+                tasks: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl OrchestratorBridge for InMemTaskBridge {
+        fn record_brainstorm(&self, _: &str, spec: &BrainstormSpec) -> Result<BrainstormSpec> {
+            Ok(spec.clone())
+        }
+        fn update_plan(&self, _: &str, plan: &ExecutionPlan) -> Result<ExecutionPlan> {
+            Ok(plan.clone())
+        }
+        async fn request_ask_user(
+            &self,
+            _: &str,
+            _: AskUserRequestSpec,
+            _: bool,
+            _: CancellationToken,
+        ) -> Result<ClarificationAnswer> {
+            Err(ZenkoError::Tool("unused".into()))
+        }
+        fn list_pending_clarifications(&self, _: Option<&str>) -> Vec<ClarificationRecord> {
+            Vec::new()
+        }
+        fn list_session_tasks(&self, _: &str) -> Result<Vec<SessionTask>> {
+            Ok(self.tasks.lock().expect("lock").clone())
+        }
+        fn ready_session_tasks(&self, sid: &str) -> Result<Vec<SessionTask>> {
+            self.list_session_tasks(sid)
+        }
+        fn create_session_task(&self, _: &str, task: SessionTask) -> Result<SessionTask> {
+            self.tasks.lock().expect("lock").push(task.clone());
+            Ok(task)
+        }
+        fn update_session_task(
+            &self,
+            _: &str,
+            task_id: &str,
+            patch: SessionTaskPatch,
+        ) -> Result<SessionTask> {
+            let mut list = self.tasks.lock().expect("lock");
+            let t = list
+                .iter_mut()
+                .find(|x| x.id == task_id)
+                .ok_or_else(|| ZenkoError::NotFound(task_id.into()))?;
+            if let Some(st) = patch.status {
+                t.status = st;
+            }
+            if let Some(ev) = patch.verification_evidence {
+                t.verification_evidence = ev;
+            }
+            Ok(t.clone())
+        }
+        fn claim_session_task(&self, _: &str, _: &str, _: &str) -> Result<SessionTask> {
+            Err(ZenkoError::Tool("unused".into()))
+        }
+        fn delete_session_task(&self, _: &str, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn clear_session_tasks(&self, _: &str) -> Result<usize> {
+            Ok(0)
+        }
+        async fn apply_orchestrate_control(
+            &self,
+            _: &str,
+            _: &Path,
+            _: OrchestrateControlRequest,
+        ) -> Result<zenko_core::OrchestrateControlReceipt> {
+            Err(ZenkoError::Tool("unused".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn session_task_batch_creates_and_updates_in_one_call_with_progress_summary() {
+        let bridge = Arc::new(InMemTaskBridge::new());
+        let tool = SessionTaskTool::new(bridge);
+        let ctx = ToolContext {
+            session_id: "s1".into(),
+            workspace_dir: std::env::temp_dir(),
+            data_dir: std::env::temp_dir(),
+            hub_dir: std::env::temp_dir(),
+            shell_timeout_secs: 30,
+            auto_background_after_secs: 15,
+            max_output_bytes: 65_536,
+            headless_no_wait: true,
+            demote_bg: Arc::new(tokio::sync::Notify::new()),
+            file_state: None,
+        };
+        let created = tool
+            .execute(
+                &ctx,
+                json!({
+                    "action": "batch",
+                    "tasks": [
+                        { "id": "t1", "title": "Edit main.js", "status": "in_progress" },
+                        { "id": "t2", "title": "Verify build", "depends_on": ["t1"] }
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("batch create");
+        assert!(created.content.contains("2 created, 0 updated"));
+        assert!(created.content.contains("Progress (0/2 done)"));
+
+        let updated = tool
+            .execute(
+                &ctx,
+                json!({
+                    "action": "batch",
+                    "tasks": [
+                        { "id": "t1", "status": "done", "verification_evidence": "node --check ok" },
+                        { "id": "t2", "status": "in_progress" }
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("batch update");
+        assert!(updated.content.contains("0 created, 2 updated"));
+        assert!(updated.content.contains("Progress (1/2 done)"));
+        assert!(updated.content.contains("[x] `t1` (done)"));
+        assert!(updated.content.contains("[/] `t2` (in_progress)"));
     }
 }

@@ -11,11 +11,34 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     ARTIFACT_HEAD_RATIO_DEN, ARTIFACT_HEAD_RATIO_NUM, BackgroundJobRecord, BackgroundJobStatus,
-    JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, PTY_ACTIONS, PTY_SEND_DEFAULT_WAIT_MS,
-    PTY_SEND_MAX_WAIT_MS, PtyAction, Result, RiskLevel, SAFE_SHELL_ENV_KEYS, SHELL_BIN_UNIX,
-    SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, TOOL_SHELL_EXEC, TaskKind, Tool, ToolContext,
-    ToolOutput, ToolSet, ToolSpec, ZenkoError,
+    JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, POSIX_SIGNAL_EXIT_BASE, PTY_ACTIONS,
+    PTY_SEND_DEFAULT_WAIT_MS, PTY_SEND_MAX_WAIT_MS, PtyAction, Result, RiskLevel,
+    SAFE_SHELL_ENV_KEYS, SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES,
+    TOOL_SHELL_EXEC, TaskKind, Tool, ToolContext, ToolOutput, ToolSet, ToolSpec,
+    UNIX_SIGNAL_NAMES, ZenkoError,
 };
+
+fn format_shell_exit_header(code: i32, command: &str) -> String {
+    let sig = code.checked_sub(POSIX_SIGNAL_EXIT_BASE).filter(|&s| s > 0 && s < 64);
+    match sig {
+        Some(s) => {
+            let name = UNIX_SIGNAL_NAMES
+                .iter()
+                .find(|(n, _)| *n == s)
+                .map(|(_, label)| *label)
+                .unwrap_or("SIGNAL");
+            let self_kill_hint = match s == 15
+                && command.contains("pkill")
+                && command.contains("-f")
+            {
+                true => " [hint: `pkill -f` matched and killed its own subshell command line; save background PID with `$!` and `kill $PID` instead]",
+                false => "",
+            };
+            format!("exit_code: {code} (terminated by signal {s}: {name}){self_kill_hint}")
+        }
+        None => format!("exit_code: {code}"),
+    }
+}
 
 pub struct ShellExecTool {
     jobs: Option<Arc<dyn JobSupervisor>>,
@@ -55,8 +78,9 @@ async fn format_completed_job(
         .read_job_output(&rec.id, Some(0), limit)
         .await?;
     let code = rec.exit_code.unwrap_or(-1);
+    let header = format_shell_exit_header(code, &rec.command);
     let body = match head_chunk.total_bytes > head_chunk.next_offset {
-        false => format!("exit_code: {code}\n{}", head_chunk.content),
+        false => format!("{header}\n{}", head_chunk.content),
         true => {
             // Codex-style Head (35%) + Tail (65%) preservation so compiler errors & test summaries
             // at the bottom of long logs are never chopped off!
@@ -77,7 +101,7 @@ async fn format_completed_job(
                 .total_bytes
                 .saturating_sub((head_part.len() + tail_part.len()) as u64);
             format!(
-                "exit_code: {code}\n{head_part}\n\n... [{omitted} bytes omitted; full log ({} bytes) at {} — use `job_read` to inspect] ...\n\n{tail_part}",
+                "{header}\n{head_part}\n\n... [{omitted} bytes omitted; full log ({} bytes) at {} — use `job_read` to inspect] ...\n\n{tail_part}",
                 head_chunk.total_bytes, rec.log_path
             )
         }
@@ -452,11 +476,21 @@ impl Tool for ShellExecTool {
             }
         };
 
+        #[cfg(unix)]
+        let code = {
+            use std::os::unix::process::ExitStatusExt as _;
+            output
+                .status
+                .code()
+                .or_else(|| output.status.signal().map(|sig| POSIX_SIGNAL_EXIT_BASE + sig))
+                .unwrap_or(-1)
+        };
+        #[cfg(not(unix))]
         let code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        let mut combined = format!("exit_code: {code}\n");
+        let mut combined = format!("{}\n", format_shell_exit_header(code, cmd_str));
         if !stdout.is_empty() {
             combined.push_str("--- stdout ---\n");
             combined.push_str(&stdout);
@@ -528,5 +562,16 @@ mod tests {
         assert!(escaped.is_err(), "cwd escape must be rejected by jail");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shell_exit_header_explains_sigterm_and_pkill_self_kill() {
+        let hdr = format_shell_exit_header(143, "python3 -m http.server 8899 &; pkill -f \"http.server 8899\"");
+        assert!(hdr.contains("exit_code: 143"));
+        assert!(hdr.contains("signal 15: SIGTERM"));
+        assert!(hdr.contains("pkill -f"));
+
+        let normal = format_shell_exit_header(2, "cargo test");
+        assert_eq!(normal, "exit_code: 2");
     }
 }

@@ -589,6 +589,13 @@ impl JobSupervisor for LocalJobSupervisor {
                 }
                 wait_res = child.wait() => match wait_res {
                     Ok(st) => {
+                        #[cfg(unix)]
+                        let code = {
+                            use std::os::unix::process::ExitStatusExt as _;
+                            st.code()
+                                .or_else(|| st.signal().map(|sig| zenko_core::POSIX_SIGNAL_EXIT_BASE + sig))
+                        };
+                        #[cfg(not(unix))]
                         let code = st.code();
                         let s = match st.success() {
                             true => BackgroundJobStatus::Completed,

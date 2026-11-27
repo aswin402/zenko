@@ -74,6 +74,17 @@ pub fn usable_input_window(context_window: u64, reserve_output_tokens: u32) -> u
         .max(COMPACTION_MIN_USABLE_INPUT_TOKENS.min(context_window as usize))
 }
 
+/// Computes the proactive compaction window by clamping ultra-large model windows (e.g. 1M–2M)
+/// to the active `ZMode` soft quality/economy ceiling while never exceeding `raw_context_window`.
+/// Physical hard-overflow recovery still uses `raw_context_window`.
+#[inline]
+pub fn effective_compaction_window(raw_context_window: u64, soft_cap: u64) -> u64 {
+    match soft_cap > 0 {
+        true => raw_context_window.min(soft_cap),
+        false => raw_context_window,
+    }
+}
+
 /// Updates a session's EMA bytes-per-token calibration from live provider `usage.prompt_tokens`.
 pub fn calibrate_bytes_per_token(
     current_bpt: f64,
@@ -2057,5 +2068,18 @@ mod tests {
         let sum = build_abandoned_branch_summary(&[&e1, &e2]).expect("branch summary");
         assert!(sum.contains("modified: src/app.rs"));
         assert!(sum.contains("hash_edit ERR"));
+    }
+
+    #[test]
+    fn effective_compaction_window_clamps_million_token_models_without_shrinking_small_windows() {
+        assert_eq!(
+            effective_compaction_window(1_000_000, zenko_core::ZMODE_BALANCED_COMPACTION_WINDOW_CAP),
+            128_000
+        );
+        assert_eq!(
+            effective_compaction_window(64_000, zenko_core::ZMODE_BALANCED_COMPACTION_WINDOW_CAP),
+            64_000
+        );
+        assert_eq!(effective_compaction_window(1_000_000, 0), 1_000_000);
     }
 }
