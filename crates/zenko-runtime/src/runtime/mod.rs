@@ -1795,10 +1795,46 @@ impl AgentRuntime {
         ))
     }
 
-    pub fn execute_zpowers_action(
-        &self,
+    async fn capture_review_git_diff(workspace_dir: &Path) -> String {
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.args(["diff", "HEAD"])
+            .current_dir(workspace_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        let diff_out = match cmd.output().await {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+            _ => String::new(),
+        };
+        let mut st_cmd = tokio::process::Command::new("git");
+        st_cmd
+            .args(["status", "--short"])
+            .current_dir(workspace_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        st_cmd.env("GIT_TERMINAL_PROMPT", "0");
+        let status_out = match st_cmd.output().await {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+            _ => String::new(),
+        };
+        let combined = match (status_out.trim().is_empty(), diff_out.trim().is_empty()) {
+            (true, true) => "(No uncommitted git changes detected.)".to_string(),
+            (false, true) => format!("Git status:\n{}", status_out.trim()),
+            (true, false) => diff_out,
+            (false, false) => format!("Git status:\n{}\n\nGit diff HEAD:\n{}", status_out.trim(), diff_out),
+        };
+        compact_preview(&combined, zenko_core::ZPOWERS_REVIEW_DIFF_MAX_CHARS)
+    }
+
+    pub async fn execute_zpowers_action(
+        self: &Arc<Self>,
         ctx: &ToolContext,
         req: zenko_core::ZPowersActionRequest,
+        cancel: CancellationToken,
     ) -> Result<ToolOutput> {
         let cfg = self.config();
         let zp_cfg = &cfg.orchestrator.zpowers;
@@ -1862,6 +1898,25 @@ impl AgentRuntime {
                     content,
                     zp_cfg,
                 )?;
+                let mut parsed_tasks = crate::zpowers::parse_markdown_plan_tasks(&root_sid, content);
+                let synced_count = match !parsed_tasks.is_empty()
+                    && crate::orchestrator::validate_and_normalize_session_tasks(&mut parsed_tasks)
+                        .is_ok()
+                    && self
+                        .store
+                        .replace_session_tasks(&root_sid, &parsed_tasks)
+                        .is_ok()
+                {
+                    true => {
+                        let count = parsed_tasks.len();
+                        self.emit(AgentEvent::SessionTasksUpdated {
+                            session_id: root_sid.clone(),
+                            tasks: parsed_tasks,
+                        });
+                        count
+                    }
+                    false => 0,
+                };
                 let rel = path
                     .strip_prefix(&ws)
                     .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -1870,10 +1925,18 @@ impl AgentRuntime {
                     session_id: root_sid,
                     stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
                     tier: zenko_core::ExecutionTier::Orchestrated,
-                    detail: format!("Recorded implementation plan -> `{rel}` (phase={})", state.phase.as_str()),
+                    detail: format!(
+                        "Recorded implementation plan -> `{rel}` ({synced_count} live todo(s), phase={})",
+                        state.phase.as_str()
+                    ),
                     model: None,
                 });
-                Ok(ToolOutput::ok(format!("Saved ZPowers plan to `{rel}`.")))
+                Ok(ToolOutput::ok(match synced_count > 0 {
+                    true => format!(
+                        "Saved ZPowers plan to `{rel}` and synced {synced_count} live todo item(s) to the session Task DAG."
+                    ),
+                    false => format!("Saved ZPowers plan to `{rel}`."),
+                }))
             }
             zenko_core::ZPowersAction::LogDebug => {
                 let hyp = req.hypothesis.as_deref().unwrap_or("");
@@ -1952,6 +2015,127 @@ impl AgentRuntime {
                     receipt.stage.as_str(),
                     receipt.number,
                     receipt.verdict.as_str()
+                )))
+            }
+            zenko_core::ZPowersAction::RunReview => {
+                if ctx.session_id != root_sid {
+                    return Ok(ToolOutput::err(
+                        "`zpowers(action=\"run_review\")` must be invoked by the root orchestrator; subagents should use `record_review`.",
+                    ));
+                }
+                if cancel.is_cancelled() {
+                    return Err(ZenkoError::Cancelled);
+                }
+                let zp_dir = crate::zpowers::zpowers_dir(&ws, &root_sid);
+                let spec_txt = std::fs::read_to_string(zp_dir.join(zenko_core::ZPOWERS_SPEC_FILE))
+                    .ok()
+                    .map(|s| compact_preview(&s, zenko_core::ZPOWERS_REVIEW_CONTEXT_MAX_CHARS))
+                    .unwrap_or_default();
+                let plan_txt = std::fs::read_to_string(zp_dir.join(zenko_core::ZPOWERS_PLAN_FILE))
+                    .ok()
+                    .map(|s| compact_preview(&s, zenko_core::ZPOWERS_REVIEW_CONTEXT_MAX_CHARS))
+                    .unwrap_or_default();
+                let diff_txt = Self::capture_review_git_diff(&ws).await;
+                let stages: Vec<zenko_core::ZPowersReviewStage> = match req.stage {
+                    Some(s) => vec![s],
+                    None => vec![
+                        zenko_core::ZPowersReviewStage::Spec,
+                        zenko_core::ZPowersReviewStage::Quality,
+                    ],
+                };
+
+                let mut stage_summaries: Vec<String> = Vec::with_capacity(stages.len());
+                for stage in stages {
+                    if cancel.is_cancelled() {
+                        return Err(ZenkoError::Cancelled);
+                    }
+                    let goal = match stage {
+                        zenko_core::ZPowersReviewStage::Spec => {
+                            zenko_core::ZPOWERS_REVIEW_PROMPT_SPEC.to_string()
+                        }
+                        zenko_core::ZPowersReviewStage::Quality => {
+                            zenko_core::ZPOWERS_REVIEW_PROMPT_QUALITY.to_string()
+                        }
+                    };
+                    let mut context_parts: Vec<String> = Vec::new();
+                    if !spec_txt.is_empty() {
+                        context_parts.push(format!("=== Session Spec (`spec.md`) ===\n{spec_txt}"));
+                    }
+                    if !plan_txt.is_empty() {
+                        context_parts.push(format!("=== Session Plan (`plan.md`) ===\n{plan_txt}"));
+                    }
+                    if let Some(ref extra) = req.summary
+                        && !extra.trim().is_empty()
+                    {
+                        context_parts.push(format!("=== Review Focus ===\n{}", extra.trim()));
+                    }
+                    context_parts.push(format!("=== Live Workspace Diff ===\n{diff_txt}"));
+
+                    let spawn_req = SubagentSpawnRequest {
+                        parent_session_id: root_sid.clone(),
+                        role: zenko_core::ZPOWERS_REVIEW_ROLE_ID.to_string(),
+                        goal,
+                        context: Some(context_parts.join("\n\n")),
+                        run_in_background: false,
+                        workspace_mode: Some(SubagentWorkspaceMode::Inherit),
+                        output_schema: None,
+                        model_override: None,
+                        fork_context: false,
+                        include_uncommitted: false,
+                        max_duration_secs: None,
+                        max_cost_usd: None,
+                        custom_directive: None,
+                        cognitive_tier: None,
+                        read_only: Some(true),
+                        tool_subset: Vec::new(),
+                    };
+                    let rec = self.subagents.spawn_agent(self, spawn_req).await?;
+                    let raw_report = rec
+                        .summary
+                        .unwrap_or_else(|| "Reviewer subagent returned no summary.".to_string());
+                    let verdict = crate::zpowers::parse_review_verdict_from_report(&raw_report);
+                    let findings = crate::zpowers::extract_review_findings(&raw_report);
+                    let (path, receipt, _state) = crate::zpowers::record_review(
+                        &ws,
+                        &root_sid,
+                        &title,
+                        parent_id.as_deref(),
+                        stage,
+                        verdict,
+                        &raw_report,
+                        &findings,
+                        zp_cfg,
+                    )?;
+                    let rel = path
+                        .strip_prefix(&ws)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|_| path.display().to_string());
+                    self.emit(AgentEvent::OrchestratorUpdated {
+                        session_id: root_sid.clone(),
+                        stage: zenko_core::ORCH_STAGE_ZPOWERS.into(),
+                        tier: zenko_core::ExecutionTier::Orchestrated,
+                        detail: format!(
+                            "Independent {} review #{} -> {} (`{rel}`)",
+                            receipt.stage.as_str(),
+                            receipt.number,
+                            receipt.verdict.as_str()
+                        ),
+                        model: None,
+                    });
+                    stage_summaries.push(format!(
+                        "- Stage `{}` (#{} -> `{}` saved at `{rel}`): {}",
+                        receipt.stage.as_str(),
+                        receipt.number,
+                        receipt.verdict.as_str(),
+                        compact_preview(&raw_report, 420)
+                    ));
+                    if verdict == zenko_core::ZPowersReviewVerdict::Blocked {
+                        break;
+                    }
+                }
+                Ok(ToolOutput::ok(format!(
+                    "Completed independent fresh-subagent ZPowers review:\n{}",
+                    stage_summaries.join("\n")
                 )))
             }
             zenko_core::ZPowersAction::WriteWalkthrough => {

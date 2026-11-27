@@ -4,6 +4,25 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.48] - 2026-11-27
+
+Completed full sovereign **ZPowers** parity with `obra/superpowers` — closing all 5 plan-first / live-todo enforcement gaps using purely state-driven orchestration (zero turn-number hardcoding, zero regex, zero `else if` ladders) plus bidirectional `plan.md <-> session_tasks` syncing, fresh-subagent two-stage `run_review`, and the full 12-skill ZPowers playbook library.
+
+### Added
+- **Bidirectional `plan.md <-> session_tasks` Live Todo Sync (`crates/zenko-runtime/src/{zpowers,runtime/mod,runtime/turn}.rs`):**
+  - Added deterministic zero-regex `parse_markdown_plan_tasks` parser converting Markdown checkboxes (`- [ ]`, `- [/]`, `- [x]`, `- [!]`, indented `Scope:`/`Verify:`, optional `*(depends on: ...)*`, or numbered task fallback) into normalized SQLite `SessionTask` nodes and broadcasting `AgentEvent::SessionTasksUpdated` whenever `zpowers(action="write_plan")` runs.
+  - Whichever planning tool the orchestrator chooses (`plan_update`, `session_task`, or `zpowers.write_plan`), `.zenko/sessions/<id>/zpowers/plan.md`, SQLite `session_tasks`, `ExecutionGuard.active_plan`, and WebUI Tasks stay unified as one single source of truth.
+- **Independent Fresh-Subagent Two-Stage Review (`zpowers(action="run_review")`, `crates/zenko-runtime/src/runtime/mod.rs`, `crates/zenko-tools/src/zpowers_tool.rs`):**
+  - Spawns fresh, isolated read-only `critic` subagents for Stage 1 (**Spec Compliance** against `spec.md`/`plan.md` + live `git diff HEAD`) and Stage 2 (**Code Quality & Minimalism**), deterministically parses `VERDICT:` + findings via `parse_review_verdict_from_report` / `extract_review_findings`, and persists numbered reports to `.zenko/sessions/<id>/zpowers/reviews/`.
+- **Full 12-Skill ZPowers Library & Sovereign Environment Bootstrap (`crates/zenko-core/src/{constants,registry}.rs`, `crates/zenko-memory/src/snapshot.rs`):**
+  - Added the 4 remaining pure-ASCII progressive skills (`using-zpowers.md`, `zpowers-parallel.md`, `zpowers-worktree.md`, `zpowers-write-skill.md`) for full `obra/superpowers` workflow coverage.
+  - Added centralized `ZPOWERS_ENVIRONMENT_POLICY` inside Tier-1 `<environment>` so the orchestrator understands ZPowers, unified todo tracking, and `fast_track` freedom upfront with zero KV-cache drift.
+
+### Fixed
+- **State-Driven Sovereign Plan-First & Todo Continuation Gates (`crates/zenko-runtime/src/orchestrator/guard.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Replaced turn-number / `short_trivial_turn` heuristics on workspace mutations with strictly state-driven readiness (`has_open_tasks` + prior workstream completion detection), eliminating stale `plan_recorded` / `fast_track` leaks into new tasks while keeping read-only Q&A zero-overhead.
+  - Centralized gate redirect bounds (`ZPOWERS_GUIDED_MAX_GATE_REDIRECTS`, `ZPOWERS_STRICT_MAX_GATE_REDIRECTS`, `ZPOWERS_STRICT_HANDOFF_MIN_FILES`) in `constants.rs` and enabled full progress-resetting todo continuation (`ORCH_MAX_PLAN_CONTINUATION_NUDGES`) so active todo checklists are systematically worked through to completion.
+
 ## [0.0.47] - 2026-11-27
 
 Introduced **ZPowers** — Zenko's native Rust plan-first orchestration workflow and per-session project workspace (`.zenko/sessions/<id>/zpowers/`), synthesizing the strongest patterns from `obra/superpowers`, Antigravity, Codex CLI, Crush, Hermes Agent, and Prime Agent with zero git pollution, zero hardcoding, zero `if/else` ladders, and zero regex.

@@ -26,12 +26,12 @@ use zenko_core::{
     ZENKO_PROJECT_LATEST_SESSION_FILE, ZENKO_PROJECT_SESSIONS_DIR, ZENKO_PROTECTED_PROJECT_SUBPATHS,
     ZENKO_SESSION_ARTIFACTS_DIR, ZENKO_SESSION_MANIFEST_FILE, ZENKO_SESSION_SCRATCH_DIR,
     ZENKO_SESSION_ZPOWERS_DIR, ZPOWERS_DEBUG_FILE, ZPOWERS_FAST_TRACK_REASON_MAX_CHARS,
-    ZPOWERS_MAX_DEBUG_ENTRIES, ZPOWERS_MAX_DOC_BYTES, ZPOWERS_MAX_REVIEWS, ZPOWERS_PLAN_FILE,
-    ZPOWERS_PROMOTE_ALLOWED_ROOTS, ZPOWERS_REVIEWS_DIR, ZPOWERS_SPEC_FILE, ZPOWERS_STATE_FILE,
-    ZPOWERS_WALKTHROUGH_FILE, ZPowersArtifactDoc, ZPowersConfig, ZPowersDebugEntry, ZPowersMode,
-    ZPowersPhase, ZPowersReviewReceipt, ZPowersReviewStage, ZPowersReviewVerdict,
-    ZPowersSessionView, ZPowersState, ZPowersVerificationReceipt, ZPowersWorkspaceManifest,
-    ZenkoError, compact_preview, new_id,
+    ZPOWERS_MAX_DEBUG_ENTRIES, ZPOWERS_MAX_DOC_BYTES, ZPOWERS_MAX_PARSED_PLAN_TASKS,
+    ZPOWERS_MAX_REVIEWS, ZPOWERS_PLAN_FILE, ZPOWERS_PROMOTE_ALLOWED_ROOTS, ZPOWERS_REVIEWS_DIR,
+    ZPOWERS_SPEC_FILE, ZPOWERS_STATE_FILE, ZPOWERS_WALKTHROUGH_FILE, ZPowersArtifactDoc,
+    ZPowersConfig, ZPowersDebugEntry, ZPowersMode, ZPowersPhase, ZPowersReviewReceipt,
+    ZPowersReviewStage, ZPowersReviewVerdict, ZPowersSessionView, ZPowersState,
+    ZPowersVerificationReceipt, ZPowersWorkspaceManifest, ZenkoError, compact_preview, new_id,
 };
 
 // ─── Path & Security Boundary Helpers ─────────────────────────────────────────
@@ -750,6 +750,246 @@ pub fn write_plan_doc(
     let plan_path = zpowers_dir(workspace_dir, session_id).join(ZPOWERS_PLAN_FILE);
     atomic_write_text(&plan_path, &rendered)?;
     Ok((plan_path, state))
+}
+
+const PLAN_CHECKBOX_PREFIXES: &[(&str, SessionTaskStatus)] = &[
+    ("- [ ] ", SessionTaskStatus::Pending),
+    ("* [ ] ", SessionTaskStatus::Pending),
+    ("- [/] ", SessionTaskStatus::InProgress),
+    ("* [/] ", SessionTaskStatus::InProgress),
+    ("- [x] ", SessionTaskStatus::Done),
+    ("- [X] ", SessionTaskStatus::Done),
+    ("* [x] ", SessionTaskStatus::Done),
+    ("* [X] ", SessionTaskStatus::Done),
+    ("- [!] ", SessionTaskStatus::Blocked),
+    ("* [!] ", SessionTaskStatus::Blocked),
+];
+
+fn strip_numbered_list_prefix(trimmed: &str) -> Option<&str> {
+    let bytes = trimmed.as_bytes();
+    let mut digits = 0usize;
+    while digits < bytes.len() && bytes[digits].is_ascii_digit() {
+        digits += 1;
+    }
+    if digits == 0 || digits + 1 >= bytes.len() {
+        return None;
+    }
+    match (bytes[digits], bytes[digits + 1]) {
+        (b'.' | b')', b' ') => Some(trimmed[digits + 2..].trim()),
+        _ => None,
+    }
+}
+
+fn split_optional_task_id_and_title(raw: &str, fallback_idx: usize) -> (String, String) {
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .strip_prefix("**`")
+        .and_then(|s| s.split_once("`**"))
+        .or_else(|| trimmed.strip_prefix('`').and_then(|s| s.split_once('`')));
+    match stripped {
+        Some((id_raw, rest)) => {
+            let clean_id: String = id_raw
+                .trim()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+                .take(40)
+                .collect();
+            let clean_title = rest
+                .trim()
+                .trim_start_matches(['—', '-', ':'])
+                .trim()
+                .to_string();
+            match (!clean_id.is_empty(), !clean_title.is_empty()) {
+                (true, true) => (clean_id, clean_title),
+                _ => (format!("plan_{}", fallback_idx + 1), trimmed.to_string()),
+            }
+        }
+        None => (format!("plan_{}", fallback_idx + 1), trimmed.to_string()),
+    }
+}
+
+fn extract_depends_on_suffix(title: &str) -> (String, Vec<String>) {
+    let lower = title.to_ascii_lowercase();
+    let marker = "*(depends on:";
+    let Some(pos) = lower.rfind(marker) else {
+        return (title.to_string(), Vec::new());
+    };
+    let head = title[..pos].trim().to_string();
+    let tail = title[pos + marker.len()..].trim();
+    let inner = tail
+        .strip_suffix(")*")
+        .or_else(|| tail.strip_suffix(')'))
+        .unwrap_or(tail);
+    let deps: Vec<String> = inner
+        .split(',')
+        .map(|d| d.trim().trim_matches('`').to_string())
+        .filter(|d| !d.is_empty())
+        .collect();
+    match head.is_empty() {
+        true => (title.to_string(), Vec::new()),
+        false => (head, deps),
+    }
+}
+
+/// Deterministic zero-regex Markdown plan parser converting `- [ ]` / `- [/]` / `- [x]`
+/// checklist items (or numbered task items as fallback) into live SQLite `SessionTask` nodes
+/// so `plan.md` and the live Todo DAG always share one single source of truth.
+pub fn parse_markdown_plan_tasks(session_id: &str, markdown: &str) -> Vec<SessionTask> {
+    let now = Utc::now();
+    let mut checkbox_tasks: Vec<SessionTask> = Vec::new();
+    let mut numbered_tasks: Vec<SessionTask> = Vec::new();
+    let mut in_fence = false;
+
+    for raw_line in markdown.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || trimmed.is_empty() {
+            continue;
+        }
+
+        let is_indented = raw_line.starts_with("  ") || raw_line.starts_with('\t');
+        if is_indented {
+            if let Some(last) = checkbox_tasks.last_mut().or_else(|| numbered_tasks.last_mut()) {
+                let verify_val = trimmed
+                    .strip_prefix("- Verify:")
+                    .or_else(|| trimmed.strip_prefix("Verify:"))
+                    .map(|s| s.trim().trim_matches('`').to_string())
+                    .filter(|s| !s.is_empty());
+                let scope_val = trimmed
+                    .strip_prefix("- Scope:")
+                    .or_else(|| trimmed.strip_prefix("Scope:"))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if let Some(v) = verify_val {
+                    last.verification_cmd = Some(v);
+                }
+                if let Some(s) = scope_val {
+                    last.description = s;
+                }
+            }
+            continue;
+        }
+
+        let matched_checkbox = PLAN_CHECKBOX_PREFIXES
+            .iter()
+            .find_map(|(pfx, status)| trimmed.strip_prefix(pfx).map(|rest| (rest, *status)));
+        if let Some((rest, status)) = matched_checkbox {
+            if checkbox_tasks.len() < ZPOWERS_MAX_PARSED_PLAN_TASKS {
+                let (id, raw_title) =
+                    split_optional_task_id_and_title(rest, checkbox_tasks.len());
+                let (title, depends_on) = extract_depends_on_suffix(&raw_title);
+                if !title.is_empty() {
+                    checkbox_tasks.push(SessionTask {
+                        id,
+                        session_id: session_id.to_string(),
+                        branch_event_id: None,
+                        title,
+                        description: String::new(),
+                        active_label: None,
+                        status,
+                        depends_on,
+                        owner_agent: None,
+                        verification_cmd: None,
+                        verification_evidence: None,
+                        notes: None,
+                        priority: 0,
+                        created_at: now,
+                        updated_at: now,
+                    });
+                }
+            }
+            continue;
+        }
+
+        if checkbox_tasks.is_empty()
+            && numbered_tasks.len() < ZPOWERS_MAX_PARSED_PLAN_TASKS
+            && let Some(rest) = strip_numbered_list_prefix(trimmed)
+        {
+            let (id, raw_title) = split_optional_task_id_and_title(rest, numbered_tasks.len());
+            let (title, depends_on) = extract_depends_on_suffix(&raw_title);
+            if !title.is_empty() {
+                numbered_tasks.push(SessionTask {
+                    id,
+                    session_id: session_id.to_string(),
+                    branch_event_id: None,
+                    title,
+                    description: String::new(),
+                    active_label: None,
+                    status: SessionTaskStatus::Pending,
+                    depends_on,
+                    owner_agent: None,
+                    verification_cmd: None,
+                    verification_evidence: None,
+                    notes: None,
+                    priority: 0,
+                    created_at: now,
+                    updated_at: now,
+                });
+            }
+        }
+    }
+
+    let mut chosen = match checkbox_tasks.is_empty() {
+        false => checkbox_tasks,
+        true => numbered_tasks,
+    };
+    let total = chosen.len() as i32;
+    let mut seen_ids: BTreeSet<String> = BTreeSet::new();
+    for (idx, task) in chosen.iter_mut().enumerate() {
+        if !seen_ids.insert(task.id.clone()) {
+            task.id = format!("plan_{}", idx + 1);
+            seen_ids.insert(task.id.clone());
+        }
+        task.priority = total - (idx as i32);
+    }
+    chosen
+}
+
+/// Deterministic zero-regex parser extracting `VERDICT: <approved|changes_requested|blocked>`
+/// from an independent reviewer subagent's report (defaults safely to `ChangesRequested`).
+pub fn parse_review_verdict_from_report(report: &str) -> ZPowersReviewVerdict {
+    for line in report.lines().rev() {
+        let cleaned = line
+            .trim()
+            .trim_matches(['*', '`', '_', '-', ' ']);
+        let lower = cleaned.to_ascii_lowercase();
+        if let Some(after) = lower.strip_prefix("verdict:") {
+            let token = after
+                .trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(['`', '*', '.', ',', ';']);
+            if let Some(verdict) = ZPowersReviewVerdict::parse(token) {
+                return verdict;
+            }
+        }
+    }
+    ZPowersReviewVerdict::ChangesRequested
+}
+
+/// Extracts concise actionable bullet lines from a reviewer subagent report (excluding `VERDICT:`).
+pub fn extract_review_findings(report: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in report.lines() {
+        let trimmed = raw.trim();
+        let bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "));
+        if let Some(item) = bullet {
+            let clean = item.trim();
+            if !clean.is_empty() && !clean.to_ascii_lowercase().starts_with("verdict:") {
+                out.push(compact_preview(clean, 240));
+                if out.len() >= 16 {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn render_debug_markdown(state: &ZPowersState, strike_limit: usize) -> String {
@@ -1476,5 +1716,48 @@ mod tests {
             .count();
         assert_eq!(remaining, 2);
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn markdown_plan_parser_and_review_verdict_parser_are_deterministic_without_regex() {
+        let md = r#"# Implementation Plan
+- [x] **`t1`** -- Design schema
+  - Scope: Add SQLite columns
+  - Verify: `cargo check -p zenko-core`
+- [/] **`t2`** -- Build engine *(depends on: t1)*
+  - Verify: `cargo test -p zenko-runtime`
+- [ ] Add WebUI badge
+```md
+- [ ] ignored inside fenced code block
+```
+"#;
+        let tasks = parse_markdown_plan_tasks("sess_1", md);
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].id, "t1");
+        assert_eq!(tasks[0].status, SessionTaskStatus::Done);
+        assert_eq!(tasks[0].verification_cmd.as_deref(), Some("cargo check -p zenko-core"));
+        assert_eq!(tasks[0].description, "Add SQLite columns");
+        assert_eq!(tasks[1].id, "t2");
+        assert_eq!(tasks[1].status, SessionTaskStatus::InProgress);
+        assert_eq!(tasks[1].depends_on, vec!["t1"]);
+        assert_eq!(tasks[2].status, SessionTaskStatus::Pending);
+        assert_eq!(tasks[2].title, "Add WebUI badge");
+
+        let numbered = "1. Inspect files\n2. Apply patch\n3. Run tests\n";
+        let n_tasks = parse_markdown_plan_tasks("sess_2", numbered);
+        assert_eq!(n_tasks.len(), 3);
+        assert_eq!(n_tasks[1].title, "Apply patch");
+
+        let report = "- Checked invariants\n- Zero unwrap in prod\n**VERDICT: approved**\n";
+        assert_eq!(
+            parse_review_verdict_from_report(report),
+            ZPowersReviewVerdict::Approved
+        );
+        assert_eq!(extract_review_findings(report).len(), 2);
+
+        assert_eq!(
+            parse_review_verdict_from_report("Some notes without explicit verdict"),
+            ZPowersReviewVerdict::ChangesRequested
+        );
     }
 }

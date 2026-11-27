@@ -781,9 +781,10 @@ impl zenko_core::ZPowersBridge for RuntimeZPowersBridge {
         &self,
         ctx: &ToolContext,
         req: zenko_core::ZPowersActionRequest,
+        cancel: CancellationToken,
     ) -> Result<ToolOutput> {
         let rt = self.upgrade()?;
-        rt.execute_zpowers_action(ctx, req)
+        rt.execute_zpowers_action(ctx, req, cancel).await
     }
 
     fn inspect_session_zpowers(

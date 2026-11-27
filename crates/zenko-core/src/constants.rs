@@ -2161,6 +2161,7 @@ pub const ZPOWERS_ACTIONS: &[&str] = &[
     "write_plan",
     "log_debug",
     "record_review",
+    "run_review",
     "write_walkthrough",
     "fast_track",
     "promote",
@@ -2186,7 +2187,17 @@ pub const ZPOWERS_DEFAULT_DEBUG_STRIKE_LIMIT: usize = 3;
 pub const ZPOWERS_MAX_DOC_BYTES: usize = 64 * 1024;
 pub const ZPOWERS_MAX_REVIEWS: usize = 16;
 pub const ZPOWERS_MAX_DEBUG_ENTRIES: usize = 24;
+pub const ZPOWERS_MAX_PARSED_PLAN_TASKS: usize = 32;
 pub const ZPOWERS_FAST_TRACK_REASON_MAX_CHARS: usize = 200;
+pub const ZPOWERS_GUIDED_MAX_GATE_REDIRECTS: usize = 2;
+pub const ZPOWERS_STRICT_MAX_GATE_REDIRECTS: usize = 3;
+pub const ZPOWERS_STRICT_HANDOFF_MIN_FILES: usize = 2;
+pub const ZPOWERS_REVIEW_DIFF_MAX_CHARS: usize = 16_000;
+pub const ZPOWERS_REVIEW_CONTEXT_MAX_CHARS: usize = 8_000;
+pub const ZPOWERS_REVIEW_ROLE_ID: &str = "critic";
+pub const ZPOWERS_REVIEW_PROMPT_SPEC: &str = "Stage-1 Spec Compliance Review (independent read-only audit): Compare the live workspace diff strictly against the session design spec and implementation plan. Verify every requirement, invariant, and edge case is implemented with nothing missing and no unintended scope drift. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
+pub const ZPOWERS_REVIEW_PROMPT_QUALITY: &str = "Stage-2 Code Quality & Minimalism Review (independent read-only audit): Inspect the live workspace diff for correctness, safety, error handling, zero hardcoding, zero regex/if-else bloat, concurrency bugs, and architectural simplicity. Run `code_minimalism(action=\"audit_diff\")` if helpful. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
+pub const ZPOWERS_ENVIRONMENT_POLICY: &str = "zpowers_workflow: You own strategy dynamically with full freedom (no rigid turn rules). Answer questions or explore directly with zero ceremony; before mutating workspace code on a new task, decide whether to frame a spec (`record_brainstorm`/`zpowers.write_spec`), create a bite-sized plan + live todo checklist (`plan_update`, `session_task`, or `zpowers.write_plan` -- all bidirectionally synced to `.zenko/sessions/<id>/zpowers/plan.md` and the live Todo DAG), or explicitly `zpowers.fast_track` for a tiny surgical fix. Work through your todo items step-by-step marking each done with fresh post-edit verification evidence, use `zpowers.run_review` for independent fresh-subagent two-stage review on substantial changes, and load any `using-zpowers` / `zpowers-*` skill via `skill_view` whenever helpful.";
 
 /// Returns `true` only for `zpowers` actions that mutate tracked workspace files outside
 /// `.zenko/sessions/<id>/` (currently `promote`). Planning/spec/review writes inside the

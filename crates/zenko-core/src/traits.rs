@@ -435,6 +435,7 @@ pub trait ZPowersBridge: Send + Sync {
         &self,
         ctx: &ToolContext,
         req: crate::types::ZPowersActionRequest,
+        cancel: CancellationToken,
     ) -> Result<ToolOutput>;
 
     fn inspect_session_zpowers(

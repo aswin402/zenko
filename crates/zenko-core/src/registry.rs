@@ -1000,6 +1000,17 @@ enabled: true\n\
 - For multi-file or multi-crate migration campaigns (Fleetshift discipline), follow the 4-stage loop: (1) scope exact targets via `code_search`/`glob_find`, (2) preview via `code_refactor(..., dry_run=true)`, (3) apply atomically or inside isolated worktrees, and (4) verify via `git_tool(action=\"diff\", structural=true)` plus targeted tests.\n",
     },
     DefaultSkillTemplate {
+        filename: "using-zpowers.md",
+        content: "---\n\
+name: Using ZPowers\n\
+description: Sovereign orchestration bootstrap guiding when to answer directly vs run ZPowers spec, bite-sized todo planning, TDD, debugging, independent two-stage review, and verification.\n\
+enabled: true\n\
+---\n\n\
+- You decide dynamically with full freedom: answer read-only questions immediately without ceremony; before editing workspace code for a task, choose either a bite-sized plan + todo checklist (`plan_update`, `session_task`, or `zpowers(action=\"write_plan\")`) or `zpowers(action=\"fast_track\")` for a tiny surgical fix.\n\
+- Every session's working artifacts live cleanly in `.zenko/sessions/<id>/zpowers/` (auto-excluded from git via `.git/info/exclude`), and `plan.md` stays bidirectionally synced with the live SQLite Todo DAG.\n\
+- Load focused playbooks on demand via `skill_view`: `zpowers-brainstorm` (design), `zpowers-plan` (DAG decomposition), `zpowers-execute` (subagent execution), `zpowers-parallel` (independent parallel workers), `zpowers-worktree` (isolated git worktrees), `zpowers-tdd` (Red-Green-Refactor), `zpowers-debug` (3-strike root cause), `zpowers-review` (two-stage review via `zpowers.run_review`), `zpowers-verify` (Iron Law), `zpowers-finish` (clean delivery), `zpowers-write-skill` (authoring new skills).\n",
+    },
+    DefaultSkillTemplate {
         filename: "zpowers-brainstorm.md",
         content: "---\n\
 name: ZPowers Brainstorm & Spec\n\
@@ -1092,6 +1103,39 @@ enabled: true\n\
 - Inspect `git_tool(action=\"status\")` and `git_tool(action=\"diff\")` to confirm `.zenko/sessions/` is excluded and zero unintended files or debug leftovers are staged.\n\
 - Write `.zenko/sessions/<id>/zpowers/walkthrough.md` (and optionally `promote` durable specs to `docs/` or `knowledge/` only if requested).\n\
 - For worktree subagents, inspect `agent_worktree(action=\"diff\")` and cleanly merge or discard; never force-push or commit without explicit user intent.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-parallel.md",
+        content: "---\n\
+name: ZPowers Dispatching Parallel Agents\n\
+description: Split 2+ independent failures, subsystems, or research tracks into concurrent scoped subagents without file-write conflicts.\n\
+enabled: true\n\
+---\n\n\
+- Use parallel dispatch ONLY when sub-problems have independent root causes or disjoint file ownership; keep tightly coupled sequential work in one stream.\n\
+- Define crisp boundaries per subagent: exact target paths, explicit invariant to verify, and whether it runs read-only (`explorer`, `researcher`, `critic`) or isolated (`coder` in `agent_worktree`).\n\
+- Spawn independent workers in one wave (`run_in_background=true`), await completion cleanly with `agent_wait(wait_all=true)`, review every diff, and run a unified integration verification check after merging.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-worktree.md",
+        content: "---\n\
+name: ZPowers Git Worktree Isolation\n\
+description: Create isolated git worktrees for risky or parallel feature work, verify a clean baseline before editing, and merge or discard cleanly.\n\
+enabled: true\n\
+---\n\n\
+- Use isolated worktrees (`spawn_agent(role=\"coder\", workspace_mode=\"worktree\")`) for parallel coding tasks or refactors that should not disturb the parent working tree.\n\
+- Verify the workspace ignores `.zenko/sessions/` (auto-handled via `.git/info/exclude`) and run a fast baseline build/test check before starting edits so pre-existing failures are never confused with new regressions.\n\
+- Before integrating, inspect `agent_worktree(action=\"diff\")`, verify tests pass inside the worktree, then merge (`agent_worktree(action=\"merge\", cleanup=true)`) or discard cleanly.\n",
+    },
+    DefaultSkillTemplate {
+        filename: "zpowers-write-skill.md",
+        content: "---\n\
+name: ZPowers Writing Skills\n\
+description: Test-driven authoring and maintenance of reusable Zenko skills via skill_manage with crisp triggers, pure-ASCII formatting, and zero bloat.\n\
+enabled: true\n\
+---\n\n\
+- Create a new skill only for repeatable workflows or non-obvious domain traps that recur across sessions (never one-off task notes).\n\
+- Keep the YAML frontmatter description laser-focused on WHEN to load the skill so progressive discovery selects it accurately.\n\
+- Write concise, concrete, pure-ASCII procedural rules citing exact Zenko tools; save/update via `invoke_tool(tool=\"skill_manage\", ...)` and verify trigger clarity and size discipline before finalizing.\n",
     },
 ];
 

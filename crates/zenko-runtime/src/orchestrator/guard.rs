@@ -22,7 +22,9 @@ use zenko_core::{
     TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, TOOL_ZPOWERS,
     VERIFICATION_CMD_PREFIXES, VERIFICATION_SHELL_TOOLS, VERIFICATION_SPOOF_FLAGS_CI,
     VERIFICATION_SPOOF_FLAGS_EXACT, WorktreeAction, ZPOWERS_DEFAULT_DEBUG_STRIKE_LIMIT,
-    ZPowersAction, ZPowersMode, ZPowersState, compact_preview, find_subagent_role,
+    ZPOWERS_GUIDED_MAX_GATE_REDIRECTS, ZPOWERS_STRICT_HANDOFF_MIN_FILES,
+    ZPOWERS_STRICT_MAX_GATE_REDIRECTS, ZPowersAction, ZPowersMode, ZPowersPhase, ZPowersState,
+    compact_preview, find_subagent_role,
     is_brain_tool_args_mutating, is_code_refactor_args_mutating, is_economy_args_mutating,
     is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
     is_memory_mutating_action, is_skill_manage_args_mutating, is_zpowers_args_mutating,
@@ -224,7 +226,6 @@ pub struct ExecutionGuard {
     total_tool_calls: usize,
     total_tool_errors: usize,
     zpowers_mode: ZPowersMode,
-    short_trivial_turn: bool,
     fast_track_reason: Option<String>,
     debug_strike_limit: usize,
     zpowers_debug_triggered: bool,
@@ -251,34 +252,44 @@ impl ExecutionGuard {
     }
 
     /// Configures ZPowers enforcement mode and hydrates persisted session-level progress
-    /// (`spec.md`, `plan.md`, `fast_track`, `reviews`, `walkthrough`) so multi-turn tasks
-    /// never re-trigger the plan-first gate once a plan is already recorded.
+    /// purely from live workstream state (zero hardcoded turn-number rules):
+    /// - When open todo tasks exist (`has_open_tasks == true`) or a freshly recorded plan has
+    ///   not yet started mutating files (e.g., Plan Mode -> Execute), `plan_recorded` carries over.
+    /// - When a prior workstream already finished (`Done`, mutated & closed all todos, or prior
+    ///   `fast_track`), planning readiness resets cleanly so the orchestrator decides fresh.
     pub fn configure_zpowers(
         &mut self,
         mode: ZPowersMode,
-        short_trivial_turn: bool,
+        has_open_tasks: bool,
         strike_limit: usize,
         workspace_dir: std::path::PathBuf,
         session_id: String,
         state: &ZPowersState,
     ) {
         self.zpowers_mode = mode;
-        self.short_trivial_turn = short_trivial_turn;
         self.debug_strike_limit = strike_limit.max(1);
         self.workspace_dir = Some(workspace_dir);
         self.active_session_id = Some(session_id);
-        if state.spec_recorded {
-            self.brainstorm_recorded = true;
-        }
-        if state.plan_recorded {
-            self.plan_recorded = true;
-            self.read_or_planned = true;
-        }
-        if state.fast_track_reason.is_some() {
-            self.fast_track_reason = state.fast_track_reason.clone();
+
+        let prior_workstream_finished = !has_open_tasks
+            && (state.phase == ZPowersPhase::Done
+                || state.fast_track_reason.is_some()
+                || !state.mutated_files.is_empty());
+
+        if !prior_workstream_finished {
+            if state.spec_recorded {
+                self.brainstorm_recorded = true;
+            }
+            if has_open_tasks || state.plan_recorded {
+                self.plan_recorded = true;
+                self.read_or_planned = true;
+            }
         }
         self.reviews_recorded = state.reviews.len();
-        self.walkthrough_recorded = state.walkthrough_recorded;
+        self.walkthrough_recorded = match prior_workstream_finished {
+            true => false,
+            false => state.walkthrough_recorded,
+        };
     }
 
     pub fn zpowers_debug_triggered(&self) -> bool {
@@ -375,13 +386,13 @@ impl ExecutionGuard {
         }
     }
 
-    /// ZPowers Plan-First Pre-Tool Gate:
-    /// - Never interrupts trivial/read-only turns, `Off`/`Advisory` mode, or writes into the
-    ///   session's own `.zenko/sessions/<id>/` folder.
-    /// - In `Guided` mode: redirects the first premature workspace mutation once until a bite-sized
-    ///   plan (`plan_update` / `session_task` / `zpowers.write_plan`) or explicit `zpowers.fast_track`
-    ///   is recorded.
-    /// - In `Strict` mode: requires `spec.md` (on non-fast deliberation) and `plan.md` before code edits.
+    /// ZPowers Sovereign Plan-First Pre-Tool Gate (purely state-driven; zero turn-number rules):
+    /// - Read-only Q&A, exploration, planning, verification, and writes inside the session's own
+    ///   `.zenko/sessions/<id>/` folder ALWAYS pass through with zero overhead.
+    /// - Before mutating workspace code when no active plan/todo exists (and no `fast_track`
+    ///   was declared), redirects cleanly so the orchestrator itself decides: either create a
+    ///   bite-sized plan + todo checklist (`plan_update` / `session_task` / `zpowers.write_plan`)
+    ///   or explicitly declare `zpowers.fast_track` for a tiny surgical fix.
     pub fn check_pre_tool_phase_gate(
         &self,
         enabled: bool,
@@ -389,7 +400,6 @@ impl ExecutionGuard {
         arguments: &Value,
     ) -> PhaseGateDecision {
         if !enabled
-            || self.short_trivial_turn
             || self.fast_track_reason.is_some()
             || matches!(self.zpowers_mode, ZPowersMode::Off | ZPowersMode::Advisory)
         {
@@ -411,16 +421,19 @@ impl ExecutionGuard {
 
         match self.zpowers_mode {
             ZPowersMode::Off | ZPowersMode::Advisory => PhaseGateDecision::Allow,
-            ZPowersMode::Guided => match !self.plan_recorded && self.phase_gate_nudges == 0 {
+            ZPowersMode::Guided => match !self.plan_recorded
+                && self.phase_gate_nudges < ZPOWERS_GUIDED_MAX_GATE_REDIRECTS
+            {
                 true => PhaseGateDecision::Redirect {
                     stage: ORCH_STAGE_PHASE_GATE,
                     reason: format!(
-                        "ZPowers plan-first gate: record a bite-sized plan before editing (`{tool_name}`)"
+                        "ZPowers plan-first gate: create a plan/todo checklist or declare `fast_track` before editing (`{tool_name}`)"
                     ),
                     hint: format!(
                         "<orchestrator_hint type=\"zpowers_plan_first\">\n\
-                         ZPowers Plan-First Gate: before modifying workspace files, inspect the relevant files and record a concise bite-sized plan via `plan_update`, `session_task`, or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_plan\",...}})` (auto-saved to `{zp_dir}/plan.md`).\n\
-                         If this is genuinely a tiny 1-line surgical edit, call `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"fast_track\",\"reason\":\"...\"}})` to proceed immediately.\n\
+                         ZPowers Plan-First Gate: before modifying workspace files, decide your approach and either:\n\
+                         1. Record a bite-sized plan + live todo list via `plan_update`, `session_task`, or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_plan\",...}})` (all bidirectionally synced to `{zp_dir}/plan.md` and the live Todo DAG), OR\n\
+                         2. If you judge this edit genuinely trivial/surgical, call `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"fast_track\",\"reason\":\"...\"}})` to proceed immediately.\n\
                          </orchestrator_hint>"
                     ),
                 },
@@ -429,7 +442,7 @@ impl ExecutionGuard {
             ZPowersMode::Strict => match (
                 self.deliberation == DeliberationDepth::Deliberate && !self.brainstorm_recorded,
                 !self.plan_recorded,
-                self.phase_gate_nudges < 2,
+                self.phase_gate_nudges < ZPOWERS_STRICT_MAX_GATE_REDIRECTS,
             ) {
                 (true, _, true) => PhaseGateDecision::Redirect {
                     stage: ORCH_STAGE_PHASE_GATE,
@@ -438,18 +451,18 @@ impl ExecutionGuard {
                     ),
                     hint: format!(
                         "<orchestrator_hint type=\"zpowers_spec_first\">\n\
-                         ZPowers Strict Gate: record a concise design spec first via `record_brainstorm` or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_spec\",...}})` (saved to `{zp_dir}/spec.md`), then create a bite-sized plan in `{zp_dir}/plan.md`.\n\
+                         ZPowers Strict Gate: record a concise design spec first via `record_brainstorm` or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_spec\",...}})` (saved to `{zp_dir}/spec.md`), then create a bite-sized todo plan in `{zp_dir}/plan.md`.\n\
                          </orchestrator_hint>"
                     ),
                 },
                 (false, true, true) => PhaseGateDecision::Redirect {
                     stage: ORCH_STAGE_PHASE_GATE,
                     reason: format!(
-                        "ZPowers strict plan gate: record an implementation plan before editing (`{tool_name}`)"
+                        "ZPowers strict plan gate: record an implementation plan/todo checklist before editing (`{tool_name}`)"
                     ),
                     hint: format!(
                         "<orchestrator_hint type=\"zpowers_plan_first\">\n\
-                         ZPowers Strict Gate: translate your spec into bite-sized DAG tasks via `plan_update`, `session_task`, or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_plan\",...}})` (saved to `{zp_dir}/plan.md`) before modifying files.\n\
+                         ZPowers Strict Gate: translate your spec into bite-sized DAG todos via `plan_update`, `session_task`, or `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"write_plan\",...}})` (synced to `{zp_dir}/plan.md` and live Todo DAG) before modifying files.\n\
                          </orchestrator_hint>"
                     ),
                 },
@@ -555,7 +568,7 @@ impl ExecutionGuard {
                                 .unwrap_or("fast_track");
                             self.fast_track_reason = Some(reason.to_string());
                         }
-                        Some(ZPowersAction::RecordReview) => {
+                        Some(ZPowersAction::RecordReview | ZPowersAction::RunReview) => {
                             self.reviews_recorded = self.reviews_recorded.saturating_add(1);
                         }
                         Some(ZPowersAction::WriteWalkthrough) => {
@@ -1010,11 +1023,12 @@ impl ExecutionGuard {
             return None;
         }
 
+        let iron_law_enforced = matches!(self.zpowers_mode, ZPowersMode::Guided | ZPowersMode::Strict);
         let needs_verify = !self.mutated_files.is_empty()
             && !self.verification_ran
             && self.verify_nudges == 0;
         let needs_strict_handoff = self.zpowers_mode == ZPowersMode::Strict
-            && self.mutated_files.len() >= 2
+            && self.mutated_files.len() >= ZPOWERS_STRICT_HANDOFF_MIN_FILES
             && self.verification_ran
             && !self.walkthrough_recorded
             && self.verify_nudges < 2;
@@ -1028,15 +1042,18 @@ impl ExecutionGuard {
                     .collect()
             })
             .unwrap_or_default();
+        let local_plan_nudge_cap = match iron_law_enforced {
+            true => ORCH_MAX_PLAN_CONTINUATION_NUDGES,
+            false => ORCH_MAX_PLAN_CONTINUATION_NUDGES.min(1),
+        };
         let needs_plan_continue = !unfinished_plan.is_empty()
-            && self.plan_nudges < ORCH_MAX_PLAN_CONTINUATION_NUDGES.min(1)
+            && self.plan_nudges < local_plan_nudge_cap
             && self.total_continuation_nudges < ORCH_MAX_TOTAL_CONTINUATION_NUDGES;
 
         let fail_note = match self.last_verification_failed {
-            true => " Your last verification command FAILED — fix the root cause and re-run verification before claiming completion.",
+            true => " Your last verification command FAILED -- fix the root cause and re-run verification before claiming completion.",
             false => "",
         };
-        let iron_law_enforced = matches!(self.zpowers_mode, ZPowersMode::Guided | ZPowersMode::Strict);
 
         match (needs_verify, needs_plan_continue, needs_strict_handoff) {
             (false, false, false) => {
@@ -1047,7 +1064,7 @@ impl ExecutionGuard {
                 self.verify_nudges += 1;
                 Some(format!(
                     "<orchestrator_hint type=\"zpowers_strict_handoff\">\n\
-                     ZPowers Strict Gate: {} files were modified and verified. Before concluding, record your two-stage review (`{TOOL_ZPOWERS}(action=\"record_review\")`) and final handoff (`{TOOL_ZPOWERS}(action=\"write_walkthrough\")`).\n\
+                     ZPowers Strict Gate: {} files were modified and verified. Before concluding, run independent two-stage review (`{TOOL_ZPOWERS}(action=\"run_review\")` or `record_review`) and write the final handoff (`{TOOL_ZPOWERS}(action=\"write_walkthrough\")`).\n\
                      </orchestrator_hint>",
                     self.mutated_files.len()
                 ))
@@ -2064,7 +2081,7 @@ mod tests {
     }
 
     #[test]
-    fn zpowers_strict_enforces_spec_then_plan_and_trivial_turns_bypass_gates() {
+    fn zpowers_strict_and_state_driven_workstream_reset_work_without_turn_hardcoding() {
         let ws = std::env::temp_dir().join("zenko_guard_zp_strict");
         let mut strict = ExecutionGuard::new(
             ExecutionTier::Orchestrated,
@@ -2080,7 +2097,13 @@ mod tests {
             &ZPowersState::new("sess_s", ZPowersMode::Strict),
         );
 
-        // Strict mode asks for spec first on non-fast tasks
+        // Read-only recon always passes immediately with zero ceremony
+        assert_eq!(
+            strict.check_pre_tool_phase_gate(true, "read_file", &json!({"path": "src/a.rs"})),
+            PhaseGateDecision::Allow
+        );
+
+        // Strict mode asks for spec first on deliberate tasks
         assert!(matches!(
             strict.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
             PhaseGateDecision::Redirect { ref hint, .. } if hint.contains("zpowers_spec_first")
@@ -2092,7 +2115,7 @@ mod tests {
             "saved spec",
             None,
         );
-        // After spec, asks for plan
+        // After spec, asks for plan/todo
         assert!(matches!(
             strict.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
             PhaseGateDecision::Redirect { ref hint, .. } if hint.contains("zpowers_plan_first")
@@ -2110,22 +2133,48 @@ mod tests {
             PhaseGateDecision::Allow
         );
 
-        // Short trivial turn NEVER triggers plan-first ceremony even in Strict mode
-        let mut trivial = ExecutionGuard::new(
-            ExecutionTier::Instant,
+        // State-driven reset: once a prior workstream finished (`Done` + 0 open tasks),
+        // a new turn starts fresh and requires a new plan/todo or fast_track (no stale leak!)
+        let mut finished_state = ZPowersState::new("sess_next", ZPowersMode::Guided);
+        finished_state.plan_recorded = true;
+        finished_state.fast_track_reason = Some("previous typo".into());
+        finished_state.phase = ZPowersPhase::Done;
+        finished_state.mutated_files = vec!["src/old.rs".into()];
+
+        let mut next_turn = ExecutionGuard::new(
+            ExecutionTier::Standard,
             IntentKind::Implement,
             DeliberationDepth::Standard,
         );
-        trivial.configure_zpowers(
-            ZPowersMode::Strict,
+        next_turn.configure_zpowers(
+            ZPowersMode::Guided,
+            false,
+            3,
+            ws.clone(),
+            "sess_next".into(),
+            &finished_state,
+        );
+        assert!(matches!(
+            next_turn.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/new.rs"})),
+            PhaseGateDecision::Redirect { ref hint, .. } if hint.contains("zpowers_plan_first")
+        ));
+
+        // Conversely, if open todos still remain (`has_open_tasks == true`), execution carries over!
+        let mut resume_turn = ExecutionGuard::new(
+            ExecutionTier::Standard,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        resume_turn.configure_zpowers(
+            ZPowersMode::Guided,
             true,
             3,
             ws,
-            "sess_t".into(),
-            &ZPowersState::new("sess_t", ZPowersMode::Strict),
+            "sess_next".into(),
+            &finished_state,
         );
         assert_eq!(
-            trivial.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/a.rs"})),
+            resume_turn.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/new.rs"})),
             PhaseGateDecision::Allow
         );
     }

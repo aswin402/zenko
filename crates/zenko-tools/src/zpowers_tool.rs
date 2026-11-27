@@ -88,7 +88,7 @@ impl Tool for ZPowersTool {
         ToolSpec {
             name: TOOL_ZPOWERS.into(),
             description: format!(
-                "Manage Zenko's native ZPowers plan-first session workspace (`.zenko/sessions/<id>/zpowers/`): inspect status, write `spec.md`/`plan.md`/`walkthrough.md`, log systematic debugging strikes in `debug.md`, record two-stage (`spec` then `quality`) reviews under `reviews/`, declare an auditable `fast_track` for trivial 1-line edits, or `promote` a doc into tracked `{}` folders.",
+                "Manage Zenko's native ZPowers session workspace (`.zenko/sessions/<id>/zpowers/`): inspect `status`, write `spec.md`/`plan.md` (bidirectionally synced to live `session_tasks` todos)/`walkthrough.md`, log systematic debugging strikes in `debug.md`, dispatch independent fresh-subagent two-stage reviews (`run_review`), record reviews (`record_review`), declare an auditable `fast_track` for tiny surgical edits, or `promote` a doc into tracked `{}` folders.",
                 ZPOWERS_PROMOTE_ALLOWED_ROOTS.join("`/`")
             ),
             parameters: json!({
@@ -180,7 +180,7 @@ impl Tool for ZPowersTool {
         &self,
         ctx: &ToolContext,
         args: Value,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<ToolOutput> {
         let raw_action = args
             .get("action")
@@ -235,7 +235,7 @@ impl Tool for ZPowersTool {
                 .unwrap_or(false),
         };
 
-        self.bridge.execute_zpowers(ctx, req).await
+        self.bridge.execute_zpowers(ctx, req, cancel).await
     }
 }
 
@@ -254,6 +254,7 @@ mod tests {
             &self,
             _ctx: &ToolContext,
             req: ZPowersActionRequest,
+            _cancel: CancellationToken,
         ) -> Result<ToolOutput> {
             Ok(ToolOutput::ok(format!("ok:{:?}", req.action)))
         }

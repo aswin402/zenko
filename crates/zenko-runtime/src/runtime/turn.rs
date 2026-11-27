@@ -607,9 +607,12 @@ impl AgentRuntime {
         };
         let initial_zp_state =
             crate::zpowers::load_state(&zpowers_ws, &zpowers_sid, cfg.orchestrator.zpowers.mode);
+        let has_open_tasks = persisted_tasks
+            .iter()
+            .any(|t| !matches!(t.status, zenko_core::SessionTaskStatus::Done));
         orch.guard.configure_zpowers(
             cfg.orchestrator.zpowers.mode,
-            orch.short_trivial_turn,
+            has_open_tasks,
             cfg.orchestrator.zpowers.debug_strike_limit,
             zpowers_ws.clone(),
             zpowers_sid.clone(),
@@ -1904,7 +1907,12 @@ impl AgentRuntime {
                         orch.guard.update_active_plan(plan);
                     }
                 if !was_phase_redirect
-                    && eff_tool_name == TOOL_SESSION_TASK
+                    && (eff_tool_name == TOOL_SESSION_TASK
+                        || (eff_tool_name == zenko_core::TOOL_ZPOWERS
+                            && eff_tool_args
+                                .get("action")
+                                .and_then(Value::as_str)
+                                .is_some_and(|a| a.eq_ignore_ascii_case("write_plan"))))
                     && !done.output.is_error
                     && let Ok(live_tasks) = self.clarifications.list_session_tasks(&session_id)
                         && let Some(plan) =
