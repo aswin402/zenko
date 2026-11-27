@@ -231,6 +231,7 @@ impl SqliteStore {
         self.with_conn(|conn| {
             conn.execute("DELETE FROM session_events_fts WHERE session_id = ?1", params![id])?;
             conn.execute("DELETE FROM session_events WHERE session_id = ?1", params![id])?;
+            conn.execute("DELETE FROM session_vars WHERE session_id = ?1", params![id])?;
             conn.execute(
                 "UPDATE sessions SET head_event_id = NULL, total_tokens = 0, total_cost_usd = 0.0, status = 'idle', updated_at = ?1 WHERE id = ?2",
                 params![now, id],
@@ -468,6 +469,139 @@ impl SqliteStore {
                 None => return Ok(cur),
             }
         }
+    }
+
+    // ─── Compaction-Surviving Session Scratchpad (`session_vars`, Prime Agent pattern) ──
+
+    pub fn upsert_session_var_with_secrets(
+        &self,
+        session_id: &str,
+        raw_key: &str,
+        raw_value: &str,
+        raw_summary: Option<&str>,
+        known_secrets: &[String],
+    ) -> Result<SessionVarEntry> {
+        let key: String = raw_key
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            .take(SESSION_VAR_MAX_KEY_CHARS)
+            .collect();
+        if key.is_empty() {
+            return Err(ZenkoError::Tool(
+                "session variable `key` must contain ASCII letters, digits, `_`, `-`, or `.`"
+                    .into(),
+            ));
+        }
+        let clean_value = sanitize_memory_text_with_secrets(raw_value, known_secrets);
+        let bounded_value = match clean_value.len() <= SESSION_VAR_MAX_VALUE_BYTES {
+            true => clean_value,
+            false => {
+                let cut = clean_value.floor_char_boundary(SESSION_VAR_MAX_VALUE_BYTES);
+                clean_value[..cut].to_string()
+            }
+        };
+        let summary_src = raw_summary
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| sanitize_memory_text_with_secrets(s, known_secrets))
+            .unwrap_or_else(|| {
+                compact_preview(&bounded_value.replace('\n', " "), SESSION_VAR_PREVIEW_CHARS)
+            });
+        let byte_len = bounded_value.len();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO session_vars (session_id, var_key, summary, value, byte_len, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    session_id,
+                    key,
+                    summary_src,
+                    bounded_value,
+                    byte_len as i64,
+                    now_str,
+                ],
+            )?;
+            // Enforce strict per-session cap (evicting oldest updated vars first)
+            conn.execute(
+                "DELETE FROM session_vars
+                 WHERE session_id = ?1
+                   AND var_key NOT IN (
+                       SELECT var_key FROM session_vars
+                       WHERE session_id = ?1
+                       ORDER BY updated_at DESC
+                       LIMIT ?2
+                   )",
+                params![session_id, SESSION_VAR_MAX_ITEMS as i64],
+            )?;
+            Ok(())
+        })?;
+
+        Ok(SessionVarEntry {
+            session_id: session_id.to_string(),
+            key,
+            summary: summary_src,
+            value: bounded_value,
+            byte_len,
+            updated_at: now,
+        })
+    }
+
+    pub fn get_session_var(&self, session_id: &str, key: &str) -> Result<Option<SessionVarEntry>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT session_id, var_key, summary, value, byte_len, updated_at
+                 FROM session_vars WHERE session_id = ?1 AND var_key = ?2",
+                params![session_id, key.trim()],
+                |r| {
+                    Ok(SessionVarEntry {
+                        session_id: r.get(0)?,
+                        key: r.get(1)?,
+                        summary: r.get(2)?,
+                        value: r.get(3)?,
+                        byte_len: r.get::<_, i64>(4)?.max(0) as usize,
+                        updated_at: parse_dt(&r.get::<_, String>(5)?),
+                    })
+                },
+            )
+            .optional()
+        })
+    }
+
+    pub fn list_session_vars(&self, session_id: &str) -> Result<Vec<SessionVarEntry>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT session_id, var_key, summary, value, byte_len, updated_at
+                 FROM session_vars
+                 WHERE session_id = ?1
+                 ORDER BY updated_at DESC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![session_id, SESSION_VAR_MAX_ITEMS as i64], |r| {
+                Ok(SessionVarEntry {
+                    session_id: r.get(0)?,
+                    key: r.get(1)?,
+                    summary: r.get(2)?,
+                    value: r.get(3)?,
+                    byte_len: r.get::<_, i64>(4)?.max(0) as usize,
+                    updated_at: parse_dt(&r.get::<_, String>(5)?),
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+    }
+
+    pub fn delete_session_var(&self, session_id: &str, key: &str) -> Result<bool> {
+        let n = self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM session_vars WHERE session_id = ?1 AND var_key = ?2",
+                params![session_id, key.trim()],
+            )
+        })?;
+        Ok(n > 0)
     }
 
 }

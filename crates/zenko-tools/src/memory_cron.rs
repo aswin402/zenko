@@ -91,7 +91,9 @@ impl Tool for MemoryTool {
 
     fn concurrency_for_args(&self, args: &Value) -> ToolConcurrency {
         match args.get("action").and_then(Value::as_str) {
-            Some("search" | "read_snapshot" | "history") => ToolConcurrency::Shared,
+            Some("search" | "read_snapshot" | "history" | "get_var" | "list_vars") => {
+                ToolConcurrency::Shared
+            }
             _ => ToolConcurrency::Global,
         }
     }
@@ -99,7 +101,7 @@ impl Tool for MemoryTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_MEMORY.into(),
-            description: "Manage Zenko's scoped persistent memory: hybrid RRF search with staleness checks, deduplicated add/update/delete entries, surgical `patch_doc` / guarded `append_doc` / pure-Rust `compress_doc` over USER.md/MEMORY.md/PROJECT_MEMORY.md/ZENKO.md, and versioned `.history/` rollback.".into(),
+            description: "Manage Zenko's scoped persistent memory & compaction-surviving session scratchpad (`set_var`/`get_var`/`list_vars`/`delete_var`): 3-way TurboQuant + FTS5 hybrid RRF search, deduplicated add/update/delete entries, surgical `patch_doc` / guarded `append_doc` / `compress_doc`, and versioned `.history/` rollback.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -117,10 +119,17 @@ impl Tool for MemoryTool {
                             "compress_doc",
                             "read_snapshot",
                             "history",
-                            "rollback_doc"
+                            "rollback_doc",
+                            "set_var",
+                            "get_var",
+                            "list_vars",
+                            "delete_var"
                         ]
                     },
                     "id": { "type": "string", "description": "Memory entry ID (for update_entry / delete_entry)" },
+                    "key": { "type": "string", "description": "Session scratchpad variable name (for set_var / get_var / delete_var)" },
+                    "value": { "type": "string", "description": "Session scratchpad payload surviving Stage-B compaction (for set_var)" },
+                    "summary": { "type": "string", "description": "Optional 1-line description shown in post-compaction `<session_vars>` index (for set_var)" },
                     "query": { "type": "string", "description": "Search query (for search)" },
                     "scope": { "type": "string", "description": "project (default for project/fact) | global (default for user/feedback) | all (for search)" },
                     "kind": { "type": "string", "enum": ["user", "feedback", "project", "reference", "fact", "lesson"] },
@@ -440,6 +449,83 @@ impl Tool for MemoryTool {
                     format!("Rolled back {doc_name} to snapshot `{sid}`."),
                     diff,
                 ))
+            }
+            "set_var" => {
+                let key = args
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ZenkoError::Tool("`set_var` requires `key`".into()))?;
+                let value = args
+                    .get("value")
+                    .or_else(|| args.get("content"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ZenkoError::Tool("`set_var` requires `value`".into()))?;
+                let summary = args.get("summary").and_then(Value::as_str);
+                let secrets = self.known_secrets();
+                let entry = self.store.upsert_session_var_with_secrets(
+                    &ctx.session_id,
+                    key,
+                    value,
+                    summary,
+                    &secrets,
+                )?;
+                Ok(ToolOutput {
+                    content: format!(
+                        "Stored session var `{}` ({}B) — survives compaction; retrieve anytime via `memory_tool(action=\"get_var\", key=\"{}\")`.",
+                        entry.key, entry.byte_len, entry.key
+                    ),
+                    is_error: false,
+                    diff: None,
+                    metadata: Some(json!({ "var": entry })),
+                })
+            }
+            "get_var" => {
+                let key = args
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ZenkoError::Tool("`get_var` requires `key`".into()))?;
+                match self.store.get_session_var(&ctx.session_id, key)? {
+                    Some(entry) => Ok(ToolOutput {
+                        content: format!(
+                            "Session var `{}` ({}B):\n{}",
+                            entry.key, entry.byte_len, entry.value
+                        ),
+                        is_error: false,
+                        diff: None,
+                        metadata: Some(json!({ "var": entry })),
+                    }),
+                    None => Ok(ToolOutput::ok(format!(
+                        "Session var `{key}` not found in this session."
+                    ))),
+                }
+            }
+            "list_vars" => {
+                let vars = self.store.list_session_vars(&ctx.session_id)?;
+                if vars.is_empty() {
+                    return Ok(ToolOutput::ok("No session scratchpad variables stored."));
+                }
+                let lines = vars
+                    .iter()
+                    .map(|v| format!("- `{}` ({}B): {}", v.key, v.byte_len, v.summary))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(ToolOutput {
+                    content: format!("Session vars ({}):\n{lines}", vars.len()),
+                    is_error: false,
+                    diff: None,
+                    metadata: Some(json!({ "vars": vars })),
+                })
+            }
+            "delete_var" => {
+                let key = args
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ZenkoError::Tool("`delete_var` requires `key`".into()))?;
+                let deleted = self.store.delete_session_var(&ctx.session_id, key)?;
+                Ok(ToolOutput::ok(match deleted {
+                    true => format!("Deleted session var `{key}`."),
+                    false => format!("Session var `{key}` not found."),
+                }))
             }
             other => Ok(ToolOutput::err(format!("Unknown memory action: {other}"))),
         }

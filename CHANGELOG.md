@@ -4,6 +4,33 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.46] - 2026-11-27
+
+Hardened Zenko's entire context-management pipeline against long-session failure modes — fixing 8 real bugs uncovered via comparative audit against Hermes Agent, Claude Code, Codex CLI, Prime Agent, and Oh My Pi, while adding calibrated token budgeting, reactive overflow auto-recovery, cumulative file ledgers, Turn-1 goal anchors, compaction-surviving `session_vars`, and abandoned-branch summarization.
+
+### Fixed
+- **Reactive Context-Overflow Recovery, Output-Token Reservation & EMA Real-Token Calibration (`crates/zenko-runtime/src/{compaction,prefix_cache,runtime/turn}.rs`):**
+  - Replaced optimistic `len / 4` budgeting with `usable_input_window(context_window, reserve_output_tokens)` (subtracting capped output-generation headroom) and per-session EMA bytes-per-token calibration fed from live provider `usage.prompt_tokens`.
+  - Added automatic reactive overflow recovery (`PROVIDER_CONTEXT_OVERFLOW_SIGNATURES`) in `turn.rs`: catches HTTP 400 context-length errors, tightens token density, forces aggressive microcompaction + emergency trimming + pair sanitization, and retries cleanly instead of aborting the turn.
+- **Stage-A Microcompaction Unwrapping & KV-Cache Epoch Quantization (`crates/zenko-runtime/src/compaction.rs`, `crates/zenko-core/src/constants.rs`):**
+  - Unwrapped `invoke_tool` and inspected `batch_tools` inside Stage-A microcompaction so deferred bulky calls (`web_fetch`, `web_search`, `git`, `code_refactor`, `knowledge_catalog`, `mcp__*`, and read batches) actually compact while `COMPACTION_PROTECTED_TOOLS` remain strictly protected.
+  - Quantized Stage-A compaction boundaries to `MICROCOMPACT_EPOCH_STEP` (`4` exchanges) so active prefixes stay byte-identical across consecutive turns instead of shifting and busting provider KV caches on every tool call.
+- **Stage-B Newest-Preserving Packing, Emergency Valve `ZMode` Alignment & Wire Pair Sanitizer (`crates/zenko-runtime/src/compaction.rs`):**
+  - Switched Stage-B LLM/deterministic transcript packing from oldest-first to newest-preserving chronological order so recent decisions and errors before the cut are never silently dropped.
+  - Fixed `compact_messages_to_budget_calibrated` to honor active `ZMode`/config `compaction_trigger_ratio`, removed the dead shadowed branch, and added in-place head+tail tool shrinking for oversized single/two-unit parallel tool waves.
+  - Added `sanitize_message_tool_pairs` before every LLM dispatch to drop orphaned `Tool` messages and synthesize missing `Tool` replies after partial recovery or branch boundaries.
+- **Accurate `context_inspect` Reporting (`crates/zenko-runtime/src/runtime/mod.rs`, `crates/zenko-tools/src/context_tools.rs`):**
+  - Aligned `inspect_session_context` with `freeze_tool_schemas`, session-frozen `frozen_micro_skills`, calibrated `bytes_per_token`, and surfaced `okf_concepts_count`, `prefix_drift_reason`, `prefix_hit_ratio_pct`, and `session_vars_count`.
+
+### Added
+- **Oh My Pi-Style Cumulative File-Operation Ledger & Abandoned-Branch Summary (`crates/zenko-core/src/types.rs`, `crates/zenko-runtime/src/{compaction,runtime/turn}.rs`):**
+  - Deterministically extracts and merges `files_read`, `files_modified`, `files_created`, `files_deleted`, and `artifacts` across Stage-B checkpoints (including `invoke_tool`, `batch_tools`, and `apply_patch` diffs).
+  - Automatically distills a zero-LLM `<branch_summary>` when forking/regenerating away from a prior trajectory so dead-end errors and touched files carry over onto the new branch.
+- **Hermes-Style Verbatim Turn-1 Goal Anchor (`crates/zenko-runtime/src/compaction.rs`):**
+  - Preserves `<original_goal>` verbatim across repeated Stage-B compactions so long sessions never drift away from the user's primary objective.
+- **Prime-Agent-Style Compaction-Surviving Session Scratchpad (`crates/zenko-memory/src/sqlite/{mod,sessions}.rs`, `crates/zenko-tools/src/memory_cron.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Added SQLite-persisted, secret-scrubbed `session_vars` accessible via `memory_tool` (`set_var`, `get_var`, `list_vars`, `delete_var`) and automatically surfaced as a compact `<session_vars>` index post-compaction.
+
 ## [0.0.45] - 2026-11-27
 
 Added three interconnected pure-Rust intelligence subsystems inspired by `TurboQuant`/`turbovec`, `LMCache`/`CacheBlend`, and Google Cloud's Open Knowledge Format (`OKF`) — zero external ML/Python dependencies, zero `/commands`, zero hardcoding, zero `if/else` ladders, and zero regex.

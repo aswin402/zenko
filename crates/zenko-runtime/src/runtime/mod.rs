@@ -5,10 +5,13 @@ use crate::agents::{
 use crate::artifacts;
 use crate::checkpoint::CheckpointManager;
 use crate::compaction::{
-    CheckpointPlan, build_compaction_prompt, build_deterministic_checkpoint,
-    compact_messages_to_budget, estimate_messages_tokens, estimate_text_tokens,
-    estimate_tool_specs_tokens, microcompact_messages, plan_checkpoint_split,
-    prepend_checkpoint_to_messages, slice_from_latest_checkpoint,
+    CheckpointPlan, build_abandoned_branch_summary, build_compaction_prompt,
+    build_deterministic_checkpoint, compact_messages_to_budget_calibrated,
+    estimate_messages_tokens_calibrated, estimate_text_tokens, estimate_text_tokens_calibrated,
+    estimate_tool_specs_tokens, estimate_tool_specs_tokens_calibrated,
+    is_provider_context_overflow_error, message_raw_bytes, microcompact_messages_calibrated,
+    plan_checkpoint_split_calibrated, prepend_checkpoint_to_messages, sanitize_message_tool_pairs,
+    slice_from_latest_checkpoint, tool_specs_raw_bytes, usable_input_window,
 };
 use crate::file_state::SessionFileTracker;
 use crate::jobs::LocalJobSupervisor;
@@ -1527,10 +1530,20 @@ impl AgentRuntime {
             false => BTreeSet::new(),
         };
         let active_micro_skills = match cfg.economy.enabled && cfg.economy.auto_micro_skills {
-            true => crate::economy::active_micro_skills_for_repo(&self.store, &repo_scope),
+            true => self
+                .frozen_micro_skills
+                .lock()
+                .ok()
+                .and_then(|m| m.get(session_id).cloned())
+                .unwrap_or_else(|| {
+                    crate::economy::active_micro_skills_for_repo(&self.store, &repo_scope)
+                }),
             false => Vec::new(),
         };
-        let activated = self.hydrate_activated_deferred(session_id, &branch);
+        let activated = match cfg.context.freeze_tool_schemas {
+            true => BTreeSet::new(),
+            false => self.hydrate_activated_deferred(session_id, &branch),
+        };
         let active_specs = self.tools.specs_for_session_with_demotions(
             cfg.context.deferred_tool_loading,
             &activated,
@@ -1589,9 +1602,13 @@ impl AgentRuntime {
             effective_sys.push_str("\n\n");
             effective_sys.push_str(&ms_block);
         }
-        let sys_tokens = estimate_text_tokens(&effective_sys);
-        let tool_schema_tokens = estimate_tool_specs_tokens(&active_specs);
+        let calibrated_bpt = self.prefix_cache.calibrated_bpt(session_id);
+        let sys_tokens = estimate_text_tokens_calibrated(&effective_sys, calibrated_bpt);
+        let tool_schema_tokens =
+            estimate_tool_specs_tokens_calibrated(&active_specs, calibrated_bpt);
         let prefix_tokens = sys_tokens + tool_schema_tokens;
+        let active_output_reserve =
+            self.effective_output_budget(cfg.provider.max_tokens, &active_model, false);
 
         let ckpt_slice = slice_from_latest_checkpoint(&branch);
         let mut raw_messages = events_to_chat_messages_refs(&ckpt_slice.kept_events, &active_model);
@@ -1599,16 +1616,18 @@ impl AgentRuntime {
             prepend_checkpoint_to_messages(&mut raw_messages, ckpt);
         }
         let (mc_messages, mc_stats) = match cfg.context.enabled {
-            true => microcompact_messages(
+            true => microcompact_messages_calibrated(
                 raw_messages,
                 context_window,
+                active_output_reserve,
                 prefix_tokens,
                 cfg.context.microcompact_trigger_ratio,
+                calibrated_bpt,
             ),
             false => (raw_messages, Default::default()),
         };
 
-        let history_tokens = estimate_messages_tokens(&mc_messages);
+        let history_tokens = estimate_messages_tokens_calibrated(&mc_messages, calibrated_bpt);
         let total_tokens = prefix_tokens + history_tokens;
         let utilization_pct = match context_window > 0 {
             true => ((total_tokens as f64 / context_window as f64) * 1000.0).round() / 10.0,
@@ -1640,6 +1659,17 @@ impl AgentRuntime {
             .store
             .get_repo_code_metrics(&repo_scope)
             .unwrap_or_default();
+
+        let okf_concepts_count = match zenko_memory::okf::has_okf_discovery_dir(&workspace_dir) {
+            true => zenko_memory::okf::scan_okf_catalog(&workspace_dir).len(),
+            false => 0,
+        };
+        let prefix_eval = self.prefix_cache.last_evaluation(session_id);
+        let session_vars_count = self
+            .store
+            .list_session_vars(session_id)
+            .map(|v| v.len())
+            .unwrap_or(0);
 
         Ok(ContextBreakdown {
             session_id: session_id.to_string(),
@@ -1681,6 +1711,15 @@ impl AgentRuntime {
             scoped_rules_loaded: self.hydrate_loaded_scoped_rules(session_id, &branch),
             nested_repo_docs_count: snapshot.nested_repo_docs.len(),
             project_brain_pages_count: snapshot.project_brain_pages_count,
+            okf_concepts_count,
+            prefix_cache_key: prefix_eval.as_ref().map(|e| e.prompt_cache_key.clone()),
+            prefix_drift_reason: prefix_eval
+                .as_ref()
+                .map(|e| e.drift_reason)
+                .unwrap_or_default(),
+            prefix_hit_ratio_pct: prefix_eval.as_ref().map_or(0, |e| e.hit_ratio_pct),
+            calibrated_bytes_per_token: (calibrated_bpt * 100.0).round() / 100.0,
+            session_vars_count,
         })
     }
 
@@ -2018,7 +2057,7 @@ impl AgentRuntime {
                 let after =
                     prefix_tokens + plan.estimated_kept_tokens + estimate_text_tokens(&clean);
                 CompactionCheckpointPayload {
-                    version: 1,
+                    version: 2,
                     summary: clean,
                     first_kept_event_id: plan.first_kept_event_id.clone(),
                     compacted_events_count: plan.compacted_events_count,
@@ -2026,6 +2065,8 @@ impl AgentRuntime {
                     estimated_tokens_after: after,
                     model: comp_model,
                     created_at: Utc::now(),
+                    original_goal: plan.original_goal.clone(),
+                    file_ledger: plan.file_ledger.clone(),
                 }
             }
             other => {

@@ -24,13 +24,14 @@ use zenko_core::{
     MemoryUpsertResult, ModelUsageStat, PairingCode, PeerRole, PermissionMode, QueuedPrompt,
     Result, RiskLevel, SESSION_CONTEXT_MAX_WINDOW, SESSION_QUEUE_MAX_ITEMS,
     SESSION_SEARCH_DEFAULT_LIMIT, SESSION_SEARCH_MAX_LIMIT, SESSION_TASK_MAX_ITEMS,
-    SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAILBOX_MAX_MESSAGES, SQLITE_JOURNAL_SIZE_LIMIT_BYTES,
-    SQLITE_VACUUM_FREELIST_MIN_BYTES, ScoredMemoryHit, Session,
+    SESSION_VAR_MAX_ITEMS, SESSION_VAR_MAX_KEY_CHARS, SESSION_VAR_MAX_VALUE_BYTES,
+    SESSION_VAR_PREVIEW_CHARS, SUBAGENT_LIST_DEFAULT_LIMIT, SUBAGENT_MAILBOX_MAX_MESSAGES,
+    SQLITE_JOURNAL_SIZE_LIMIT_BYTES, SQLITE_VACUUM_FREELIST_MIN_BYTES, ScoredMemoryHit, Session,
     SessionContextTurn, SessionContextWindow, SessionEvent, SessionRolloutSummary,
     SessionSearchFilter, SessionSearchHit, SessionStatus, SessionTask, SessionTaskStatus,
-    SubagentRecord, SubagentStatus, SubagentWorkspaceMode, TURBOQUANT_MIN_COSINE,
-    TURBOQUANT_SQLITE_SCAN_LIMIT, TaskKind, ToolUsageStat,
-    UiCustomization, UiProfile, UsageStats, WorkspaceCheckpoint, ZenkoError, new_id,
+    SessionVarEntry, SubagentRecord, SubagentStatus, SubagentWorkspaceMode, TURBOQUANT_MIN_COSINE,
+    TURBOQUANT_SQLITE_SCAN_LIMIT, TaskKind, ToolUsageStat, UiCustomization, UiProfile, UsageStats,
+    WorkspaceCheckpoint, ZenkoError, compact_preview, new_id,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -430,6 +431,16 @@ impl SqliteStore {
                 );
                 CREATE INDEX IF NOT EXISTS idx_session_tasks_lookup
                     ON session_tasks(session_id, status, priority DESC, created_at ASC);
+
+                CREATE TABLE IF NOT EXISTS session_vars (
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    var_key TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    value TEXT NOT NULL,
+                    byte_len INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, var_key)
+                );
 
                 CREATE TABLE IF NOT EXISTS workspace_checkpoints (
                     id TEXT PRIMARY KEY,

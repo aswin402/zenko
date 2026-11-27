@@ -403,8 +403,45 @@ pub struct ArtifactSpillRecord {
     pub preview: String,
 }
 
+/// Deterministic cumulative file-operation & artifact ledger carried across Stage-B compactions
+/// (Oh My Pi pattern: ensures the agent never forgets edited, created, deleted, or read files).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionFileLedger {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_read: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_modified: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_created: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_deleted: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
+}
+
+impl CompactionFileLedger {
+    pub fn is_empty(&self) -> bool {
+        self.files_read.is_empty()
+            && self.files_modified.is_empty()
+            && self.files_created.is_empty()
+            && self.files_deleted.is_empty()
+            && self.artifacts.is_empty()
+    }
+}
+
+/// Durable session-scoped scratchpad variable surviving Stage-B compactions (Prime Agent pattern).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionVarEntry {
+    pub session_id: String,
+    pub key: String,
+    pub summary: String,
+    pub value: String,
+    pub byte_len: usize,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Persisted `EventKind::CompactionCheckpoint` payload stored in SQLite for zero-loss,
-/// cache-friendly long-horizon session continuity (Oh My Pi + Codex iterative merge pattern).
+/// cache-friendly long-horizon session continuity (Oh My Pi + Codex + Hermes synthesis).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionCheckpointPayload {
     pub version: u32,
@@ -415,6 +452,12 @@ pub struct CompactionCheckpointPayload {
     pub estimated_tokens_after: usize,
     pub model: String,
     pub created_at: DateTime<Utc>,
+    /// Hermes-style verbatim Turn-1 user goal anchor preserved across repeated compactions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_goal: Option<String>,
+    /// Oh My Pi-style deterministic cumulative file-operation & artifact ledger.
+    #[serde(default)]
+    pub file_ledger: CompactionFileLedger,
 }
 
 /// Pure-English output conciseness tier (`off`, `lite`, `full`, `ultra`).
@@ -577,6 +620,18 @@ pub struct ContextBreakdown {
     pub nested_repo_docs_count: usize,
     #[serde(default)]
     pub project_brain_pages_count: usize,
+    #[serde(default)]
+    pub okf_concepts_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_cache_key: Option<String>,
+    #[serde(default)]
+    pub prefix_drift_reason: PrefixDriftReason,
+    #[serde(default)]
+    pub prefix_hit_ratio_pct: u8,
+    #[serde(default)]
+    pub calibrated_bytes_per_token: f64,
+    #[serde(default)]
+    pub session_vars_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

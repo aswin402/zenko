@@ -33,10 +33,15 @@ pub use artifacts::{
 };
 pub use checkpoint::CheckpointManager;
 pub use compaction::{
-    CheckpointPlan, CheckpointSlice, MicrocompactStats, build_compaction_prompt,
-    build_deterministic_checkpoint, compact_messages_to_budget, estimate_messages_tokens,
-    estimate_text_tokens, estimate_tool_specs_tokens, microcompact_messages,
-    plan_checkpoint_split, prepend_checkpoint_to_messages, slice_from_latest_checkpoint,
+    CheckpointPlan, CheckpointSlice, MicrocompactStats, build_abandoned_branch_summary,
+    build_compaction_prompt, build_deterministic_checkpoint, calibrate_bytes_per_token,
+    compact_messages_to_budget, compact_messages_to_budget_calibrated, estimate_messages_tokens,
+    estimate_messages_tokens_calibrated, estimate_text_tokens, estimate_text_tokens_calibrated,
+    estimate_tool_specs_tokens, estimate_tool_specs_tokens_calibrated,
+    extract_compaction_file_ledger, is_provider_context_overflow_error, message_raw_bytes,
+    microcompact_messages, microcompact_messages_calibrated, plan_checkpoint_split,
+    plan_checkpoint_split_calibrated, prepend_checkpoint_to_messages, sanitize_message_tool_pairs,
+    slice_from_latest_checkpoint, tool_specs_raw_bytes, usable_input_window,
 };
 pub use dream::{dream_status, run_dream_cycle, run_dream_worker};
 pub use export::{export_batch, export_session};

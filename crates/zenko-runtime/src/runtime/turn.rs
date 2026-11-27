@@ -316,8 +316,26 @@ impl AgentRuntime {
                 .set_session_frozen_hash(&session_id, &snapshot.tier1_hash);
         }
 
+        // Oh My Pi-style abandoned-branch summary when user forks/regenerates from an earlier event
+        let mut abandoned_branch_summary: Option<String> = None;
         let parent_for_user = match opts.parent_event_override {
-            Some(explicit_parent) => explicit_parent,
+            Some(explicit_parent) => {
+                if explicit_parent != session.head_event_id {
+                    let old_branch = self
+                        .store
+                        .get_active_branch(&session_id)
+                        .unwrap_or_default();
+                    let abandoned_slice: Vec<&SessionEvent> = match explicit_parent.as_deref() {
+                        Some(fork_id) => match old_branch.iter().position(|e| e.id == fork_id) {
+                            Some(pos) => old_branch[(pos + 1)..].iter().collect(),
+                            None => old_branch.iter().collect(),
+                        },
+                        None => old_branch.iter().collect(),
+                    };
+                    abandoned_branch_summary = build_abandoned_branch_summary(&abandoned_slice);
+                }
+                explicit_parent
+            }
             None => session.head_event_id.clone(),
         };
         let user_ev = self.store.append_event(
@@ -678,7 +696,6 @@ impl AgentRuntime {
         if let Ok(mut pending) = session_ctrl.pending_control.lock() {
             *pending = None;
         }
-        let effective_sys_tokens = estimate_text_tokens(&effective_system_prompt);
         let tool_ctx = ToolContext {
             session_id: session_id.clone(),
             workspace_dir,
@@ -807,12 +824,15 @@ impl AgentRuntime {
                 &session_scope.availability,
                 |spec| session_scope.permits_spec(spec),
             );
-            let active_specs_tokens = estimate_tool_specs_tokens(&active_tool_specs);
+            let live_bpt = self.prefix_cache.calibrated_bpt(&session_id);
+            let active_specs_tokens =
+                estimate_tool_specs_tokens_calibrated(&active_tool_specs, live_bpt);
+            let iter_sys_tokens = estimate_text_tokens_calibrated(&effective_system_prompt, live_bpt);
             if iter_idx == 0 && !economy_pruned_tools.is_empty() {
                 economy_trace.pruned_tokens_saved_per_iter =
                     unpruned_eager_tokens.saturating_sub(active_specs_tokens);
             }
-            let prefix_tokens = effective_sys_tokens + active_specs_tokens;
+            let prefix_tokens = iter_sys_tokens + active_specs_tokens;
 
             let mut branch_events = self.store.get_active_branch(&session_id)?;
             let mut ckpt_slice = slice_from_latest_checkpoint(&branch_events);
@@ -821,13 +841,15 @@ impl AgentRuntime {
                 prepend_checkpoint_to_messages(&mut raw_messages, ckpt);
             }
 
-            // Stage A: Zero-cost selective microcompaction (protects recent tail + planning tools)
+            // Stage A: Zero-cost quantized selective microcompaction (unwraps invoke_tool/batch_tools)
             let (mut messages, mc_stats) = match cfg.context.enabled {
-                true => microcompact_messages(
+                true => microcompact_messages_calibrated(
                     raw_messages,
                     context_window,
+                    active_max_tokens,
                     prefix_tokens,
                     cfg.context.microcompact_trigger_ratio,
+                    live_bpt,
                 ),
                 false => (raw_messages, Default::default()),
             };
@@ -844,18 +866,23 @@ impl AgentRuntime {
                 });
             }
 
-            // Stage B: Persisted iterative-merge CompactionCheckpoint when context still exceeds trigger
+            // Stage B: Persisted iterative-merge CompactionCheckpoint (subtracting output reserve)
+            let usable_window = usable_input_window(context_window, active_max_tokens);
             let stage_b_budget =
-                ((context_window as f64) * cfg.context.compaction_trigger_ratio.clamp(0.45, 0.94))
+                ((usable_window as f64) * cfg.context.compaction_trigger_ratio.clamp(0.45, 0.94))
                     as usize;
             let mut compacted_this_iter = false;
             if cfg.context.enabled
-                && prefix_tokens + estimate_messages_tokens(&messages) > stage_b_budget
-                && let Some(plan) = plan_checkpoint_split(
+                && prefix_tokens + estimate_messages_tokens_calibrated(&messages, live_bpt)
+                    > stage_b_budget
+                && let Some(plan) = plan_checkpoint_split_calibrated(
                     &ckpt_slice,
                     context_window,
+                    active_max_tokens,
                     prefix_tokens,
                     cfg.context.compaction_trigger_ratio,
+                    live_bpt,
+                    false,
                 ) {
                     let ckpt_payload = self
                         .run_stage_b_compaction(
@@ -902,18 +929,27 @@ impl AgentRuntime {
                     if let Some(ref ckpt) = ckpt_slice.checkpoint {
                         prepend_checkpoint_to_messages(&mut rebuilt, ckpt);
                     }
-                    messages = microcompact_messages(
+                    messages = microcompact_messages_calibrated(
                         rebuilt,
                         context_window,
+                        active_max_tokens,
                         prefix_tokens,
                         cfg.context.microcompact_trigger_ratio,
+                        live_bpt,
                     )
                     .0;
                 }
 
-            // Emergency pair-preserving hard ceiling (covers Stage-B cooldown edge cases)
+            // Emergency pair-preserving hard ceiling (honors ZMode ratio + shrinks giant single waves)
             let before_hard_len = messages.len();
-            messages = compact_messages_to_budget(messages, context_window, prefix_tokens);
+            messages = compact_messages_to_budget_calibrated(
+                messages,
+                context_window,
+                active_max_tokens,
+                prefix_tokens,
+                cfg.context.compaction_trigger_ratio,
+                live_bpt,
+            );
             let hard_compacted_now = messages.len() < before_hard_len
                 && messages
                     .first()
@@ -938,6 +974,18 @@ impl AgentRuntime {
                 if let Some(ref rw_sum) = latest_rewind_summary {
                     tail_reminders.push(format!(
                         "<rewind_summary>\nPrevious attempt was rewound. Use these lessons to avoid repeating failed paths:\n{rw_sum}\n</rewind_summary>"
+                    ));
+                }
+                if let Some(branch_sum) = abandoned_branch_summary.take() {
+                    self.emit(AgentEvent::OrchestratorUpdated {
+                        session_id: session_id.clone(),
+                        stage: zenko_core::ORCH_STAGE_BRANCH_SUMMARY.into(),
+                        tier: orch.triage.tier,
+                        detail: "Carried abandoned branch summary onto forked trajectory".into(),
+                        model: None,
+                    });
+                    tail_reminders.push(format!(
+                        "<branch_summary>\n{branch_sum}\n</branch_summary>"
                     ));
                 }
                 if let Some(ref guide) = orch.guidance_block {
@@ -1012,6 +1060,20 @@ impl AgentRuntime {
                             "<project_memory_invariants>\nKey workspace invariants recalled post-compaction:\n{bullets}\n</project_memory_invariants>"
                         ));
                     }
+                // Prime-Agent-style compaction-surviving scratchpad index (`session_vars`)
+                if let Ok(vars) = self.store.list_session_vars(&session_id)
+                    && !vars.is_empty()
+                {
+                    let var_lines = vars
+                        .into_iter()
+                        .map(|v| format!("- `{}` ({}B): {}", v.key, v.byte_len, v.summary))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    tail_reminders.push(format!(
+                        "<session_vars>\nCompaction-surviving scratchpad variables (read via `invoke_tool(tool=\"{}\", args={{\"action\":\"get_var\",\"key\":\"...\"}})`):\n{var_lines}\n</session_vars>",
+                        TOOL_MEMORY
+                    ));
+                }
             }
             if !pending_orch_hints.is_empty() {
                 tail_reminders.append(&mut pending_orch_hints);
@@ -1055,76 +1117,141 @@ impl AgentRuntime {
             if !tail_reminders.is_empty() {
                 append_cache_safe_reminder(&mut messages, tail_reminders.join("\n\n"));
             }
+            messages = sanitize_message_tool_pairs(messages);
 
             let effective_effort = match (reasoning_effort, self.resolve_supports_reasoning(&model)) {
                 (Some(_), Some(false)) => None,
                 (eff, _) => eff,
             };
 
-            let prefix_eval = self.prefix_cache.evaluate_and_record(
-                &session_id,
-                &effective_system_prompt,
-                &active_tool_specs,
-                &messages,
-                compacted_now,
-            );
-            last_prompt_cache_key = Some(prefix_eval.prompt_cache_key.clone());
-            if !matches!(
-                prefix_eval.drift_reason,
-                zenko_core::PrefixDriftReason::FirstTurn | zenko_core::PrefixDriftReason::FullHit
-            ) && prefix_eval.busted_tokens > 0
-            {
-                self.emit(AgentEvent::OrchestratorUpdated {
-                    session_id: session_id.clone(),
-                    stage: zenko_core::ORCH_STAGE_PREFIX_CACHE.into(),
-                    tier: orch.triage.tier,
-                    detail: format!(
-                        "Prefix {} ({}% reused · {} tok kept · {} tok busted)",
-                        prefix_eval.drift_reason.as_str(),
-                        prefix_eval.hit_ratio_pct,
-                        prefix_eval.reusable_tokens,
-                        prefix_eval.busted_tokens
-                    ),
-                    model: None,
-                });
-            }
-
-            let chat_req = ChatRequest {
-                session_id: session_id.clone(),
-                model: model.clone(),
-                fallbacks: cfg.provider.fallbacks.clone(),
-                system_prompt: effective_system_prompt.clone(),
-                messages,
-                tools: active_tool_specs,
-                temperature: cfg.provider.temperature,
-                max_tokens: active_max_tokens,
-                enable_streaming: cfg.provider.enable_streaming,
-                enable_prompt_caching: cfg.provider.enable_prompt_caching,
-                sticky_session_routing: cfg.provider.sticky_session_routing,
-                provider_sort: cfg.provider.provider_sort.clone(),
-                reasoning_effort: effective_effort,
-                prompt_cache_key: Some(prefix_eval.prompt_cache_key),
-            };
-
-            let wire_req_meta = match wire_debug_enabled() {
-                true => Some(json!({
-                    "iteration": iter_idx,
-                    "system_prompt_chars": chat_req.system_prompt.len(),
-                    "message_count": chat_req.messages.len(),
-                    "messages": &chat_req.messages,
-                    "tools_count": chat_req.tools.len(),
-                    "temperature": chat_req.temperature,
-                    "max_tokens": chat_req.max_tokens,
-                    "enable_streaming": chat_req.enable_streaming,
-                })),
-                false => None,
-            };
-
             let turn_id = new_id();
             let iter_started = std::time::Instant::now();
             let mut thinking_started: Option<std::time::Instant> = None;
             let mut thinking_ended: Option<std::time::Instant> = None;
-            let mut stream = self.provider.stream_chat(chat_req, cancel.clone()).await?;
+            let mut overflow_attempt = 0usize;
+            let mut attempt_bpt = live_bpt;
+
+            let (mut stream, wire_req_meta, sent_raw_bytes) = loop {
+                let prefix_eval = self.prefix_cache.evaluate_and_record(
+                    &session_id,
+                    &effective_system_prompt,
+                    &active_tool_specs,
+                    &messages,
+                    compacted_now || overflow_attempt > 0,
+                );
+                last_prompt_cache_key = Some(prefix_eval.prompt_cache_key.clone());
+                if overflow_attempt == 0
+                    && !matches!(
+                        prefix_eval.drift_reason,
+                        zenko_core::PrefixDriftReason::FirstTurn
+                            | zenko_core::PrefixDriftReason::FullHit
+                    )
+                    && prefix_eval.busted_tokens > 0
+                {
+                    self.emit(AgentEvent::OrchestratorUpdated {
+                        session_id: session_id.clone(),
+                        stage: zenko_core::ORCH_STAGE_PREFIX_CACHE.into(),
+                        tier: orch.triage.tier,
+                        detail: format!(
+                            "Prefix {} ({}% reused · {} tok kept · {} tok busted)",
+                            prefix_eval.drift_reason.as_str(),
+                            prefix_eval.hit_ratio_pct,
+                            prefix_eval.reusable_tokens,
+                            prefix_eval.busted_tokens
+                        ),
+                        model: None,
+                    });
+                }
+
+                let sent_raw_bytes = effective_system_prompt.len()
+                    + tool_specs_raw_bytes(&active_tool_specs)
+                    + messages.iter().map(message_raw_bytes).sum::<usize>();
+
+                let chat_req = ChatRequest {
+                    session_id: session_id.clone(),
+                    model: model.clone(),
+                    fallbacks: cfg.provider.fallbacks.clone(),
+                    system_prompt: effective_system_prompt.clone(),
+                    messages: messages.clone(),
+                    tools: active_tool_specs.clone(),
+                    temperature: cfg.provider.temperature,
+                    max_tokens: active_max_tokens,
+                    enable_streaming: cfg.provider.enable_streaming,
+                    enable_prompt_caching: cfg.provider.enable_prompt_caching,
+                    sticky_session_routing: cfg.provider.sticky_session_routing,
+                    provider_sort: cfg.provider.provider_sort.clone(),
+                    reasoning_effort: effective_effort,
+                    prompt_cache_key: Some(prefix_eval.prompt_cache_key),
+                };
+
+                let wire_req_meta = match wire_debug_enabled() {
+                    true => Some(json!({
+                        "iteration": iter_idx,
+                        "overflow_attempt": overflow_attempt,
+                        "system_prompt_chars": chat_req.system_prompt.len(),
+                        "message_count": chat_req.messages.len(),
+                        "messages": &chat_req.messages,
+                        "tools_count": chat_req.tools.len(),
+                        "temperature": chat_req.temperature,
+                        "max_tokens": chat_req.max_tokens,
+                        "enable_streaming": chat_req.enable_streaming,
+                    })),
+                    false => None,
+                };
+
+                match self.provider.stream_chat(chat_req, cancel.clone()).await {
+                    Ok(s) => break (s, wire_req_meta, sent_raw_bytes),
+                    Err(err)
+                        if is_provider_context_overflow_error(&err)
+                            && overflow_attempt < zenko_core::COMPACTION_OVERFLOW_MAX_RETRIES =>
+                    {
+                        let aggressive_ratio = zenko_core::COMPACTION_OVERFLOW_BUDGET_RATIOS
+                            .get(overflow_attempt)
+                            .copied()
+                            .or_else(|| zenko_core::COMPACTION_OVERFLOW_BUDGET_RATIOS.last().copied())
+                            .unwrap_or(zenko_core::DEFAULT_COMPACTION_TRIGGER_RATIO);
+                        overflow_attempt += 1;
+                        attempt_bpt = (attempt_bpt * zenko_core::COMPACTION_OVERFLOW_BPT_DECAY)
+                            .max(zenko_core::TOKEN_CALIBRATION_MIN_BYTES_PER_TOK);
+                        let rec_prefix_tokens =
+                            estimate_text_tokens_calibrated(&effective_system_prompt, attempt_bpt)
+                                + estimate_tool_specs_tokens_calibrated(
+                                    &active_tool_specs,
+                                    attempt_bpt,
+                                );
+                        messages = microcompact_messages_calibrated(
+                            messages,
+                            context_window,
+                            active_max_tokens,
+                            rec_prefix_tokens,
+                            zenko_core::COMPACTION_OVERFLOW_MICRO_TRIGGER,
+                            attempt_bpt,
+                        )
+                        .0;
+                        messages = compact_messages_to_budget_calibrated(
+                            messages,
+                            context_window,
+                            active_max_tokens,
+                            rec_prefix_tokens,
+                            aggressive_ratio,
+                            attempt_bpt,
+                        );
+                        messages = sanitize_message_tool_pairs(messages);
+                        self.emit(AgentEvent::OrchestratorUpdated {
+                            session_id: session_id.clone(),
+                            stage: zenko_core::ORCH_STAGE_OVERFLOW_RECOVERY.into(),
+                            tier: orch.triage.tier,
+                            detail: format!(
+                                "Recovered from provider context overflow (attempt {overflow_attempt}/{}, tightened density to {:.2} B/tok)",
+                                zenko_core::COMPACTION_OVERFLOW_MAX_RETRIES,
+                                attempt_bpt
+                            ),
+                            model: None,
+                        });
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
 
             let mut thinking_buf = String::new();
             let mut text_buf = String::new();
@@ -1185,6 +1312,14 @@ impl AgentRuntime {
             total_usage.completion_tokens += usage.completion_tokens;
             total_usage.cache_read_tokens += usage.cache_read_tokens;
             total_usage.cost_usd += usage.cost_usd;
+
+            if usage.prompt_tokens > 0 {
+                let _ = self.prefix_cache.record_prompt_token_sample(
+                    &session_id,
+                    sent_raw_bytes,
+                    usage.prompt_tokens,
+                );
+            }
 
             if usage.prompt_tokens > 0 || usage.completion_tokens > 0 || usage.cost_usd > 0.0 {
                 let _ = self
@@ -2107,16 +2242,24 @@ impl AgentRuntime {
             if let Some(ref ckpt) = ckpt_slice.checkpoint {
                 prepend_checkpoint_to_messages(&mut raw_messages, ckpt);
             }
-            let (mc_messages, _) = microcompact_messages(
+            let synth_bpt = self.prefix_cache.calibrated_bpt(&session_id);
+            let synth_sys_tokens =
+                estimate_text_tokens_calibrated(&effective_system_prompt, synth_bpt);
+            let (mc_messages, _) = microcompact_messages_calibrated(
                 raw_messages,
                 context_window,
-                effective_sys_tokens,
+                active_max_tokens,
+                synth_sys_tokens,
                 cfg.context.microcompact_trigger_ratio,
+                synth_bpt,
             );
-            let mut messages = compact_messages_to_budget(
+            let mut messages = compact_messages_to_budget_calibrated(
                 mc_messages,
                 context_window,
-                effective_sys_tokens,
+                active_max_tokens,
+                synth_sys_tokens,
+                cfg.context.compaction_trigger_ratio,
+                synth_bpt,
             );
             append_cache_safe_reminder(
                 &mut messages,
@@ -2127,27 +2270,70 @@ impl AgentRuntime {
                      </orchestrator_hint>"
                 ),
             );
+            messages = sanitize_message_tool_pairs(messages);
             let effective_effort = match (reasoning_effort, self.resolve_supports_reasoning(&model)) {
                 (Some(_), Some(false)) => None,
                 (eff, _) => eff,
             };
-            let synth_req = ChatRequest {
-                session_id: session_id.clone(),
-                model: model.clone(),
-                fallbacks: cfg.provider.fallbacks.clone(),
-                system_prompt: effective_system_prompt.clone(),
-                messages,
-                tools: Vec::new(),
-                temperature: cfg.provider.temperature,
-                max_tokens: active_max_tokens,
-                enable_streaming: cfg.provider.enable_streaming,
-                enable_prompt_caching: cfg.provider.enable_prompt_caching,
-                sticky_session_routing: cfg.provider.sticky_session_routing,
-                provider_sort: cfg.provider.provider_sort.clone(),
-                reasoning_effort: effective_effort,
-                prompt_cache_key: last_prompt_cache_key,
+            let mut synth_attempt = 0usize;
+            let mut synth_attempt_bpt = synth_bpt;
+            let synth_stream = loop {
+                let synth_req = ChatRequest {
+                    session_id: session_id.clone(),
+                    model: model.clone(),
+                    fallbacks: cfg.provider.fallbacks.clone(),
+                    system_prompt: effective_system_prompt.clone(),
+                    messages: messages.clone(),
+                    tools: Vec::new(),
+                    temperature: cfg.provider.temperature,
+                    max_tokens: active_max_tokens,
+                    enable_streaming: cfg.provider.enable_streaming,
+                    enable_prompt_caching: cfg.provider.enable_prompt_caching,
+                    sticky_session_routing: cfg.provider.sticky_session_routing,
+                    provider_sort: cfg.provider.provider_sort.clone(),
+                    reasoning_effort: effective_effort,
+                    prompt_cache_key: last_prompt_cache_key.clone(),
+                };
+                match self.provider.stream_chat(synth_req, cancel.clone()).await {
+                    Ok(s) => break Ok(s),
+                    Err(err)
+                        if is_provider_context_overflow_error(&err)
+                            && synth_attempt < zenko_core::COMPACTION_OVERFLOW_MAX_RETRIES =>
+                    {
+                        let aggressive_ratio = zenko_core::COMPACTION_OVERFLOW_BUDGET_RATIOS
+                            .get(synth_attempt)
+                            .copied()
+                            .or_else(|| zenko_core::COMPACTION_OVERFLOW_BUDGET_RATIOS.last().copied())
+                            .unwrap_or(zenko_core::DEFAULT_COMPACTION_TRIGGER_RATIO);
+                        synth_attempt += 1;
+                        synth_attempt_bpt = (synth_attempt_bpt
+                            * zenko_core::COMPACTION_OVERFLOW_BPT_DECAY)
+                            .max(zenko_core::TOKEN_CALIBRATION_MIN_BYTES_PER_TOK);
+                        let tightened_sys =
+                            estimate_text_tokens_calibrated(&effective_system_prompt, synth_attempt_bpt);
+                        messages = microcompact_messages_calibrated(
+                            messages,
+                            context_window,
+                            active_max_tokens,
+                            tightened_sys,
+                            zenko_core::COMPACTION_OVERFLOW_MICRO_TRIGGER,
+                            synth_attempt_bpt,
+                        )
+                        .0;
+                        messages = compact_messages_to_budget_calibrated(
+                            messages,
+                            context_window,
+                            active_max_tokens,
+                            tightened_sys,
+                            aggressive_ratio,
+                            synth_attempt_bpt,
+                        );
+                        messages = sanitize_message_tool_pairs(messages);
+                    }
+                    Err(err) => break Err(err),
+                }
             };
-            if let Ok(mut stream) = self.provider.stream_chat(synth_req, cancel.clone()).await {
+            if let Ok(mut stream) = synth_stream {
                 let synth_turn_id = new_id();
                 let synth_started = std::time::Instant::now();
                 let mut synth_think_start: Option<std::time::Instant> = None;

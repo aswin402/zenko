@@ -124,8 +124,59 @@ pub const DEFAULT_COMPACTION_KEEP_RECENT: usize = 8;
 pub const DEFAULT_COMPACTION_SNIPPET_CHARS: usize = 220;
 pub const MICROCOMPACT_PROTECT_RECENT_EXCHANGES: usize = 4;
 pub const MICROCOMPACT_MIN_TOOL_CHARS: usize = 1_200;
+/// Quantized epoch step for Stage-A microcompaction cut boundaries so the KV prefix stays
+/// byte-identical across consecutive turns instead of shifting by 1 message every iteration.
+pub const MICROCOMPACT_EPOCH_STEP: usize = 4;
 pub const COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS: usize = 8;
 pub const COMPACTION_MAX_CHECKPOINT_TOKENS: u32 = 2_048;
+pub const COMPACTION_MIN_USABLE_INPUT_TOKENS: usize = 4_096;
+pub const COMPACTION_MAX_OUTPUT_RESERVE_NUM: u64 = 30;
+pub const COMPACTION_MAX_OUTPUT_RESERVE_DEN: u64 = 100;
+pub const COMPACTION_MAX_TRANSCRIPT_CHARS: usize = 28_000;
+pub const COMPACTION_MAX_DETERMINISTIC_CHARS: usize = 4_800;
+pub const COMPACTION_ANCHOR_GOAL_MAX_CHARS: usize = 600;
+pub const COMPACTION_LEDGER_MAX_FILES_PER_KIND: usize = 32;
+pub const COMPACTION_LEDGER_MAX_ARTIFACTS: usize = 16;
+pub const COMPACTION_OVERFLOW_MAX_RETRIES: usize = 2;
+pub const COMPACTION_OVERFLOW_BPT_DECAY: f64 = 0.72;
+pub const COMPACTION_OVERFLOW_MICRO_TRIGGER: f64 = 0.30;
+pub const COMPACTION_OVERFLOW_BUDGET_RATIOS: &[f64] = &[0.58, 0.45];
+pub const COMPACTION_EMERGENCY_SINGLE_MSG_MAX_CHARS: usize = 8_000;
+
+// Real-token self-calibration (EMA bytes-per-token from live provider `usage.prompt_tokens`)
+pub const TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK: f64 = 3.5;
+pub const TOKEN_CALIBRATION_MIN_BYTES_PER_TOK: f64 = 1.6;
+pub const TOKEN_CALIBRATION_MAX_BYTES_PER_TOK: f64 = 5.0;
+pub const TOKEN_CALIBRATION_EMA_ALPHA: f64 = 0.35;
+pub const TOKEN_CALIBRATION_MIN_SAMPLE_BYTES: usize = 2_048;
+
+/// Declarative case-insensitive substrings identifying provider HTTP 400 context-window overflow
+/// errors for automatic reactive compaction & retry (zero regex).
+pub const PROVIDER_CONTEXT_OVERFLOW_SIGNATURES: &[&str] = &[
+    "context_length_exceeded",
+    "maximum context length",
+    "prompt is too long",
+    "exceeds the maximum",
+    "too many tokens",
+    "context window",
+    "input is too long",
+    "max_tokens_exceeded",
+    "request too large",
+    "context limit",
+];
+
+// Prime-Agent-inspired Compaction-Surviving Session Scratchpad (`session_vars`)
+pub const SESSION_VAR_MAX_ITEMS: usize = 32;
+pub const SESSION_VAR_MAX_KEY_CHARS: usize = 64;
+pub const SESSION_VAR_MAX_VALUE_BYTES: usize = 32 * 1024;
+pub const SESSION_VAR_PREVIEW_CHARS: usize = 100;
+
+// Oh-My-Pi-inspired Abandoned-Branch Summarization on Tree Fork / Regenerate
+pub const BRANCH_SUMMARY_MAX_EVENTS: usize = 24;
+pub const BRANCH_SUMMARY_MAX_CHARS: usize = 1_600;
+pub const ORCH_STAGE_OVERFLOW_RECOVERY: &str = "overflow_recovery";
+pub const ORCH_STAGE_BRANCH_SUMMARY: &str = "branch_summary";
+pub const NOTE_KIND_BRANCH_SUMMARY: &str = "branch_summary";
 
 // Phase 3 Context Engineering: 3-Tier Prompting, Artifact Spilling, Progressive Skills & Deferred Tools
 pub const ARTIFACTS_DIR_NAME: &str = "artifacts";
@@ -445,6 +496,10 @@ pub const MEMORY_INJECTION_BLOCKED_TAGS: &[&str] = &[
     "orchestrator_hint",
     "compacted_checkpoint",
     "compacted_history",
+    "original_goal",
+    "file_ledger",
+    "branch_summary",
+    "session_vars",
     "active_execution_plan",
     "active_task_dag",
     "plan_mode",
@@ -1123,6 +1178,7 @@ pub const VERIFICATION_SHELL_TOOLS: &[&str] = &[TOOL_SHELL_EXEC, TOOL_JOB_WAIT];
 pub const MICROCOMPACTABLE_TOOLS: &[&str] = &[
     TOOL_READ_FILE,
     TOOL_CODE_SEARCH,
+    TOOL_CODE_REFACTOR,
     TOOL_GLOB_FIND,
     TOOL_LIST_DIR,
     TOOL_GIT,
@@ -1132,6 +1188,7 @@ pub const MICROCOMPACTABLE_TOOLS: &[&str] = &[
     TOOL_MCP_RESOURCE,
     TOOL_JOB_READ,
     TOOL_SCRIPT_BLOCK,
+    TOOL_KNOWLEDGE_CATALOG,
 ];
 /// High-signal state/planning tools strictly exempt from microcompaction (prevents working-memory amnesia).
 pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
@@ -1142,7 +1199,6 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_ORCHESTRATE_CONTROL,
     TOOL_MEMORY,
     TOOL_PROJECT_BRAIN,
-    TOOL_KNOWLEDGE_CATALOG,
     TOOL_SKILL_VIEW,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,

@@ -42,11 +42,25 @@ struct CachedFileChunk {
     seen_iter: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SessionPrefixState {
     last_chain: Vec<ChainedPromptChunk>,
+    last_eval: Option<PrefixCacheEvaluation>,
+    calibrated_bpt: f64,
     chunk_refs: HashMap<(PathBuf, String), CachedFileChunk>,
     chunk_lru: VecDeque<(PathBuf, String)>,
+}
+
+impl Default for SessionPrefixState {
+    fn default() -> Self {
+        Self {
+            last_chain: Vec::new(),
+            last_eval: None,
+            calibrated_bpt: zenko_core::TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK,
+            chunk_refs: HashMap::new(),
+            chunk_lru: VecDeque::new(),
+        }
+    }
 }
 
 impl SessionPrefixState {
@@ -399,8 +413,48 @@ impl SessionPrefixTracker {
         };
 
         state.last_chain = current_chunks;
+        state.last_eval = Some(eval.clone());
         guard.evict_if_needed();
         eval
+    }
+
+    /// Returns the most recent prefix-cache evaluation for `session_id` (used by `context_inspect`).
+    pub fn last_evaluation(&self, session_id: &str) -> Option<PrefixCacheEvaluation> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.sessions.get(session_id).and_then(|s| s.last_eval.clone()))
+    }
+
+    /// Returns the session's live calibrated bytes-per-token estimate (EMA updated from provider usage).
+    pub fn calibrated_bpt(&self, session_id: &str) -> f64 {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.sessions.get(session_id).map(|s| s.calibrated_bpt))
+            .unwrap_or(zenko_core::TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK)
+    }
+
+    /// Updates the session's EMA bytes-per-token ratio from actual provider `usage.prompt_tokens`.
+    pub fn record_prompt_token_sample(
+        &self,
+        session_id: &str,
+        request_bytes: usize,
+        actual_prompt_tokens: u64,
+    ) -> f64 {
+        let Ok(mut guard) = self.inner.lock() else {
+            return zenko_core::TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK;
+        };
+        guard.touch(session_id);
+        let state = guard.sessions.entry(session_id.to_string()).or_default();
+        state.calibrated_bpt = crate::compaction::calibrate_bytes_per_token(
+            state.calibrated_bpt,
+            request_bytes,
+            actual_prompt_tokens,
+        );
+        let updated = state.calibrated_bpt;
+        guard.evict_if_needed();
+        updated
     }
 
     /// Checks whether a large read-only file/OKF output is already verbatim inside the active

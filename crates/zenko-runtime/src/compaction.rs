@@ -1,64 +1,272 @@
-//! Phase 3 Two-Stage Context Compaction Engine (Oh My Pi + Claude Code + Codex synthesis).
+//! Two-Stage Context Compaction & Overflow-Recovery Engine
+//! (Oh My Pi + Claude Code + Codex + Hermes + Prime Agent synthesis).
 //!
+//! - **Calibrated Token Budgeting:** Subtracts capped output-token reservation from `context_window`
+//!   and supports per-session EMA bytes-per-token calibration from real provider `usage.prompt_tokens`.
 //! - **Stage A (`microcompact_messages`):** Zero-cost, zero-LLM selective collapse of bulky
-//!   ephemeral tool results (`MICROCOMPACTABLE_TOOLS`) and stale `reasoning_content` outside the
-//!   recent exchange tail, while strictly protecting planning/memory tools
-//!   (`COMPACTION_PROTECTED_TOOLS`) and preserving `artifact:` handles.
+//!   ephemeral tool results (unwrapping `invoke_tool` & `batch_tools`!) using **quantized epoch
+//!   boundaries** (`MICROCOMPACT_EPOCH_STEP`) so provider KV caches stay warm across turns instead
+//!   of shifting every iteration.
 //! - **Stage B (`slice_from_latest_checkpoint` + `plan_checkpoint_split`):** Persisted SQLite
-//!   `EventKind::CompactionCheckpoint` with `first_kept_event_id`, iterative-merge structured
-//!   summarization prompt, anti-thrash cooldown (`COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS`),
-//!   and zero-LLM deterministic fallback.
-//! - **Emergency Valve (`compact_messages_to_budget`):** In-memory pair-preserving hard ceiling.
+//!   `EventKind::CompactionCheckpoint` carrying a **Hermes-style verbatim Turn-1 goal anchor**,
+//!   an **Oh My Pi-style deterministic cumulative file & artifact ledger**, **newest-preserving**
+//!   transcript packing, anti-thrash cooldown (bypassable on reactive overflow), and zero-LLM fallback.
+//! - **Emergency Valve (`compact_messages_to_budget_with_ratio`):** Honors active `ZMode`/config
+//!   ratios, shrinks oversized single-wave tool payloads even when `units.len() <= 2`, and pairs with
+//!   `sanitize_message_tool_pairs` to guarantee 100% protocol-valid wire requests.
+//! - **Abandoned-Branch Summarizer (`build_abandoned_branch_summary`):** Zero-LLM distillation of
+//!   abandoned fork lessons on tree regeneration/retry.
 //!
-//! Zero regex, zero hardcoded tool names, strictly dynamic across all model context windows.
+//! Zero regex, zero `if/else` ladders, zero hardcoded strings, zero `.unwrap()` in production paths.
 
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use zenko_core::{
-    ARTIFACT_PATH_PREFIX, COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS, COMPACTION_PROTECTED_TOOLS,
-    ChatMessage, CompactionCheckpointPayload, DEFAULT_COMPACTION_KEEP_RECENT,
+    ARTIFACT_PATH_PREFIX, BRANCH_SUMMARY_MAX_CHARS, BRANCH_SUMMARY_MAX_EVENTS,
+    CODEX_PATCH_ADD_FILE, CODEX_PATCH_DELETE_FILE, CODEX_PATCH_UPDATE_FILE,
+    COMPACTION_ANCHOR_GOAL_MAX_CHARS, COMPACTION_EMERGENCY_SINGLE_MSG_MAX_CHARS,
+    COMPACTION_LEDGER_MAX_ARTIFACTS, COMPACTION_LEDGER_MAX_FILES_PER_KIND,
+    COMPACTION_MAX_DETERMINISTIC_CHARS, COMPACTION_MAX_OUTPUT_RESERVE_DEN,
+    COMPACTION_MAX_OUTPUT_RESERVE_NUM, COMPACTION_MAX_TRANSCRIPT_CHARS,
+    COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS, COMPACTION_MIN_USABLE_INPUT_TOKENS,
+    COMPACTION_PROTECTED_TOOLS, ChatMessage, CompactionCheckpointPayload, CompactionFileLedger,
     DEFAULT_COMPACTION_SNIPPET_CHARS, DEFAULT_COMPACTION_TRIGGER_RATIO, EventKind, EventRole,
-    MICROCOMPACT_MIN_TOOL_CHARS, MICROCOMPACT_PROTECT_RECENT_EXCHANGES, MICROCOMPACTABLE_TOOLS,
-    SessionEvent, ToolSpec, compact_preview,
+    MICROCOMPACT_EPOCH_STEP, MICROCOMPACT_MIN_TOOL_CHARS, MICROCOMPACT_PROTECT_RECENT_EXCHANGES,
+    MICROCOMPACTABLE_TOOLS, PROVIDER_CONTEXT_OVERFLOW_SIGNATURES, SessionEvent,
+    TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK, TOKEN_CALIBRATION_EMA_ALPHA,
+    TOKEN_CALIBRATION_MAX_BYTES_PER_TOK, TOKEN_CALIBRATION_MIN_BYTES_PER_TOK,
+    TOKEN_CALIBRATION_MIN_SAMPLE_BYTES, TOOL_APPLY_PATCH, TOOL_BATCH_TOOLS, TOOL_CODE_REFACTOR,
+    TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_KNOWLEDGE_CATALOG, TOOL_READ_FILE, TOOL_WRITE_FILE,
+    ToolSpec, UNIFIED_DIFF_NEW_PREFIX, ZenkoError, compact_preview,
 };
 
-/// Approximate token count for plain UTF-8 text (conservative ~4 bytes/token).
-pub fn estimate_text_tokens(text: &str) -> usize {
-    text.len().div_ceil(4)
+// ─── Calibrated Token Math & Usable Input Window ──────────────────────────────
+
+#[inline]
+pub fn clamp_bytes_per_token(bpt: f64) -> f64 {
+    match bpt.is_finite() {
+        true => bpt.clamp(
+            TOKEN_CALIBRATION_MIN_BYTES_PER_TOK,
+            TOKEN_CALIBRATION_MAX_BYTES_PER_TOK,
+        ),
+        false => TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK,
+    }
 }
 
-pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
-    let base = msg.content.len()
+#[inline]
+pub fn bytes_to_tokens(bytes: usize, bytes_per_tok: f64) -> usize {
+    if bytes == 0 {
+        return 0;
+    }
+    let denom = clamp_bytes_per_token(bytes_per_tok);
+    ((bytes as f64) / denom).ceil() as usize
+}
+
+/// Computes the usable input token ceiling after reserving output-generation headroom
+/// (capped at `30%` of `context_window` so small windows never starve input).
+pub fn usable_input_window(context_window: u64, reserve_output_tokens: u32) -> usize {
+    let max_reserve = (context_window
+        .saturating_mul(COMPACTION_MAX_OUTPUT_RESERVE_NUM))
+        / COMPACTION_MAX_OUTPUT_RESERVE_DEN;
+    let effective_reserve = (reserve_output_tokens as u64).min(max_reserve);
+    (context_window.saturating_sub(effective_reserve) as usize)
+        .max(COMPACTION_MIN_USABLE_INPUT_TOKENS.min(context_window as usize))
+}
+
+/// Updates a session's EMA bytes-per-token calibration from live provider `usage.prompt_tokens`.
+pub fn calibrate_bytes_per_token(
+    current_bpt: f64,
+    total_request_bytes: usize,
+    actual_prompt_tokens: u64,
+) -> f64 {
+    let cur = clamp_bytes_per_token(current_bpt);
+    if total_request_bytes < TOKEN_CALIBRATION_MIN_SAMPLE_BYTES || actual_prompt_tokens == 0 {
+        return cur;
+    }
+    let observed = clamp_bytes_per_token(total_request_bytes as f64 / actual_prompt_tokens as f64);
+    clamp_bytes_per_token(
+        cur * (1.0 - TOKEN_CALIBRATION_EMA_ALPHA) + observed * TOKEN_CALIBRATION_EMA_ALPHA,
+    )
+}
+
+/// Returns `true` when a provider error string matches known context-window overflow signatures
+/// (pure case-insensitive table match, zero regex).
+pub fn is_provider_context_overflow_error(err: &ZenkoError) -> bool {
+    let lower = err.to_string().to_ascii_lowercase();
+    PROVIDER_CONTEXT_OVERFLOW_SIGNATURES
+        .iter()
+        .any(|sig| lower.contains(sig))
+}
+
+/// Approximate token count for plain UTF-8 text using calibrated default density (`3.5 B/tok`).
+pub fn estimate_text_tokens(text: &str) -> usize {
+    bytes_to_tokens(text.len(), TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK)
+}
+
+pub fn estimate_text_tokens_calibrated(text: &str, bytes_per_tok: f64) -> usize {
+    bytes_to_tokens(text.len(), bytes_per_tok)
+}
+
+pub fn message_raw_bytes(msg: &ChatMessage) -> usize {
+    msg.content.len()
         + msg.reasoning_content.as_deref().map_or(0, str::len)
         + msg
             .tool_calls
             .iter()
             .map(|tc| tc.name.len() + tc.arguments.to_string().len())
-            .sum::<usize>();
-    base.div_ceil(4) + 8
+            .sum::<usize>()
+}
+
+pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
+    estimate_message_tokens_calibrated(msg, TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK)
+}
+
+pub fn estimate_message_tokens_calibrated(msg: &ChatMessage, bytes_per_tok: f64) -> usize {
+    bytes_to_tokens(message_raw_bytes(msg), bytes_per_tok) + 8
 }
 
 pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> usize {
-    messages.iter().map(estimate_message_tokens).sum()
+    estimate_messages_tokens_calibrated(messages, TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK)
+}
+
+pub fn estimate_messages_tokens_calibrated(messages: &[ChatMessage], bytes_per_tok: f64) -> usize {
+    messages
+        .iter()
+        .map(|m| estimate_message_tokens_calibrated(m, bytes_per_tok))
+        .sum()
+}
+
+pub fn tool_specs_raw_bytes(specs: &[ToolSpec]) -> usize {
+    specs
+        .iter()
+        .map(|s| s.name.len() + s.description.len() + s.parameters.to_string().len())
+        .sum()
 }
 
 pub fn estimate_tool_specs_tokens(specs: &[ToolSpec]) -> usize {
+    estimate_tool_specs_tokens_calibrated(specs, TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK)
+}
+
+pub fn estimate_tool_specs_tokens_calibrated(specs: &[ToolSpec], bytes_per_tok: f64) -> usize {
     specs
         .iter()
         .map(|s| {
             let bytes = s.name.len() + s.description.len() + s.parameters.to_string().len();
-            bytes.div_ceil(4) + 12
+            bytes_to_tokens(bytes, bytes_per_tok) + 12
         })
         .sum()
 }
 
-fn estimate_event_tokens(ev: &SessionEvent) -> usize {
-    match ev.role {
-        EventRole::System => 0,
-        _ => ev.content_json.to_string().len().div_ceil(4) + 8,
-    }
+/// Estimates tokens for a persisted `SessionEvent` using only wire-visible fields (never
+/// double-counting `duration_ms`, `read_less` metadata, or JSON wrapper overhead).
+fn estimate_event_tokens_calibrated(ev: &SessionEvent, bytes_per_tok: f64) -> usize {
+    let bytes = match ev.role {
+        EventRole::System => return 0,
+        EventRole::User => ev
+            .content_json
+            .get("text")
+            .and_then(Value::as_str)
+            .map_or(0, str::len),
+        EventRole::Assistant => {
+            let text_len = ev
+                .content_json
+                .get("text")
+                .and_then(Value::as_str)
+                .map_or(0, str::len);
+            let calls_len: usize = ev
+                .content_json
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .map(|tc| {
+                            let n = tc.get("name").and_then(Value::as_str).map_or(0, str::len);
+                            let a = tc.get("arguments").map_or(0, |v| v.to_string().len());
+                            n + a
+                        })
+                        .sum()
+                })
+                .unwrap_or(0);
+            text_len + calls_len
+        }
+        EventRole::Tool => ev
+            .content_json
+            .get("content")
+            .and_then(Value::as_str)
+            .map_or(0, str::len),
+    };
+    bytes_to_tokens(bytes, bytes_per_tok) + 8
 }
+
+// ─── Wire Protocol-Pair Sanitizer (Codex / Hermes Safety Guarantee) ───────────
+
+/// Guarantees that an outbound `messages[]` array strictly satisfies OpenAI/Anthropic/MiniMax
+/// tool-call pairing invariants:
+/// 1. Drops any orphaned `EventRole::Tool` messages not preceded by a matching `Assistant(tool_calls)`.
+/// 2. Synthesizes recovery `EventRole::Tool` replies for any `Assistant(tool_calls)` ID missing a result.
+pub fn sanitize_message_tool_pairs(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    let mut pending_calls: Vec<(String, String)> = Vec::new();
+    let mut answered_ids: HashSet<String> = HashSet::new();
+
+    let flush_missing = |out: &mut Vec<ChatMessage>,
+                         pending: &mut Vec<(String, String)>,
+                         answered: &mut HashSet<String>| {
+        for (call_id, tool_name) in pending.drain(..) {
+            if !answered.contains(&call_id) {
+                out.push(ChatMessage {
+                    role: EventRole::Tool,
+                    content: format!(
+                        "[recovered missing `{tool_name}` tool result after branch/compaction boundary]"
+                    ),
+                    reasoning_content: None,
+                    tool_calls: Vec::new(),
+                    tool_call_id: Some(call_id),
+                    name: Some(tool_name),
+                });
+            }
+        }
+        answered.clear();
+    };
+
+    for msg in messages {
+        match msg.role {
+            EventRole::Tool => {
+                let valid = msg
+                    .tool_call_id
+                    .as_deref()
+                    .is_some_and(|cid| {
+                        pending_calls.iter().any(|(pid, _)| pid == cid)
+                            && !answered_ids.contains(cid)
+                    });
+                if valid {
+                    if let Some(ref cid) = msg.tool_call_id {
+                        answered_ids.insert(cid.clone());
+                    }
+                    out.push(msg);
+                }
+            }
+            EventRole::Assistant => {
+                flush_missing(&mut out, &mut pending_calls, &mut answered_ids);
+                if !msg.tool_calls.is_empty() {
+                    for tc in &msg.tool_calls {
+                        pending_calls.push((tc.id.clone(), tc.name.clone()));
+                    }
+                }
+                out.push(msg);
+            }
+            EventRole::User | EventRole::System => {
+                flush_missing(&mut out, &mut pending_calls, &mut answered_ids);
+                out.push(msg);
+            }
+        }
+    }
+    flush_missing(&mut out, &mut pending_calls, &mut answered_ids);
+    out
+}
+
+// ─── Atomic Exchange Grouping ─────────────────────────────────────────────────
 
 struct ExchangeUnit {
     messages: Vec<ChatMessage>,
@@ -66,9 +274,7 @@ struct ExchangeUnit {
     summary_line: String,
 }
 
-/// Groups a flat chat history into atomic exchanges so tool-call / tool-result sequences
-/// stay indivisible during microcompaction and budget windowing.
-fn group_atomic_exchanges(messages: Vec<ChatMessage>) -> Vec<ExchangeUnit> {
+fn group_atomic_exchanges(messages: Vec<ChatMessage>, bytes_per_tok: f64) -> Vec<ExchangeUnit> {
     let mut units: Vec<ExchangeUnit> = Vec::with_capacity(messages.len());
     let mut iter = messages.into_iter().peekable();
 
@@ -89,7 +295,10 @@ fn group_atomic_exchanges(messages: Vec<ChatMessage>) -> Vec<ExchangeUnit> {
             }
         }
 
-        let est_tokens = group.iter().map(estimate_message_tokens).sum();
+        let est_tokens = group
+            .iter()
+            .map(|m| estimate_message_tokens_calibrated(m, bytes_per_tok))
+            .sum();
         let summary_line = summarize_exchange(&group);
         units.push(ExchangeUnit {
             messages: group,
@@ -137,7 +346,7 @@ fn summarize_exchange(group: &[ChatMessage]) -> String {
     }
 }
 
-// ─── Stage A: Zero-Cost Selective Microcompaction ─────────────────────────────
+// ─── Stage A: Quantized, Wrapper-Aware Selective Microcompaction ──────────────
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MicrocompactStats {
@@ -180,30 +389,123 @@ fn extract_tool_target_hint(args: Option<&Value>) -> String {
     let Some(val) = args else {
         return String::new();
     };
-    const HINT_KEYS: &[&str] = &["path", "query", "command", "url", "job_id", "slug"];
+    const HINT_KEYS: &[&str] = &["path", "id", "query", "command", "url", "job_id", "slug"];
     for key in HINT_KEYS {
         if let Some(s) = val.get(*key).and_then(Value::as_str).map(str::trim)
-            && !s.is_empty() {
-                return compact_preview(s, 72);
-            }
+            && !s.is_empty()
+        {
+            return compact_preview(s, 72);
+        }
     }
     String::new()
 }
 
-/// Stage-A lossless microcompaction:
-/// When estimated prompt + history tokens exceed `context_window * trigger_ratio`, collapses
-/// older bulky outputs of `MICROCOMPACTABLE_TOOLS` (and stale `reasoning_content`) outside the
-/// protected recent tail into 1-line stubs preserving target hints and `artifact:` handles.
-/// Strictly exempts `COMPACTION_PROTECTED_TOOLS` to prevent working-memory amnesia.
+/// Unwraps `invoke_tool` and inspects `batch_tools` so deferred bulky calls (`git`, `web_fetch`,
+/// `code_refactor`, `knowledge_catalog`, multi-file read batches) actually microcompact while
+/// strictly shielding `COMPACTION_PROTECTED_TOOLS` (`plan_update`, `memory_tool`, `project_brain`, ...).
+fn classify_microcompact_target<'a>(
+    outer_name: &'a str,
+    outer_args: Option<&'a Value>,
+) -> Option<(String, String)> {
+    match outer_name {
+        TOOL_INVOKE_TOOL => {
+            let args = outer_args?;
+            let inner_name = args
+                .get("tool")
+                .or_else(|| args.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?;
+            if COMPACTION_PROTECTED_TOOLS.contains(&inner_name) {
+                return None;
+            }
+            let inner_args = args.get("args").or_else(|| args.get("arguments"));
+            // Allow all declared microcompactable tools AND dynamic `mcp__*` read payloads
+            let eligible = MICROCOMPACTABLE_TOOLS.contains(&inner_name)
+                || inner_name.starts_with(zenko_core::MCP_TOOL_PREFIX);
+            match eligible {
+                true => Some((inner_name.to_string(), extract_tool_target_hint(inner_args))),
+                false => None,
+            }
+        }
+        TOOL_BATCH_TOOLS => {
+            let calls = outer_args
+                .and_then(|a| a.get("calls"))
+                .and_then(Value::as_array)?;
+            if calls.is_empty() {
+                return None;
+            }
+            let mut inner_names: Vec<&str> = Vec::with_capacity(calls.len());
+            for step in calls {
+                let raw = step
+                    .get("tool")
+                    .or_else(|| step.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let eff = match raw {
+                    TOOL_INVOKE_TOOL => step
+                        .get("args")
+                        .or_else(|| step.get("arguments"))
+                        .and_then(|a| a.get("tool").or_else(|| a.get("name")))
+                        .and_then(Value::as_str)
+                        .unwrap_or(raw),
+                    other => other,
+                };
+                if COMPACTION_PROTECTED_TOOLS.contains(&eff) {
+                    return None;
+                }
+                inner_names.push(eff);
+            }
+            let preview_names: Vec<&str> = inner_names.iter().copied().take(3).collect();
+            let hint = format!("{} calls: {}", calls.len(), preview_names.join(", "));
+            Some((TOOL_BATCH_TOOLS.to_string(), compact_preview(&hint, 72)))
+        }
+        other => {
+            if COMPACTION_PROTECTED_TOOLS.contains(&other)
+                || !MICROCOMPACTABLE_TOOLS.contains(&other)
+            {
+                return None;
+            }
+            Some((other.to_string(), extract_tool_target_hint(outer_args)))
+        }
+    }
+}
+
+/// Stage-A lossless microcompaction (backwards-compatible wrapper using default calibration).
 pub fn microcompact_messages(
     messages: Vec<ChatMessage>,
     context_window: u64,
     prefix_tokens: usize,
     trigger_ratio: f64,
 ) -> (Vec<ChatMessage>, MicrocompactStats) {
+    microcompact_messages_calibrated(
+        messages,
+        context_window,
+        0,
+        prefix_tokens,
+        trigger_ratio,
+        TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK,
+    )
+}
+
+/// Stage-A lossless, KV-cache-friendly quantized microcompaction:
+/// - Subtracts output reservation from usable input window and uses calibrated `bytes_per_tok`.
+/// - Unwraps `invoke_tool` and inspects `batch_tools` so deferred read/search/web/git payloads
+///   microcompact while strictly protecting planning & memory tools.
+/// - Quantizes the compaction boundary to multiples of `MICROCOMPACT_EPOCH_STEP` so the active
+///   prefix stays byte-identical across consecutive turns (eliminating per-turn KV-cache busts).
+pub fn microcompact_messages_calibrated(
+    messages: Vec<ChatMessage>,
+    context_window: u64,
+    reserve_output_tokens: u32,
+    prefix_tokens: usize,
+    trigger_ratio: f64,
+    bytes_per_tok: f64,
+) -> (Vec<ChatMessage>, MicrocompactStats) {
     let ratio = trigger_ratio.clamp(0.25, 0.90);
-    let trigger_budget = ((context_window as f64) * ratio) as usize;
-    let mut units = group_atomic_exchanges(messages);
+    let usable = usable_input_window(context_window, reserve_output_tokens);
+    let trigger_budget = ((usable as f64) * ratio) as usize;
+    let mut units = group_atomic_exchanges(messages, bytes_per_tok);
     let history_tokens: usize = units.iter().map(|u| u.est_tokens).sum();
 
     if prefix_tokens + history_tokens <= trigger_budget
@@ -215,7 +517,15 @@ pub fn microcompact_messages(
         );
     }
 
-    let protected_start = units.len().saturating_sub(MICROCOMPACT_PROTECT_RECENT_EXCHANGES);
+    let raw_protected_start = units.len().saturating_sub(MICROCOMPACT_PROTECT_RECENT_EXCHANGES);
+    // Quantize cut point to epoch multiples so KV prefix remains invariant for EPOCH_STEP turns.
+    // Fall back to exact `raw_protected_start` if quantized boundary is 0 (short heavy session).
+    let quantized_start = (raw_protected_start / MICROCOMPACT_EPOCH_STEP) * MICROCOMPACT_EPOCH_STEP;
+    let protected_start = match quantized_start > 0 {
+        true => quantized_start,
+        false => raw_protected_start,
+    };
+
     let mut stats = MicrocompactStats::default();
 
     for unit in units.iter_mut().take(protected_start) {
@@ -228,7 +538,7 @@ pub fn microcompact_messages(
                     }
                     if let Some(reasoning) = msg.reasoning_content.take() {
                         stats.stripped_reasoning_blocks += 1;
-                        stats.tokens_saved += reasoning.len().div_ceil(4);
+                        stats.tokens_saved += bytes_to_tokens(reasoning.len(), bytes_per_tok);
                     }
                 }
                 EventRole::Tool => {
@@ -236,34 +546,36 @@ pub fn microcompact_messages(
                         .tool_call_id
                         .as_deref()
                         .and_then(|id| call_meta.get(id));
-                    let tool_name = msg
+                    let outer_name = msg
                         .name
                         .as_deref()
                         .or_else(|| meta.map(|(n, _)| n.as_str()))
                         .unwrap_or("");
-                    if COMPACTION_PROTECTED_TOOLS.contains(&tool_name)
-                        || !MICROCOMPACTABLE_TOOLS.contains(&tool_name)
-                        || msg.content.len() < MICROCOMPACT_MIN_TOOL_CHARS
-                    {
+                    if msg.content.len() < MICROCOMPACT_MIN_TOOL_CHARS {
                         continue;
                     }
+                    let Some((eff_label, target)) =
+                        classify_microcompact_target(outer_name, meta.map(|(_, a)| a))
+                    else {
+                        continue;
+                    };
                     let orig_bytes = msg.content.len();
                     let orig_lines = msg.content.lines().count();
-                    let target = extract_tool_target_hint(meta.map(|(_, a)| a));
                     let target_part = match target.is_empty() {
                         true => String::new(),
                         false => format!(" `{target}`"),
                     };
-                    let preserved_rules: Vec<String> = extract_scoped_repo_rules_blocks(&msg.content)
-                        .into_iter()
-                        .map(String::from)
-                        .collect();
+                    let preserved_rules: Vec<String> =
+                        extract_scoped_repo_rules_blocks(&msg.content)
+                            .into_iter()
+                            .map(String::from)
+                            .collect();
                     let base_stub = match extract_artifact_handle(&msg.content) {
                         Some(handle) => format!(
-                            "[microcompacted `{tool_name}`{target_part} ({orig_lines} lines, {orig_bytes}B) — inspect full output with `read_file` at `{handle}`]"
+                            "[microcompacted `{eff_label}`{target_part} ({orig_lines} lines, {orig_bytes}B) — inspect full output with `read_file` at `{handle}`]"
                         ),
                         None => format!(
-                            "[microcompacted `{tool_name}`{target_part} ({orig_lines} lines, {orig_bytes}B) — re-read if needed]"
+                            "[microcompacted `{eff_label}`{target_part} ({orig_lines} lines, {orig_bytes}B) — re-read if needed]"
                         ),
                     };
                     let stub = match preserved_rules.is_empty() {
@@ -273,7 +585,7 @@ pub fn microcompact_messages(
                     if stub.len() >= orig_bytes {
                         continue;
                     }
-                    let saved = orig_bytes.saturating_sub(stub.len()) / 4;
+                    let saved = bytes_to_tokens(orig_bytes.saturating_sub(stub.len()), bytes_per_tok);
                     msg.content = stub;
                     stats.compacted_tools += 1;
                     stats.tokens_saved += saved;
@@ -285,6 +597,292 @@ pub fn microcompact_messages(
 
     let out = units.into_iter().flat_map(|u| u.messages).collect();
     (out, stats)
+}
+
+// ─── Oh My Pi Cumulative File-Op Ledger & Hermes Turn-1 Goal Anchor ──────────
+
+fn push_capped(set: &mut BTreeSet<String>, path: &str, cap: usize) {
+    let cleaned = path.trim();
+    if !cleaned.is_empty() && set.len() < cap {
+        set.insert(cleaned.to_string());
+    }
+}
+
+fn record_tool_call_in_ledger(
+    tool_name: &str,
+    args: &Value,
+    read_set: &mut BTreeSet<String>,
+    mod_set: &mut BTreeSet<String>,
+    created_set: &mut BTreeSet<String>,
+    deleted_set: &mut BTreeSet<String>,
+) {
+    match tool_name {
+        TOOL_INVOKE_TOOL => {
+            if let Some(inner) = args
+                .get("tool")
+                .or_else(|| args.get("name"))
+                .and_then(Value::as_str)
+            {
+                let inner_args = args
+                    .get("args")
+                    .or_else(|| args.get("arguments"))
+                    .unwrap_or(&Value::Null);
+                record_tool_call_in_ledger(
+                    inner,
+                    inner_args,
+                    read_set,
+                    mod_set,
+                    created_set,
+                    deleted_set,
+                );
+            }
+        }
+        TOOL_BATCH_TOOLS => {
+            if let Some(calls) = args.get("calls").and_then(Value::as_array) {
+                for step in calls {
+                    if let Some(t) = step
+                        .get("tool")
+                        .or_else(|| step.get("name"))
+                        .and_then(Value::as_str)
+                    {
+                        let a = step
+                            .get("args")
+                            .or_else(|| step.get("arguments"))
+                            .unwrap_or(&Value::Null);
+                        record_tool_call_in_ledger(
+                            t,
+                            a,
+                            read_set,
+                            mod_set,
+                            created_set,
+                            deleted_set,
+                        );
+                    }
+                }
+            }
+        }
+        TOOL_READ_FILE => {
+            if let Some(p) = args.get("path").and_then(Value::as_str)
+                && !p.starts_with(ARTIFACT_PATH_PREFIX)
+            {
+                push_capped(read_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND);
+            }
+        }
+        TOOL_KNOWLEDGE_CATALOG => {
+            if args.get("action").and_then(Value::as_str) == Some("upsert")
+                && let Some(id) = args.get("id").and_then(Value::as_str)
+            {
+                push_capped(
+                    mod_set,
+                    &format!("knowledge/{id}.md"),
+                    COMPACTION_LEDGER_MAX_FILES_PER_KIND,
+                );
+            }
+        }
+        TOOL_WRITE_FILE => {
+            if let Some(p) = args.get("path").and_then(Value::as_str) {
+                match read_set.contains(p) || mod_set.contains(p) {
+                    true => push_capped(mod_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND),
+                    false => push_capped(created_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND),
+                }
+            }
+        }
+        TOOL_HASH_EDIT => {
+            if let Some(p) = args.get("path").and_then(Value::as_str) {
+                push_capped(mod_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND);
+            }
+        }
+        TOOL_CODE_REFACTOR => {
+            if zenko_core::is_code_refactor_args_mutating(args)
+                && let Some(p) = args
+                    .get("path")
+                    .or_else(|| args.get("from"))
+                    .and_then(Value::as_str)
+            {
+                push_capped(mod_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND);
+            }
+        }
+        TOOL_APPLY_PATCH => {
+            if let Some(p) = args.get("path").and_then(Value::as_str) {
+                push_capped(mod_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND);
+            }
+            if let Some(files) = args.get("files").and_then(Value::as_array) {
+                for f in files {
+                    let act = f.get("action").and_then(Value::as_str).unwrap_or("update");
+                    if let Some(p) = f.get("path").and_then(Value::as_str) {
+                        match act {
+                            "create" => {
+                                push_capped(created_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+                            }
+                            "delete" => {
+                                push_capped(deleted_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+                            }
+                            _ => push_capped(mod_set, p, COMPACTION_LEDGER_MAX_FILES_PER_KIND),
+                        }
+                    }
+                }
+            }
+            if let Some(patch) = args.get("patch").and_then(Value::as_str) {
+                #[derive(Clone, Copy)]
+                enum PatchLineOp {
+                    Add,
+                    Delete,
+                    Modify,
+                    UnifiedNew,
+                }
+                const PATCH_LINE_PREFIXES: &[(&str, PatchLineOp)] = &[
+                    (CODEX_PATCH_ADD_FILE, PatchLineOp::Add),
+                    (CODEX_PATCH_DELETE_FILE, PatchLineOp::Delete),
+                    (CODEX_PATCH_UPDATE_FILE, PatchLineOp::Modify),
+                    (UNIFIED_DIFF_NEW_PREFIX, PatchLineOp::UnifiedNew),
+                ];
+                for line in patch.lines() {
+                    let t = line.trim();
+                    let matched = PATCH_LINE_PREFIXES
+                        .iter()
+                        .find_map(|&(pfx, op)| t.strip_prefix(pfx).map(|rest| (op, rest)));
+                    match matched {
+                        Some((PatchLineOp::Add, rest)) => {
+                            push_capped(created_set, rest, COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+                        }
+                        Some((PatchLineOp::Delete, rest)) => {
+                            push_capped(deleted_set, rest, COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+                        }
+                        Some((PatchLineOp::Modify, rest)) => {
+                            push_capped(mod_set, rest, COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+                        }
+                        Some((PatchLineOp::UnifiedNew, rest)) => {
+                            let clean = rest.trim().strip_prefix("b/").unwrap_or(rest.trim());
+                            if clean != zenko_core::UNIFIED_DIFF_DEV_NULL {
+                                push_capped(mod_set, clean, COMPACTION_LEDGER_MAX_FILES_PER_KIND);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Deterministically merges prior checkpoint file operations with newly compacted events
+/// so edited/created/deleted/read files and artifact handles are never forgotten across compactions.
+pub fn extract_compaction_file_ledger(
+    events: &[&SessionEvent],
+    prior: Option<&CompactionFileLedger>,
+) -> CompactionFileLedger {
+    let mut read_set: BTreeSet<String> = prior
+        .map(|p| p.files_read.iter().cloned().collect())
+        .unwrap_or_default();
+    let mut mod_set: BTreeSet<String> = prior
+        .map(|p| p.files_modified.iter().cloned().collect())
+        .unwrap_or_default();
+    let mut created_set: BTreeSet<String> = prior
+        .map(|p| p.files_created.iter().cloned().collect())
+        .unwrap_or_default();
+    let mut deleted_set: BTreeSet<String> = prior
+        .map(|p| p.files_deleted.iter().cloned().collect())
+        .unwrap_or_default();
+    let mut artifact_set: BTreeSet<String> = prior
+        .map(|p| p.artifacts.iter().cloned().collect())
+        .unwrap_or_default();
+
+    for ev in events {
+        match ev.role {
+            EventRole::Assistant => {
+                if let Some(calls) = ev.content_json.get("tool_calls").and_then(Value::as_array) {
+                    for tc in calls {
+                        if let Some(name) = tc.get("name").and_then(Value::as_str) {
+                            let args = tc.get("arguments").unwrap_or(&Value::Null);
+                            record_tool_call_in_ledger(
+                                name,
+                                args,
+                                &mut read_set,
+                                &mut mod_set,
+                                &mut created_set,
+                                &mut deleted_set,
+                            );
+                        }
+                    }
+                }
+            }
+            EventRole::Tool => {
+                if let Some(content) = ev.content_json.get("content").and_then(Value::as_str)
+                    && let Some(handle) = extract_artifact_handle(content)
+                {
+                    push_capped(&mut artifact_set, handle, COMPACTION_LEDGER_MAX_ARTIFACTS);
+                }
+            }
+            EventRole::User | EventRole::System => {}
+        }
+    }
+
+    CompactionFileLedger {
+        files_read: read_set
+            .into_iter()
+            .take(COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+            .collect(),
+        files_modified: mod_set
+            .into_iter()
+            .take(COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+            .collect(),
+        files_created: created_set
+            .into_iter()
+            .take(COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+            .collect(),
+        files_deleted: deleted_set
+            .into_iter()
+            .take(COMPACTION_LEDGER_MAX_FILES_PER_KIND)
+            .collect(),
+        artifacts: artifact_set
+            .into_iter()
+            .take(COMPACTION_LEDGER_MAX_ARTIFACTS)
+            .collect(),
+    }
+}
+
+fn extract_original_goal(
+    events: &[&SessionEvent],
+    prior: Option<&CompactionCheckpointPayload>,
+) -> Option<String> {
+    if let Some(goal) = prior
+        .and_then(|c| c.original_goal.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(goal.to_string());
+    }
+    events
+        .iter()
+        .find(|ev| ev.role == EventRole::User)
+        .and_then(|ev| ev.content_json.get("text").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| compact_preview(s, COMPACTION_ANCHOR_GOAL_MAX_CHARS))
+}
+
+fn format_file_ledger_block(ledger: &CompactionFileLedger) -> Option<String> {
+    if ledger.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(5);
+    if !ledger.files_modified.is_empty() {
+        parts.push(format!("modified: {}", ledger.files_modified.join(", ")));
+    }
+    if !ledger.files_created.is_empty() {
+        parts.push(format!("created: {}", ledger.files_created.join(", ")));
+    }
+    if !ledger.files_deleted.is_empty() {
+        parts.push(format!("deleted: {}", ledger.files_deleted.join(", ")));
+    }
+    if !ledger.files_read.is_empty() {
+        parts.push(format!("read: {}", ledger.files_read.join(", ")));
+    }
+    if !ledger.artifacts.is_empty() {
+        parts.push(format!("artifacts: {}", ledger.artifacts.join(", ")));
+    }
+    Some(format!("<file_ledger>\n{}\n</file_ledger>", parts.join("\n")))
 }
 
 // ─── Stage B: Persisted Checkpoint Slicing & Iterative-Merge Planner ──────────
@@ -355,15 +953,29 @@ pub fn slice_from_latest_checkpoint<'a>(events: &'a [SessionEvent]) -> Checkpoin
     }
 }
 
-/// Injects a persisted checkpoint summary at the head of `messages[]` without mutating the
-/// Tier-1/Tier-2 system prompt and without creating adjacent `user, user` turns.
+/// Injects a persisted checkpoint summary (including Hermes Turn-1 goal anchor & Oh My Pi
+/// cumulative file ledger) at the head of `messages[]` without mutating the Tier-1 system prompt.
 pub fn prepend_checkpoint_to_messages(
     messages: &mut Vec<ChatMessage>,
     checkpoint: &CompactionCheckpointPayload,
 ) {
+    let mut inner = String::with_capacity(checkpoint.summary.len() + 256);
+    if let Some(ref goal) = checkpoint.original_goal
+        && !goal.trim().is_empty()
+    {
+        inner.push_str("<original_goal>\n");
+        inner.push_str(goal.trim());
+        inner.push_str("\n</original_goal>\n\n");
+    }
+    if let Some(ledger_block) = format_file_ledger_block(&checkpoint.file_ledger) {
+        inner.push_str(&ledger_block);
+        inner.push_str("\n\n");
+    }
+    inner.push_str(&checkpoint.summary);
+
     let block = format!(
-        "<compacted_checkpoint compacted_events=\"{}\" model=\"{}\">\n{}\n</compacted_checkpoint>",
-        checkpoint.compacted_events_count, checkpoint.model, checkpoint.summary
+        "<compacted_checkpoint compacted_events=\"{}\" model=\"{}\">\n{inner}\n</compacted_checkpoint>",
+        checkpoint.compacted_events_count, checkpoint.model
     );
     match messages.first_mut() {
         Some(first) if first.role == EventRole::User => {
@@ -391,7 +1003,10 @@ struct EventUnit<'a> {
     first_non_system_id: Option<String>,
 }
 
-fn group_atomic_event_units<'a>(events: &[&'a SessionEvent]) -> Vec<EventUnit<'a>> {
+fn group_atomic_event_units<'a>(
+    events: &[&'a SessionEvent],
+    bytes_per_tok: f64,
+) -> Vec<EventUnit<'a>> {
     let mut units: Vec<EventUnit<'a>> = Vec::with_capacity(events.len());
     let mut idx = 0usize;
 
@@ -419,7 +1034,10 @@ fn group_atomic_event_units<'a>(events: &[&'a SessionEvent]) -> Vec<EventUnit<'a
             }
         }
 
-        let est_tokens = group.iter().map(|e| estimate_event_tokens(e)).sum();
+        let est_tokens = group
+            .iter()
+            .map(|e| estimate_event_tokens_calibrated(e, bytes_per_tok))
+            .sum();
         let first_non_system_id = group
             .iter()
             .find(|e| e.role != EventRole::System)
@@ -441,55 +1059,92 @@ pub struct CheckpointPlan<'a> {
     pub compacted_events_count: usize,
     pub estimated_tokens_before: usize,
     pub estimated_kept_tokens: usize,
+    pub original_goal: Option<String>,
+    pub file_ledger: CompactionFileLedger,
 }
 
-/// Decides whether Stage-B persisted compaction should run and computes a pair-safe split boundary
-/// while enforcing anti-thrash cooldown (`COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS`).
+/// Backwards-compatible Stage-B split planner using default calibration & cooldown.
 pub fn plan_checkpoint_split<'a>(
     slice: &CheckpointSlice<'a>,
     context_window: u64,
     prefix_tokens: usize,
     trigger_ratio: f64,
 ) -> Option<CheckpointPlan<'a>> {
-    if slice.checkpoint.is_some()
+    plan_checkpoint_split_calibrated(
+        slice,
+        context_window,
+        0,
+        prefix_tokens,
+        trigger_ratio,
+        TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK,
+        false,
+    )
+}
+
+/// Calibrated Stage-B split planner honoring output-token reservation, real-token EMA density,
+/// optional reactive-overflow cooldown bypass (`force_overflow`), Turn-1 goal anchor, and
+/// deterministic cumulative file-op ledger extraction.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_checkpoint_split_calibrated<'a>(
+    slice: &CheckpointSlice<'a>,
+    context_window: u64,
+    reserve_output_tokens: u32,
+    prefix_tokens: usize,
+    trigger_ratio: f64,
+    bytes_per_tok: f64,
+    force_overflow: bool,
+) -> Option<CheckpointPlan<'a>> {
+    if !force_overflow
+        && slice.checkpoint.is_some()
         && slice.events_since_checkpoint < COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS
     {
         return None;
     }
 
     let ratio = trigger_ratio.clamp(0.45, 0.94);
-    let total_budget = ((context_window as f64) * ratio) as usize;
-    let units = group_atomic_event_units(&slice.kept_events);
-    if units.len() <= 3 {
+    let usable = usable_input_window(context_window, reserve_output_tokens);
+    let total_budget = ((usable as f64) * ratio) as usize;
+    let units = group_atomic_event_units(&slice.kept_events, bytes_per_tok);
+    let min_units = match force_overflow {
+        true => 2,
+        false => 3,
+    };
+    if units.len() <= min_units {
         return None;
     }
 
     let prior_ckpt_tokens = slice
         .checkpoint
         .as_ref()
-        .map_or(0, |c| estimate_text_tokens(&c.summary));
+        .map_or(0, |c| estimate_text_tokens_calibrated(&c.summary, bytes_per_tok));
     let active_tokens: usize = units.iter().map(|u| u.est_tokens).sum::<usize>() + prior_ckpt_tokens;
-    if prefix_tokens + active_tokens <= total_budget {
+    if !force_overflow && prefix_tokens + active_tokens <= total_budget {
         return None;
     }
 
-    // Keep roughly 35% of available history budget as verbatim recent tail (minimum 2 units)
     let available = total_budget.saturating_sub(prefix_tokens).max(2_048);
-    let tail_budget = ((available * 35) / 100).max(1_024);
+    let tail_pct = match force_overflow {
+        true => 25,
+        false => 35,
+    };
+    let tail_budget = ((available * tail_pct) / 100).max(1_024);
+    let min_keep = match force_overflow {
+        true => 1,
+        false => 2,
+    };
 
     let mut kept_tokens = 0usize;
     let mut keep_from = units.len();
     for idx in (0..units.len()).rev() {
         let kept_units = units.len() - idx;
         let next_tokens = kept_tokens + units[idx].est_tokens;
-        if kept_units > 2 && next_tokens > tail_budget {
+        if kept_units > min_keep && next_tokens > tail_budget {
             break;
         }
         kept_tokens = next_tokens;
         keep_from = idx;
     }
 
-    // Ensure at least one unit is compacted and the kept boundary has a real event ID
     if keep_from == 0 || keep_from >= units.len() {
         return None;
     }
@@ -507,6 +1162,11 @@ pub fn plan_checkpoint_split<'a>(
         return None;
     }
 
+    let original_goal = extract_original_goal(&events_to_compact, slice.checkpoint.as_ref());
+    let file_ledger = extract_compaction_file_ledger(
+        &events_to_compact,
+        slice.checkpoint.as_ref().map(|c| &c.file_ledger),
+    );
     let compacted_events_count = events_to_compact.len()
         + slice
             .checkpoint
@@ -519,6 +1179,8 @@ pub fn plan_checkpoint_split<'a>(
         compacted_events_count,
         estimated_tokens_before: prefix_tokens + active_tokens,
         estimated_kept_tokens: kept_tokens,
+        original_goal,
+        file_ledger,
     })
 }
 
@@ -593,7 +1255,30 @@ fn format_event_for_compactor(ev: &SessionEvent) -> String {
     }
 }
 
+/// Packs formatted transcript lines newest-first within `char_budget`, then restores strict
+/// chronological order so the most recent decisions/errors right before the cut are NEVER dropped.
+fn pack_newest_chronological(lines: &[String], char_budget: usize, line_prefix: &str) -> (Vec<String>, usize) {
+    let mut kept_rev: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for line in lines.iter().rev() {
+        let needed = line_prefix.len() + line.len() + 1;
+        match used + needed <= char_budget || kept_rev.is_empty() {
+            true => {
+                used += needed;
+                kept_rev.push(format!("{line_prefix}{line}"));
+            }
+            false => {
+                omitted += 1;
+            }
+        }
+    }
+    kept_rev.reverse();
+    (kept_rev, omitted)
+}
+
 /// Builds the iterative-merge compaction prompt (System + User transcript) for `compaction_model`.
+/// Preserves the Turn-1 goal anchor, cumulative file ledger, and **newest** compacted events.
 pub fn build_compaction_prompt(
     plan: &CheckpointPlan<'_>,
     prior_checkpoint: Option<&CompactionCheckpointPayload>,
@@ -614,6 +1299,15 @@ pub fn build_compaction_prompt(
         .to_string();
 
     let mut body = String::with_capacity(4096);
+    if let Some(ref goal) = plan.original_goal {
+        body.push_str("<original_goal>\n");
+        body.push_str(goal);
+        body.push_str("\n</original_goal>\n\n");
+    }
+    if let Some(ledger_block) = format_file_ledger_block(&plan.file_ledger) {
+        body.push_str(&ledger_block);
+        body.push_str("\n\n");
+    }
     if let Some(prev) = prior_checkpoint {
         body.push_str("<prior_checkpoint>\n");
         body.push_str(&prev.summary);
@@ -625,16 +1319,19 @@ pub fn build_compaction_prompt(
         body.push_str("\n</active_execution_plan>\n\n");
     }
     body.push_str("<transcript_to_merge>\n");
-    const MAX_TRANSCRIPT_CHARS: usize = 28_000;
-    for ev in &plan.events_to_compact {
-        let line = format_event_for_compactor(ev);
-        if line.is_empty() {
-            continue;
-        }
-        if body.len() + line.len() + 48 > MAX_TRANSCRIPT_CHARS {
-            body.push_str("... (additional middle entries condensed)\n");
-            break;
-        }
+
+    let formatted: Vec<String> = plan
+        .events_to_compact
+        .iter()
+        .map(|ev| format_event_for_compactor(ev))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let remaining_budget = COMPACTION_MAX_TRANSCRIPT_CHARS.saturating_sub(body.len() + 96);
+    let (kept_lines, omitted) = pack_newest_chronological(&formatted, remaining_budget, "");
+    if omitted > 0 {
+        body.push_str(&format!("... ({omitted} earlier entries condensed)\n"));
+    }
+    for line in kept_lines {
         body.push_str(&line);
         body.push('\n');
     }
@@ -642,7 +1339,7 @@ pub fn build_compaction_prompt(
     (sys, body)
 }
 
-/// Zero-LLM deterministic fallback checkpoint builder used if the compaction LLM call fails.
+/// Zero-LLM deterministic fallback checkpoint builder (newest-preserving + Turn-1 goal + file ledger).
 pub fn build_deterministic_checkpoint(
     plan: &CheckpointPlan<'_>,
     prior_checkpoint: Option<&CompactionCheckpointPayload>,
@@ -652,7 +1349,7 @@ pub fn build_deterministic_checkpoint(
     let mut summary = String::new();
     if let Some(prev) = prior_checkpoint {
         summary.push_str("## Prior Checkpoint\n");
-        summary.push_str(&compact_preview(&prev.summary, 2_400));
+        summary.push_str(&compact_preview(&prev.summary, 2_000));
         summary.push_str("\n\n");
     }
     if let Some(plan_txt) = active_plan_summary {
@@ -661,23 +1358,24 @@ pub fn build_deterministic_checkpoint(
         summary.push_str("\n\n");
     }
     summary.push_str("## Compacted Transcript\n");
-    const MAX_DETERMINISTIC_CHARS: usize = 4_800;
-    for ev in &plan.events_to_compact {
-        let line = format_event_for_compactor(ev);
-        if line.is_empty() {
-            continue;
-        }
-        if summary.len() + line.len() + 32 > MAX_DETERMINISTIC_CHARS {
-            summary.push_str("- ... (earlier entries omitted)\n");
-            break;
-        }
-        summary.push_str("- ");
+    let formatted: Vec<String> = plan
+        .events_to_compact
+        .iter()
+        .map(|ev| format_event_for_compactor(ev))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let remaining = COMPACTION_MAX_DETERMINISTIC_CHARS.saturating_sub(summary.len() + 64);
+    let (kept_lines, omitted) = pack_newest_chronological(&formatted, remaining, "- ");
+    if omitted > 0 {
+        summary.push_str(&format!("- ... ({omitted} earlier entries omitted)\n"));
+    }
+    for line in kept_lines {
         summary.push_str(&line);
         summary.push('\n');
     }
     let after = prefix_tokens + plan.estimated_kept_tokens + estimate_text_tokens(&summary);
     CompactionCheckpointPayload {
-        version: 1,
+        version: 2,
         summary,
         first_kept_event_id: plan.first_kept_event_id.clone(),
         compacted_events_count: plan.compacted_events_count,
@@ -685,26 +1383,189 @@ pub fn build_deterministic_checkpoint(
         estimated_tokens_after: after,
         model: "deterministic".into(),
         created_at: Utc::now(),
+        original_goal: plan.original_goal.clone(),
+        file_ledger: plan.file_ledger.clone(),
     }
+}
+
+// ─── Oh My Pi-Style Abandoned-Branch Summarizer (Zero-LLM) ────────────────────
+
+/// Deterministically summarizes an abandoned branch when the user forks/regenerates from an
+/// earlier event, preserving files touched, errors encountered, and dead-end lessons.
+pub fn build_abandoned_branch_summary(abandoned: &[&SessionEvent]) -> Option<String> {
+    let non_sys: Vec<&SessionEvent> = abandoned
+        .iter()
+        .copied()
+        .filter(|e| e.role != EventRole::System)
+        .collect();
+    if non_sys.is_empty() {
+        return None;
+    }
+
+    let ledger = extract_compaction_file_ledger(&non_sys, None);
+    let recent: Vec<&SessionEvent> = non_sys
+        .iter()
+        .rev()
+        .take(BRANCH_SUMMARY_MAX_EVENTS)
+        .copied()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
+        "Abandoned branch summary ({} event(s) replaced by this retry/fork — avoid repeating failed approaches):",
+        non_sys.len()
+    ));
+    if let Some(ledger_block) = format_file_ledger_block(&ledger) {
+        lines.push(ledger_block);
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut last_assistant: Option<String> = None;
+    for ev in &recent {
+        match ev.role {
+            EventRole::Tool => {
+                if ev
+                    .content_json
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    let name = ev
+                        .content_json
+                        .get("tool_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
+                    let body = ev
+                        .content_json
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if errors.len() < 4 {
+                        errors.push(format!("- [{name} ERR] {}", compact_preview(body, 140)));
+                    }
+                }
+            }
+            EventRole::Assistant => {
+                let text = ev
+                    .content_json
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if !text.is_empty() {
+                    last_assistant = Some(compact_preview(text, 220));
+                }
+            }
+            EventRole::User | EventRole::System => {}
+        }
+    }
+
+    if !errors.is_empty() {
+        lines.push(format!("Errors hit on prior branch:\n{}", errors.join("\n")));
+    }
+    if let Some(reply) = last_assistant {
+        lines.push(format!("Last prior reply excerpt: {reply}"));
+    }
+
+    let joined = lines.join("\n");
+    Some(compact_preview(&joined, BRANCH_SUMMARY_MAX_CHARS))
 }
 
 // ─── Emergency Hard-Ceiling Pair-Preserving Budget Valve ──────────────────────
 
-/// Compacts older exchanges into a rolling `<compacted_history>` summary when estimated tokens
-/// still exceed `context_window * DEFAULT_COMPACTION_TRIGGER_RATIO` after Stage A/B (e.g., during
-/// Stage-B anti-thrash cooldown), while keeping the most recent exchanges verbatim and never
-/// orphaning tool-result messages.
+/// Backwards-compatible emergency hard-ceiling valve using default trigger ratio & calibration.
 pub fn compact_messages_to_budget(
     messages: Vec<ChatMessage>,
     context_window: u64,
     system_prompt_tokens: usize,
 ) -> Vec<ChatMessage> {
-    let total_budget = ((context_window as f64) * DEFAULT_COMPACTION_TRIGGER_RATIO) as usize;
+    compact_messages_to_budget_calibrated(
+        messages,
+        context_window,
+        0,
+        system_prompt_tokens,
+        DEFAULT_COMPACTION_TRIGGER_RATIO,
+        TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK,
+    )
+}
+
+fn shrink_oversized_tool_message(msg: &mut ChatMessage, char_cap: usize) {
+    if msg.content.len() <= char_cap {
+        return;
+    }
+    let orig_bytes = msg.content.len();
+    let preserved_rules: Vec<String> = extract_scoped_repo_rules_blocks(&msg.content)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let handle_note = match extract_artifact_handle(&msg.content) {
+        Some(h) => format!(" (full output at `{h}`)"),
+        None => String::new(),
+    };
+    let head_cap = (char_cap / 2).max(256);
+    let tail_cap = (char_cap / 3).max(256);
+    let head_end = msg.content.floor_char_boundary(head_cap.min(orig_bytes));
+    let tail_start = msg
+        .content
+        .ceil_char_boundary(orig_bytes.saturating_sub(tail_cap));
+    let body = match head_end < tail_start {
+        true => format!(
+            "{}\n\n... [emergency-trimmed {orig_bytes}B tool output to fit context window{handle_note}] ...\n\n{}",
+            &msg.content[..head_end],
+            &msg.content[tail_start..]
+        ),
+        false => compact_preview(&msg.content, char_cap),
+    };
+    msg.content = match preserved_rules.is_empty() {
+        true => body,
+        false => format!("{body}\n\n{}", preserved_rules.join("\n\n")),
+    };
+}
+
+/// Emergency pair-preserving hard ceiling honoring the active `ZMode`/config `trigger_ratio`,
+/// output-token reservation, and calibrated density — AND safely shrinking oversized single-wave
+/// tool results even when `units.len() <= 2` (eliminating unrecoverable HTTP 400 overflows).
+pub fn compact_messages_to_budget_calibrated(
+    messages: Vec<ChatMessage>,
+    context_window: u64,
+    reserve_output_tokens: u32,
+    system_prompt_tokens: usize,
+    trigger_ratio: f64,
+    bytes_per_tok: f64,
+) -> Vec<ChatMessage> {
+    let ratio = trigger_ratio.clamp(0.45, 0.94);
+    let usable = usable_input_window(context_window, reserve_output_tokens);
+    let total_budget = ((usable as f64) * ratio) as usize;
     let available = total_budget.saturating_sub(system_prompt_tokens).max(2_048);
 
-    let units = group_atomic_exchanges(messages);
+    let mut units = group_atomic_exchanges(messages, bytes_per_tok);
     let total_tokens: usize = units.iter().map(|u| u.est_tokens).sum();
-    if total_tokens <= available || units.len() <= 2 {
+    if total_tokens <= available {
+        return units.into_iter().flat_map(|u| u.messages).collect();
+    }
+
+    // Giant single/two-unit edge case (e.g. massive parallel tool wave): shrink bulky tool outputs
+    // in place so the payload fits without dropping the active turn!
+    if units.len() <= 2 {
+        let tool_count = units
+            .iter()
+            .flat_map(|u| u.messages.iter())
+            .filter(|m| m.role == EventRole::Tool)
+            .count()
+            .max(1);
+        let per_tool_chars = (((available as f64) * clamp_bytes_per_token(bytes_per_tok)) as usize
+            / (tool_count + 1))
+            .clamp(1_024, COMPACTION_EMERGENCY_SINGLE_MSG_MAX_CHARS);
+        for unit in &mut units {
+            for msg in &mut unit.messages {
+                if msg.role == EventRole::Tool {
+                    shrink_oversized_tool_message(msg, per_tool_chars);
+                }
+            }
+        }
         return units.into_iter().flat_map(|u| u.messages).collect();
     }
 
@@ -716,12 +1577,6 @@ pub fn compact_messages_to_budget(
         let next_tokens = kept_tokens + units[idx].est_tokens;
         let kept_count = units.len() - idx;
         let must_keep_tail = kept_count <= 2;
-        if !must_keep_tail
-            && kept_count > DEFAULT_COMPACTION_KEEP_RECENT
-            && next_tokens > recent_budget
-        {
-            break;
-        }
         if !must_keep_tail && next_tokens > recent_budget {
             break;
         }
@@ -733,16 +1588,21 @@ pub fn compact_messages_to_budget(
         return units.into_iter().flat_map(|u| u.messages).collect();
     }
 
+    // Pack dropped exchange summaries newest-first so recent decisions survive
     let summary_char_cap = (available / 4).saturating_mul(4).clamp(1_200, 12_000);
-    let mut summary = String::from(
-        "<compacted_history>\nEarlier conversation turns compacted to fit context budget:\n",
-    );
-    for unit in &units[..keep_from] {
-        if summary.len() + unit.summary_line.len() + 24 > summary_char_cap {
-            summary.push_str("... (older turns omitted)\n");
-            break;
-        }
-        summary.push_str(&unit.summary_line);
+    let dropped_lines: Vec<String> = units[..keep_from]
+        .iter()
+        .map(|u| u.summary_line.clone())
+        .collect();
+    let header = "<compacted_history>\nEarlier conversation turns compacted to fit context budget:\n";
+    let (kept_summaries, omitted) =
+        pack_newest_chronological(&dropped_lines, summary_char_cap.saturating_sub(header.len() + 64), "");
+    let mut summary = String::from(header);
+    if omitted > 0 {
+        summary.push_str(&format!("... ({omitted} older turns omitted)\n"));
+    }
+    for line in kept_summaries {
+        summary.push_str(&line);
         summary.push('\n');
     }
     summary.push_str("</compacted_history>");
@@ -777,7 +1637,7 @@ pub fn compact_messages_to_budget(
 mod tests {
     use super::*;
     use serde_json::json;
-    use zenko_core::{TOOL_PLAN_UPDATE, ToolCall};
+    use zenko_core::{TOOL_PLAN_UPDATE, TOOL_WEB_FETCH, ToolCall};
 
     fn user_msg(text: &str) -> ChatMessage {
         ChatMessage {
@@ -853,80 +1713,130 @@ mod tests {
     }
 
     #[test]
-    fn stage_a_microcompaction_collapses_old_reads_preserves_protected_tools_and_artifacts() {
+    fn stage_a_microcompaction_unwraps_invoke_tool_and_batch_tools_while_quantizing_boundary() {
         let mut msgs = Vec::new();
-        // Old read_file with spilled artifact handle -> MUST microcompact & preserve handle
-        msgs.push(user_msg("inspect big file"));
+        // Unit 0: User prompt
+        msgs.push(user_msg("inspect docs and web"));
+        // Unit 1: invoke_tool wrapping bulky `web_fetch` -> MUST microcompact!
         msgs.push(ChatMessage {
             role: EventRole::Assistant,
             content: String::new(),
-            reasoning_content: Some("long stale thinking ".repeat(100)),
+            reasoning_content: Some("stale thought ".repeat(80)),
             tool_calls: vec![ToolCall {
-                id: "c_read".into(),
-                name: "read_file".into(),
-                arguments: json!({"path": "src/main.rs"}),
+                id: "c_inv_web".into(),
+                name: TOOL_INVOKE_TOOL.into(),
+                arguments: json!({"tool": TOOL_WEB_FETCH, "args": {"url": "https://example.com"}}),
             }],
             tool_call_id: None,
             name: None,
         });
         msgs.push(ChatMessage {
             role: EventRole::Tool,
-            content: format!(
-                "{}\n[spilled full `read_file` output -> `artifact:s1/c_read.txt`]",
-                "line\n".repeat(400)
-            ),
+            content: "web body line\n".repeat(250),
             reasoning_content: None,
             tool_calls: Vec::new(),
-            tool_call_id: Some("c_read".into()),
-            name: Some("read_file".into()),
+            tool_call_id: Some("c_inv_web".into()),
+            name: Some(TOOL_INVOKE_TOOL.into()),
         });
-
-        // Old protected plan_update -> MUST NEVER microcompact
+        // Unit 2: invoke_tool wrapping PROTECTED `plan_update` -> MUST NEVER microcompact!
         msgs.push(ChatMessage {
             role: EventRole::Assistant,
             content: String::new(),
             reasoning_content: None,
             tool_calls: vec![ToolCall {
-                id: "c_plan".into(),
-                name: TOOL_PLAN_UPDATE.into(),
-                arguments: json!({"goal": "ship phase 3"}),
+                id: "c_inv_plan".into(),
+                name: TOOL_INVOKE_TOOL.into(),
+                arguments: json!({"tool": TOOL_PLAN_UPDATE, "args": {"goal": "keep safe"}}),
             }],
             tool_call_id: None,
             name: None,
         });
-        let big_plan = format!("PLAN_PAYLOAD: {}", "step detail ".repeat(200));
+        let plan_body = format!("PLAN_KEEP {}", "detail ".repeat(300));
         msgs.push(ChatMessage {
             role: EventRole::Tool,
-            content: big_plan.clone(),
+            content: plan_body.clone(),
             reasoning_content: None,
             tool_calls: Vec::new(),
-            tool_call_id: Some("c_plan".into()),
-            name: Some(TOOL_PLAN_UPDATE.into()),
+            tool_call_id: Some("c_inv_plan".into()),
+            name: Some(TOOL_INVOKE_TOOL.into()),
         });
-
-        // 4 recent protected exchanges -> MUST remain untouched
+        // Unit 3: batch_tools of non-protected reads -> MUST microcompact!
+        msgs.push(ChatMessage {
+            role: EventRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "c_batch".into(),
+                name: TOOL_BATCH_TOOLS.into(),
+                arguments: json!({"calls": [{"tool": "read_file", "args": {"path": "a.rs"}}]}),
+            }],
+            tool_call_id: None,
+            name: None,
+        });
+        msgs.push(ChatMessage {
+            role: EventRole::Tool,
+            content: "batch output line\n".repeat(250),
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            tool_call_id: Some("c_batch".into()),
+            name: Some(TOOL_BATCH_TOOLS.into()),
+        });
+        // Unit 4: Recent unit right on quantized epoch boundary (epoch_end = 4 for 8..11 units)
+        msgs.push(ChatMessage {
+            role: EventRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "c_boundary".into(),
+                name: TOOL_READ_FILE.into(),
+                arguments: json!({"path": "boundary.rs"}),
+            }],
+            tool_call_id: None,
+            name: None,
+        });
+        let boundary_body = "boundary code line\n".repeat(200);
+        msgs.push(ChatMessage {
+            role: EventRole::Tool,
+            content: boundary_body.clone(),
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            tool_call_id: Some("c_boundary".into()),
+            name: Some(TOOL_READ_FILE.into()),
+        });
+        // Units 5..8: 4 recent turns (total = 9 units -> raw_protected_start = 5, quantized = 4!)
         for i in 0..MICROCOMPACT_PROTECT_RECENT_EXCHANGES {
             msgs.push(user_msg(&format!("recent turn {i}")));
         }
 
-        let (out, stats) = microcompact_messages(msgs, 2_000, 600, 0.50);
-        assert_eq!(stats.compacted_tools, 1);
+        let (out, stats) = microcompact_messages(msgs, 2_400, 600, 0.50);
+        assert_eq!(stats.compacted_tools, 2, "invoke_tool(web_fetch) + batch_tools must compact");
         assert_eq!(stats.stripped_reasoning_blocks, 1);
-        assert!(stats.tokens_saved > 200);
 
-        let read_res = out
+        let web_res = out
             .iter()
-            .find(|m| m.tool_call_id.as_deref() == Some("c_read"))
-            .expect("c_read kept");
-        assert!(read_res.content.contains("[microcompacted `read_file`"));
-        assert!(read_res.content.contains("src/main.rs"));
-        assert!(read_res.content.contains("artifact:s1/c_read.txt"));
+            .find(|m| m.tool_call_id.as_deref() == Some("c_inv_web"))
+            .expect("web kept");
+        assert!(web_res.content.contains("[microcompacted `web_fetch`"));
+        assert!(web_res.content.contains("https://example.com"));
 
         let plan_res = out
             .iter()
-            .find(|m| m.tool_call_id.as_deref() == Some("c_plan"))
-            .expect("c_plan kept");
-        assert_eq!(plan_res.content, big_plan, "protected plan_update must never microcompact");
+            .find(|m| m.tool_call_id.as_deref() == Some("c_inv_plan"))
+            .expect("plan kept");
+        assert_eq!(plan_res.content, plan_body, "protected invoke_tool(plan_update) must not compact");
+
+        let batch_res = out
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("c_batch"))
+            .expect("batch kept");
+        assert!(batch_res.content.contains("[microcompacted `batch_tools`"));
+
+        // Unit 4 stays verbatim because quantized epoch boundary stays pinned at 4 (KV-cache stability!)
+        let boundary_res = out
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("c_boundary"))
+            .expect("boundary kept");
+        assert_eq!(boundary_res.content, boundary_body);
     }
 
     #[test]
@@ -967,60 +1877,185 @@ mod tests {
             .find(|m| m.tool_call_id.as_deref() == Some("c_scoped"))
             .expect("c_scoped kept");
         assert!(compacted.content.contains("[microcompacted `read_file`"));
-        assert!(
-            compacted.content.contains(scoped_block),
-            "microcompaction must preserve JIT scoped rules: {}",
-            compacted.content
-        );
+        assert!(compacted.content.contains(scoped_block));
         assert!(!compacted.content.contains("pub fn route() {}"));
     }
 
     #[test]
-    fn stage_b_checkpoint_slicing_and_antithrash_cooldown() {
+    fn stage_b_preserves_goal_anchor_cumulative_file_ledger_and_newest_events() {
         let mut events = Vec::new();
-        for i in 0..8 {
+        events.push(mk_event(
+            "u_0",
+            EventRole::User,
+            EventKind::Message,
+            json!({"text": "ORIGINAL_ANCHOR_GOAL: Refactor payment retry state machine"}),
+        ));
+        events.push(mk_event(
+            "a_0",
+            EventRole::Assistant,
+            EventKind::ToolCall,
+            json!({
+                "text": "",
+                "tool_calls": [
+                    {"id": "t1", "name": "read_file", "arguments": {"path": "src/payments.rs"}},
+                    {"id": "t2", "name": "hash_edit", "arguments": {"path": "src/payments.rs"}}
+                ]
+            }),
+        ));
+        events.push(mk_event(
+            "tr_1",
+            EventRole::Tool,
+            EventKind::ToolResult,
+            json!({"tool_call_id": "t1", "tool_name": "read_file", "content": "ok -> artifact:s1/t1.txt", "is_error": false}),
+        ));
+        for i in 1..10 {
             events.push(mk_event(
                 &format!("u_{i}"),
                 EventRole::User,
                 EventKind::Message,
-                json!({"text": format!("User turn {i}: {}", "z".repeat(800))}),
+                json!({"text": format!("Turn {i} filler: {}", "z".repeat(700))}),
             ));
             events.push(mk_event(
                 &format!("a_{i}"),
                 EventRole::Assistant,
                 EventKind::Message,
-                json!({"text": format!("Reply {i}: {}", "w".repeat(800))}),
+                json!({"text": format!("Reply {i} CRITICAL_MARKER_{i}: {}", "w".repeat(700))}),
             ));
         }
 
         let slice = slice_from_latest_checkpoint(&events);
-        assert!(slice.checkpoint.is_none());
-        let plan = plan_checkpoint_split(&slice, 4_000, 500, 0.75).expect("should plan checkpoint");
-        assert!(!plan.events_to_compact.is_empty());
+        let plan = plan_checkpoint_split_calibrated(
+            &slice,
+            6_000,
+            1_000,
+            500,
+            0.75,
+            TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK,
+            false,
+        )
+        .expect("plan created");
 
-        let ckpt = build_deterministic_checkpoint(&plan, None, Some("goal: test"), 500);
-        events.push(mk_event(
-            "ckpt_1",
-            EventRole::System,
-            EventKind::CompactionCheckpoint,
-            serde_json::to_value(&ckpt).expect("serialize ckpt"),
-        ));
-        events.push(mk_event(
-            "u_after",
-            EventRole::User,
-            EventKind::Message,
-            json!({"text": "next step"}),
-        ));
+        assert!(plan
+            .original_goal
+            .as_deref()
+            .is_some_and(|g| g.contains("ORIGINAL_ANCHOR_GOAL")));
+        assert!(plan.file_ledger.files_read.contains(&"src/payments.rs".to_string()));
+        assert!(plan.file_ledger.files_modified.contains(&"src/payments.rs".to_string()));
+        assert!(plan.file_ledger.artifacts.contains(&"artifact:s1/t1.txt".to_string()));
 
-        let slice2 = slice_from_latest_checkpoint(&events);
-        assert_eq!(slice2.checkpoints_count, 1);
-        assert_eq!(slice2.checkpoint_event_id.as_deref(), Some("ckpt_1"));
-        assert_eq!(slice2.events_since_checkpoint, 1);
-        assert_eq!(slice2.kept_events.first().map(|e| e.id.as_str()), Some(ckpt.first_kept_event_id.as_str()));
-        assert_eq!(slice2.kept_events.last().map(|e| e.id.as_str()), Some("u_after"));
-        assert!(
-            plan_checkpoint_split(&slice2, 1_000, 500, 0.50).is_none(),
-            "anti-thrash cooldown must block immediate re-compaction"
+        let ckpt = build_deterministic_checkpoint(&plan, None, Some("goal: refactor"), 500);
+        // Verify newest compacted event survives truncation (not head-only!)
+        let last_compacted_id = plan
+            .events_to_compact
+            .last()
+            .and_then(|e| e.content_json.get("text").and_then(Value::as_str))
+            .unwrap_or("");
+        if let Some(marker) = last_compacted_id.split(':').next() {
+            assert!(
+                ckpt.summary.contains(marker),
+                "newest compacted entry `{marker}` must be retained over oldest filler"
+            );
+        }
+
+        let mut msgs = vec![user_msg("continue")];
+        prepend_checkpoint_to_messages(&mut msgs, &ckpt);
+        assert!(msgs[0].content.contains("<original_goal>"));
+        assert!(msgs[0].content.contains("<file_ledger>"));
+        assert!(msgs[0].content.contains("modified: src/payments.rs"));
+    }
+
+    #[test]
+    fn emergency_valve_shrinks_giant_single_wave_and_sanitizer_repairs_broken_pairs() {
+        let mut msgs = vec![
+            user_msg("analyze huge dump"),
+            ChatMessage {
+                role: EventRole::Assistant,
+                content: String::new(),
+                reasoning_content: None,
+                tool_calls: vec![ToolCall {
+                    id: "c_big".into(),
+                    name: "shell_exec".into(),
+                    arguments: json!({"command": "cat big.log"}),
+                }],
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: EventRole::Tool,
+                content: "huge log line\n".repeat(4_000),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                tool_call_id: Some("c_big".into()),
+                name: Some("shell_exec".into()),
+            },
+        ];
+
+        // Even with <= 2 atomic units, emergency valve must shrink oversized tool output!
+        let trimmed = compact_messages_to_budget_calibrated(msgs.clone(), 4_096, 512, 400, 0.80, 3.5);
+        let big_out = trimmed.last().expect("tool msg");
+        assert!(big_out.content.len() < 12_000);
+        assert!(big_out.content.contains("emergency-trimmed"));
+
+        // Sanitizer drops leading orphan tool and synthesizes missing tool reply
+        msgs.insert(
+            0,
+            ChatMessage {
+                role: EventRole::Tool,
+                content: "orphan".into(),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                tool_call_id: Some("ghost".into()),
+                name: Some("read_file".into()),
+            },
         );
+        msgs.push(ChatMessage {
+            role: EventRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "missing_reply".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "x.rs"}),
+            }],
+            tool_call_id: None,
+            name: None,
+        });
+        let clean = sanitize_message_tool_pairs(msgs);
+        assert_eq!(clean[0].role, EventRole::User);
+        assert_eq!(clean.last().map(|m| m.role), Some(EventRole::Tool));
+        assert_eq!(
+            clean.last().and_then(|m| m.tool_call_id.as_deref()),
+            Some("missing_reply")
+        );
+    }
+
+    #[test]
+    fn token_calibration_overflow_detection_and_branch_summary_work() {
+        assert!(is_provider_context_overflow_error(&ZenkoError::Provider(
+            "HTTP 400: maximum context length exceeded".into()
+        )));
+        assert!(!is_provider_context_overflow_error(&ZenkoError::Provider(
+            "HTTP 429: rate limit exceeded".into()
+        )));
+
+        // Dense code: 20_000 bytes took 8_000 tokens (2.5 B/tok) -> EMA moves down from 3.5
+        let next = calibrate_bytes_per_token(3.5, 20_000, 8_000);
+        assert!(next < 3.4 && next > 2.5);
+
+        let e1 = mk_event(
+            "a1",
+            EventRole::Assistant,
+            EventKind::ToolCall,
+            json!({"text": "Trying regex rewrite", "tool_calls": [{"id": "c1", "name": "hash_edit", "arguments": {"path": "src/app.rs"}}]}),
+        );
+        let e2 = mk_event(
+            "t1",
+            EventRole::Tool,
+            EventKind::ToolResult,
+            json!({"tool_call_id": "c1", "tool_name": "hash_edit", "content": "hash mismatch on line 42", "is_error": true}),
+        );
+        let sum = build_abandoned_branch_summary(&[&e1, &e2]).expect("branch summary");
+        assert!(sum.contains("modified: src/app.rs"));
+        assert!(sum.contains("hash_edit ERR"));
     }
 }

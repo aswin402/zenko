@@ -552,3 +552,43 @@
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn session_vars_scratchpad_scrubs_secrets_enforces_cap_and_clears_with_session() {
+        let dir = std::env::temp_dir().join(format!("zenko_svars_{}", new_id()));
+        let store = SqliteStore::open(dir.join("zenko.db")).expect("open");
+        let sess = store
+            .create_session("Scratchpad", "webui", None, None, PermissionMode::Balanced)
+            .expect("session");
+
+        let secrets = vec!["my-secret-api-token-999".to_string()];
+        let saved = store
+            .upsert_session_var_with_secrets(
+                &sess.id,
+                "audit_findings",
+                "Found token my-secret-api-token-999 in config",
+                Some("Security audit summary"),
+                &secrets,
+            )
+            .expect("upsert var");
+        assert_eq!(saved.key, "audit_findings");
+        assert!(!saved.value.contains("my-secret-api-token-999"));
+
+        let got = store
+            .get_session_var(&sess.id, "audit_findings")
+            .expect("get")
+            .expect("some");
+        assert_eq!(got.summary, "Security audit summary");
+        assert_eq!(store.list_session_vars(&sess.id).expect("list").len(), 1);
+
+        assert!(store.delete_session_var(&sess.id, "audit_findings").expect("del"));
+        assert!(store.list_session_vars(&sess.id).expect("empty").is_empty());
+
+        let _ = store
+            .upsert_session_var_with_secrets(&sess.id, "k1", "val1", None, &[])
+            .expect("k1");
+        store.clear_session_events(&sess.id).expect("clear");
+        assert!(store.list_session_vars(&sess.id).expect("cleared").is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
