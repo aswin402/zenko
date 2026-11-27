@@ -698,6 +698,35 @@ pub fn summarize_okf_concept(c: &OkfConcept) -> OkfConceptSummary {
     }
 }
 
+/// Builds a compact Tier-2 `<knowledge_catalog_index>` summary list for `SnapshotManager`.
+/// Returns `(active_concepts_count, formatted_lines)` — strictly empty (0 tokens) when unused.
+pub fn build_okf_catalog_index(workspace_dir: &Path) -> (usize, Vec<String>) {
+    let catalog: Vec<OkfConcept> = scan_okf_catalog(workspace_dir)
+        .into_iter()
+        .filter(|c| !matches!(c.status, OkfDocStatus::Deprecated | OkfDocStatus::Superseded))
+        .collect();
+    if catalog.is_empty() {
+        return (0, Vec::new());
+    }
+    let total = catalog.len();
+    let lines = catalog
+        .into_iter()
+        .take(zenko_core::OKF_MAX_INDEX_CONCEPTS)
+        .map(|c| {
+            let s = summarize_okf_concept(&c);
+            format!(
+                "- `{}` [{} · {}/{}]: {}",
+                s.id,
+                s.doc_type,
+                s.trust_tier.as_str(),
+                s.freshness.as_str(),
+                compact_preview(&s.title, 72)
+            )
+        })
+        .collect();
+    (total, lines)
+}
+
 /// Reads a single OKF concept by canonical ID (`knowledge/auth`), stem (`auth`), or relative path.
 pub fn read_okf_concept(workspace_dir: &Path, id_or_path: &str) -> Option<OkfConcept> {
     let needle = concept_id_from_rel_path(id_or_path.trim());

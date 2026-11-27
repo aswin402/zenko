@@ -61,6 +61,10 @@ pub struct WorkspaceSnapshot {
     pub nested_repo_docs: Vec<String>,
     #[serde(default)]
     pub project_brain_pages_count: usize,
+    #[serde(default)]
+    pub hub_wiki_pages_count: usize,
+    #[serde(default)]
+    pub okf_concepts_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_prose_style_source: Option<String>,
     #[serde(default)]
@@ -1155,6 +1159,10 @@ impl SnapshotManager {
         let nested_repo_docs: Vec<String> = nested_docs.iter().map(|(p, _)| p.clone()).collect();
         let (project_brain_pages_count, brain_root_slots, brain_index_lines) =
             crate::brain::build_project_brain_index(&self.workspace_dir());
+        let (hub_wiki_pages_count, hub_uncompiled_raw, hub_wiki_index_lines) =
+            crate::brain::build_hub_wiki_index(&self.hub_dir());
+        let (okf_concepts_count, okf_index_lines) =
+            crate::okf::build_okf_catalog_index(&self.workspace_dir());
         let custom_prose_style_source = zenko_core::detect_custom_prose_style(&[
             (zenko_core::MEM_DOC_USER, &user_md),
             (zenko_core::MEM_DOC_SOUL, &soul_md),
@@ -1183,6 +1191,8 @@ impl SnapshotManager {
         tier1.push_str(zenko_core::ZPOWERS_ENVIRONMENT_POLICY);
         tier1.push('\n');
         tier1.push_str(zenko_core::ASK_USER_ENVIRONMENT_POLICY);
+        tier1.push('\n');
+        tier1.push_str(zenko_core::INSTRUCTION_PRECEDENCE_POLICY);
         tier1.push_str("\n</environment>");
 
         let tier1_hash = sha256_hex(&tier1);
@@ -1228,6 +1238,35 @@ impl SnapshotManager {
             }
             tier2.push_str("</project_brain_index>");
         }
+        if !hub_wiki_index_lines.is_empty() || hub_uncompiled_raw > 0 {
+            tier2.push_str("\n\n<hub_wiki_index>\n");
+            tier2.push_str(&format!(
+                "Personal compounding Hub Wiki (`hub:wiki/`) active — inspect/compile via `invoke_tool(tool=\"{}\", args={{\"scope\":\"hub\",\"action\":\"read_page\"|\"search\"|\"ingest_raw\"|\"create_page\"|\"lint\"}})`:\n",
+                zenko_core::TOOL_PROJECT_BRAIN
+            ));
+            if hub_uncompiled_raw > 0 {
+                tier2.push_str(&format!(
+                    "Uncompiled raw sources waiting in `hub:wiki/raw/`: {hub_uncompiled_raw}\n"
+                ));
+            }
+            for line in &hub_wiki_index_lines {
+                tier2.push_str(line);
+                tier2.push('\n');
+            }
+            tier2.push_str("</hub_wiki_index>");
+        }
+        if !okf_index_lines.is_empty() {
+            tier2.push_str("\n\n<knowledge_catalog_index>\n");
+            tier2.push_str(&format!(
+                "Repo Open Knowledge Format (OKF) catalog active — read/search/audit via `invoke_tool(tool=\"{}\", args={{\"action\":\"read\"|\"search\"|\"graph\"|\"audit_freshness\"}})`:\n",
+                zenko_core::TOOL_KNOWLEDGE_CATALOG
+            ));
+            for line in &okf_index_lines {
+                tier2.push_str(line);
+                tier2.push('\n');
+            }
+            tier2.push_str("</knowledge_catalog_index>");
+        }
 
         let active_skills: Vec<&SkillDoc> = skills
             .iter()
@@ -1270,6 +1309,8 @@ impl SnapshotManager {
             repo_rules_loaded,
             nested_repo_docs,
             project_brain_pages_count,
+            hub_wiki_pages_count,
+            okf_concepts_count,
             custom_prose_style_source,
             cache_stability_warnings,
             tier1_prompt: tier1,
@@ -2465,5 +2506,58 @@ mod tests {
         assert!(warnings.len() >= 3, "warnings={warnings:?}");
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn emits_tier1_precedence_and_tier2_hub_wiki_and_okf_indexes_only_when_present() {
+        let base = std::env::temp_dir().join(format!("zenko_tier2_wiki_{}", zenko_core::new_id()));
+        let data_dir = base.join("data");
+        let ws = base.join("ws");
+        let hub = base.join("hub");
+        std::fs::create_dir_all(&ws).expect("ws");
+        std::fs::create_dir_all(&hub).expect("hub");
+
+        // Empty workspace & hub -> zero Tier-2 wiki/OKF token overhead
+        let mgr = SnapshotManager::new(&data_dir, &ws).with_hub_dir(&hub);
+        let empty_snap = mgr.load_snapshot().expect("empty snap");
+        assert!(empty_snap.tier1_prompt.contains("instruction_precedence:"));
+        assert!(!empty_snap.tier2_prompt.contains("<hub_wiki_index>"));
+        assert!(!empty_snap.tier2_prompt.contains("<knowledge_catalog_index>"));
+        assert_eq!(empty_snap.hub_wiki_pages_count, 0);
+        assert_eq!(empty_snap.okf_concepts_count, 0);
+
+        // Populate hub wiki + OKF concept -> both surface cleanly in Tier 2
+        let _ = crate::brain::create_brain_page_scoped(
+            &ws,
+            &hub,
+            zenko_core::BrainScope::Hub,
+            "rust-patterns",
+            "Rust Architecture Notes",
+            zenko_core::BrainPageCategory::Concept,
+            zenko_core::BrainPageStatus::Active,
+            &["rust".into()],
+            "Prefer declarative match dispatch over if/else chains.",
+            "Saved note",
+            "notes",
+            &[],
+            &[],
+        )
+        .expect("hub page");
+        std::fs::create_dir_all(ws.join("knowledge")).expect("okf dir");
+        std::fs::write(
+            ws.join("knowledge/auth.md"),
+            "---\ntype: architecture\ntitle: Auth Contract\nsummary: Token verification invariant\n---\nAlways validate HMAC signatures.\n",
+        )
+        .expect("okf doc");
+
+        let full_snap = mgr.load_snapshot().expect("full snap");
+        assert_eq!(full_snap.hub_wiki_pages_count, 1);
+        assert_eq!(full_snap.okf_concepts_count, 1);
+        assert!(full_snap.tier2_prompt.contains("<hub_wiki_index>"));
+        assert!(full_snap.tier2_prompt.contains("rust-patterns"));
+        assert!(full_snap.tier2_prompt.contains("<knowledge_catalog_index>"));
+        assert!(full_snap.tier2_prompt.contains("Auth Contract"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

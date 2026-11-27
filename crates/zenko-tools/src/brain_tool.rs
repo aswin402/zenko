@@ -7,15 +7,16 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
     BRAIN_ACTIONS, BRAIN_DEFAULT_SEARCH_LIMIT, BRAIN_MAX_SEARCH_LIMIT, BRAIN_PAGE_CATEGORIES,
-    BRAIN_PAGE_STATUSES, BRAIN_ROOT_SLOT_SLUGS, BRAIN_TIMELINE_KINDS, BrainAction,
-    BrainPageCategory, BrainPageStatus, BrainRootSlot, BrainTimelineKind, Result, RiskLevel,
-    SecretVault, TOOL_PROJECT_BRAIN, Tool, ToolConcurrency, ToolContext, ToolExposure, ToolOutput,
-    ToolSet, ToolSpec, ZenkoError, is_brain_tool_args_mutating,
+    BRAIN_PAGE_STATUSES, BRAIN_ROOT_SLOT_SLUGS, BRAIN_SCOPES, BRAIN_TIMELINE_KINDS, BrainAction,
+    BrainPageCategory, BrainPageStatus, BrainRootSlot, BrainScope, BrainTimelineKind, Result,
+    RiskLevel, SecretVault, TOOL_PROJECT_BRAIN, Tool, ToolConcurrency, ToolContext, ToolExposure,
+    ToolOutput, ToolSet, ToolSpec, ZenkoError, is_brain_tool_args_mutating,
 };
 use zenko_memory::brain::{
-    append_brain_timeline, archive_brain_page, compute_brain_impact_graph, create_brain_page,
-    init_project_brain, list_brain_pages, read_brain_page, read_brain_root_slot,
-    search_brain_pages, update_brain_page_truth, update_brain_root_slot,
+    append_brain_timeline_scoped, archive_brain_page_scoped, compute_brain_impact_graph_scoped,
+    create_brain_page_scoped, ingest_raw_source, init_brain_scoped, lint_brain,
+    list_brain_pages_scoped, read_brain_page_scoped, read_brain_root_slot_scoped,
+    search_brain_pages_scoped, update_brain_page_truth_scoped, update_brain_root_slot_scoped,
 };
 
 pub struct ProjectBrainTool {
@@ -88,14 +89,19 @@ impl Tool for ProjectBrainTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_PROJECT_BRAIN.into(),
-            description: "Manage Git-tracked Repo-Native Project Brain (`BRAIN.md` + `brain/`, interoperable with `mindmuxai/brain.md`): atomic correct-by-construction pages pairing rewritable `compiled_truth` with append-only `Timeline` decision/reversal history, 6 blueprint root slots (`background`, `architecture`, `flow`, `mindmap`, `stack`, `roadmap`), token search, and BFS `affects`/backlink impact graphs.".into(),
+            description: "Manage Git-tracked Repo Project Brain (`scope=\"workspace\"`, `BRAIN.md` + `brain/`) or Personal Compounding Hub Wiki (`scope=\"hub\"`, `hub:wiki/`): Karpathy LLM Wiki layers (`raw/` immutable source drop-box, `pages/` pairing rewritable `compiled_truth` with append-only `Timeline`, auto-maintained `index.md` & `log.md`), root slots, search, BFS `impact`, `ingest_raw`, and deterministic `lint`.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": BRAIN_SCOPES,
+                        "description": "Target wiki scope: `workspace` (default, repo-native `brain/`) or `hub` (personal compounding `hub:wiki/`)."
+                    },
                     "action": {
                         "type": "string",
                         "enum": BRAIN_ACTIONS,
-                        "description": "Read-only (`list_pages`, `read_page`, `read_root`, `search`, `impact`) or atomic mutating (`init`, `create_page`, `update_truth`, `append_timeline`, `archive_page`, `update_root`)."
+                        "description": "Read-only (`list_pages`, `read_page`, `read_root`, `search`, `impact`, `lint`) or atomic mutating (`init`, `create_page`, `update_truth`, `append_timeline`, `archive_page`, `update_root`, `ingest_raw`)."
                     },
                     "id": { "type": "string", "description": "Kebab-case page ID (e.g. `auth-session-strategy`)." },
                     "title": { "type": "string", "description": "One-line page title (for `create_page`)." },
@@ -137,23 +143,38 @@ impl Tool for ProjectBrainTool {
             )));
         };
 
+        let scope = match args.get("scope").and_then(Value::as_str) {
+            Some(raw_scope) => BrainScope::parse(raw_scope).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "invalid project_brain scope `{raw_scope}` (expected one of: {})",
+                    BRAIN_SCOPES.join(", ")
+                ))
+            })?,
+            None => BrainScope::Workspace,
+        };
+        let scope_label = match scope {
+            BrainScope::Workspace => "Project Brain",
+            BrainScope::Hub => "Personal Hub Wiki",
+        };
         let ws = ctx.workspace_dir.clone();
+        let hub = ctx.hub_dir.clone();
         let secrets = self.known_secrets();
 
         match action {
             BrainAction::Init => {
-                let created = tokio::task::spawn_blocking(move || init_project_brain(&ws))
-                    .await
-                    .map_err(|e| ZenkoError::Tool(format!("project_brain init join error: {e}")))??;
+                let created =
+                    tokio::task::spawn_blocking(move || init_brain_scoped(&ws, &hub, scope))
+                        .await
+                        .map_err(|e| ZenkoError::Tool(format!("project_brain init join error: {e}")))??;
                 let msg = match created.is_empty() {
-                    true => "Project Brain already initialized in this workspace.".to_string(),
+                    true => format!("{scope_label} already initialized."),
                     false => format!(
-                        "Initialized Project Brain ({} file(s) created): {}",
+                        "Initialized {scope_label} ({} file(s) created): {}",
                         created.len(),
                         created.join(", ")
                     ),
                 };
-                Ok(ok_meta(msg, json!({ "created": created })))
+                Ok(ok_meta(msg, json!({ "scope": scope.as_str(), "created": created })))
             }
             BrainAction::ListPages => {
                 let status_f = args
@@ -165,15 +186,15 @@ impl Tool for ProjectBrainTool {
                     .and_then(Value::as_str)
                     .and_then(BrainPageCategory::parse);
                 let pages = tokio::task::spawn_blocking(move || {
-                    list_brain_pages(&ws, status_f, cat_f)
+                    list_brain_pages_scoped(&ws, &hub, scope, status_f, cat_f)
                 })
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("project_brain list join error: {e}")))?;
 
                 let content = match pages.is_empty() {
-                    true => "No Project Brain pages found.".to_string(),
+                    true => format!("No {scope_label} pages found."),
                     false => {
-                        let mut lines = vec![format!("Project Brain Pages ({}):", pages.len())];
+                        let mut lines = vec![format!("{scope_label} Pages ({}):", pages.len())];
                         for p in &pages {
                             let rev = match p.has_reversals {
                                 true => " [reversal]",
@@ -203,19 +224,20 @@ impl Tool for ProjectBrainTool {
                     .ok_or_else(|| ZenkoError::Tool("`read_page` requires `id`".into()))?
                     .to_string();
                 let (page, impact) = tokio::task::spawn_blocking(move || -> Result<_> {
-                    let page = read_brain_page(&ws, &id)?;
-                    let impact = compute_brain_impact_graph(&ws, &page.id)?;
+                    let page = read_brain_page_scoped(&ws, &hub, scope, &id)?;
+                    let impact = compute_brain_impact_graph_scoped(&ws, &hub, scope, &page.id)?;
                     Ok((page, impact))
                 })
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("project_brain read join error: {e}")))??;
 
                 let mut out = vec![format!(
-                    "# {} (`{}` · {} · {})\nupdated: {} · tags: [{}]",
+                    "# {} (`{}` · {} · {} · scope={})\nupdated: {} · tags: [{}]",
                     page.title,
                     page.id,
                     page.category.as_str(),
                     page.status.as_str(),
+                    scope.as_str(),
                     page.updated,
                     page.tags.join(", ")
                 )];
@@ -248,7 +270,7 @@ impl Tool for ProjectBrainTool {
                 }
                 Ok(ok_meta(
                     out.join("\n"),
-                    json!({ "page": page, "impact": impact }),
+                    json!({ "scope": scope.as_str(), "page": page, "impact": impact }),
                 ))
             }
             BrainAction::CreatePage => {
@@ -294,8 +316,10 @@ impl Tool for ProjectBrainTool {
                 let affects = parse_string_array(&args, "affects");
 
                 let page = tokio::task::spawn_blocking(move || {
-                    create_brain_page(
+                    create_brain_page_scoped(
                         &ws,
+                        &hub,
+                        scope,
                         &id,
                         &title,
                         category,
@@ -313,7 +337,7 @@ impl Tool for ProjectBrainTool {
 
                 Ok(ok_meta(
                     format!(
-                        "Created Project Brain page `{}` [{} · {}] ({} timeline entry).",
+                        "Created {scope_label} page `{}` [{} · {}] ({} timeline entry; index.md & log.md synced).",
                         page.id,
                         page.category.as_str(),
                         page.status.as_str(),
@@ -361,8 +385,10 @@ impl Tool for ProjectBrainTool {
                     .and_then(BrainPageStatus::parse);
 
                 let (page, impact) = tokio::task::spawn_blocking(move || -> Result<_> {
-                    let page = update_brain_page_truth(
+                    let page = update_brain_page_truth_scoped(
                         &ws,
+                        &hub,
+                        scope,
                         &id,
                         &truth,
                         kind,
@@ -373,7 +399,7 @@ impl Tool for ProjectBrainTool {
                         status_override,
                         &secrets,
                     )?;
-                    let impact = compute_brain_impact_graph(&ws, &page.id)?;
+                    let impact = compute_brain_impact_graph_scoped(&ws, &hub, scope, &page.id)?;
                     Ok((page, impact))
                 })
                 .await
@@ -389,12 +415,13 @@ impl Tool for ProjectBrainTool {
                 };
                 Ok(ok_meta(
                     format!(
-                        "Updated `{}` compiled_truth + appended `{}` timeline entry (#{}){impact_note}.",
+                        "Updated `{}` ({}) compiled_truth + appended `{}` timeline entry (#{}){impact_note}.",
                         page.id,
+                        scope.as_str(),
                         kind.as_str(),
                         page.timeline.len()
                     ),
-                    json!({ "page": page, "impact": impact }),
+                    json!({ "scope": scope.as_str(), "page": page, "impact": impact }),
                 ))
             }
             BrainAction::AppendTimeline => {
@@ -423,17 +450,20 @@ impl Tool for ProjectBrainTool {
                 let affects = parse_string_array(&args, "affects");
 
                 let page = tokio::task::spawn_blocking(move || {
-                    append_brain_timeline(&ws, &id, kind, &summary, &source, &affects, &secrets)
+                    append_brain_timeline_scoped(
+                        &ws, &hub, scope, &id, kind, &summary, &source, &affects, &secrets,
+                    )
                 })
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("project_brain timeline join error: {e}")))??;
 
                 Ok(ok_meta(
                     format!(
-                        "Appended `{}` timeline entry (#{}) to `{}`.",
+                        "Appended `{}` timeline entry (#{}) to `{}` ({}).",
                         kind.as_str(),
                         page.timeline.len(),
-                        page.id
+                        page.id,
+                        scope.as_str()
                     ),
                     serde_json::to_value(&page).unwrap_or(Value::Null),
                 ))
@@ -463,8 +493,10 @@ impl Tool for ProjectBrainTool {
                     .unwrap_or(false);
 
                 let page = tokio::task::spawn_blocking(move || {
-                    archive_brain_page(
+                    archive_brain_page_scoped(
                         &ws,
+                        &hub,
+                        scope,
                         &id,
                         &summary,
                         &source,
@@ -478,8 +510,9 @@ impl Tool for ProjectBrainTool {
 
                 Ok(ok_meta(
                     format!(
-                        "Archived `{}` ({} timeline entries).",
+                        "Archived `{}` ({}, {} timeline entries).",
                         page.id,
+                        scope.as_str(),
                         page.timeline.len()
                     ),
                     serde_json::to_value(&page).unwrap_or(Value::Null),
@@ -496,10 +529,12 @@ impl Tool for ProjectBrainTool {
                         BRAIN_ROOT_SLOT_SLUGS.join(", ")
                     )));
                 };
-                let body = tokio::task::spawn_blocking(move || read_brain_root_slot(&ws, slot))
-                    .await
-                    .map_err(|e| ZenkoError::Tool(format!("project_brain read_root error: {e}")))??;
-                Ok(ok_meta(body, json!({ "slot": slot.as_str() })))
+                let body = tokio::task::spawn_blocking(move || {
+                    read_brain_root_slot_scoped(&ws, &hub, scope, slot)
+                })
+                .await
+                .map_err(|e| ZenkoError::Tool(format!("project_brain read_root error: {e}")))??;
+                Ok(ok_meta(body, json!({ "scope": scope.as_str(), "slot": slot.as_str() })))
             }
             BrainAction::UpdateRoot => {
                 let raw_slot = args
@@ -519,17 +554,17 @@ impl Tool for ProjectBrainTool {
                     .ok_or_else(|| ZenkoError::Tool("`update_root` requires `content`".into()))?
                     .to_string();
                 let written = tokio::task::spawn_blocking(move || {
-                    update_brain_root_slot(&ws, slot, &content, &secrets)
+                    update_brain_root_slot_scoped(&ws, &hub, scope, slot, &content, &secrets)
                 })
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("project_brain update_root error: {e}")))??;
                 Ok(ok_meta(
                     format!(
-                        "Updated Project Brain root slot `{}` ({} bytes).",
+                        "Updated {scope_label} root slot `{}` ({} bytes).",
                         slot.filename(),
                         written.len()
                     ),
-                    json!({ "slot": slot.as_str(), "bytes": written.len() }),
+                    json!({ "scope": scope.as_str(), "slot": slot.as_str(), "bytes": written.len() }),
                 ))
             }
             BrainAction::Search => {
@@ -548,15 +583,15 @@ impl Tool for ProjectBrainTool {
                     .unwrap_or(BRAIN_DEFAULT_SEARCH_LIMIT as u64)
                     .clamp(1, BRAIN_MAX_SEARCH_LIMIT as u64) as usize;
                 let hits = tokio::task::spawn_blocking(move || {
-                    search_brain_pages(&ws, &query, include_archived, limit)
+                    search_brain_pages_scoped(&ws, &hub, scope, &query, include_archived, limit)
                 })
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("project_brain search error: {e}")))?;
 
                 let content = match hits.is_empty() {
-                    true => "No matching Project Brain pages found.".to_string(),
+                    true => format!("No matching {scope_label} pages found."),
                     false => {
-                        let mut lines = vec![format!("Project Brain Search ({} hit(s)):", hits.len())];
+                        let mut lines = vec![format!("{scope_label} Search ({} hit(s)):", hits.len())];
                         for h in &hits {
                             let rev = match h.summary.has_reversals {
                                 true => " [reversal]",
@@ -591,13 +626,13 @@ impl Tool for ProjectBrainTool {
                     .ok_or_else(|| ZenkoError::Tool("`impact` requires `id`".into()))?
                     .to_string();
                 let graph = tokio::task::spawn_blocking(move || {
-                    compute_brain_impact_graph(&ws, &id)
+                    compute_brain_impact_graph_scoped(&ws, &hub, scope, &id)
                 })
                 .await
                 .map_err(|e| ZenkoError::Tool(format!("project_brain impact error: {e}")))??;
 
                 let content = format!(
-                    "Project Brain Impact Graph for `{}`:\n- direct_affects: [{}]\n- transitive_affects: [{}]\n- referenced_by: [{}]",
+                    "{scope_label} Impact Graph for `{}`:\n- direct_affects: [{}]\n- transitive_affects: [{}]\n- referenced_by: [{}]",
                     graph.page_id,
                     graph.direct_affects.join(", "),
                     graph.transitive_affects.join(", "),
@@ -606,6 +641,72 @@ impl Tool for ProjectBrainTool {
                 Ok(ok_meta(
                     content,
                     serde_json::to_value(&graph).unwrap_or(Value::Null),
+                ))
+            }
+            BrainAction::IngestRaw => {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ZenkoError::Tool("`ingest_raw` requires `id`".into()))?
+                    .to_string();
+                let title = args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let source_url = args
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let content_body = args
+                    .get("content")
+                    .or_else(|| args.get("compiled_truth"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ZenkoError::Tool("`ingest_raw` requires `content`".into()))?
+                    .to_string();
+                let rel_path = tokio::task::spawn_blocking(move || {
+                    ingest_raw_source(
+                        &ws,
+                        &hub,
+                        scope,
+                        &id,
+                        &title,
+                        &source_url,
+                        &content_body,
+                        &secrets,
+                    )
+                })
+                .await
+                .map_err(|e| ZenkoError::Tool(format!("project_brain ingest_raw error: {e}")))??;
+                Ok(ok_meta(
+                    format!(
+                        "Saved immutable raw source `{rel_path}` in {scope_label} (`index.md` & `log.md` updated). Compile into wiki pages with `create_page`/`update_truth` citing `source=\"{rel_path}\"`."
+                    ),
+                    json!({ "scope": scope.as_str(), "raw_path": rel_path }),
+                ))
+            }
+            BrainAction::Lint => {
+                let report = tokio::task::spawn_blocking(move || lint_brain(&ws, &hub, scope))
+                    .await
+                    .map_err(|e| ZenkoError::Tool(format!("project_brain lint error: {e}")))?;
+                let mut lines = vec![format!(
+                    "{scope_label} Lint Report (pages={}/{} active · raw={} · issues={}):",
+                    report.active_pages,
+                    report.total_pages,
+                    report.raw_sources_count,
+                    report.issues.len()
+                )];
+                if report.issues.is_empty() {
+                    lines.push("- Healthy: zero orphans, zero broken links, zero stale pages, and zero uncompiled raw sources.".into());
+                } else {
+                    for issue in &report.issues {
+                        lines.push(format!("- [{}] {}: {}", issue.kind.as_str(), issue.target, issue.detail));
+                    }
+                }
+                Ok(ok_meta(
+                    lines.join("\n"),
+                    serde_json::to_value(&report).unwrap_or(Value::Null),
                 ))
             }
         }

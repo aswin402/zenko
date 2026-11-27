@@ -3,6 +3,7 @@ pub mod agents;
 pub mod artifacts;
 pub mod checkpoint;
 pub mod compaction;
+pub mod context_engine;
 pub mod dream;
 pub mod economy;
 pub mod export;
@@ -44,6 +45,10 @@ pub use compaction::{
     microcompact_messages, microcompact_messages_calibrated, plan_checkpoint_split,
     plan_checkpoint_split_calibrated, prepend_checkpoint_to_messages, sanitize_message_tool_pairs,
     slice_from_latest_checkpoint, tool_specs_raw_bytes, usable_input_window,
+};
+pub use context_engine::{
+    AssembledTailContext, TailContextBlock, TailContextBuilder, compute_context_score,
+    retrieve_ranked_context,
 };
 pub use dream::{dream_status, run_dream_cycle, run_dream_worker};
 pub use export::{export_batch, export_session};

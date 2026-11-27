@@ -2,7 +2,8 @@ use crate::error::Result;
 use crate::types::{
     AgentMailMessage, AgentMessageOptions, BackgroundJobRecord, BatchToolRequest,
     BatchToolStepOutcome, BrainstormSpec, ChatRequest, ClarificationAnswer, ClarificationOption,
-    ClarificationRecord, ContextBreakdown, ExecutionPlan, FileFreshnessCheck,
+    ClarificationRecord, ContextBreakdown, ContextRetrievalReport, ExecutionPlan,
+    FileFreshnessCheck,
     GoalLoopCreateRequest, GoalLoopPatch, GoalLoopRecord, GoalLoopRun, JobReadChunk, LlmDelta,
     ModelInfo, OrchestrateControlReceipt, OrchestrateControlRequest, RepoMicroSkill, SessionTask,
     SessionTaskPatch, SubagentRecord, SubagentSpawnRequest, TaskKind, TokenEconomyReport,
@@ -299,6 +300,23 @@ pub trait ContextBridge: Send + Sync {
     /// Computes live per-tier token usage, cache hit %, microcompaction savings, active checkpoint,
     /// and spilled artifacts count for `session_id`.
     async fn inspect_session_context(&self, session_id: &str) -> Result<ContextBreakdown>;
+
+    /// Runs unified multi-source context retrieval across SQLite memories, repo Project Brain,
+    /// personal Hub Wiki, OKF Knowledge Catalog, and Skills with explicit precedence + relevance scoring.
+    async fn retrieve_ranked_context(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<ContextRetrievalReport> {
+        let _ = (session_id, limit);
+        Ok(ContextRetrievalReport {
+            query: query.to_string(),
+            workspace_scope: String::new(),
+            total_candidates: 0,
+            items: Vec::new(),
+        })
+    }
 }
 
 /// Bridge connecting wave-aware `batch_tools` and KV-cache-safe `invoke_tool` in `zenko-tools`

@@ -1784,6 +1784,7 @@ impl AgentRuntime {
             scoped_rules_loaded: self.hydrate_loaded_scoped_rules(session_id, &branch),
             nested_repo_docs_count: snapshot.nested_repo_docs.len(),
             project_brain_pages_count: snapshot.project_brain_pages_count,
+            hub_wiki_pages_count: snapshot.hub_wiki_pages_count,
             okf_concepts_count,
             prefix_cache_key: prefix_eval.as_ref().map(|e| e.prompt_cache_key.clone()),
             prefix_drift_reason: prefix_eval
@@ -1794,6 +1795,43 @@ impl AgentRuntime {
             calibrated_bytes_per_token: (calibrated_bpt * 100.0).round() / 100.0,
             session_vars_count,
         })
+    }
+
+    /// Runs the modular Context Retrieval Engine across Repo Project Brain, Personal Hub Wiki,
+    /// OKF Knowledge Catalog, Scoped/Global SQLite Memories, and Progressive Skills.
+    pub async fn retrieve_ranked_context(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<zenko_core::ContextRetrievalReport> {
+        let cfg = self.config();
+        let workspace_dir = self
+            .store
+            .get_session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.workspace_dir)
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cfg.resolved_workspace_dir());
+        let hub_dir = cfg.resolved_hub_dir();
+        let data_dir = cfg.resolved_data_dir();
+        let store = self.store.clone();
+        let q = query.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mgr = SnapshotManager::new(&data_dir, &workspace_dir).with_hub_dir(&hub_dir);
+            crate::context_engine::retrieve_ranked_context(
+                &store,
+                &mgr,
+                &workspace_dir,
+                &hub_dir,
+                &q,
+                limit,
+            )
+        })
+        .await
+        .map_err(|e| ZenkoError::Tool(format!("context retrieval worker failed: {e}")))
     }
 
     pub fn resolve_repo_scope(&self, workspace_dir: Option<&Path>) -> String {

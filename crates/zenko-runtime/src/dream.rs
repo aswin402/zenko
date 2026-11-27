@@ -339,27 +339,43 @@ async fn execute_dream_stages(
 ) -> Result<Option<String>> {
     // Stage 0: Zero-token deterministic hygiene (always runs even offline)
     let ws = cfg.resolved_workspace_dir();
+    let hub = cfg.resolved_hub_dir();
     let hygiene = runtime.store.run_memory_hygiene(Some(&ws))?;
     rec.memories_merged += hygiene.duplicates_merged;
     rec.memories_archived += hygiene.entries_archived;
 
-    let stage0_mgr = SnapshotManager::new(cfg.resolved_data_dir(), &ws)
-        .with_hub_dir(cfg.resolved_hub_dir());
+    let stage0_mgr = SnapshotManager::new(cfg.resolved_data_dir(), &ws).with_hub_dir(&hub);
     let (stage0_compressed, stage0_bytes_saved) = match cfg.memory.dream_auto_patch_docs {
         true => auto_compress_bloated_memory_docs(&stage0_mgr, cfg.context.concise_mode),
         false => (0, 0),
     };
     rec.docs_patched += stage0_compressed;
 
+    // Deterministic Karpathy Wiki lint across active Project Brain & Personal Hub Wiki (zero tokens)
+    let ws_wiki_issues = match zenko_memory::brain::has_project_brain(&ws) {
+        true => zenko_memory::brain::lint_brain(&ws, &hub, zenko_core::BrainScope::Workspace)
+            .issues
+            .len(),
+        false => 0,
+    };
+    let hub_wiki_issues = match zenko_memory::brain::has_hub_wiki(&hub) {
+        true => zenko_memory::brain::lint_brain(&ws, &hub, zenko_core::BrainScope::Hub)
+            .issues
+            .len(),
+        false => 0,
+    };
+    let wiki_lint_issues = ws_wiki_issues + hub_wiki_issues;
+
     if sessions.is_empty() {
         rec.status = "hygiene_only".into();
         rec.detail = Some(format!(
-            "Stage-0 hygiene complete (dedup={}, archived={}, stale_paths={}, docs_compressed={}, bytes_saved={})",
+            "Stage-0 hygiene complete (dedup={}, archived={}, stale_paths={}, docs_compressed={}, bytes_saved={}, wiki_lint_issues={})",
             hygiene.duplicates_merged,
             hygiene.entries_archived,
             hygiene.stale_flagged,
             stage0_compressed,
             stage0_bytes_saved,
+            wiki_lint_issues,
         ));
         return Ok(None);
     }

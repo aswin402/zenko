@@ -89,6 +89,20 @@ impl ContextBridge for RuntimeContextBridge {
         };
         rt.inspect_session_context(session_id).await
     }
+
+    async fn retrieve_ranked_context(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<zenko_core::ContextRetrievalReport> {
+        let Some(rt) = self.upgrade() else {
+            return Err(ZenkoError::Config(
+                "runtime context bridge unavailable".into(),
+            ));
+        };
+        rt.retrieve_ranked_context(session_id, query, limit).await
+    }
 }
 
 /// Leak-free `Weak<AgentRuntime>` bridge executing `batch_tools` through the runtime's

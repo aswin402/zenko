@@ -359,10 +359,19 @@ impl Tool for ContextInspectTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_CONTEXT_INSPECT.into(),
-            description: "Inspect live token budget breakdown for the current session: Tier 1/2 prompt sizes, loaded repo rules, eager vs deferred tool schemas, conversation tokens, microcompaction savings, active compaction checkpoint, spilled artifacts, and KV cache hit %.".into(),
+            description: "Inspect live token budget breakdown (Tier 1/2 prompt sizes, KV cache hit %, checkpoints, artifacts) OR pass `query` to run unified multi-source ranked context retrieval across Repo Project Brain, Personal Hub Wiki, OKF Knowledge Catalog, SQLite Memories, and Skills (separating instruction precedence from relevance scoring).".into(),
             parameters: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional topic/task query: when set, ranks relevant context across Project Brain, Hub Wiki, OKF, Memories & Skills with exact just-in-time load hints."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max ranked context hits when `query` is provided (default: 8, max: 24)."
+                    }
+                }
             }),
             risk: RiskLevel::Safe,
         }
@@ -371,9 +380,61 @@ impl Tool for ContextInspectTool {
     async fn execute(
         &self,
         ctx: &ToolContext,
-        _args: Value,
+        args: Value,
         _cancel: CancellationToken,
     ) -> Result<ToolOutput> {
+        if let Some(query) = args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(zenko_core::CONTEXT_RETRIEVAL_DEFAULT_LIMIT as u64)
+                .clamp(1, zenko_core::CONTEXT_RETRIEVAL_MAX_LIMIT as u64) as usize;
+            let report = self
+                .bridge
+                .retrieve_ranked_context(&ctx.session_id, query, limit)
+                .await?;
+            let content = match report.items.is_empty() {
+                true => format!(
+                    "Context Retrieval for `{}`: 0 matching items across Project Brain, Hub Wiki, OKF, Memories, and Skills.",
+                    report.query
+                ),
+                false => {
+                    let mut lines = vec![format!(
+                        "Ranked Context Retrieval for `{}` ({} shown / {} candidates · precedence != relevance):",
+                        report.query,
+                        report.items.len(),
+                        report.total_candidates
+                    )];
+                    for (idx, item) in report.items.iter().enumerate() {
+                        lines.push(format!(
+                            "{}. [score={:.2} · prec=P{}:{} · {}] `{}` — {} | {} | load: `{}`",
+                            idx + 1,
+                            item.score,
+                            item.precedence.rank(),
+                            item.precedence.as_str(),
+                            item.source.as_str(),
+                            item.id,
+                            item.title,
+                            item.summary,
+                            item.load_hint
+                        ));
+                    }
+                    lines.join("\n")
+                }
+            };
+            return Ok(ToolOutput {
+                content,
+                is_error: false,
+                diff: None,
+                metadata: serde_json::to_value(&report).ok(),
+            });
+        }
+
         let info = self.bridge.inspect_session_context(&ctx.session_id).await?;
         let rules = match info.repo_rules_loaded.is_empty() {
             true => "none".to_string(),
@@ -404,7 +465,7 @@ impl Tool for ContextInspectTool {
             "Context Budget (`{}` · model=`{}`)\n\
              - Window: {} / {} tok ({:.1}% used · KV cache hit {:.1}%)\n\
              - Tier 1 (frozen prefix): {} tok (hash={} · repo_rules=[{rules}] · kv_prefix={kv_prefix_status})\n\
-             - Tier 2 (session stable): {} tok (scoped_dox={scoped_rules} · project_brain={} active · okf={} concepts)\n\
+             - Tier 2 (session stable): {} tok (scoped_dox={scoped_rules} · project_brain={} active · hub_wiki={} active · okf={} concepts)\n\
              - Prefix Engine: drift=`{}` ({}% reused · calibrated {:.2} B/tok · session_vars={})\n\
              - Tool schemas: {} tok (eager={}, deferred_active={}/{})\n\
              - History: {} tok (microcompacted={} tools, ~{} tok saved)\n\
@@ -421,6 +482,7 @@ impl Tool for ContextInspectTool {
             &info.tier1_hash[..info.tier1_hash.len().min(12)],
             info.tier2_tokens,
             info.project_brain_pages_count,
+            info.hub_wiki_pages_count,
             info.okf_concepts_count,
             info.prefix_drift_reason.as_str(),
             info.prefix_hit_ratio_pct,

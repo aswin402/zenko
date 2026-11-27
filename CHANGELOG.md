@@ -4,6 +4,20 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.55] - 2026-11-28
+
+Upgraded Zenko's orchestrator and knowledge architecture with a modular **Context Assembly & Multi-Source Relevance Engine** (explicitly separating Instruction Precedence from Context Relevance while preserving Tier-1/Tier-2 KV-cache stability) and a dual-scope **Karpathy LLM Wiki** layer (`hub:wiki/` + `raw/` + `index.md` + `log.md` + deterministic `lint`).
+
+### Added
+- **Context Assembly Engine & Multi-Source Ranked Retrieval (`crates/zenko-core/src/{constants,traits,types}.rs`, `crates/zenko-runtime/src/{context_engine,lib,runtime/bridges,runtime/mod,runtime/turn}.rs`, `crates/zenko-tools/src/context_tools.rs`):**
+  - Introduced a declarative 7-level `InstructionPrecedence` hierarchy (`PlatformSafety > ActiveTaskState > ProjectRules > CompiledTruth > ScopedMemory > RuntimeSignals > UserDefaultsAndPersona`) documented statically once in Tier 1 (`INSTRUCTION_PRECEDENCE_POLICY`, zero KV-cache drift).
+  - Extracted `TailContextBuilder` to replace ad-hoc Tier-3 `<system_reminder>` assembly in `turn.rs`: sorts all volatile blocks deterministically by `(precedence_rank, insertion_order)` and enforces `CONTEXT_TAIL_MAX_TOKENS` while guaranteeing mandatory safety/task blocks are never dropped.
+  - Added pure-Rust `retrieve_ranked_context` combining 5 weighted signals (`relevance` blended with query-term coverage, `scope_match`, `authority`, `freshness`, `confidence`) across Repo Project Brain, Personal Hub Wiki, OKF Knowledge Catalog, SQLite Memories, and Progressive Skills — exposed on demand via `context_inspect(query="...", limit=8)` with exact just-in-time `load_hint` tool calls.
+- **Dual-Scope Karpathy LLM Wiki (`crates/zenko-memory/src/{brain,okf,snapshot}.rs`, `crates/zenko-tools/src/brain_tool.rs`, `crates/zenko-runtime/src/{dream,policy}.rs`):**
+  - Extended `project_brain` with `scope: "workspace" | "hub"` (`<workspace>/brain/` for git-tracked repo truth; `<hub_dir>/wiki/` for personal compounding knowledge), immutable `raw/` source drops (`action="ingest_raw"`), auto-maintained `index.md` (grouped by category with backlink counts), and append-only `log.md` (`## [YYYY-MM-DD] <op> | <target>`).
+  - Added zero-token deterministic `project_brain(action="lint")` detecting orphan pages, broken links / dangling `affects`, missing local source files, stale/drifted pages, uncompiled `raw/` sources, and suggested missing concepts (referenced by >= 2 pages), wired into both `PermissionMode::Plan` (read-only) and autonomous Dream Stage-0 hygiene.
+  - Added bounded Tier-2 `<hub_wiki_index>` and `<knowledge_catalog_index>` progressive disclosure catalogs in `WorkspaceSnapshot` (0 bytes when unused; session-frozen for full KV-cache reuse).
+
 ## [0.0.54] - 2026-11-28
 
 Resolved five runtime, ZPowers orchestration, telemetry, and WebUI bugs uncovered during live end-to-end testing with `MiniMax-M2.7` and `MiniMax-M3.1-Flash`.

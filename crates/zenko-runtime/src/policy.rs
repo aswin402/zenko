@@ -820,7 +820,7 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
         TOOL_PROJECT_BRAIN => match is_brain_tool_args_mutating(args) {
             false => PolicyVerdict::Allow,
             true => PolicyVerdict::Deny(
-                "Read-only Plan Mode only permits read-only `project_brain` actions (`list_pages`, `read_page`, `read_root`, `search`, `impact`). Approve the plan before writing to `brain/`."
+                "Read-only Plan Mode only permits read-only `project_brain` actions (`list_pages`, `read_page`, `read_root`, `search`, `impact`, `lint`). Approve the plan before writing to `brain/` or `hub:wiki/`."
                     .into(),
             ),
         },

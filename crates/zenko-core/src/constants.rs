@@ -1879,6 +1879,14 @@ pub const DOX_DRIFT_MAX_FINDINGS: usize = 6;
 
 // ── Repo-Native Project Brain (`mindmuxai/brain.md` open standard, zero regex)
 pub const BRAIN_DIR_NAME: &str = "brain";
+pub const BRAIN_HUB_WIKI_DIR_NAME: &str = "wiki";
+pub const BRAIN_RAW_DIR_NAME: &str = "raw";
+pub const BRAIN_INDEX_FILE_NAME: &str = "index.md";
+pub const BRAIN_LOG_FILE_NAME: &str = "log.md";
+pub const BRAIN_MAX_RAW_BYTES: usize = 128 * 1024;
+pub const BRAIN_MAX_LOG_BYTES: usize = 128 * 1024;
+pub const BRAIN_LINT_MAX_ISSUES: usize = 48;
+pub const BRAIN_SCOPES: &[&str] = &["workspace", "hub"];
 pub const BRAIN_PAGES_DIR_NAME: &str = "pages";
 pub const BRAIN_PROTOCOL_FILE: &str = "BRAIN.md";
 pub const BRAIN_PREFS_DIR_NAME: &str = ".mindmux";
@@ -1935,6 +1943,8 @@ pub const BRAIN_ACTIONS: &[&str] = &[
     "update_root",
     "search",
     "impact",
+    "ingest_raw",
+    "lint",
 ];
 
 // ── Chisel / Chisle Precision File I/O, Context Diet & Prose Yield ───────────
@@ -2155,6 +2165,7 @@ pub const OKF_MAX_SOURCES_PER_DOC: usize = 24;
 pub const OKF_MAX_GRAPH_HOPS: usize = 3;
 pub const OKF_EXPIRING_SOON_DAYS: i64 = 14;
 pub const OKF_RECON_MAX_HITS: usize = 4;
+pub const OKF_MAX_INDEX_CONCEPTS: usize = 24;
 pub const OKF_DEFAULT_SEARCH_LIMIT: usize = 8;
 pub const OKF_MAX_SEARCH_LIMIT: usize = 32;
 pub const OKF_SUMMARY_PREVIEW_CHARS: usize = 120;
@@ -2274,6 +2285,17 @@ pub const ZPOWERS_REVIEW_ROLE_ID: &str = "critic";
 pub const ZPOWERS_REVIEW_PROMPT_SPEC: &str = "Stage-1 Spec Compliance Review (independent read-only audit): Compare the live workspace diff strictly against the session design spec and implementation plan. Verify every requirement, invariant, and edge case is implemented with nothing missing and no unintended scope drift. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
 pub const ZPOWERS_REVIEW_PROMPT_QUALITY: &str = "Stage-2 Code Quality & Minimalism Review (independent read-only audit): Inspect the live workspace diff for correctness, safety, error handling, zero hardcoding, zero regex/if-else bloat, concurrency bugs, and architectural simplicity. Run `code_minimalism(action=\"audit_diff\")` if helpful. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
 pub const ZPOWERS_ENVIRONMENT_POLICY: &str = "zpowers_workflow: You own strategy dynamically with full freedom (no rigid turn rules). Answer questions or explore directly with zero ceremony; before mutating workspace code on a new task, decide whether to frame a spec (`record_brainstorm`/`zpowers.write_spec`), create a bite-sized plan + live todo checklist (`session_task(action=\"batch\", tasks=[...])`, `plan_update`, or `zpowers.write_plan` -- all bidirectionally synced to `.zenko/sessions/<id>/zpowers/plan.md` and the live Todo DAG), or explicitly `zpowers.fast_track` for a tiny surgical fix. Keep todos live as you work -- mark the active task `in_progress` and completed tasks `done` (batching updates via `session_task(action=\"batch\", tasks=[...])` alongside edits/verification so zero iterations are wasted), attach fresh post-edit verification evidence (run test/build commands directly without piping through `| tail` or `| head` and never `pkill -f` a pattern present in the current shell command), use `zpowers.run_review` for independent fresh-subagent two-stage review on substantial changes, and load any `using-zpowers` / `zpowers-*` skill via `skill_view` whenever helpful.";
+
+// ── Context Assembly Engine & Multi-Factor Retrieval Weights (Precedence vs Relevance) ──
+pub const CONTEXT_TAIL_MAX_TOKENS: usize = 4_000;
+pub const CONTEXT_RETRIEVAL_DEFAULT_LIMIT: usize = 8;
+pub const CONTEXT_RETRIEVAL_MAX_LIMIT: usize = 24;
+pub const CONTEXT_SCORE_WEIGHT_RELEVANCE: f64 = 0.35;
+pub const CONTEXT_SCORE_WEIGHT_SCOPE: f64 = 0.20;
+pub const CONTEXT_SCORE_WEIGHT_AUTHORITY: f64 = 0.20;
+pub const CONTEXT_SCORE_WEIGHT_FRESHNESS: f64 = 0.15;
+pub const CONTEXT_SCORE_WEIGHT_CONFIDENCE: f64 = 0.10;
+pub const INSTRUCTION_PRECEDENCE_POLICY: &str = "instruction_precedence: Resolve conflicting rules strictly in order: (1) Platform/Safety/ExecPolicy/Plan Mode > (2) Active Task & User Request > (3) Repo/Scoped DOX Rules > (4) Compiled Truth (Project Brain, Verified OKF, Hub Wiki) > (5) Scoped Memory > (6) Runtime Signals > (7) Global User Defaults & Persona. Precedence decides what wins; Relevance decides what to load on demand via `invoke_tool(tool=\"context_inspect\", args={\"query\":\"...\"})` and file durable learnings into `project_brain` (`scope=\"workspace\"` for repo truth, `scope=\"hub\"` for personal wiki with immutable `raw/`, `index.md`, `log.md`, and `lint`).";
 
 // ── Sovereign Epistemic `ask_user` Interactive Protocol (rpiv + micode + octto + assistant-ui) ──
 pub const ASK_USER_KINDS: &[&str] = &[

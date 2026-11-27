@@ -621,6 +621,8 @@ pub struct ContextBreakdown {
     #[serde(default)]
     pub project_brain_pages_count: usize,
     #[serde(default)]
+    pub hub_wiki_pages_count: usize,
+    #[serde(default)]
     pub okf_concepts_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_cache_key: Option<String>,
@@ -4721,6 +4723,31 @@ impl BrainRootSlot {
 }
 
 /// Declarative action enum for the deferred `project_brain` tool (pure `match`, zero string ladders).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainScope {
+    #[default]
+    Workspace,
+    Hub,
+}
+
+impl BrainScope {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "workspace" | "repo" | "project" => Some(Self::Workspace),
+            "hub" | "personal" | "wiki" | "global" => Some(Self::Hub),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Hub => "hub",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrainAction {
@@ -4735,6 +4762,8 @@ pub enum BrainAction {
     UpdateRoot,
     Search,
     Impact,
+    IngestRaw,
+    Lint,
 }
 
 impl BrainAction {
@@ -4751,6 +4780,8 @@ impl BrainAction {
             "update_root" => Some(Self::UpdateRoot),
             "search" | "query" => Some(Self::Search),
             "impact" | "graph" | "links" => Some(Self::Impact),
+            "ingest_raw" | "ingest" | "raw" => Some(Self::IngestRaw),
+            "lint" | "audit" | "health" => Some(Self::Lint),
             _ => None,
         }
     }
@@ -4764,8 +4795,148 @@ impl BrainAction {
                 | Self::AppendTimeline
                 | Self::ArchivePage
                 | Self::UpdateRoot
+                | Self::IngestRaw
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainLintIssueKind {
+    OrphanPage,
+    BrokenLink,
+    MissingSourceFile,
+    StalePage,
+    UncompiledRaw,
+    SuggestedConcept,
+}
+
+impl BrainLintIssueKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OrphanPage => "orphan_page",
+            Self::BrokenLink => "broken_link",
+            Self::MissingSourceFile => "missing_source_file",
+            Self::StalePage => "stale_page",
+            Self::UncompiledRaw => "uncompiled_raw",
+            Self::SuggestedConcept => "suggested_concept",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainLintIssue {
+    pub kind: BrainLintIssueKind,
+    pub target: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BrainLintReport {
+    pub scope: BrainScope,
+    pub total_pages: usize,
+    pub active_pages: usize,
+    pub raw_sources_count: usize,
+    pub uncompiled_raw_sources: Vec<String>,
+    pub orphan_pages: Vec<String>,
+    pub broken_links: Vec<String>,
+    pub missing_source_files: Vec<String>,
+    pub stale_pages: Vec<String>,
+    pub suggested_concepts: Vec<String>,
+    pub issues: Vec<BrainLintIssue>,
+}
+
+/// Explicit instruction precedence hierarchy separating conflict resolution ("what wins")
+/// from context relevance scoring ("what gets retrieved"). Lower numeric rank wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionPrecedence {
+    PlatformSafety = 1,
+    ActiveTaskState = 2,
+    ProjectRules = 3,
+    CompiledTruth = 4,
+    ScopedMemory = 5,
+    RuntimeSignals = 6,
+    UserDefaultsAndPersona = 7,
+}
+
+impl InstructionPrecedence {
+    pub fn rank(self) -> u8 {
+        self as u8
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PlatformSafety => "platform_safety",
+            Self::ActiveTaskState => "active_task_state",
+            Self::ProjectRules => "project_rules",
+            Self::CompiledTruth => "compiled_truth",
+            Self::ScopedMemory => "scoped_memory",
+            Self::RuntimeSignals => "runtime_signals",
+            Self::UserDefaultsAndPersona => "user_defaults_and_persona",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSourceKind {
+    ProjectBrain,
+    HubWiki,
+    OkfCatalog,
+    ProjectMemory,
+    GlobalMemory,
+    Skill,
+}
+
+impl ContextSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectBrain => "project_brain",
+            Self::HubWiki => "hub_wiki",
+            Self::OkfCatalog => "okf_catalog",
+            Self::ProjectMemory => "project_memory",
+            Self::GlobalMemory => "global_memory",
+            Self::Skill => "skill",
+        }
+    }
+
+    pub fn precedence(self) -> InstructionPrecedence {
+        match self {
+            Self::ProjectBrain | Self::HubWiki | Self::OkfCatalog => {
+                InstructionPrecedence::CompiledTruth
+            }
+            Self::ProjectMemory | Self::GlobalMemory => InstructionPrecedence::ScopedMemory,
+            Self::Skill => InstructionPrecedence::RuntimeSignals,
+        }
+    }
+}
+
+/// Multi-factor scored context candidate returned by the unified Context Retrieval Engine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankedContextItem {
+    pub source: ContextSourceKind,
+    pub precedence: InstructionPrecedence,
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub load_hint: String,
+    pub score: f64,
+    pub relevance: f64,
+    pub scope_match: f64,
+    pub authority: f64,
+    pub freshness: f64,
+    pub confidence: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContextRetrievalReport {
+    pub query: String,
+    pub workspace_scope: String,
+    pub total_candidates: usize,
+    pub items: Vec<RankedContextItem>,
 }
 
 /// Returns `true` when `project_brain` arguments request a mutating repository write

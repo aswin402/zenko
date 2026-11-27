@@ -887,13 +887,15 @@ impl AgentRuntime {
                     .is_some_and(|m| m.content.contains("<compacted_history>"));
             let compacted_now = compacted_this_iter || hard_compacted_now;
 
-            // Collect all volatile turn guidance, hints, plan continuity, and background job notices
-            // into a single cache-safe `<system_reminder>` (never injecting mid-array `role: "system"`
-            // that would be hoisted by Anthropic/OpenRouter proxies and bust Tier-1 KV cache!).
-            let mut tail_reminders: Vec<String> = Vec::with_capacity(4);
+            // Assemble volatile Tier-3 tail via the precedence-ordered, budget-guarded
+            // Context Assembly Engine (never mutating Tier-1/Tier-2 frozen KV-cache prefixes!).
+            let mut tail_builder = crate::context_engine::TailContextBuilder::new();
             if iter_idx == 0 {
                 if effective_permission == PermissionMode::Plan {
-                    tail_reminders.push(
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::PlatformSafety,
+                        "plan_mode",
+                        true,
                         "<plan_mode active=\"true\">\n\
                          STRICT READ-ONLY PLAN MODE IS ACTIVE.\n\
                          - You may inspect files (`read_file`, `code_search`, `list_dir`), run strictly read-only shell commands (`git status`, `git diff`, `git log`, `rg`, `ls`), spawn read-only subagents (`explorer`, `architect`), and create structured plans via `record_brainstorm`, `plan_update`, and `session_task`.\n\
@@ -903,9 +905,14 @@ impl AgentRuntime {
                     );
                 }
                 if let Some(ref rw_sum) = latest_rewind_summary {
-                    tail_reminders.push(format!(
-                        "<rewind_summary>\nPrevious attempt was rewound. Use these lessons to avoid repeating failed paths:\n{rw_sum}\n</rewind_summary>"
-                    ));
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::ActiveTaskState,
+                        "rewind_summary",
+                        true,
+                        format!(
+                            "<rewind_summary>\nPrevious attempt was rewound. Use these lessons to avoid repeating failed paths:\n{rw_sum}\n</rewind_summary>"
+                        ),
+                    );
                 }
                 if let Some(branch_sum) = abandoned_branch_summary.take() {
                     self.emit(AgentEvent::OrchestratorUpdated {
@@ -915,22 +922,35 @@ impl AgentRuntime {
                         detail: "Carried abandoned branch summary onto forked trajectory".into(),
                         model: None,
                     });
-                    tail_reminders.push(format!(
-                        "<branch_summary>\n{branch_sum}\n</branch_summary>"
-                    ));
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::ActiveTaskState,
+                        "branch_summary",
+                        true,
+                        format!("<branch_summary>\n{branch_sum}\n</branch_summary>"),
+                    );
                 }
                 let live_tasks = self
                     .clarifications
                     .list_session_tasks(&session_id)
                     .unwrap_or_default();
                 match format_session_tasks_prompt_block(&live_tasks) {
-                    Some(dag_block) => tail_reminders.push(dag_block),
+                    Some(dag_block) => tail_builder.push(
+                        zenko_core::InstructionPrecedence::ActiveTaskState,
+                        "task_dag",
+                        true,
+                        dag_block,
+                    ),
                     None => {
                         if let Some(plan) = orch.guard.active_plan() {
-                            tail_reminders.push(format!(
-                                "<active_execution_plan>\nContinue active DAG plan (treat decided steps as locked): {}\n</active_execution_plan>",
-                                format_plan_summary(plan)
-                            ));
+                            tail_builder.push(
+                                zenko_core::InstructionPrecedence::ActiveTaskState,
+                                "execution_plan",
+                                true,
+                                format!(
+                                    "<active_execution_plan>\nContinue active DAG plan (treat decided steps as locked): {}\n</active_execution_plan>",
+                                    format_plan_summary(plan)
+                                ),
+                            );
                         }
                     }
                 }
@@ -942,14 +962,24 @@ impl AgentRuntime {
                         .list_session_tasks(&session_id)
                         .unwrap_or_default();
                     if let Some(dag_block) = format_session_tasks_prompt_block(&live_tasks) {
-                        tail_reminders.push(format!(
-                            "Context compacted — resume directly from the durable SQLite Task DAG below without re-planning:\n{dag_block}"
-                        ));
+                        tail_builder.push(
+                            zenko_core::InstructionPrecedence::ActiveTaskState,
+                            "post_compact_task_dag",
+                            true,
+                            format!(
+                                "Context compacted — resume directly from the durable SQLite Task DAG below without re-planning:\n{dag_block}"
+                            ),
+                        );
                     } else if let Some(plan) = orch.guard.active_plan() {
-                        tail_reminders.push(format!(
-                            "<active_execution_plan>\nContext compacted — treat existing plan as DECIDED work and resume directly without re-planning: {}\n</active_execution_plan>",
-                            format_plan_summary(plan)
-                        ));
+                        tail_builder.push(
+                            zenko_core::InstructionPrecedence::ActiveTaskState,
+                            "post_compact_plan",
+                            true,
+                            format!(
+                                "<active_execution_plan>\nContext compacted — treat existing plan as DECIDED work and resume directly without re-planning: {}\n</active_execution_plan>",
+                                format_plan_summary(plan)
+                            ),
+                        );
                     }
                 }
                 // Oh My Pi post-compaction recall (placed in Tier-3 tail so Tier-1 KV cache stays frozen!)
@@ -973,9 +1003,14 @@ impl AgentRuntime {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        tail_reminders.push(format!(
-                            "<project_memory_invariants>\nKey workspace invariants recalled post-compaction:\n{bullets}\n</project_memory_invariants>"
-                        ));
+                        tail_builder.push(
+                            zenko_core::InstructionPrecedence::ScopedMemory,
+                            "post_compact_memories",
+                            false,
+                            format!(
+                                "<project_memory_invariants>\nKey workspace invariants recalled post-compaction:\n{bullets}\n</project_memory_invariants>"
+                            ),
+                        );
                     }
                 // Prime-Agent-style compaction-surviving scratchpad index (`session_vars`)
                 if let Ok(vars) = self.store.list_session_vars(&session_id)
@@ -986,17 +1021,27 @@ impl AgentRuntime {
                         .map(|v| format!("- `{}` ({}B): {}", v.key, v.byte_len, v.summary))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    tail_reminders.push(format!(
-                        "<session_vars>\nCompaction-surviving scratchpad variables (read via `invoke_tool(tool=\"{}\", args={{\"action\":\"get_var\",\"key\":\"...\"}})`):\n{var_lines}\n</session_vars>",
-                        TOOL_MEMORY
-                    ));
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::ScopedMemory,
+                        "session_vars",
+                        false,
+                        format!(
+                            "<session_vars>\nCompaction-surviving scratchpad variables (read via `invoke_tool(tool=\"{}\", args={{\"action\":\"get_var\",\"key\":\"...\"}})`):\n{var_lines}\n</session_vars>",
+                            TOOL_MEMORY
+                        ),
+                    );
                 }
                 if let Some(zp_recall) = crate::zpowers::build_zpowers_recall_block(
                     &zpowers_ws,
                     &zpowers_sid,
                     cfg.orchestrator.zpowers.mode,
                 ) {
-                    tail_reminders.push(zp_recall);
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::ActiveTaskState,
+                        "zpowers_recall",
+                        true,
+                        zp_recall,
+                    );
                 }
             }
             if iter_idx == 0
@@ -1007,35 +1052,60 @@ impl AgentRuntime {
                     cfg.orchestrator.zpowers.mode,
                 )
             {
-                tail_reminders.push(zp_recall);
+                tail_builder.push(
+                    zenko_core::InstructionPrecedence::ActiveTaskState,
+                    "zpowers_recall",
+                    true,
+                    zp_recall,
+                );
             }
-            if !pending_orch_hints.is_empty() {
-                tail_reminders.append(&mut pending_orch_hints);
+            for hint in pending_orch_hints.drain(..) {
+                tail_builder.push(
+                    zenko_core::InstructionPrecedence::ActiveTaskState,
+                    "orch_hint",
+                    true,
+                    hint,
+                );
             }
             if !delta_micro_skills.is_empty() {
                 if let Some(delta_ms_block) = render_repo_micro_skills_block(&delta_micro_skills) {
-                    tail_reminders.push(format!(
-                        "{}\n{delta_ms_block}\n{}",
-                        zenko_core::PREFIX_CACHE_TAIL_BLOCK_TAG_OPEN,
-                        zenko_core::PREFIX_CACHE_TAIL_BLOCK_TAG_CLOSE
-                    ));
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::RuntimeSignals,
+                        "delta_micro_skills",
+                        false,
+                        format!(
+                            "{}\n{delta_ms_block}\n{}",
+                            zenko_core::PREFIX_CACHE_TAIL_BLOCK_TAG_OPEN,
+                            zenko_core::PREFIX_CACHE_TAIL_BLOCK_TAG_CLOSE
+                        ),
+                    );
                 }
                 delta_micro_skills.clear();
             }
             let mem_deltas = self.drain_memory_deltas(&session_id);
             if !mem_deltas.is_empty() {
-                tail_reminders.push(format!(
-                    "<memory_delta>\nPersistent memory updated mid-session (Tier-1/Tier-2 prefix stays frozen for KV cache):\n- {}\n</memory_delta>",
-                    mem_deltas.join("\n- ")
-                ));
+                tail_builder.push(
+                    zenko_core::InstructionPrecedence::ScopedMemory,
+                    "memory_delta",
+                    false,
+                    format!(
+                        "<memory_delta>\nPersistent memory updated mid-session (Tier-1/Tier-2 prefix stays frozen for KV cache):\n- {}\n</memory_delta>",
+                        mem_deltas.join("\n- ")
+                    ),
+                );
             }
             let job_notices = self.drain_job_notices(&session_id);
             if !job_notices.is_empty() {
                 let lines: Vec<&str> = job_notices.iter().map(WakeupNotice::as_text).collect();
-                tail_reminders.push(format!(
-                    "<background_job_updates>\n{}\n</background_job_updates>",
-                    lines.join("\n")
-                ));
+                tail_builder.push(
+                    zenko_core::InstructionPrecedence::RuntimeSignals,
+                    "background_jobs",
+                    true,
+                    format!(
+                        "<background_job_updates>\n{}\n</background_job_updates>",
+                        lines.join("\n")
+                    ),
+                );
             }
             if let Ok(unread_mail) = self.store.drain_unread_agent_messages(&session_id)
                 && !unread_mail.is_empty() {
@@ -1043,13 +1113,21 @@ impl AgentRuntime {
                         .into_iter()
                         .map(|m| format!("- [from {}]: {}", m.from_session_id, m.body))
                         .collect();
-                    tail_reminders.push(format!(
-                        "<agent_mailbox>\nMessages received from related agents:\n{}\n</agent_mailbox>",
-                        lines.join("\n")
-                    ));
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::RuntimeSignals,
+                        "agent_mailbox",
+                        false,
+                        format!(
+                            "<agent_mailbox>\nMessages received from related agents:\n{}\n</agent_mailbox>",
+                            lines.join("\n")
+                        ),
+                    );
                 }
-            if !tail_reminders.is_empty() {
-                append_cache_safe_reminder(&mut messages, tail_reminders.join("\n\n"));
+            if !tail_builder.is_empty() {
+                let assembled = tail_builder.build(zenko_core::CONTEXT_TAIL_MAX_TOKENS, live_bpt);
+                if !assembled.rendered.is_empty() {
+                    append_cache_safe_reminder(&mut messages, assembled.rendered);
+                }
             }
             messages = sanitize_message_tool_pairs(messages);
 

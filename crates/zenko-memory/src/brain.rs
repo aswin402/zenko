@@ -18,15 +18,17 @@ use chrono::Utc;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use zenko_core::{
-    BRAIN_COMPILED_TRUTH_MARKER, BRAIN_DIR_NAME, BRAIN_IMPACT_MAX_HOPS, BRAIN_MAX_AFFECTS,
-    BRAIN_MAX_INDEX_PAGES, BRAIN_MAX_PAGE_BYTES, BRAIN_MAX_ROOT_BYTES, BRAIN_MAX_SLUG_CHARS,
-    BRAIN_MAX_TAGS, BRAIN_MAX_TIMELINE_ENTRIES, BRAIN_MAX_TITLE_CHARS, BRAIN_PAGES_DIR_NAME,
-    BRAIN_PREFS_DIR_NAME, BRAIN_PREFS_FILE_NAME, BRAIN_PREFS_ROOT_KEY, BRAIN_PROTOCOL_FILE,
-    BRAIN_ROOT_SLOTS, BRAIN_TIMELINE_HEADING, BrainImpactGraph, BrainPage, BrainPageCategory,
-    BrainPageStatus, BrainPageSummary, BrainRootSlot, BrainSearchHit, BrainTimelineEntry,
-    BrainTimelineKind, OKF_KEY_SOURCES, OKF_KEY_STALE_AFTER, OKF_KEY_VERIFIED_AT,
-    OKF_KEY_VERIFIED_BY, OkfDocStatus, OkfFreshnessState, Result, TURBOQUANT_MIN_COSINE,
-    ZenkoError, compact_preview, find_brain_root_slot,
+    BRAIN_COMPILED_TRUTH_MARKER, BRAIN_DIR_NAME, BRAIN_HUB_WIKI_DIR_NAME, BRAIN_IMPACT_MAX_HOPS,
+    BRAIN_INDEX_FILE_NAME, BRAIN_LINT_MAX_ISSUES, BRAIN_LOG_FILE_NAME, BRAIN_MAX_AFFECTS,
+    BRAIN_MAX_INDEX_PAGES, BRAIN_MAX_LOG_BYTES, BRAIN_MAX_PAGE_BYTES, BRAIN_MAX_RAW_BYTES,
+    BRAIN_MAX_ROOT_BYTES, BRAIN_MAX_SLUG_CHARS, BRAIN_MAX_TAGS, BRAIN_MAX_TIMELINE_ENTRIES,
+    BRAIN_MAX_TITLE_CHARS, BRAIN_PAGES_DIR_NAME, BRAIN_PREFS_DIR_NAME, BRAIN_PREFS_FILE_NAME,
+    BRAIN_PREFS_ROOT_KEY, BRAIN_PROTOCOL_FILE, BRAIN_RAW_DIR_NAME, BRAIN_ROOT_SLOTS,
+    BRAIN_TIMELINE_HEADING, BrainImpactGraph, BrainLintIssue, BrainLintIssueKind, BrainLintReport,
+    BrainPage, BrainPageCategory, BrainPageStatus, BrainPageSummary, BrainRootSlot, BrainScope,
+    BrainSearchHit, BrainTimelineEntry, BrainTimelineKind, OKF_KEY_SOURCES, OKF_KEY_STALE_AFTER,
+    OKF_KEY_VERIFIED_AT, OKF_KEY_VERIFIED_BY, OkfDocStatus, OkfFreshnessState, OkfTrustTier,
+    Result, TURBOQUANT_MIN_COSINE, ZenkoError, compact_preview, find_brain_root_slot,
 };
 
 /// Resolves the workspace's Project Brain root directory, honoring `.mindmux/preferences.json`
@@ -72,6 +74,14 @@ pub fn resolve_brain_root(workspace_dir: &Path) -> PathBuf {
     }
 }
 
+/// Resolves either the workspace Project Brain (`<ws>/brain`) or the personal Hub Wiki (`<hub>/wiki`).
+pub fn resolve_scoped_brain_root(workspace_dir: &Path, hub_dir: &Path, scope: BrainScope) -> PathBuf {
+    match scope {
+        BrainScope::Workspace => resolve_brain_root(workspace_dir),
+        BrainScope::Hub => hub_dir.join(BRAIN_HUB_WIKI_DIR_NAME),
+    }
+}
+
 /// Returns `true` when the workspace has an initialized Project Brain directory.
 pub fn has_project_brain(workspace_dir: &Path) -> bool {
     let root = resolve_brain_root(workspace_dir);
@@ -81,6 +91,15 @@ pub fn has_project_brain(workspace_dir: &Path) -> bool {
             || BRAIN_ROOT_SLOTS
                 .iter()
                 .any(|slot| root.join(slot.filename).is_file()))
+}
+
+/// Returns `true` when the user's personal Hub Wiki (`<hub>/wiki/`) has been initialized.
+pub fn has_hub_wiki(hub_dir: &Path) -> bool {
+    let root = hub_dir.join(BRAIN_HUB_WIKI_DIR_NAME);
+    root.is_dir()
+        && (root.join(BRAIN_PAGES_DIR_NAME).is_dir()
+            || root.join(BRAIN_RAW_DIR_NAME).is_dir()
+            || root.join(BRAIN_INDEX_FILE_NAME).is_file())
 }
 
 /// Normalizes and validates a strict kebab-case page identifier (`a-z`, `0-9`, `-`).
@@ -150,42 +169,245 @@ fn write_atomic_file(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Scaffolds a repo-native Project Brain (`BRAIN.md` + `brain/pages/` + empty root blueprint slots)
-/// without overwriting any existing files. Returns newly created relative paths.
+/// Scaffolds a repo-native Project Brain (`BRAIN.md` + `brain/{pages,raw}/` + `index.md` + `log.md`
+/// + root blueprint slots) without overwriting existing files.
 pub fn init_project_brain(workspace_dir: &Path) -> Result<Vec<String>> {
-    let root = resolve_brain_root(workspace_dir);
+    init_brain_scoped(workspace_dir, workspace_dir, BrainScope::Workspace)
+}
+
+/// Scaffolds either a workspace Project Brain (`<ws>/brain/`) or personal Hub Wiki (`<hub>/wiki/`)
+/// with Karpathy LLM Wiki layers (`raw/`, `pages/`, `index.md`, `log.md`) without overwriting files.
+pub fn init_brain_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+) -> Result<Vec<String>> {
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
     let pages_dir = root.join(BRAIN_PAGES_DIR_NAME);
+    let raw_dir = root.join(BRAIN_RAW_DIR_NAME);
     std::fs::create_dir_all(&pages_dir)?;
+    std::fs::create_dir_all(&raw_dir)?;
 
     let mut created = Vec::new();
-    let protocol_path = workspace_dir.join(BRAIN_PROTOCOL_FILE);
-    if !protocol_path.exists() {
-        let protocol_body = format!(
-            "# Project Brain Protocol\n\n\
-             This repository stores durable architectural truth, decisions, constraints, and reversals in `{BRAIN_DIR_NAME}/`.\n\n\
-             - **Pages (`{BRAIN_DIR_NAME}/{BRAIN_PAGES_DIR_NAME}/<id>.md`):** Each page pairs a rewritable `<!-- compiled_truth -->` section with an append-only `## Timeline` audit log (`decision`, `evidence`, `update`, `reversal`, `archived`).\n\
-             - **Root Blueprint Slots (`{BRAIN_DIR_NAME}/*.md`):** `background.md`, `architecture.md`, `flow.md`, `mindmap.md`, `stack.md`, `roadmap.md`.\n\
-             - **Single-Writer Invariant:** Mutate pages atomically through Zenko's `project_brain` tool (or a compatible `brain.md` writer) rather than hand-editing YAML frontmatter.\n"
-        );
-        write_atomic_file(&protocol_path, &protocol_body)?;
-        created.push(BRAIN_PROTOCOL_FILE.to_string());
-    }
+    let display_base = match scope {
+        BrainScope::Workspace => workspace_dir,
+        BrainScope::Hub => hub_dir,
+    };
 
-    for desc in BRAIN_ROOT_SLOTS {
-        let slot_path = root.join(desc.filename);
-        if !slot_path.exists() {
-            let body = format!("# {}\n\n<!-- {} -->\n", desc.title, desc.guidance);
-            write_atomic_file(&slot_path, &body)?;
-            let rel = slot_path
-                .strip_prefix(workspace_dir)
-                .unwrap_or(&slot_path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            created.push(rel);
+    if scope == BrainScope::Workspace {
+        let protocol_path = workspace_dir.join(BRAIN_PROTOCOL_FILE);
+        if !protocol_path.exists() {
+            let protocol_body = format!(
+                "# Project Brain Protocol\n\n\
+                 This repository stores durable architectural truth, decisions, constraints, and reversals in `{BRAIN_DIR_NAME}/`.\n\n\
+                 - **Raw Sources (`{BRAIN_DIR_NAME}/{BRAIN_RAW_DIR_NAME}/`):** Immutable source drops (specs, research notes, web clips) compiled into wiki pages.\n\
+                 - **Pages (`{BRAIN_DIR_NAME}/{BRAIN_PAGES_DIR_NAME}/<id>.md`):** Each page pairs a rewritable `<!-- compiled_truth -->` section with an append-only `## Timeline` audit log (`decision`, `evidence`, `update`, `reversal`, `archived`).\n\
+                 - **Index & Log (`{BRAIN_DIR_NAME}/{BRAIN_INDEX_FILE_NAME}`, `{BRAIN_DIR_NAME}/{BRAIN_LOG_FILE_NAME}`):** Auto-maintained catalog and chronological operation log.\n\
+                 - **Root Blueprint Slots (`{BRAIN_DIR_NAME}/*.md`):** `background.md`, `architecture.md`, `flow.md`, `mindmap.md`, `stack.md`, `roadmap.md`.\n\
+                 - **Single-Writer Invariant:** Mutate pages atomically through Zenko's `project_brain` tool rather than hand-editing YAML frontmatter.\n"
+            );
+            write_atomic_file(&protocol_path, &protocol_body)?;
+            created.push(BRAIN_PROTOCOL_FILE.to_string());
+        }
+
+        for desc in BRAIN_ROOT_SLOTS {
+            let slot_path = root.join(desc.filename);
+            if !slot_path.exists() {
+                let body = format!("# {}\n\n<!-- {} -->\n", desc.title, desc.guidance);
+                write_atomic_file(&slot_path, &body)?;
+                let rel = slot_path
+                    .strip_prefix(display_base)
+                    .unwrap_or(&slot_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                created.push(rel);
+            }
         }
     }
 
+    let index_path = root.join(BRAIN_INDEX_FILE_NAME);
+    if !index_path.exists() {
+        rebuild_brain_index_md(&root, scope);
+        let rel = index_path
+            .strip_prefix(display_base)
+            .unwrap_or(&index_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        created.push(rel);
+    }
+
+    let log_path = root.join(BRAIN_LOG_FILE_NAME);
+    if !log_path.exists() {
+        let header = match scope {
+            BrainScope::Workspace => "# Project Brain Log\n\nChronological append-only log of ingest, compilation, updates, and lint passes.\n",
+            BrainScope::Hub => "# Personal Hub Wiki Log\n\nChronological append-only log of raw ingests, wiki syntheses, updates, and lint passes.\n",
+        };
+        write_atomic_file(&log_path, header)?;
+        let rel = log_path
+            .strip_prefix(display_base)
+            .unwrap_or(&log_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        created.push(rel);
+    }
+
     Ok(created)
+}
+
+/// Lists immutable raw source files in `<root>/raw/` sorted deterministically.
+pub fn list_raw_sources_at_root(root: &Path) -> Vec<String> {
+    let raw_dir = root.join(BRAIN_RAW_DIR_NAME);
+    let Ok(rd) = std::fs::read_dir(&raw_dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && !name.starts_with('.')
+        {
+            out.push(format!("{BRAIN_RAW_DIR_NAME}/{name}"));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Appends one Karpathy-style parseable line (`## [YYYY-MM-DD] <op> | <target> — <summary>`) to `log.md`.
+fn append_brain_log_md(root: &Path, op: &str, target: &str, summary: &str) {
+    let log_path = root.join(BRAIN_LOG_FILE_NAME);
+    let date = Utc::now().format("%Y-%m-%d");
+    let clean_summary = summary.replace(['\r', '\n'], " ");
+    let entry = format!(
+        "\n## [{date}] {op} | {target}\n{}\n",
+        compact_preview(clean_summary.trim(), 220)
+    );
+    let mut existing = std::fs::read_to_string(&log_path).unwrap_or_else(|_| {
+        "# Wiki Log\n\nChronological append-only log of ingests, compilations, and lints.\n"
+            .to_string()
+    });
+    existing.push_str(&entry);
+    if existing.len() > BRAIN_MAX_LOG_BYTES {
+        let keep_from = existing.floor_char_boundary(existing.len() - (BRAIN_MAX_LOG_BYTES * 3 / 4));
+        if let Some(rel_nl) = existing[keep_from..].find('\n') {
+            existing = format!(
+                "# Wiki Log (trimmed older entries)\n{}",
+                &existing[keep_from + rel_nl + 1..]
+            );
+        }
+    }
+    let _ = write_atomic_file(&log_path, &existing);
+}
+
+/// Regenerates a clean, human- and LLM-readable `index.md` catalog grouped by category with backlink counts.
+fn rebuild_brain_index_md(root: &Path, scope: BrainScope) {
+    let pages = load_all_brain_pages_at_root(root);
+    let raw_files = list_raw_sources_at_root(root);
+
+    let mut inbound_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for page in &pages {
+        let mut out_targets: BTreeSet<String> = BTreeSet::new();
+        for ev in &page.timeline {
+            for dep in &ev.affects {
+                if dep != &page.id {
+                    out_targets.insert(dep.clone());
+                }
+            }
+        }
+        for link in extract_markdown_links(&page.compiled_truth) {
+            if let Some(slug) = extract_brain_link_slug(&link)
+                && slug != page.id
+            {
+                out_targets.insert(slug);
+            }
+        }
+        for target in out_targets {
+            *inbound_counts.entry(target).or_insert(0) += 1;
+        }
+    }
+
+    let heading = match scope {
+        BrainScope::Workspace => "# Project Brain Index",
+        BrainScope::Hub => "# Personal Hub Wiki Index",
+    };
+    let mut grouped: BTreeMap<&'static str, Vec<&BrainPage>> = BTreeMap::new();
+    let mut archived_count = 0usize;
+    for page in &pages {
+        if page.status == BrainPageStatus::Archived {
+            archived_count += 1;
+            continue;
+        }
+        grouped
+            .entry(page.category.as_str())
+            .or_default()
+            .push(page);
+    }
+
+    let active_count = pages.len().saturating_sub(archived_count);
+    let mut out = format!(
+        "{heading}\n\n\
+         - **Active pages:** {active_count} (archived: {archived_count})\n\
+         - **Raw sources (`{BRAIN_RAW_DIR_NAME}/`):** {}\n\n",
+        raw_files.len()
+    );
+
+    if grouped.is_empty() {
+        out.push_str("_No compiled pages yet. Drop sources into `raw/` or call `project_brain(action=\"create_page\")`._\n");
+    } else {
+        for (cat, list) in grouped {
+            out.push_str(&format!("## {cat}\n"));
+            for p in list {
+                let first_line = p
+                    .compiled_truth
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty() && !l.starts_with('#'))
+                    .unwrap_or(&p.title);
+                let in_links = inbound_counts.get(&p.id).copied().unwrap_or(0);
+                out.push_str(&format!(
+                    "- [{}]({BRAIN_PAGES_DIR_NAME}/{}.md) (`{}`) — {} [backlinks: {in_links}]\n",
+                    p.title,
+                    p.id,
+                    p.id,
+                    compact_preview(first_line, 96)
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
+    if !raw_files.is_empty() {
+        out.push_str(&format!("## Raw Sources ({BRAIN_RAW_DIR_NAME}/)\n"));
+        for rf in raw_files.iter().take(40) {
+            out.push_str(&format!("- `{rf}`\n"));
+        }
+    }
+
+    let _ = write_atomic_file(&root.join(BRAIN_INDEX_FILE_NAME), &out);
+}
+
+fn extract_brain_link_slug(raw_link: &str) -> Option<String> {
+    let trimmed = raw_link.trim();
+    if trimmed.is_empty() || trimmed.contains("://") || trimmed.starts_with('#') {
+        return None;
+    }
+    let clean = trimmed.split('#').next().unwrap_or(trimmed).trim();
+    if !clean.ends_with(".md") {
+        return None;
+    }
+    if clean.starts_with("raw/") || clean.starts_with("../raw/") {
+        return None;
+    }
+    let stem = clean
+        .rsplit('/')
+        .next()
+        .unwrap_or(clean)
+        .strip_suffix(".md")
+        .unwrap_or(clean);
+    sanitize_brain_slug(stem).ok()
 }
 
 fn render_inline_list(items: &[String]) -> String {
@@ -497,9 +719,9 @@ pub fn summarize_brain_page_in_workspace(
     }
 }
 
-/// Loads all parsed pages from `<brain_root>/pages/*.md` deterministically sorted by page ID.
-pub fn load_all_brain_pages(workspace_dir: &Path) -> Vec<BrainPage> {
-    let pages_dir = resolve_brain_root(workspace_dir).join(BRAIN_PAGES_DIR_NAME);
+/// Loads all parsed pages from `<root>/pages/*.md` deterministically sorted by page ID.
+pub fn load_all_brain_pages_at_root(root: &Path) -> Vec<BrainPage> {
+    let pages_dir = root.join(BRAIN_PAGES_DIR_NAME);
     let Ok(rd) = std::fs::read_dir(&pages_dir) else {
         return Vec::new();
     };
@@ -527,27 +749,63 @@ pub fn load_all_brain_pages(workspace_dir: &Path) -> Vec<BrainPage> {
     by_id.into_values().collect()
 }
 
+/// Loads all parsed pages from `<brain_root>/pages/*.md` deterministically sorted by page ID.
+pub fn load_all_brain_pages(workspace_dir: &Path) -> Vec<BrainPage> {
+    load_all_brain_pages_at_root(&resolve_brain_root(workspace_dir))
+}
+
 pub fn list_brain_pages(
     workspace_dir: &Path,
     status_filter: Option<BrainPageStatus>,
     category_filter: Option<BrainPageCategory>,
 ) -> Vec<BrainPageSummary> {
-    load_all_brain_pages(workspace_dir)
+    list_brain_pages_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        status_filter,
+        category_filter,
+    )
+}
+
+pub fn list_brain_pages_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    status_filter: Option<BrainPageStatus>,
+    category_filter: Option<BrainPageCategory>,
+) -> Vec<BrainPageSummary> {
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let provenance_ws = match scope {
+        BrainScope::Workspace => Some(workspace_dir),
+        BrainScope::Hub => Some(root.as_path()),
+    };
+    load_all_brain_pages_at_root(&root)
         .into_iter()
         .filter(|p| status_filter.is_none_or(|st| p.status == st))
         .filter(|p| category_filter.is_none_or(|c| p.category == c))
-        .map(|p| summarize_brain_page_in_workspace(&p, Some(workspace_dir)))
+        .map(|p| summarize_brain_page_in_workspace(&p, provenance_ws))
         .collect()
 }
 
 pub fn read_brain_page(workspace_dir: &Path, raw_id: &str) -> Result<BrainPage> {
+    read_brain_page_scoped(workspace_dir, workspace_dir, BrainScope::Workspace, raw_id)
+}
+
+pub fn read_brain_page_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+) -> Result<BrainPage> {
     let id = sanitize_brain_slug(raw_id)?;
-    let path = resolve_brain_root(workspace_dir)
+    let path = resolve_scoped_brain_root(workspace_dir, hub_dir, scope)
         .join(BRAIN_PAGES_DIR_NAME)
         .join(format!("{id}.md"));
     if !path.is_file() {
         return Err(ZenkoError::NotFound(format!(
-            "project_brain page `{id}` does not exist"
+            "project_brain ({}) page `{id}` does not exist",
+            scope.as_str()
         )));
     }
     let raw = std::fs::read_to_string(&path)?;
@@ -568,14 +826,47 @@ pub fn create_brain_page(
     affects: &[String],
     known_secrets: &[String],
 ) -> Result<BrainPage> {
+    create_brain_page_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        raw_id,
+        title,
+        category,
+        status,
+        tags,
+        compiled_truth,
+        timeline_summary,
+        source,
+        affects,
+        known_secrets,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_brain_page_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+    title: &str,
+    category: BrainPageCategory,
+    status: BrainPageStatus,
+    tags: &[String],
+    compiled_truth: &str,
+    timeline_summary: &str,
+    source: &str,
+    affects: &[String],
+    known_secrets: &[String],
+) -> Result<BrainPage> {
     let id = sanitize_brain_slug(raw_id)?;
-    let _ = init_project_brain(workspace_dir)?;
-    let path = resolve_brain_root(workspace_dir)
-        .join(BRAIN_PAGES_DIR_NAME)
-        .join(format!("{id}.md"));
+    let _ = init_brain_scoped(workspace_dir, hub_dir, scope)?;
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let path = root.join(BRAIN_PAGES_DIR_NAME).join(format!("{id}.md"));
     if path.exists() {
         return Err(ZenkoError::Tool(format!(
-            "project_brain page `{id}` already exists (use `update_truth` or `append_timeline` instead)"
+            "project_brain ({}) page `{id}` already exists (use `update_truth` or `append_timeline` instead)",
+            scope.as_str()
         )));
     }
 
@@ -619,7 +910,7 @@ pub fn create_brain_page(
         timeline: vec![BrainTimelineEntry {
             time: now,
             kind: initial_kind,
-            summary: clean_summary,
+            summary: clean_summary.clone(),
             source: clean_source,
             affects: sanitize_slug_list(affects, BRAIN_MAX_AFFECTS),
         }],
@@ -632,6 +923,8 @@ pub fn create_brain_page(
         )));
     }
     write_atomic_file(&path, &rendered)?;
+    rebuild_brain_index_md(&root, scope);
+    append_brain_log_md(&root, "create_page", &id, &clean_summary);
     Ok(page)
 }
 
@@ -649,7 +942,38 @@ pub fn update_brain_page_truth(
     status_override: Option<BrainPageStatus>,
     known_secrets: &[String],
 ) -> Result<BrainPage> {
-    let mut page = read_brain_page(workspace_dir, raw_id)?;
+    update_brain_page_truth_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        raw_id,
+        new_truth,
+        kind,
+        summary,
+        source,
+        affects,
+        tags_override,
+        status_override,
+        known_secrets,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_brain_page_truth_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+    new_truth: &str,
+    kind: BrainTimelineKind,
+    summary: &str,
+    source: &str,
+    affects: &[String],
+    tags_override: Option<&[String]>,
+    status_override: Option<BrainPageStatus>,
+    known_secrets: &[String],
+) -> Result<BrainPage> {
+    let mut page = read_brain_page_scoped(workspace_dir, hub_dir, scope, raw_id)?;
     let clean_truth = sanitize_memory_text_with_secrets(new_truth.trim(), known_secrets);
     let clean_summary = sanitize_memory_text_with_secrets(summary.trim(), known_secrets);
     if clean_truth.is_empty() || clean_summary.is_empty() {
@@ -657,9 +981,13 @@ pub fn update_brain_page_truth(
             "project_brain `update_truth` requires non-empty `compiled_truth` and `summary`".into(),
         ));
     }
+    let clean_source = sanitize_memory_text_with_secrets(source.trim(), known_secrets);
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     page.compiled_truth = clean_truth;
     page.updated = now.clone();
+    if !clean_source.is_empty() && !page.sources.iter().any(|s| s == &clean_source) {
+        page.sources.push(clean_source.clone());
+    }
     if let Some(new_tags) = tags_override {
         page.tags = sanitize_slug_list(new_tags, BRAIN_MAX_TAGS);
     }
@@ -669,8 +997,8 @@ pub fn update_brain_page_truth(
     page.timeline.push(BrainTimelineEntry {
         time: now,
         kind,
-        summary: clean_summary,
-        source: sanitize_memory_text_with_secrets(source.trim(), known_secrets),
+        summary: clean_summary.clone(),
+        source: clean_source,
         affects: sanitize_slug_list(affects, BRAIN_MAX_AFFECTS),
     });
     if page.timeline.len() > BRAIN_MAX_TIMELINE_ENTRIES {
@@ -686,10 +1014,11 @@ pub fn update_brain_page_truth(
             BRAIN_MAX_PAGE_BYTES / 1024
         )));
     }
-    let path = resolve_brain_root(workspace_dir)
-        .join(BRAIN_PAGES_DIR_NAME)
-        .join(format!("{}.md", page.id));
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let path = root.join(BRAIN_PAGES_DIR_NAME).join(format!("{}.md", page.id));
     write_atomic_file(&path, &rendered)?;
+    rebuild_brain_index_md(&root, scope);
+    append_brain_log_md(&root, "update_truth", &page.id, &clean_summary);
     Ok(page)
 }
 
@@ -703,20 +1032,49 @@ pub fn append_brain_timeline(
     affects: &[String],
     known_secrets: &[String],
 ) -> Result<BrainPage> {
-    let mut page = read_brain_page(workspace_dir, raw_id)?;
+    append_brain_timeline_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        raw_id,
+        kind,
+        summary,
+        source,
+        affects,
+        known_secrets,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn append_brain_timeline_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+    kind: BrainTimelineKind,
+    summary: &str,
+    source: &str,
+    affects: &[String],
+    known_secrets: &[String],
+) -> Result<BrainPage> {
+    let mut page = read_brain_page_scoped(workspace_dir, hub_dir, scope, raw_id)?;
     let clean_summary = sanitize_memory_text_with_secrets(summary.trim(), known_secrets);
     if clean_summary.is_empty() {
         return Err(ZenkoError::Tool(
             "project_brain `append_timeline` requires non-empty `summary`".into(),
         ));
     }
+    let clean_source = sanitize_memory_text_with_secrets(source.trim(), known_secrets);
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     page.updated = now.clone();
+    if !clean_source.is_empty() && !page.sources.iter().any(|s| s == &clean_source) {
+        page.sources.push(clean_source.clone());
+    }
     page.timeline.push(BrainTimelineEntry {
         time: now,
         kind,
-        summary: clean_summary,
-        source: sanitize_memory_text_with_secrets(source.trim(), known_secrets),
+        summary: clean_summary.clone(),
+        source: clean_source,
         affects: sanitize_slug_list(affects, BRAIN_MAX_AFFECTS),
     });
     let rendered = serialize_brain_page(&page);
@@ -727,10 +1085,11 @@ pub fn append_brain_timeline(
             BRAIN_MAX_PAGE_BYTES / 1024
         )));
     }
-    let path = resolve_brain_root(workspace_dir)
-        .join(BRAIN_PAGES_DIR_NAME)
-        .join(format!("{}.md", page.id));
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let path = root.join(BRAIN_PAGES_DIR_NAME).join(format!("{}.md", page.id));
     write_atomic_file(&path, &rendered)?;
+    rebuild_brain_index_md(&root, scope);
+    append_brain_log_md(&root, kind.as_str(), &page.id, &clean_summary);
     Ok(page)
 }
 
@@ -744,7 +1103,32 @@ pub fn archive_brain_page(
     is_reversal: bool,
     known_secrets: &[String],
 ) -> Result<BrainPage> {
-    let mut page = read_brain_page(workspace_dir, raw_id)?;
+    archive_brain_page_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        raw_id,
+        reversal_summary,
+        source,
+        affects,
+        is_reversal,
+        known_secrets,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn archive_brain_page_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+    reversal_summary: &str,
+    source: &str,
+    affects: &[String],
+    is_reversal: bool,
+    known_secrets: &[String],
+) -> Result<BrainPage> {
+    let mut page = read_brain_page_scoped(workspace_dir, hub_dir, scope, raw_id)?;
     let clean_summary = sanitize_memory_text_with_secrets(reversal_summary.trim(), known_secrets);
     if clean_summary.is_empty() {
         return Err(ZenkoError::Tool(
@@ -761,23 +1145,42 @@ pub fn archive_brain_page(
             true => BrainTimelineKind::Reversal,
             false => BrainTimelineKind::Archived,
         },
-        summary: clean_summary,
+        summary: clean_summary.clone(),
         source: sanitize_memory_text_with_secrets(source.trim(), known_secrets),
         affects: sanitize_slug_list(affects, BRAIN_MAX_AFFECTS),
     });
     let rendered = serialize_brain_page(&page);
-    let path = resolve_brain_root(workspace_dir)
-        .join(BRAIN_PAGES_DIR_NAME)
-        .join(format!("{}.md", page.id));
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let path = root.join(BRAIN_PAGES_DIR_NAME).join(format!("{}.md", page.id));
     write_atomic_file(&path, &rendered)?;
+    rebuild_brain_index_md(&root, scope);
+    append_brain_log_md(
+        &root,
+        match is_reversal {
+            true => "reversal",
+            false => "archive_page",
+        },
+        &page.id,
+        &clean_summary,
+    );
     Ok(page)
 }
 
 pub fn read_brain_root_slot(workspace_dir: &Path, slot: BrainRootSlot) -> Result<String> {
-    let path = resolve_brain_root(workspace_dir).join(slot.filename());
+    read_brain_root_slot_scoped(workspace_dir, workspace_dir, BrainScope::Workspace, slot)
+}
+
+pub fn read_brain_root_slot_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    slot: BrainRootSlot,
+) -> Result<String> {
+    let path = resolve_scoped_brain_root(workspace_dir, hub_dir, scope).join(slot.filename());
     if !path.is_file() {
         return Err(ZenkoError::NotFound(format!(
-            "project_brain root slot `{}` does not exist (run `init` or `update_root`)",
+            "project_brain ({}) root slot `{}` does not exist (run `init` or `update_root`)",
+            scope.as_str(),
             slot.as_str()
         )));
     }
@@ -790,7 +1193,25 @@ pub fn update_brain_root_slot(
     content: &str,
     known_secrets: &[String],
 ) -> Result<String> {
-    let _ = init_project_brain(workspace_dir)?;
+    update_brain_root_slot_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        slot,
+        content,
+        known_secrets,
+    )
+}
+
+pub fn update_brain_root_slot_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    slot: BrainRootSlot,
+    content: &str,
+    known_secrets: &[String],
+) -> Result<String> {
+    let _ = init_brain_scoped(workspace_dir, hub_dir, scope)?;
     let clean = sanitize_memory_text_with_secrets(content.trim(), known_secrets);
     if clean.is_empty() {
         return Err(ZenkoError::Tool(
@@ -809,15 +1230,96 @@ pub fn update_brain_root_slot(
         true => format!("{clean}\n"),
         false => format!("# {}\n\n{clean}\n", desc.title),
     };
-    let path = resolve_brain_root(workspace_dir).join(slot.filename());
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let path = root.join(slot.filename());
     write_atomic_file(&path, &body)?;
+    append_brain_log_md(&root, "update_root", slot.as_str(), desc.title);
     Ok(body)
+}
+
+/// Saves an immutable raw source into `<root>/raw/<slug>.md` (Karpathy LLM Wiki ingest layer).
+/// Refuses silent overwrite if the slug already exists so raw sources remain append-only.
+#[allow(clippy::too_many_arguments)]
+pub fn ingest_raw_source(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+    title: &str,
+    source_url: &str,
+    content: &str,
+    known_secrets: &[String],
+) -> Result<String> {
+    let slug = sanitize_brain_slug(raw_id)?;
+    let _ = init_brain_scoped(workspace_dir, hub_dir, scope)?;
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let rel_path = format!("{BRAIN_RAW_DIR_NAME}/{slug}.md");
+    let full_path = root.join(&rel_path);
+    if full_path.exists() {
+        return Err(ZenkoError::Tool(format!(
+            "immutable raw source `{rel_path}` already exists in {} wiki; pick a new `id` to preserve raw history",
+            scope.as_str()
+        )));
+    }
+    let clean_body = sanitize_memory_text_with_secrets(content.trim(), known_secrets);
+    if clean_body.is_empty() {
+        return Err(ZenkoError::Tool(
+            "project_brain `ingest_raw` requires non-empty `content`".into(),
+        ));
+    }
+    let clean_title = match title.trim().is_empty() {
+        true => slug.clone(),
+        false => compact_preview(
+            &sanitize_memory_text_with_secrets(title.trim(), known_secrets),
+            BRAIN_MAX_TITLE_CHARS,
+        ),
+    };
+    let clean_source = sanitize_memory_text_with_secrets(source_url.trim(), known_secrets);
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let mut rendered = String::with_capacity(256 + clean_body.len());
+    rendered.push_str("---\n");
+    rendered.push_str(&format!("id: {slug}\n"));
+    rendered.push_str(&format!("title: {}\n", escape_yaml_inline(&clean_title)));
+    if !clean_source.is_empty() {
+        rendered.push_str(&format!("source: \"{}\"\n", escape_yaml_inline(&clean_source)));
+    }
+    rendered.push_str(&format!("ingested_at: \"{now}\"\n"));
+    rendered.push_str("immutable: true\n---\n\n");
+    rendered.push_str(&clean_body);
+    rendered.push('\n');
+
+    if rendered.len() > BRAIN_MAX_RAW_BYTES {
+        return Err(ZenkoError::Tool(format!(
+            "raw source `{rel_path}` exceeds {} KiB cap",
+            BRAIN_MAX_RAW_BYTES / 1024
+        )));
+    }
+    write_atomic_file(&full_path, &rendered)?;
+    rebuild_brain_index_md(&root, scope);
+    append_brain_log_md(
+        &root,
+        "ingest",
+        &rel_path,
+        &format!("Saved immutable raw source `{clean_title}`"),
+    );
+    Ok(rel_path)
 }
 
 /// Deterministic zero-regex BFS impact graph over `affects` edges and reverse backlinks.
 pub fn compute_brain_impact_graph(workspace_dir: &Path, raw_id: &str) -> Result<BrainImpactGraph> {
+    compute_brain_impact_graph_scoped(workspace_dir, workspace_dir, BrainScope::Workspace, raw_id)
+}
+
+pub fn compute_brain_impact_graph_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    raw_id: &str,
+) -> Result<BrainImpactGraph> {
     let target_id = sanitize_brain_slug(raw_id)?;
-    let pages = load_all_brain_pages(workspace_dir);
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let pages = load_all_brain_pages_at_root(&root);
     let mut forward: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut reverse: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
@@ -834,15 +1336,8 @@ pub fn compute_brain_impact_graph(workspace_dir: &Path, raw_id: &str) -> Result<
                 }
             }
         }
-        // Also fold OKF-style relative Markdown `[Title](other-page.md)` links into the graph
         for raw_link in extract_markdown_links(&page.compiled_truth) {
-            let stem = raw_link
-                .rsplit('/')
-                .next()
-                .unwrap_or(&raw_link)
-                .strip_suffix(".md")
-                .unwrap_or(&raw_link);
-            if let Ok(slug) = sanitize_brain_slug(stem)
+            if let Some(slug) = extract_brain_link_slug(&raw_link)
                 && slug != page.id
             {
                 out_edges.insert(slug.clone());
@@ -890,6 +1385,174 @@ pub fn compute_brain_impact_graph(workspace_dir: &Path, raw_id: &str) -> Result<
     })
 }
 
+/// Deterministic zero-token Karpathy Wiki `lint` pass checking orphans, broken links, missing
+/// workspace source files, stale/drifted pages, uncompiled `raw/` sources, and suggested concepts.
+pub fn lint_brain(workspace_dir: &Path, hub_dir: &Path, scope: BrainScope) -> BrainLintReport {
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let pages = load_all_brain_pages_at_root(&root);
+    let raw_files = list_raw_sources_at_root(&root);
+    let active_pages_vec: Vec<&BrainPage> = pages
+        .iter()
+        .filter(|p| p.status != BrainPageStatus::Archived)
+        .collect();
+    let known_ids: BTreeSet<&str> = pages.iter().map(|p| p.id.as_str()).collect();
+    let provenance_ws = match scope {
+        BrainScope::Workspace => Some(workspace_dir),
+        BrainScope::Hub => Some(root.as_path()),
+    };
+
+    let mut inbound_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut dangling_ref_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut broken_links: BTreeSet<String> = BTreeSet::new();
+    let mut missing_source_files: BTreeSet<String> = BTreeSet::new();
+    let mut stale_pages: BTreeSet<String> = BTreeSet::new();
+    let mut issues: Vec<BrainLintIssue> = Vec::new();
+    let mut push_issue = |kind: BrainLintIssueKind, target: String, detail: String| {
+        if issues.len() < BRAIN_LINT_MAX_ISSUES {
+            issues.push(BrainLintIssue {
+                kind,
+                target,
+                detail,
+            });
+        }
+    };
+
+    for page in &active_pages_vec {
+        let mut out_targets: BTreeSet<String> = BTreeSet::new();
+        for ev in &page.timeline {
+            for dep in &ev.affects {
+                if dep != &page.id {
+                    out_targets.insert(dep.clone());
+                }
+            }
+        }
+        for raw_link in extract_markdown_links(&page.compiled_truth) {
+            if let Some(slug) = extract_brain_link_slug(&raw_link)
+                && slug != page.id
+            {
+                out_targets.insert(slug);
+            }
+        }
+        for target in out_targets {
+            match known_ids.contains(target.as_str()) {
+                true => *inbound_counts.entry(target).or_insert(0) += 1,
+                false => {
+                    *dangling_ref_counts.entry(target.clone()).or_insert(0) += 1;
+                    let edge = format!("{} -> {}", page.id, target);
+                    if broken_links.insert(edge.clone()) {
+                        push_issue(
+                            BrainLintIssueKind::BrokenLink,
+                            edge,
+                            format!("Page `{}` references missing page `{target}`", page.id),
+                        );
+                    }
+                }
+            }
+        }
+
+        let summary = summarize_brain_page_in_workspace(page, provenance_ws);
+        if summary.freshness == OkfFreshnessState::Stale
+            || summary.trust_tier == OkfTrustTier::SourceDrifted
+        {
+            if stale_pages.insert(page.id.clone()) {
+                push_issue(
+                    BrainLintIssueKind::StalePage,
+                    page.id.clone(),
+                    format!(
+                        "Page `{}` is {}/{} and should be re-verified",
+                        page.id,
+                        summary.trust_tier.as_str(),
+                        summary.freshness.as_str()
+                    ),
+                );
+            }
+        }
+
+        if let Some(ws) = provenance_ws {
+            let mut candidate_sources: Vec<String> = page.sources.clone();
+            for ev in &page.timeline {
+                if !ev.source.is_empty() && !candidate_sources.iter().any(|s| s == &ev.source) {
+                    candidate_sources.push(ev.source.clone());
+                }
+            }
+            let (missing, _) = evaluate_source_provenance(ws, &candidate_sources, None);
+            for m in missing {
+                // Only flag file-like local paths (contain `/` or `.`) so freeform notes like "audit" aren't false positives
+                if (m.contains('/') || m.contains('.')) && missing_source_files.insert(m.clone()) {
+                    push_issue(
+                        BrainLintIssueKind::MissingSourceFile,
+                        m.clone(),
+                        format!("Page `{}` cites missing local source `{m}`", page.id),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut orphan_pages: Vec<String> = Vec::new();
+    if active_pages_vec.len() >= 2 {
+        for page in &active_pages_vec {
+            if inbound_counts.get(&page.id).copied().unwrap_or(0) == 0 {
+                orphan_pages.push(page.id.clone());
+                push_issue(
+                    BrainLintIssueKind::OrphanPage,
+                    page.id.clone(),
+                    format!("Active page `{}` has zero inbound links or `affects` backlinks", page.id),
+                );
+            }
+        }
+    }
+
+    let mut suggested_concepts: Vec<String> = Vec::new();
+    for (slug, count) in dangling_ref_counts {
+        if count >= 2 {
+            suggested_concepts.push(slug.clone());
+            push_issue(
+                BrainLintIssueKind::SuggestedConcept,
+                slug.clone(),
+                format!("Missing concept `{slug}` is referenced by {count} pages; consider creating it"),
+            );
+        }
+    }
+
+    let mut uncompiled_raw_sources: Vec<String> = Vec::new();
+    for raw_rel in &raw_files {
+        let fname = raw_rel.rsplit('/').next().unwrap_or(raw_rel);
+        let cited = pages.iter().any(|p| {
+            p.sources
+                .iter()
+                .any(|s| s.contains(raw_rel.as_str()) || s.contains(fname))
+                || p.compiled_truth.contains(raw_rel.as_str())
+                || p.compiled_truth.contains(fname)
+                || p.timeline
+                    .iter()
+                    .any(|e| e.source.contains(raw_rel.as_str()) || e.source.contains(fname))
+        });
+        if !cited {
+            uncompiled_raw_sources.push(raw_rel.clone());
+            push_issue(
+                BrainLintIssueKind::UncompiledRaw,
+                raw_rel.clone(),
+                format!("Raw source `{raw_rel}` has not been compiled into any wiki page yet"),
+            );
+        }
+    }
+
+    BrainLintReport {
+        scope,
+        total_pages: pages.len(),
+        active_pages: active_pages_vec.len(),
+        raw_sources_count: raw_files.len(),
+        uncompiled_raw_sources,
+        orphan_pages,
+        broken_links: broken_links.into_iter().collect(),
+        missing_source_files: missing_source_files.into_iter().collect(),
+        stale_pages: stale_pages.into_iter().collect(),
+        suggested_concepts,
+        issues,
+    }
+}
+
 /// Deterministic zero-regex token-overlap search across Project Brain pages (weights title,
 /// tags, compiled truth, timeline summaries, active status, and reversal presence).
 pub fn search_brain_pages(
@@ -898,11 +1561,34 @@ pub fn search_brain_pages(
     include_archived: bool,
     limit: usize,
 ) -> Vec<BrainSearchHit> {
+    search_brain_pages_scoped(
+        workspace_dir,
+        workspace_dir,
+        BrainScope::Workspace,
+        query,
+        include_archived,
+        limit,
+    )
+}
+
+pub fn search_brain_pages_scoped(
+    workspace_dir: &Path,
+    hub_dir: &Path,
+    scope: BrainScope,
+    query: &str,
+    include_archived: bool,
+    limit: usize,
+) -> Vec<BrainSearchHit> {
     let q_terms: BTreeSet<String> = tokenize_terms(query).into_iter().collect();
     if q_terms.is_empty() {
         return Vec::new();
     }
-    let pages = load_all_brain_pages(workspace_dir);
+    let root = resolve_scoped_brain_root(workspace_dir, hub_dir, scope);
+    let provenance_ws = match scope {
+        BrainScope::Workspace => Some(workspace_dir),
+        BrainScope::Hub => Some(root.as_path()),
+    };
+    let pages = load_all_brain_pages_at_root(&root);
     let tq_codec = TurboQuantCodec::default_memory_codec();
     let tq_query = tq_codec.prepare_text_query(query);
     let mut scored: Vec<BrainSearchHit> = Vec::new();
@@ -951,7 +1637,7 @@ pub fn search_brain_pages(
         if raw_score <= 0.0 {
             continue;
         }
-        let summary = summarize_brain_page_in_workspace(&page, Some(workspace_dir));
+        let summary = summarize_brain_page_in_workspace(&page, provenance_ws);
         let status_mult = match page.status {
             BrainPageStatus::Active => 1.25,
             BrainPageStatus::Draft => 1.0,
@@ -989,6 +1675,33 @@ pub fn search_brain_pages(
     });
     scored.truncate(limit);
     scored
+}
+
+/// Builds a compact Tier-2 `<hub_wiki_index>` summary list for `SnapshotManager`.
+/// Returns `(active_page_count, uncompiled_raw_count, formatted_lines)` — strictly empty when unused.
+pub fn build_hub_wiki_index(hub_dir: &Path) -> (usize, usize, Vec<String>) {
+    if !has_hub_wiki(hub_dir) {
+        return (0, 0, Vec::new());
+    }
+    let report = lint_brain(hub_dir, hub_dir, BrainScope::Hub);
+    let pages: Vec<BrainPageSummary> =
+        list_brain_pages_scoped(hub_dir, hub_dir, BrainScope::Hub, None, None)
+            .into_iter()
+            .filter(|p| p.status != BrainPageStatus::Archived)
+            .collect();
+    let total_active = pages.len();
+    let lines: Vec<String> = pages
+        .into_iter()
+        .take(BRAIN_MAX_INDEX_PAGES)
+        .map(|p| {
+            let rev_tag = match p.has_reversals {
+                true => " [has-reversal]",
+                false => "",
+            };
+            format!("- `{}` [{}]{rev_tag}: {}", p.id, p.category.as_str(), p.title)
+        })
+        .collect();
+    (total_active, report.uncompiled_raw_sources.len(), lines)
 }
 
 /// Builds a compact Tier-2 `<project_brain_index>` summary list for `SnapshotManager`.
@@ -1164,6 +1877,96 @@ mod tests {
         )
         .expect("write evil prefs");
         assert_eq!(resolve_brain_root(&base), base.join("brain"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn karpathy_hub_wiki_supports_immutable_raw_index_log_and_lint() {
+        let base = std::env::temp_dir().join(format!("zenko_hub_wiki_{}", zenko_core::new_id()));
+        let ws = base.join("ws");
+        let hub = base.join("hub");
+        std::fs::create_dir_all(&ws).expect("ws");
+        std::fs::create_dir_all(&hub).expect("hub");
+
+        let raw_path = ingest_raw_source(
+            &ws,
+            &hub,
+            BrainScope::Hub,
+            "context-paper",
+            "Effective Context Engineering",
+            "https://anthropic.com/research/effective-context-engineering",
+            "Use progressive disclosure and compaction to beat context rot.",
+            &[],
+        )
+        .expect("ingest raw");
+        assert_eq!(raw_path, "raw/context-paper.md");
+
+        // Immutable raw drop-box must refuse silent overwrite
+        assert!(
+            ingest_raw_source(
+                &ws,
+                &hub,
+                BrainScope::Hub,
+                "context-paper",
+                "Overwrite",
+                "",
+                "Should fail",
+                &[],
+            )
+            .is_err()
+        );
+
+        // Before compiling, lint flags uncompiled raw source
+        let pre_lint = lint_brain(&ws, &hub, BrainScope::Hub);
+        assert_eq!(pre_lint.uncompiled_raw_sources, vec!["raw/context-paper.md"]);
+
+        // Compile 2 pages referencing a shared missing concept (`kv-cache`) so lint suggests creating it
+        let _ = create_brain_page_scoped(
+            &ws,
+            &hub,
+            BrainScope::Hub,
+            "context-engineering",
+            "Context Engineering",
+            BrainPageCategory::Concept,
+            BrainPageStatus::Active,
+            &["agents".into()],
+            "Combines progressive disclosure with [KV Cache](kv-cache.md) discipline.",
+            "Compiled from Anthropic article",
+            &raw_path,
+            &["kv-cache".into(), "compaction".into()],
+            &[],
+        )
+        .expect("page 1");
+        let _ = create_brain_page_scoped(
+            &ws,
+            &hub,
+            BrainScope::Hub,
+            "compaction",
+            "Memory Compaction",
+            BrainPageCategory::Concept,
+            BrainPageStatus::Active,
+            &["agents".into()],
+            "Reclaims bloated tool outputs while respecting [KV Cache](kv-cache.md).",
+            "Compiled compaction notes",
+            &raw_path,
+            &["kv-cache".into()],
+            &[],
+        )
+        .expect("page 2");
+
+        let post_lint = lint_brain(&ws, &hub, BrainScope::Hub);
+        assert!(post_lint.uncompiled_raw_sources.is_empty());
+        assert_eq!(post_lint.suggested_concepts, vec!["kv-cache"]);
+        assert_eq!(post_lint.orphan_pages, vec!["context-engineering"]);
+
+        // Auto-maintained index.md and log.md must exist and reflect operations
+        let index_md = std::fs::read_to_string(hub.join("wiki/index.md")).expect("index.md");
+        assert!(index_md.contains("Context Engineering"));
+        assert!(index_md.contains("Memory Compaction"));
+        let log_md = std::fs::read_to_string(hub.join("wiki/log.md")).expect("log.md");
+        assert!(log_md.contains("ingest | raw/context-paper.md"));
+        assert!(log_md.contains("create_page | context-engineering"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
