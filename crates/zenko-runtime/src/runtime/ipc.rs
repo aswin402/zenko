@@ -933,23 +933,17 @@ impl AgentRuntime {
                     .and_then(|p| p.get("id"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let selected = params
-                    .and_then(|p| p.get("selected_option_id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let custom = params
-                    .and_then(|p| p.get("custom_answer"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from);
+                let resolution: zenko_core::AskUserResolution = params
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
                 let resolved_by = params
                     .and_then(|p| p.get("resolved_by"))
                     .and_then(Value::as_str)
                     .unwrap_or("cli");
                 let rec = self
                     .clarifications
-                    .resolve_clarification(id, selected, custom, resolved_by);
+                    .resolve_ask_user(id, resolution, resolved_by);
                 json!({"ok": true, "result": {"resolved": rec.is_some(), "clarification": rec}})
             }
             IPC_METHOD_ORCHESTRATOR_TRIAGE => {

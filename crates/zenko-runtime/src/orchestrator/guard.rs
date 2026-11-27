@@ -840,7 +840,7 @@ impl ExecutionGuard {
                 let hint = format!(
                     "<orchestrator_hint type=\"circuit_breaker\">\n\
                      Loop detector triggered: {reason}. Stop repeating the same invocation. \
-                     Re-read the target file/error carefully, inspect assumptions, and pivot to a different approach or call `record_brainstorm` / `ask_clarification` if blocked.\n\
+                     Re-read the target file/error carefully, inspect assumptions, and pivot to a different approach or call `record_brainstorm` / `ask_user` if blocked.\n\
                      </orchestrator_hint>"
                 );
                 return self.escalate_or_pivot(reason, hint);
@@ -935,7 +935,7 @@ impl ExecutionGuard {
                              ZPowers 3-Strike Systematic Debugging Breaker ({count} consecutive failures): STOP patching symptoms immediately.\n\
                              1. Read the full error/stack trace and inspect ground-truth code with read-only tools.\n\
                              2. Log one falsifiable root-cause hypothesis via `invoke_tool(tool=\"{TOOL_ZPOWERS}\", args={{\"action\":\"log_debug\",...}})` (recorded in `{zp_dir}/debug.md`).\n\
-                             3. Question the underlying architecture/assumptions before making another edit, or consult the user via `ask_clarification` if genuinely blocked.\n\
+                             3. Question the underlying architecture/assumptions before making another edit, or consult the user via `ask_user` if genuinely blocked.\n\
                              </orchestrator_hint>"
                         ),
                     )

@@ -228,6 +228,7 @@ export const Loader2 = LoaderCircle
 export const Loader2Icon = LoaderCircle
 export const MessageSquare = createThemedIcon('chat', MessageSquareRaw)
 export const Minus = createThemedIcon('minus', MinusRaw)
+export const MinusIcon = Minus
 export const Moon = createThemedIcon('moon', MoonRaw)
 export const Palette = createThemedIcon('palette', PaletteRaw)
 export const PanelLeftClose = createThemedIcon('panelLeftClose', PanelLeftCloseRaw)

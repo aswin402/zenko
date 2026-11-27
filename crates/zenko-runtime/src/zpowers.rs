@@ -21,17 +21,18 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use zenko_core::{
-    BrainstormSpec, ExecutionPlan, FILE_MODE_OWNER_ONLY, PlanStepStatus, Result, SessionTask,
-    SessionTaskStatus, ZENKO_GIT_EXCLUDE_ENTRY, ZENKO_PROJECT_DIR,
-    ZENKO_PROJECT_LATEST_SESSION_FILE, ZENKO_PROJECT_SESSIONS_DIR, ZENKO_PROTECTED_PROJECT_SUBPATHS,
-    ZENKO_SESSION_ARTIFACTS_DIR, ZENKO_SESSION_MANIFEST_FILE, ZENKO_SESSION_SCRATCH_DIR,
-    ZENKO_SESSION_ZPOWERS_DIR, ZPOWERS_DEBUG_FILE, ZPOWERS_FAST_TRACK_REASON_MAX_CHARS,
-    ZPOWERS_MAX_DEBUG_ENTRIES, ZPOWERS_MAX_DOC_BYTES, ZPOWERS_MAX_PARSED_PLAN_TASKS,
-    ZPOWERS_MAX_REVIEWS, ZPOWERS_PLAN_FILE, ZPOWERS_PROMOTE_ALLOWED_ROOTS, ZPOWERS_REVIEWS_DIR,
-    ZPOWERS_SPEC_FILE, ZPOWERS_STATE_FILE, ZPOWERS_WALKTHROUGH_FILE, ZPowersArtifactDoc,
-    ZPowersConfig, ZPowersDebugEntry, ZPowersMode, ZPowersPhase, ZPowersReviewReceipt,
-    ZPowersReviewStage, ZPowersReviewVerdict, ZPowersSessionView, ZPowersState,
-    ZPowersVerificationReceipt, ZPowersWorkspaceManifest, ZenkoError, compact_preview, new_id,
+    BrainstormSpec, ClarificationAnswer, ClarificationRecord, ExecutionPlan, FILE_MODE_OWNER_ONLY,
+    PlanStepStatus, Result, SessionTask, SessionTaskStatus, ZENKO_GIT_EXCLUDE_ENTRY,
+    ZENKO_PROJECT_DIR, ZENKO_PROJECT_LATEST_SESSION_FILE, ZENKO_PROJECT_SESSIONS_DIR,
+    ZENKO_PROTECTED_PROJECT_SUBPATHS, ZENKO_SESSION_ARTIFACTS_DIR, ZENKO_SESSION_MANIFEST_FILE,
+    ZENKO_SESSION_SCRATCH_DIR, ZENKO_SESSION_ZPOWERS_DIR, ZPOWERS_DEBUG_FILE,
+    ZPOWERS_DECISIONS_FILE, ZPOWERS_FAST_TRACK_REASON_MAX_CHARS, ZPOWERS_MAX_DEBUG_ENTRIES,
+    ZPOWERS_MAX_DOC_BYTES, ZPOWERS_MAX_PARSED_PLAN_TASKS, ZPOWERS_MAX_REVIEWS, ZPOWERS_PLAN_FILE,
+    ZPOWERS_PROMOTE_ALLOWED_ROOTS, ZPOWERS_REVIEWS_DIR, ZPOWERS_SPEC_FILE, ZPOWERS_STATE_FILE,
+    ZPOWERS_WALKTHROUGH_FILE, ZPowersArtifactDoc, ZPowersConfig, ZPowersDebugEntry, ZPowersMode,
+    ZPowersPhase, ZPowersReviewReceipt, ZPowersReviewStage, ZPowersReviewVerdict,
+    ZPowersSessionView, ZPowersState, ZPowersVerificationReceipt, ZPowersWorkspaceManifest,
+    ZenkoError, compact_preview, new_id,
 };
 
 // ─── Path & Security Boundary Helpers ─────────────────────────────────────────
@@ -1220,6 +1221,96 @@ pub fn write_walkthrough(
     Ok((wt_path, state))
 }
 
+/// Appends a resolved `ask_user` decision or user-provided data block into
+/// `.zenko/sessions/<id>/zpowers/decisions.md` (micode Continuity Ledger pattern) so answers
+/// survive Stage-B compaction and spawned subagents never re-ask solved questions.
+#[allow(clippy::too_many_arguments)]
+pub fn append_user_decision(
+    workspace_dir: &Path,
+    session_id: &str,
+    title: &str,
+    parent_session_id: Option<&str>,
+    rec: &ClarificationRecord,
+    ans: &ClarificationAnswer,
+    cfg: &ZPowersConfig,
+) -> Result<PathBuf> {
+    let mut state = load_state(workspace_dir, session_id, cfg.mode);
+    save_state(workspace_dir, session_id, title, parent_session_id, &mut state, cfg)?;
+    let path = zpowers_dir(workspace_dir, session_id).join(ZPOWERS_DECISIONS_FILE);
+    let mut body = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        "# User Decisions & Provided Data\n\n\
+         Authoritative user answers collected via `ask_user` in this session. Do not re-ask resolved items.\n\n"
+            .to_string()
+    });
+    let heading = match rec.title.trim().is_empty() {
+        true => compact_preview(rec.question.trim(), 90),
+        false => compact_preview(rec.title.trim(), 90),
+    };
+    body.push_str(&format!(
+        "## {} (`{}` · `{}`)\n\n- **Question:** {}\n- **Resolved by:** `{}` (auto={})\n",
+        heading,
+        rec.kind.as_str(),
+        Utc::now().to_rfc3339(),
+        rec.question.trim(),
+        ans.resolved_by,
+        ans.auto_resolved
+    ));
+    match (
+        !ans.selected_option_ids.is_empty(),
+        !ans.selected_option_id.trim().is_empty(),
+    ) {
+        (true, _) => {
+            body.push_str(&format!("- **Selected:** `{}`\n", ans.selected_option_ids.join("`, `")));
+        }
+        (false, true) => {
+            let label = rec
+                .options
+                .iter()
+                .find(|o| o.id == ans.selected_option_id)
+                .map(|o| format!("{} (`{}`)", o.label, o.id))
+                .unwrap_or_else(|| format!("`{}`", ans.selected_option_id));
+            body.push_str(&format!("- **Selected:** {label}\n"));
+        }
+        (false, false) => {}
+    }
+    if !ans.step_answers.is_empty() {
+        body.push_str("- **Flow Answers:**\n");
+        for (step_id, vals) in &ans.step_answers {
+            body.push_str(&format!("  - `{step_id}`: {}\n", vals.join(", ")));
+        }
+    }
+    if !ans.field_values.is_empty() {
+        let secret_ids: std::collections::HashSet<&str> = rec
+            .fields
+            .iter()
+            .filter(|f| f.secret)
+            .map(|f| f.id.as_str())
+            .collect();
+        body.push_str("- **Provided Data:**\n");
+        for (k, v) in &ans.field_values {
+            let safe_val = match secret_ids.contains(k.as_str()) {
+                true => "[provided]".to_string(),
+                false => zenko_core::scrub_secrets(v, &[]),
+            };
+            body.push_str(&format!("  - `{k}`: {}\n", compact_preview(&safe_val, 320)));
+        }
+    }
+    if let Some(ref rating) = ans.rating
+        && !rating.trim().is_empty()
+    {
+        body.push_str(&format!("- **Rating:** `{}`\n", rating.trim()));
+    }
+    if let Some(ref custom) = ans.custom_answer
+        && !custom.trim().is_empty()
+    {
+        let safe_note = zenko_core::scrub_secrets(custom.trim(), &[]);
+        body.push_str(&format!("- **User Note:** {safe_note}\n"));
+    }
+    body.push('\n');
+    atomic_write_text(&path, &body)?;
+    Ok(path)
+}
+
 pub fn record_fast_track(
     workspace_dir: &Path,
     session_id: &str,
@@ -1293,6 +1384,9 @@ pub fn promote_doc(
         ZPOWERS_SPEC_FILE | "spec" => zpowers_dir(workspace_dir, session_id).join(ZPOWERS_SPEC_FILE),
         ZPOWERS_PLAN_FILE | "plan" => zpowers_dir(workspace_dir, session_id).join(ZPOWERS_PLAN_FILE),
         ZPOWERS_DEBUG_FILE | "debug" => zpowers_dir(workspace_dir, session_id).join(ZPOWERS_DEBUG_FILE),
+        ZPOWERS_DECISIONS_FILE | "decisions" => {
+            zpowers_dir(workspace_dir, session_id).join(ZPOWERS_DECISIONS_FILE)
+        }
         ZPOWERS_WALKTHROUGH_FILE | "walkthrough" => {
             zpowers_dir(workspace_dir, session_id).join(ZPOWERS_WALKTHROUGH_FILE)
         }
@@ -1384,6 +1478,7 @@ pub fn inspect_session_zpowers(
         for name in [
             ZPOWERS_SPEC_FILE,
             ZPOWERS_PLAN_FILE,
+            ZPOWERS_DECISIONS_FILE,
             ZPOWERS_DEBUG_FILE,
             ZPOWERS_WALKTHROUGH_FILE,
         ] {

@@ -633,6 +633,20 @@ pub const TOOL_KNOWLEDGE_CATALOG: &str = "knowledge_catalog";
 pub const TOOL_CRON: &str = "cron_tool";
 pub const TOOL_RECORD_BRAINSTORM: &str = "record_brainstorm";
 pub const TOOL_ASK_CLARIFICATION: &str = "ask_clarification";
+pub const TOOL_ASK_USER: &str = "ask_user";
+/// Declarative backwards-compatible tool-name aliases (zero duplicated tool schemas on the wire).
+pub const TOOL_NAME_ALIASES: &[(&str, &str)] = &[(TOOL_ASK_CLARIFICATION, TOOL_ASK_USER)];
+
+/// Resolves a legacy tool alias to its canonical registered tool name (O(K) table lookup).
+pub fn resolve_tool_name_alias(raw: &str) -> &str {
+    TOOL_NAME_ALIASES
+        .iter()
+        .find_map(|(alias, canonical)| match *alias == raw {
+            true => Some(*canonical),
+            false => None,
+        })
+        .unwrap_or(raw)
+}
 pub const TOOL_PLAN_UPDATE: &str = "plan_update";
 pub const TOOL_SESSION_TASK: &str = "session_task";
 pub const TOOL_ORCHESTRATE_CONTROL: &str = "orchestrate_control";
@@ -1146,6 +1160,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
 pub const PLANNING_TOOLS: &[&str] = &[
     TOOL_RECORD_BRAINSTORM,
     TOOL_ASK_CLARIFICATION,
+    TOOL_ASK_USER,
     TOOL_PLAN_UPDATE,
     TOOL_SESSION_TASK,
     TOOL_ORCHESTRATE_CONTROL,
@@ -1200,6 +1215,7 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_PLAN_UPDATE,
     TOOL_SESSION_TASK,
     TOOL_ASK_CLARIFICATION,
+    TOOL_ASK_USER,
     TOOL_ORCHESTRATE_CONTROL,
     TOOL_ZPOWERS,
     TOOL_MEMORY,
@@ -1551,6 +1567,7 @@ pub const ECONOMY_PROTECTED_CORE_TOOLS: &[&str] = &[
     TOOL_INVOKE_TOOL,
     TOOL_BATCH_TOOLS,
     TOOL_ASK_CLARIFICATION,
+    TOOL_ASK_USER,
     TOOL_ORCHESTRATE_CONTROL,
     TOOL_TOKEN_ECONOMY,
     TOOL_CODE_MINIMALISM,
@@ -2153,6 +2170,7 @@ pub const ZPOWERS_STATE_FILE: &str = "state.json";
 pub const ZPOWERS_SPEC_FILE: &str = "spec.md";
 pub const ZPOWERS_PLAN_FILE: &str = "plan.md";
 pub const ZPOWERS_DEBUG_FILE: &str = "debug.md";
+pub const ZPOWERS_DECISIONS_FILE: &str = "decisions.md";
 pub const ZPOWERS_WALKTHROUGH_FILE: &str = "walkthrough.md";
 pub const ZPOWERS_REVIEWS_DIR: &str = "reviews";
 pub const ZPOWERS_ACTIONS: &[&str] = &[
@@ -2198,6 +2216,25 @@ pub const ZPOWERS_REVIEW_ROLE_ID: &str = "critic";
 pub const ZPOWERS_REVIEW_PROMPT_SPEC: &str = "Stage-1 Spec Compliance Review (independent read-only audit): Compare the live workspace diff strictly against the session design spec and implementation plan. Verify every requirement, invariant, and edge case is implemented with nothing missing and no unintended scope drift. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
 pub const ZPOWERS_REVIEW_PROMPT_QUALITY: &str = "Stage-2 Code Quality & Minimalism Review (independent read-only audit): Inspect the live workspace diff for correctness, safety, error handling, zero hardcoding, zero regex/if-else bloat, concurrency bugs, and architectural simplicity. Run `code_minimalism(action=\"audit_diff\")` if helpful. End your report with a single final line: `VERDICT: approved`, `VERDICT: changes_requested`, or `VERDICT: blocked`.";
 pub const ZPOWERS_ENVIRONMENT_POLICY: &str = "zpowers_workflow: You own strategy dynamically with full freedom (no rigid turn rules). Answer questions or explore directly with zero ceremony; before mutating workspace code on a new task, decide whether to frame a spec (`record_brainstorm`/`zpowers.write_spec`), create a bite-sized plan + live todo checklist (`plan_update`, `session_task`, or `zpowers.write_plan` -- all bidirectionally synced to `.zenko/sessions/<id>/zpowers/plan.md` and the live Todo DAG), or explicitly `zpowers.fast_track` for a tiny surgical fix. Work through your todo items step-by-step marking each done with fresh post-edit verification evidence, use `zpowers.run_review` for independent fresh-subagent two-stage review on substantial changes, and load any `using-zpowers` / `zpowers-*` skill via `skill_view` whenever helpful.";
+
+// ── Sovereign Epistemic `ask_user` Interactive Protocol (rpiv + micode + octto + assistant-ui) ──
+pub const ASK_USER_KINDS: &[&str] = &[
+    "option_list",
+    "question_flow",
+    "recommendation",
+    "data_input",
+    "feedback",
+];
+pub const ASK_USER_SELECTION_MODES: &[&str] = &["single", "multi"];
+pub const ASK_USER_MAX_OPTIONS: usize = 8;
+pub const ASK_USER_MAX_STEPS: usize = 5;
+pub const ASK_USER_MAX_FIELDS: usize = 8;
+pub const ASK_USER_MAX_PROS_CONS: usize = 6;
+pub const ASK_USER_RESOLVER_NEEDS_INPUT: &str = "needs_user_input";
+pub const ASK_USER_OPTION_ACCEPT: &str = "accept";
+pub const ASK_USER_OPTION_CUSTOM: &str = "custom";
+pub const ASK_USER_OPTION_DATA_SUBMITTED: &str = "submitted";
+pub const ASK_USER_ENVIRONMENT_POLICY: &str = "ask_user_epistemic_policy: Inspect workspace, git, memory, OKF, and `project_brain` first -- never bother the user for facts already on disk. Whenever required external data, target values, credentials/IDs, user preferences, or ambiguous tradeoffs are missing or your confidence is low -- at ANY moment (start, mid-execution, or wrap-up) -- NEVER guess or fabricate; immediately invoke `ask_user` with the minimal matching `kind`: `data_input` (missing free-text values or form fields), `option_list` (single or multi-select choices), `question_flow` (2-5 interdependent guided steps in one flow), `recommendation` (leading proposal with pros/cons and alternatives), or `feedback` (review/approval/revision input). Every answered decision is persisted cleanly to `.zenko/sessions/<id>/zpowers/decisions.md` so you never re-ask solved questions.";
 
 /// Returns `true` only for `zpowers` actions that mutate tracked workspace files outside
 /// `.zenko/sessions/<id>/` (currently `promote`). Planning/spec/review writes inside the

@@ -9,7 +9,8 @@ use crate::{
     MINIMALISM_BLOAT_HINT_NEW_FILES_ULTRA, SUBAGENT_ROLE_CUSTOM, SUBAGENT_ROLE_DRAFTER,
     SUBAGENT_ROLE_EXPLORER, ShuntShellBinBehavior, TOOL_AGENT_KILL, TOOL_AGENT_LIST,
     TOOL_AGENT_MESSAGE, TOOL_AGENT_WAIT, TOOL_AGENT_WORKTREE, TOOL_APPLY_PATCH,
-    TOOL_ASK_CLARIFICATION, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM, TOOL_CODE_REFACTOR,
+    TOOL_ASK_CLARIFICATION, TOOL_ASK_USER, TOOL_BATCH_TOOLS, TOOL_CODE_MINIMALISM,
+    TOOL_CODE_REFACTOR,
     TOOL_CODE_SEARCH,
     TOOL_CONTEXT_INSPECT, TOOL_CRON, TOOL_GIT, TOOL_GLOB_FIND, TOOL_GOAL_LOOP, TOOL_HASH_EDIT,
     TOOL_INVOKE_TOOL, TOOL_KNOWLEDGE_CATALOG, TOOL_LIST_DIR, TOOL_LSP, TOOL_MEMORY,
@@ -261,6 +262,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_KILL,
             TOOL_AGENT_WORKTREE,
@@ -315,6 +317,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_AGENT_WORKTREE,
         ],
         system_addendum: "You are a Zenko Architect subagent operating in read-only planning mode. Analyze trade-offs, invariants, blast radius, and step dependencies; optionally fan out parallel `explorer` subagents for wide codebase discovery; return a crisp, actionable implementation specification without modifying files.",
@@ -335,6 +338,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SKILL_MANAGE,
             TOOL_ORCHESTRATE_CONTROL,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_WORKTREE,
         ],
@@ -370,6 +374,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SKILL_MANAGE,
             TOOL_ORCHESTRATE_CONTROL,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_KILL,
             TOOL_AGENT_WORKTREE,
@@ -398,6 +403,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SKILL_MANAGE,
             TOOL_ORCHESTRATE_CONTROL,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_KILL,
             TOOL_AGENT_WORKTREE,
@@ -446,6 +452,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_KILL,
             TOOL_AGENT_WORKTREE,
@@ -490,6 +497,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_SCRIPT_BLOCK,
             TOOL_CRON,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_KILL,
             TOOL_AGENT_WORKTREE,
@@ -511,6 +519,7 @@ pub const SUBAGENT_ROLE_REGISTRY: &[SubagentRoleDescriptor] = &[
             TOOL_GOAL_LOOP,
             TOOL_SKILL_MANAGE,
             TOOL_ASK_CLARIFICATION,
+            TOOL_ASK_USER,
             TOOL_SPAWN_AGENT,
             TOOL_AGENT_WORKTREE,
             TOOL_ORCHESTRATE_CONTROL,
@@ -1019,7 +1028,7 @@ enabled: true\n\
 ---\n\n\
 - HARD GATE: Before implementing any non-trivial feature, UI change, or architectural refactor, inspect the relevant files cheaply (`glob_find`, `code_search`, `read_file(mode=\"outline\")`) and frame the problem first.\n\
 - Surface explicit invariants, assumptions, blind spots, and 2-3 candidate options with blast-radius and reversibility tradeoffs via `record_brainstorm` (which auto-syncs `.zenko/sessions/<id>/zpowers/spec.md`) or `invoke_tool(tool=\"zpowers\", args={\"action\":\"write_spec\",...})`.\n\
-- Resolve genuine architectural ambiguity cleanly with `ask_clarification` (1 focused question at a time with a recommended default) rather than guessing silently.\n\
+- Resolve genuine ambiguity or missing user data cleanly with `ask_user` (choose `option_list`, `question_flow`, `recommendation`, `data_input`, or `feedback`) rather than guessing silently.\n\
 - Do not write production code until the chosen design direction is recorded in `spec.md` and broken into an actionable plan in `plan.md`.\n",
     },
     DefaultSkillTemplate {
@@ -1068,7 +1077,7 @@ enabled: true\n\
 - Phase 1 (Reproduce & Inspect): Read the full error/stack trace, check exact failing lines via `read_file`, and isolate a minimal reproduction command.\n\
 - Phase 2 (Pattern Diff): Compare the failing path against a working sibling path using `code_search` and `git_tool(action=\"diff\")`.\n\
 - Phase 3 (Single-Variable Hypothesis): Form one falsifiable hypothesis, log it via `invoke_tool(tool=\"zpowers\", args={\"action\":\"log_debug\",\"hypothesis\":\"...\",\"evidence\":\"...\"})`, and test minimally.\n\
-- Phase 4 (3-Strike Architectural Breaker): If 3 consecutive fix attempts fail, STOP patching symptoms immediately. Re-read `.zenko/sessions/<id>/zpowers/debug.md`, question the underlying design/assumptions, and either redesign in `spec.md` or ask the user via `ask_clarification`.\n",
+- Phase 4 (3-Strike Architectural Breaker): If 3 consecutive fix attempts fail, STOP patching symptoms immediately. Re-read `.zenko/sessions/<id>/zpowers/debug.md`, question the underlying design/assumptions, and either redesign in `spec.md` or ask the user via `ask_user`.\n",
     },
     DefaultSkillTemplate {
         filename: "zpowers-verify.md",

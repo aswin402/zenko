@@ -881,31 +881,104 @@ impl TelegramGateway {
                 }
                 AgentEvent::ClarificationRequested { clarification } => {
                     let targets = self.resolve_telegram_targets(&clarification.session_id);
-                    let mut lines = vec![format!("Design Decision Needed\n{}", clarification.question)];
+                    let heading = match clarification.title.trim().is_empty() {
+                        true => match clarification.kind {
+                            zenko_core::AskUserKind::OptionList => "Input Needed",
+                            zenko_core::AskUserKind::QuestionFlow => "Quick Questions",
+                            zenko_core::AskUserKind::Recommendation => "Recommendation",
+                            zenko_core::AskUserKind::DataInput => "Information Needed",
+                            zenko_core::AskUserKind::Feedback => "Feedback Requested",
+                        },
+                        false => clarification.title.trim(),
+                    };
+                    let mut lines = vec![format!("{heading}\n{}", clarification.question)];
                     if !clarification.context.trim().is_empty() {
                         lines.push(clarification.context.clone());
                     }
-                    let mut rows: Vec<Value> = Vec::with_capacity(clarification.options.len());
-                    for (idx, opt) in clarification.options.iter().enumerate() {
-                        let rec = match opt.recommended {
-                            true => " (recommended)",
-                            false => "",
-                        };
-                        let desc = match opt.description.trim().is_empty() {
-                            true => String::new(),
-                            false => format!(" — {}", opt.description),
-                        };
-                        lines.push(format!("{}. {}{rec}{desc}", idx + 1, opt.label));
-                        rows.push(json!([{
-                            "text": format!("{}{rec}", opt.label),
-                            "callback_data": format!("{TELEGRAM_CB_CLARIFY_PREFIX}:{}:{idx}", clarification.id)
-                        }]));
+                    if let Some(ref rec) = clarification.recommendation {
+                        if !rec.summary.trim().is_empty() && rec.summary.trim() != clarification.context.trim() {
+                            lines.push(rec.summary.clone());
+                        }
+                        if !rec.rationale.trim().is_empty() {
+                            lines.push(format!("Rationale: {}", rec.rationale));
+                        }
+                        for pro in &rec.pros {
+                            lines.push(format!("+ {pro}"));
+                        }
+                        for con in &rec.cons {
+                            lines.push(format!("- {con}"));
+                        }
+                    }
+                    let mut rows: Vec<Value> = Vec::new();
+                    match clarification.kind {
+                        zenko_core::AskUserKind::OptionList
+                        | zenko_core::AskUserKind::Recommendation => {
+                            for (idx, opt) in clarification.options.iter().enumerate() {
+                                let rec = match opt.recommended {
+                                    true => " (recommended)",
+                                    false => "",
+                                };
+                                let desc = match opt.description.trim().is_empty() {
+                                    true => String::new(),
+                                    false => format!(" — {}", opt.description),
+                                };
+                                lines.push(format!("{}. {}{rec}{desc}", idx + 1, opt.label));
+                                rows.push(json!([{
+                                    "text": format!("{}{rec}", opt.label),
+                                    "callback_data": format!("{TELEGRAM_CB_CLARIFY_PREFIX}:{}:{idx}", clarification.id)
+                                }]));
+                            }
+                        }
+                        zenko_core::AskUserKind::QuestionFlow => {
+                            for (idx, step) in clarification.steps.iter().enumerate() {
+                                let opts: Vec<&str> =
+                                    step.options.iter().map(|o| o.label.as_str()).collect();
+                                lines.push(format!(
+                                    "{}. {} [{}]",
+                                    idx + 1,
+                                    step.question,
+                                    opts.join(" / ")
+                                ));
+                            }
+                            lines.push(
+                                "Reply with your answers here or open the Zenko WebUI for the guided flow."
+                                    .to_string(),
+                            );
+                        }
+                        zenko_core::AskUserKind::DataInput => {
+                            for field in &clarification.fields {
+                                let req_tag = match field.required {
+                                    true => " (required)",
+                                    false => " (optional)",
+                                };
+                                lines.push(format!("- {}{req_tag}", field.label));
+                            }
+                            lines.push(
+                                "Reply directly in this chat with the requested info (or submit in Zenko WebUI)."
+                                    .to_string(),
+                            );
+                        }
+                        zenko_core::AskUserKind::Feedback => {
+                            for (idx, opt) in clarification.options.iter().enumerate() {
+                                rows.push(json!([{
+                                    "text": opt.label,
+                                    "callback_data": format!("{TELEGRAM_CB_CLARIFY_PREFIX}:{}:{idx}", clarification.id)
+                                }]));
+                            }
+                            lines.push(
+                                "Tap a quick choice or reply directly with your feedback."
+                                    .to_string(),
+                            );
+                        }
                     }
                     let text = lines.join("\n");
-                    let markup = json!({ "inline_keyboard": rows });
+                    let markup = match rows.is_empty() {
+                        true => None,
+                        false => Some(json!({ "inline_keyboard": rows })),
+                    };
                     for (chat_id, thread_id) in targets {
                         let _ = self
-                            .send_message(token.as_str(), chat_id, thread_id, &text, Some(markup.clone()))
+                            .send_message(token.as_str(), chat_id, thread_id, &text, markup.clone())
                             .await;
                     }
                 }

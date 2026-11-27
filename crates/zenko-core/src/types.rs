@@ -2253,6 +2253,169 @@ pub struct BrainstormSpec {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AskUserKind {
+    #[default]
+    OptionList,
+    QuestionFlow,
+    Recommendation,
+    DataInput,
+    Feedback,
+}
+
+impl AskUserKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OptionList => "option_list",
+            Self::QuestionFlow => "question_flow",
+            Self::Recommendation => "recommendation",
+            Self::DataInput => "data_input",
+            Self::Feedback => "feedback",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "option_list" | "options" | "pick_one" | "pick_many" | "choice" => {
+                Some(Self::OptionList)
+            }
+            "question_flow" | "flow" | "wizard" | "multi_step" => Some(Self::QuestionFlow),
+            "recommendation" | "recommend" | "recommendation_card" | "proposal" => {
+                Some(Self::Recommendation)
+            }
+            "data_input" | "input" | "form" | "ask_text" | "text" => Some(Self::DataInput),
+            "feedback" | "feedback_dialog" | "review" | "confirm" => Some(Self::Feedback),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AskUserSelectionMode {
+    #[default]
+    Single,
+    Multi,
+}
+
+impl AskUserSelectionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Multi => "multi",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "single" | "one" | "radio" => Some(Self::Single),
+            "multi" | "multiple" | "many" | "checkbox" => Some(Self::Multi),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserField {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub placeholder: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub multiline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserStep {
+    pub id: String,
+    #[serde(alias = "title")]
+    pub question: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub selection_mode: AskUserSelectionMode,
+    #[serde(default)]
+    pub options: Vec<ClarificationOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<usize>,
+    #[serde(default)]
+    pub allow_custom: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserRecommendation {
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub rationale: String,
+    #[serde(default, alias = "badge")]
+    pub confidence: String,
+    #[serde(default)]
+    pub pros: Vec<String>,
+    #[serde(default)]
+    pub cons: Vec<String>,
+    #[serde(default)]
+    pub accept_label: String,
+    #[serde(default, alias = "reject_label")]
+    pub alternatives_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserRequestSpec {
+    #[serde(default)]
+    pub kind: AskUserKind,
+    #[serde(default)]
+    pub title: String,
+    pub question: String,
+    #[serde(default)]
+    pub context: String,
+    #[serde(default)]
+    pub selection_mode: AskUserSelectionMode,
+    #[serde(default)]
+    pub options: Vec<ClarificationOption>,
+    #[serde(default)]
+    pub steps: Vec<AskUserStep>,
+    #[serde(default)]
+    pub fields: Vec<AskUserField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<AskUserRecommendation>,
+    #[serde(default)]
+    pub allow_custom: bool,
+    #[serde(default = "default_true_bool")]
+    pub allow_auto_default: bool,
+}
+
+fn default_true_bool() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AskUserResolution {
+    #[serde(default)]
+    pub selected_option_id: String,
+    #[serde(default)]
+    pub selected_option_ids: Vec<String>,
+    #[serde(default)]
+    pub step_answers: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub field_values: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClarificationOption {
     pub id: String,
@@ -2288,16 +2451,41 @@ impl ClarificationStatus {
 pub struct ClarificationRecord {
     pub id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub kind: AskUserKind,
+    #[serde(default)]
+    pub title: String,
     pub question: String,
     #[serde(default)]
     pub context: String,
+    #[serde(default)]
+    pub selection_mode: AskUserSelectionMode,
+    #[serde(default)]
     pub options: Vec<ClarificationOption>,
+    #[serde(default)]
+    pub steps: Vec<AskUserStep>,
+    #[serde(default)]
+    pub fields: Vec<AskUserField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<AskUserRecommendation>,
+    #[serde(default)]
+    pub allow_custom: bool,
+    #[serde(default = "default_true_bool")]
+    pub allow_auto_default: bool,
     pub recommended_option_id: String,
     pub status: ClarificationStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_option_id: Option<String>,
+    #[serde(default)]
+    pub selected_option_ids: Vec<String>,
+    #[serde(default)]
+    pub step_answers: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub field_values: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -2308,10 +2496,20 @@ pub struct ClarificationRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClarificationAnswer {
     pub selected_option_id: String,
+    #[serde(default)]
+    pub selected_option_ids: Vec<String>,
+    #[serde(default)]
+    pub step_answers: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub field_values: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<String>,
     pub resolved_by: String,
     pub auto_resolved: bool,
+    #[serde(default)]
+    pub needs_user_input: bool,
 }
 
 // ─── Phase 5: Async Subagents, Git Worktree Isolation & Inter-Agent Mailbox ────

@@ -11,16 +11,19 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
+    ASK_USER_KINDS, ASK_USER_MAX_FIELDS, ASK_USER_MAX_OPTIONS, ASK_USER_MAX_PROS_CONS,
+    ASK_USER_MAX_STEPS, ASK_USER_OPTION_ACCEPT, ASK_USER_SELECTION_MODES, AskUserField,
+    AskUserKind, AskUserRecommendation, AskUserRequestSpec, AskUserSelectionMode, AskUserStep,
     BRAINSTORM_STAGES, BrainstormOption, BrainstormSpec, BrainstormStage, CODE_MINIMALISM_MODES,
     CONCISE_MODES, ClarificationOption, CodeMinimalismMode, ConciseMode, ExecutionPlan,
     MODEL_ROUTING_ROLES, ModelRoutingRole, ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_DEFAULT_OPTION_SCORE,
     ORCH_PLAN_MAX_STEPS, OrchestrateControlRequest, OrchestratorBridge, PlanStep, PlanStepStatus,
     REASONING_EFFORTS, ReasoningEffort, ResourceLockKey, Result, RiskLevel, SESSION_TASK_ACTIONS,
     SESSION_TASK_DAG_LOCK_KEY, SESSION_TASK_STATUSES, SessionTask, SessionTaskAction,
-    SessionTaskPatch, SessionTaskStatus, TOOL_ASK_CLARIFICATION, TOOL_ORCHESTRATE_CONTROL,
+    SessionTaskPatch, SessionTaskStatus, TOOL_ASK_USER, TOOL_ORCHESTRATE_CONTROL,
     TOOL_PLAN_UPDATE, TOOL_RECORD_BRAINSTORM, TOOL_SESSION_TASK, TURN_POSTURES, Tool,
     ToolConcurrency, ToolContext, ToolOutput, ToolSpec, TurnPosture, ZenkoError, new_id,
-    new_session_task_id,
+    new_session_task_id, scrub_secrets,
 };
 
 pub struct RecordBrainstormTool {
@@ -424,9 +427,12 @@ impl Tool for PlanUpdateTool {
     }
 }
 
-pub struct AskClarificationTool {
+pub struct AskUserTool {
     bridge: Arc<dyn OrchestratorBridge>,
 }
+
+/// Backwards-compatible alias for `AskUserTool`.
+pub type AskClarificationTool = AskUserTool;
 
 /// LLM-sovereign live orchestration tool (`orchestrate_control`): lets Zenko declare/transition
 /// turn posture, dynamically shift cognitive gear (model slot + reasoning effort) mid-turn,
@@ -675,14 +681,276 @@ impl Tool for OrchestrateControlTool {
     }
 }
 
-impl AskClarificationTool {
+fn parse_ask_options(raw: Option<&Value>, max_items: usize) -> Vec<ClarificationOption> {
+    raw.and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .take(max_items)
+                .enumerate()
+                .filter_map(|(idx, v)| {
+                    let label = v.get("label").and_then(Value::as_str)?.trim().to_string();
+                    if label.is_empty() {
+                        return None;
+                    }
+                    let id = v
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("choice_{}", idx + 1));
+                    let description = v
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let recommended = v
+                        .get("recommended")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(idx == 0);
+                    Some(ClarificationOption {
+                        id,
+                        label,
+                        description,
+                        recommended,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_ask_steps(raw: Option<&Value>) -> Vec<AskUserStep> {
+    raw.and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .take(ASK_USER_MAX_STEPS)
+                .enumerate()
+                .filter_map(|(idx, v)| {
+                    let question = v
+                        .get("question")
+                        .and_then(Value::as_str)?
+                        .trim()
+                        .to_string();
+                    if question.is_empty() {
+                        return None;
+                    }
+                    let options = parse_ask_options(v.get("options"), ASK_USER_MAX_OPTIONS);
+                    if options.is_empty() {
+                        return None;
+                    }
+                    let id = v
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("step_{}", idx + 1));
+                    let description = v
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let selection_mode = v
+                        .get("selection_mode")
+                        .and_then(Value::as_str)
+                        .and_then(AskUserSelectionMode::parse)
+                        .unwrap_or(AskUserSelectionMode::Single);
+                    let min_selections = v
+                        .get("min_selections")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as usize);
+                    let max_selections = v
+                        .get("max_selections")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as usize);
+                    Some(AskUserStep {
+                        id,
+                        question,
+                        description,
+                        selection_mode,
+                        options,
+                        min_selections,
+                        max_selections,
+                        allow_custom: v
+                            .get("allow_custom")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_ask_fields(raw: Option<&Value>) -> Vec<AskUserField> {
+    raw.and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .take(ASK_USER_MAX_FIELDS)
+                .enumerate()
+                .filter_map(|(idx, v)| {
+                    let label = v.get("label").and_then(Value::as_str)?.trim().to_string();
+                    if label.is_empty() {
+                        return None;
+                    }
+                    let id = v
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("field_{}", idx + 1));
+                    Some(AskUserField {
+                        id,
+                        label,
+                        description: v
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                        placeholder: v
+                            .get("placeholder")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                        default_value: v
+                            .get("default_value")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(String::from),
+                        required: v.get("required").and_then(Value::as_bool).unwrap_or(true),
+                        secret: v.get("secret").and_then(Value::as_bool).unwrap_or(false),
+                        multiline: v.get("multiline").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_ask_recommendation(
+    raw: Option<&Value>,
+    fallback_title: &str,
+    fallback_summary: &str,
+) -> Option<AskUserRecommendation> {
+    raw.and_then(Value::as_object).map(|obj| {
+        let mut pros = parse_string_vec(obj.get("pros"));
+        pros.truncate(ASK_USER_MAX_PROS_CONS);
+        let mut cons = parse_string_vec(obj.get("cons"));
+        cons.truncate(ASK_USER_MAX_PROS_CONS);
+        let title = obj
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(fallback_title)
+            .to_string();
+        let summary = obj
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(fallback_summary)
+            .to_string();
+        let rationale = obj
+            .get("rationale")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let confidence = obj
+            .get("confidence")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("recommended")
+            .to_string();
+        let accept_label = obj
+            .get("accept_label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Accept")
+            .to_string();
+        let alternatives_label = obj
+            .get("alternatives_label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Alternatives")
+            .to_string();
+        AskUserRecommendation {
+            title,
+            summary,
+            rationale,
+            confidence,
+            pros,
+            cons,
+            accept_label,
+            alternatives_label,
+        }
+    })
+}
+
+fn format_ask_user_answer_text(spec: &AskUserRequestSpec, ans: &zenko_core::ClarificationAnswer) -> String {
+    let mut parts: Vec<String> = vec![format!(
+        "User prompt ({}) resolved by `{}` (auto_resolved={}, needs_user_input={}):",
+        spec.kind.as_str(),
+        ans.resolved_by,
+        ans.auto_resolved,
+        ans.needs_user_input
+    )];
+    match (
+        !ans.selected_option_ids.is_empty(),
+        !ans.selected_option_id.trim().is_empty(),
+    ) {
+        (true, _) => parts.push(format!("selected=[{}]", ans.selected_option_ids.join(", "))),
+        (false, true) => parts.push(format!("selected=`{}`", ans.selected_option_id)),
+        (false, false) => {}
+    }
+    if !ans.step_answers.is_empty() {
+        let steps_str: Vec<String> = ans
+            .step_answers
+            .iter()
+            .map(|(k, v)| format!("{k}=[{}]", v.join(", ")))
+            .collect();
+        parts.push(format!("steps={{ {} }}", steps_str.join("; ")));
+    }
+    if !ans.field_values.is_empty() {
+        let fields_str: Vec<String> = ans
+            .field_values
+            .iter()
+            .map(|(k, v)| format!("{k}={v:?}"))
+            .collect();
+        parts.push(format!("fields={{ {} }}", fields_str.join(", ")));
+    }
+    if let Some(ref rating) = ans.rating
+        && !rating.trim().is_empty()
+    {
+        parts.push(format!("rating=`{}`", rating.trim()));
+    }
+    if let Some(ref note) = ans.custom_answer
+        && !note.trim().is_empty()
+    {
+        parts.push(format!("note={:?}", note.trim()));
+    }
+    parts.join(" ")
+}
+
+impl AskUserTool {
     pub fn new(bridge: Arc<dyn OrchestratorBridge>) -> Self {
         Self { bridge }
     }
 }
 
 #[async_trait]
-impl Tool for AskClarificationTool {
+impl Tool for AskUserTool {
     fn toolset(&self) -> zenko_core::ToolSet {
         zenko_core::ToolSet::Orchestration
     }
@@ -696,16 +964,36 @@ impl Tool for AskClarificationTool {
     }
 
     fn spec(&self) -> ToolSpec {
+        let kind_enum: Vec<Value> = ASK_USER_KINDS
+            .iter()
+            .map(|&k| Value::String(k.to_string()))
+            .collect();
+        let mode_enum: Vec<Value> = ASK_USER_SELECTION_MODES
+            .iter()
+            .map(|&m| Value::String(m.to_string()))
+            .collect();
         ToolSpec {
-            name: TOOL_ASK_CLARIFICATION.into(),
-            description: "Ask a high-impact multiple-choice design clarification question with a recommended default. Surfaces an interactive card in WebUI/CLI/Telegram and auto-resolves safely with the recommended option in headless 24/7 runs.".into(),
+            name: TOOL_ASK_USER.into(),
+            description: "Ask the user directly whenever you lack confidence, face meaningful ambiguity, or need missing data (URLs, paths, target environment, credentials/config, preferences, or sign-off). Available at any point in a task (start, mid-turn, or wrap-up). Supports five interactive WebUI elements: `option_list` (single/multi pick), `question_flow` (multi-step guided questions), `recommendation` (opinionated proposal with Accept/Alternatives), `data_input` (structured fields or freeform data), and `feedback` (wrap-up check-in/rating). Resolved answers persist into `.zenko/sessions/<id>/zpowers/decisions.md`.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string", "description": "Concise high-impact design question" },
-                    "context": { "type": "string", "description": "Brief tradeoff context" },
+                    "kind": {
+                        "type": "string",
+                        "enum": kind_enum,
+                        "description": "UI surface kind: `option_list`, `question_flow`, `recommendation`, `data_input`, or `feedback` (inferred automatically from supplied fields if omitted)."
+                    },
+                    "title": { "type": "string", "description": "Optional short card heading." },
+                    "question": { "type": "string", "description": "Clear, concise question or request for the user." },
+                    "context": { "type": "string", "description": "Brief rationale, tradeoff summary, or why this input is needed." },
+                    "selection_mode": {
+                        "type": "string",
+                        "enum": mode_enum,
+                        "description": "For `option_list`: `single` (commits on click) or `multiple` (checkboxes + Confirm)."
+                    },
                     "options": {
                         "type": "array",
+                        "description": "Choices for `option_list`, fallback alternatives for `recommendation`, or quick-pick reasons for `feedback`.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -714,11 +1002,73 @@ impl Tool for AskClarificationTool {
                                 "description": { "type": "string" },
                                 "recommended": { "type": "boolean" }
                             },
-                            "required": ["id", "label"]
+                            "required": ["label"]
                         }
-                    }
+                    },
+                    "steps": {
+                        "type": "array",
+                        "description": "Sequential steps for `question_flow` (up to 5 steps).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "question": { "type": "string" },
+                                "description": { "type": "string" },
+                                "selection_mode": { "type": "string", "enum": mode_enum },
+                                "min_selections": { "type": "integer", "minimum": 0 },
+                                "max_selections": { "type": "integer", "minimum": 1 },
+                                "options": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "label": { "type": "string" },
+                                            "description": { "type": "string" },
+                                            "recommended": { "type": "boolean" }
+                                        },
+                                        "required": ["label"]
+                                    }
+                                }
+                            },
+                            "required": ["question", "options"]
+                        }
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Structured input fields for `data_input` (e.g. target URL, DB host, region, token name).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "label": { "type": "string" },
+                                "placeholder": { "type": "string" },
+                                "default_value": { "type": "string" },
+                                "required": { "type": "boolean" },
+                                "secret": { "type": "boolean" },
+                                "multiline": { "type": "boolean" }
+                            },
+                            "required": ["label"]
+                        }
+                    },
+                    "recommendation": {
+                        "type": "object",
+                        "description": "Structured opinionated proposal for `recommendation`.",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "summary": { "type": "string" },
+                            "rationale": { "type": "string" },
+                            "confidence": { "type": "string" },
+                            "pros": { "type": "array", "items": { "type": "string" } },
+                            "cons": { "type": "array", "items": { "type": "string" } },
+                            "accept_label": { "type": "string" },
+                            "alternatives_label": { "type": "string" }
+                        }
+                    },
+                    "allow_custom": { "type": "boolean", "description": "Show a custom freeform note/override input alongside structured choices." },
+                    "allow_auto_default": { "type": "boolean", "description": "Whether headless 24/7 mode may auto-apply defaults (set false for missing required facts/data)." }
                 },
-                "required": ["question", "options"]
+                "required": ["question"]
             }),
             risk: RiskLevel::Safe,
         }
@@ -735,86 +1085,168 @@ impl Tool for AskClarificationTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| ZenkoError::Tool("missing `question`".into()))?;
+            .ok_or_else(|| ZenkoError::Tool("missing `question`".into()))?
+            .to_string();
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let context = args
             .get("context")
             .and_then(Value::as_str)
             .unwrap_or("")
-            .trim();
-        let raw_opts = args
-            .get("options")
-            .and_then(Value::as_array)
-            .ok_or_else(|| ZenkoError::Tool("missing `options` array".into()))?;
+            .trim()
+            .to_string();
+        let selection_mode = args
+            .get("selection_mode")
+            .and_then(Value::as_str)
+            .and_then(AskUserSelectionMode::parse)
+            .unwrap_or(AskUserSelectionMode::Single);
+        let mut options = parse_ask_options(args.get("options"), ASK_USER_MAX_OPTIONS);
+        let steps = parse_ask_steps(args.get("steps"));
+        let fields = parse_ask_fields(args.get("fields"));
+        let mut recommendation = parse_ask_recommendation(
+            args.get("recommendation"),
+            match title.is_empty() {
+                true => &question,
+                false => &title,
+            },
+            &context,
+        );
 
-        let options: Vec<ClarificationOption> = raw_opts
-            .iter()
-            .take(ORCH_BRAINSTORM_MAX_OPTIONS)
-            .enumerate()
-            .filter_map(|(idx, v)| {
-                let label = v.get("label").and_then(Value::as_str)?.trim().to_string();
-                let id = v
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("choice_{}", idx + 1));
-                let description = v
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let recommended = v
-                    .get("recommended")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(idx == 0);
-                Some(ClarificationOption {
-                    id,
-                    label,
-                    description,
-                    recommended,
-                })
-            })
-            .collect();
+        let kind = match args.get("kind").and_then(Value::as_str) {
+            Some(raw) => AskUserKind::parse(raw).ok_or_else(|| {
+                ZenkoError::Tool(format!(
+                    "Unknown `kind` `{raw}`. Valid values: {}.",
+                    ASK_USER_KINDS.join(", ")
+                ))
+            })?,
+            None => match (
+                !steps.is_empty(),
+                !fields.is_empty(),
+                recommendation.is_some(),
+                !options.is_empty(),
+            ) {
+                (true, _, _, _) => AskUserKind::QuestionFlow,
+                (false, true, _, _) => AskUserKind::DataInput,
+                (false, false, true, _) => AskUserKind::Recommendation,
+                (false, false, false, true) => AskUserKind::OptionList,
+                (false, false, false, false) => AskUserKind::DataInput,
+            },
+        };
 
-        if options.is_empty() {
-            return Ok(ToolOutput::err(
-                "provide at least 1 clarification option with `id` and `label`",
-            ));
+        match kind {
+            AskUserKind::OptionList if options.is_empty() => {
+                return Ok(ToolOutput::err(
+                    "`option_list` requires at least 1 option with `label` (or use `kind=\"data_input\"` for freeform input)",
+                ));
+            }
+            AskUserKind::QuestionFlow if steps.is_empty() => {
+                return Ok(ToolOutput::err(
+                    "`question_flow` requires at least 1 step with `question` and `options`",
+                ));
+            }
+            AskUserKind::Recommendation => {
+                if recommendation.is_none() {
+                    recommendation = Some(AskUserRecommendation {
+                        title: match title.is_empty() {
+                            true => question.clone(),
+                            false => title.clone(),
+                        },
+                        summary: context.clone(),
+                        rationale: String::new(),
+                        confidence: "recommended".into(),
+                        pros: Vec::new(),
+                        cons: Vec::new(),
+                        accept_label: "Accept".into(),
+                        alternatives_label: "Alternatives".into(),
+                    });
+                }
+                if options.is_empty() {
+                    options.push(ClarificationOption {
+                        id: ASK_USER_OPTION_ACCEPT.into(),
+                        label: recommendation
+                            .as_ref()
+                            .map(|r| r.accept_label.clone())
+                            .unwrap_or_else(|| "Accept".into()),
+                        description: "Proceed with the recommended approach".into(),
+                        recommended: true,
+                    });
+                }
+            }
+            _ => {}
         }
+
+        let allow_custom = args
+            .get("allow_custom")
+            .and_then(Value::as_bool)
+            .unwrap_or(matches!(kind, AskUserKind::DataInput | AskUserKind::Feedback));
+        let allow_auto_default = args
+            .get("allow_auto_default")
+            .and_then(Value::as_bool)
+            .unwrap_or(!matches!(kind, AskUserKind::DataInput));
+
+        let spec = AskUserRequestSpec {
+            kind,
+            title: title.clone(),
+            question: question.clone(),
+            context: context.clone(),
+            selection_mode,
+            options,
+            steps,
+            fields,
+            recommendation,
+            allow_custom,
+            allow_auto_default,
+        };
 
         let answer = self
             .bridge
-            .request_clarification(
-                &ctx.session_id,
-                question,
-                context,
-                options,
-                ctx.headless_no_wait,
-                cancel,
-            )
+            .request_ask_user(&ctx.session_id, spec.clone(), ctx.headless_no_wait, cancel)
             .await?;
 
-        let custom_suffix = answer
-            .custom_answer
-            .as_deref()
-            .map(|s| format!(" Note: {s}"))
-            .unwrap_or_default();
+        let secret_ids: std::collections::HashSet<&str> = spec
+            .fields
+            .iter()
+            .filter(|f| f.secret)
+            .map(|f| f.id.as_str())
+            .collect();
+        let safe_field_values: std::collections::BTreeMap<String, String> = answer
+            .field_values
+            .iter()
+            .map(|(k, v)| {
+                let sanitized = match secret_ids.contains(k.as_str()) {
+                    true => "[provided]".to_string(),
+                    false => scrub_secrets(v, &[]),
+                };
+                (k.clone(), sanitized)
+            })
+            .collect();
+        let safe_custom = answer.custom_answer.as_deref().map(|s| scrub_secrets(s, &[]));
+
         Ok(ToolOutput {
-            content: format!(
-                "Clarification resolved by `{}` (auto_resolved={}): selected option `{}`.{custom_suffix}",
-                answer.resolved_by, answer.auto_resolved, answer.selected_option_id
-            ),
+            content: format_ask_user_answer_text(&spec, &answer),
             is_error: false,
             diff: None,
             metadata: Some(json!({
-                "question": question,
-                "context": context,
+                "kind": spec.kind.as_str(),
+                "title": spec.title,
+                "question": spec.question,
+                "context": spec.context,
+                "options": spec.options,
+                "steps": spec.steps,
+                "recommendation": spec.recommendation,
                 "selected_option_id": answer.selected_option_id,
-                "custom_answer": answer.custom_answer,
+                "selected_option_ids": answer.selected_option_ids,
+                "step_answers": answer.step_answers,
+                "field_values": safe_field_values,
+                "custom_answer": safe_custom,
+                "rating": answer.rating,
                 "resolved_by": answer.resolved_by,
                 "auto_resolved": answer.auto_resolved,
+                "needs_user_input": answer.needs_user_input,
             })),
         })
     }
@@ -1076,4 +1508,200 @@ fn format_task_list(header: &str, tasks: &[SessionTask]) -> String {
         })
         .collect();
     format!("{header} ({}):\n{}", tasks.len(), lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use zenko_core::{
+        ClarificationAnswer, ClarificationRecord, TOOL_ASK_CLARIFICATION, TOOL_ASK_USER,
+        ToolAvailabilityContext,
+    };
+
+    struct MockAskBridge {
+        seen: std::sync::Mutex<Vec<AskUserRequestSpec>>,
+    }
+
+    impl MockAskBridge {
+        fn new() -> Self {
+            Self {
+                seen: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl OrchestratorBridge for MockAskBridge {
+        fn record_brainstorm(&self, _: &str, spec: &BrainstormSpec) -> Result<BrainstormSpec> {
+            Ok(spec.clone())
+        }
+        fn update_plan(&self, _: &str, plan: &ExecutionPlan) -> Result<ExecutionPlan> {
+            Ok(plan.clone())
+        }
+        async fn request_ask_user(
+            &self,
+            _: &str,
+            spec: AskUserRequestSpec,
+            _: bool,
+            _: CancellationToken,
+        ) -> Result<ClarificationAnswer> {
+            if let Ok(mut list) = self.seen.lock() {
+                list.push(spec.clone());
+            }
+            let mut field_values = std::collections::BTreeMap::new();
+            for f in &spec.fields {
+                field_values.insert(
+                    f.id.clone(),
+                    match f.secret {
+                        true => "sk-live-secret-999".into(),
+                        false => "https://staging.example.com".into(),
+                    },
+                );
+            }
+            Ok(ClarificationAnswer {
+                selected_option_id: spec
+                    .options
+                    .first()
+                    .map(|o| o.id.clone())
+                    .unwrap_or_else(|| "data_submitted".into()),
+                selected_option_ids: spec.options.first().map(|o| vec![o.id.clone()]).unwrap_or_default(),
+                step_answers: std::collections::BTreeMap::new(),
+                field_values,
+                custom_answer: Some("user note".into()),
+                rating: None,
+                resolved_by: "webui".into(),
+                auto_resolved: false,
+                needs_user_input: false,
+            })
+        }
+        fn list_pending_clarifications(&self, _: Option<&str>) -> Vec<ClarificationRecord> {
+            Vec::new()
+        }
+        fn list_session_tasks(&self, _: &str) -> Result<Vec<SessionTask>> {
+            Ok(Vec::new())
+        }
+        fn ready_session_tasks(&self, _: &str) -> Result<Vec<SessionTask>> {
+            Ok(Vec::new())
+        }
+        fn create_session_task(&self, _: &str, task: SessionTask) -> Result<SessionTask> {
+            Ok(task)
+        }
+        fn update_session_task(&self, _: &str, _: &str, _: SessionTaskPatch) -> Result<SessionTask> {
+            Err(ZenkoError::Tool("unused".into()))
+        }
+        fn claim_session_task(&self, _: &str, _: &str, _: &str) -> Result<SessionTask> {
+            Err(ZenkoError::Tool("unused".into()))
+        }
+        fn delete_session_task(&self, _: &str, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn clear_session_tasks(&self, _: &str) -> Result<usize> {
+            Ok(0)
+        }
+        async fn apply_orchestrate_control(
+            &self,
+            _: &str,
+            _: &Path,
+            _: OrchestrateControlRequest,
+        ) -> Result<zenko_core::OrchestrateControlReceipt> {
+            Err(ZenkoError::Tool("unused".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_user_tool_infers_kinds_masks_secret_metadata_and_resolves_alias() {
+        let bridge = Arc::new(MockAskBridge::new());
+        let reg = crate::ToolRegistry::empty();
+        reg.register(Arc::new(AskUserTool::new(bridge.clone())));
+
+        // Canonical name and legacy alias both resolve to the exact same tool.
+        let canonical = reg.get(TOOL_ASK_USER).expect("ask_user registered");
+        let aliased = reg
+            .get(TOOL_ASK_CLARIFICATION)
+            .expect("ask_clarification alias resolves");
+        assert_eq!(canonical.spec().name, TOOL_ASK_USER);
+        assert_eq!(aliased.spec().name, TOOL_ASK_USER);
+        assert!(canonical.is_available(&ToolAvailabilityContext {
+            is_subagent: false,
+            ..Default::default()
+        }));
+        assert!(!canonical.is_available(&ToolAvailabilityContext {
+            is_subagent: true,
+            ..Default::default()
+        }));
+
+        let ctx = ToolContext {
+            session_id: "s1".into(),
+            workspace_dir: std::env::temp_dir(),
+            data_dir: std::env::temp_dir(),
+            hub_dir: std::env::temp_dir(),
+            shell_timeout_secs: 30,
+            auto_background_after_secs: 15,
+            max_output_bytes: 65_536,
+            headless_no_wait: false,
+            demote_bg: Arc::new(tokio::sync::Notify::new()),
+            file_state: None,
+        };
+
+        // 1. DataInput inferred from `fields`, secret field masked in persisted metadata.
+        let out = canonical
+            .execute(
+                &ctx,
+                json!({
+                    "question": "Provide target environment details",
+                    "fields": [
+                        { "id": "url", "label": "Target URL" },
+                        { "id": "token", "label": "API Token", "secret": true }
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("data_input execute");
+        assert!(!out.is_error);
+        let meta = out.metadata.expect("metadata");
+        assert_eq!(meta["kind"], "data_input");
+        assert_eq!(meta["field_values"]["url"], "https://staging.example.com");
+        assert_eq!(meta["field_values"]["token"], "[provided]");
+
+        // 2. QuestionFlow inferred from `steps`.
+        let out_flow = canonical
+            .execute(
+                &ctx,
+                json!({
+                    "question": "Configure new service",
+                    "steps": [
+                        {
+                            "id": "runtime",
+                            "question": "Runtime?",
+                            "options": [{ "id": "rust", "label": "Rust" }]
+                        }
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("flow execute");
+        assert_eq!(out_flow.metadata.expect("meta")["kind"], "question_flow");
+
+        // 3. Recommendation inferred from `recommendation` object.
+        let out_rec = canonical
+            .execute(
+                &ctx,
+                json!({
+                    "question": "Proceed with SQLite WAL?",
+                    "recommendation": {
+                        "title": "Use SQLite WAL",
+                        "summary": "Zero external daemon, ACID transactions",
+                        "pros": ["Single file"],
+                        "cons": ["Single writer"]
+                    }
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("rec execute");
+        assert_eq!(out_rec.metadata.expect("meta")["kind"], "recommendation");
+    }
 }

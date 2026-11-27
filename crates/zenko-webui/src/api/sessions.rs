@@ -826,11 +826,20 @@ pub async fn api_list_clarifications(
     Json(list).into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct ResolveClarificationReq {
+    #[serde(default)]
     selected_option_id: String,
     #[serde(default)]
+    selected_option_ids: Vec<String>,
+    #[serde(default)]
+    step_answers: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    field_values: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     custom_answer: Option<String>,
+    #[serde(default)]
+    rating: Option<String>,
 }
 
 pub async fn api_resolve_clarification(
@@ -838,18 +847,19 @@ pub async fn api_resolve_clarification(
     Path(id): Path<String>,
     Json(req): Json<ResolveClarificationReq>,
 ) -> Response {
-    let custom = req
-        .custom_answer
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-    match state.runtime.clarifications.resolve_clarification(
-        &id,
-        req.selected_option_id.trim(),
-        custom,
-        "webui",
-    ) {
+    let resolution = zenko_core::AskUserResolution {
+        selected_option_id: req.selected_option_id,
+        selected_option_ids: req.selected_option_ids,
+        step_answers: req.step_answers,
+        field_values: req.field_values,
+        custom_answer: req.custom_answer,
+        rating: req.rating,
+    };
+    match state
+        .runtime
+        .clarifications
+        .resolve_ask_user(&id, resolution, "webui")
+    {
         Some(rec) => Json(json!({"resolved": true, "clarification": rec})).into_response(),
         None => (
             StatusCode::NOT_FOUND,

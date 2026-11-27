@@ -9,6 +9,7 @@ import type {
   ApprovalRecord,
   BackgroundJob,
   BootstrapResponse,
+  AskUserResolution,
   ClarificationRecord,
   DaemonTelemetry,
   HubCategoryMeta,
@@ -596,7 +597,7 @@ export default function App() {
       },
       clarification_requested: (ev, sid) => {
         if (!ev.clarification) return
-        toast(`Decision needed: ${ev.clarification.question}`, 'info')
+        toast(`Input needed: ${ev.clarification.title || ev.clarification.question}`, 'info')
         if (sid && ev.clarification.session_id === sid) {
           setPendingClarifications((prev) =>
             prev.some((c) => c.id === ev.clarification.id) ? prev : [...prev, ev.clarification],
@@ -605,6 +606,7 @@ export default function App() {
       },
       clarification_resolved: (ev) => {
         setPendingClarifications((prev) => prev.filter((c) => c.id !== ev.clarification_id))
+        setZpowersRev((n) => n + 1)
       },
       subagent_spawned: (ev) => {
         if (!ev.agent) return
@@ -1180,18 +1182,16 @@ export default function App() {
                   toast(e?.message || 'Failed to resolve approval', 'error')
                 }
               }}
-              onResolveClarification={async (id, selectedOptionId, customAnswer) => {
+              onResolveClarification={async (id, resolution: AskUserResolution) => {
                 try {
                   await api(`/api/clarifications/${encodeURIComponent(id)}`, {
                     method: 'POST',
-                    body: JSON.stringify({
-                      selected_option_id: selectedOptionId,
-                      custom_answer: customAnswer || null,
-                    }),
+                    body: JSON.stringify(resolution),
                   })
                   setPendingClarifications((prev) => prev.filter((c) => c.id !== id))
+                  setZpowersRev((n) => n + 1)
                 } catch (e: any) {
-                  toast(e?.message || 'Failed to resolve clarification', 'error')
+                  toast(e?.message || 'Failed to submit response', 'error')
                 }
               }}
             />

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, FileCode2, History, Layers, ListChecks, RotateCcw, ShieldCheck, X } from 'lucide-react'
 import { api } from '@/lib/api'
+import { TodoList, type TodoStatus } from '@/components/assistant-ui/elements/todo-list'
 import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/motion/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/motion/popover'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
@@ -20,12 +21,12 @@ const MAX_VISIBLE_CHECKPOINTS = 12
 const APPROVE_AND_EXECUTE_PROMPT =
   'The plan is approved. Execute the tracked Task DAG step by step and verify each change.'
 
-const TASK_STATUS_STYLE: Record<SessionTaskStatus, { label: string; color: string }> = {
-  pending: { label: 'pending', color: 'var(--muted)' },
-  in_progress: { label: 'active', color: 'var(--accent)' },
-  blocked: { label: 'blocked', color: 'var(--muted)' },
-  done: { label: 'done', color: 'var(--fg)' },
-  failed: { label: 'failed', color: 'var(--destructive)' },
+const TASK_STATUS_TO_TODO: Record<SessionTaskStatus, TodoStatus> = {
+  pending: 'pending',
+  in_progress: 'active',
+  blocked: 'cancelled',
+  done: 'done',
+  failed: 'failed',
 }
 
 const REWIND_MODE_OPTIONS: ReadonlyArray<readonly [RewindMode, string]> = [
@@ -658,33 +659,22 @@ export function WorkspaceToolsPopovers({
                   <X size={12} />
                 </button>
               </div>
-              <CompactScrollArea autoHeight viewportClassName="max-h-64 pr-2.5">
-                <div className="flex flex-col gap-1.5">
-                  {tasks.map((t) => {
-                    const meta = TASK_STATUS_STYLE[t.status] || TASK_STATUS_STYLE.pending
-                    return (
-                      <div
-                        key={t.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border)]/70 bg-[var(--bg)] px-2.5 py-1.5 text-[11.5px]"
-                      >
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span
-                            className="shrink-0 font-mono text-[10px] uppercase"
-                            style={{ color: meta.color }}
-                          >
-                            [{meta.label}]
-                          </span>
-                          <span className="truncate font-medium text-[var(--fg)]">{t.title}</span>
-                        </div>
-                        {t.owner_agent && (
-                          <span className="rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-px font-mono text-[9.5px] text-[var(--muted)]">
-                            {t.owner_agent.slice(0, 10)}
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
+              <CompactScrollArea autoHeight viewportClassName="max-h-72 pr-2.5">
+                <TodoList
+                  title="Tracked Plan"
+                  description="Live synced with .zenko/sessions/<id>/zpowers/plan.md"
+                  maxVisible={8}
+                  className="max-w-none"
+                  items={tasks.map((t) => ({
+                    id: t.id,
+                    text: t.title,
+                    status: TASK_STATUS_TO_TODO[t.status] || 'pending',
+                    description:
+                      t.active_label ||
+                      (t.owner_agent ? `owner: ${t.owner_agent.slice(0, 12)}` : t.description || undefined),
+                    reason: t.status === 'failed' ? t.notes || t.verification_evidence || undefined : undefined,
+                  }))}
+                />
               </CompactScrollArea>
             </PopoverContent>
           </Popover>

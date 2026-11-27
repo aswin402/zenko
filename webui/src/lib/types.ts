@@ -86,13 +86,72 @@ export interface ExecutionPlan {
   updated_at: string
 }
 
+export type AskUserKind =
+  | 'option_list'
+  | 'question_flow'
+  | 'recommendation'
+  | 'data_input'
+  | 'feedback'
+
+export type AskUserSelectionMode = 'single' | 'multi' | 'multiple'
+
+export interface AskUserField {
+  id: string
+  label: string
+  placeholder?: string
+  default_value?: string | null
+  required?: boolean
+  secret?: boolean
+  multiline?: boolean
+}
+
+export interface AskUserStep {
+  id: string
+  question: string
+  description?: string
+  selection_mode?: AskUserSelectionMode
+  options: ClarificationOption[]
+  min_selections?: number | null
+  max_selections?: number | null
+}
+
+export interface AskUserRecommendation {
+  title: string
+  summary: string
+  rationale?: string
+  confidence?: string
+  pros?: string[]
+  cons?: string[]
+  accept_label?: string
+  alternatives_label?: string
+}
+
+export interface AskUserResolution {
+  selected_option_id?: string
+  selected_option_ids?: string[]
+  step_answers?: Record<string, string[]>
+  field_values?: Record<string, string>
+  custom_answer?: string | null
+  rating?: string | null
+}
+
 export interface ClarificationDecisionNote {
+  kind?: AskUserKind
+  title?: string
   question: string
   context?: string
+  options?: ClarificationOption[]
+  steps?: AskUserStep[]
+  recommendation?: AskUserRecommendation | null
   selected_option_id: string
+  selected_option_ids?: string[]
+  step_answers?: Record<string, string[]>
+  field_values?: Record<string, string>
   custom_answer?: string | null
+  rating?: string | null
   resolved_by: string
   auto_resolved: boolean
+  needs_user_input?: boolean
 }
 
 export type BrainstormStage = 'exploring' | 'refined' | 'committed'
@@ -127,13 +186,25 @@ export interface ClarificationOption {
 export interface ClarificationRecord {
   id: string
   session_id: string
+  kind?: AskUserKind
+  title?: string
   question: string
   context: string
+  selection_mode?: AskUserSelectionMode
   options: ClarificationOption[]
+  steps?: AskUserStep[]
+  fields?: AskUserField[]
+  recommendation?: AskUserRecommendation | null
+  allow_custom?: boolean
+  allow_auto_default?: boolean
   recommended_option_id: string
   status: string
   selected_option_id?: string | null
+  selected_option_ids?: string[]
+  step_answers?: Record<string, string[]>
+  field_values?: Record<string, string>
   custom_answer?: string | null
+  rating?: string | null
   resolved_by?: string | null
   created_at: string
 }

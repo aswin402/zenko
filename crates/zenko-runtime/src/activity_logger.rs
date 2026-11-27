@@ -505,16 +505,26 @@ impl ActivityTracker {
                 dir: LogDirection::Warn,
                 channel: LogChannel::Approve,
                 subject: format!(
-                    "clarify: {}",
+                    "ask_user ({}): {}",
+                    clarification.kind.as_str(),
                     compact_preview(&clarification.question, LOG_PREVIEW_ARGS_CHARS)
                 ),
-                status: Some(("clarify".to_string(), LogStatusTone::Warn)),
-                meta: Some(format!("{} opts", clarification.options.len())),
+                status: Some(("ask_user".to_string(), LogStatusTone::Warn)),
+                meta: Some(match clarification.kind {
+                    zenko_core::AskUserKind::QuestionFlow => {
+                        format!("{} steps", clarification.steps.len())
+                    }
+                    zenko_core::AskUserKind::DataInput => {
+                        format!("{} fields", clarification.fields.len())
+                    }
+                    _ => format!("{} opts", clarification.options.len()),
+                }),
                 session_id: Some(clarification.session_id.clone()),
                 turn_id: None,
                 call_id: Some(clarification.id.clone()),
                 payload: Some(json!({
                     "clarification_id": clarification.id,
+                    "kind": clarification.kind.as_str(),
                     "question": clarification.question,
                     "recommended": clarification.recommended_option_id,
                 })),

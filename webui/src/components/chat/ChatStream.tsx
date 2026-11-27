@@ -4,7 +4,6 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowUpRight,
   BrainIcon,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -13,7 +12,6 @@ import {
   FolderSearch,
   ListChecks,
   Search,
-  Sliders,
   type LucideIcon,
 } from 'lucide-react'
 import { motion } from 'motion/react'
@@ -27,6 +25,7 @@ import {
 } from '@/lib/elements'
 import type {
   ApprovalRecord,
+  AskUserResolution,
   BrainstormSpec,
   ClarificationDecisionNote,
   ClarificationRecord,
@@ -71,8 +70,10 @@ import { BouncyAccordion } from '@/components/motion/bouncy-accordion'
 import type { LoaderVariant } from '@/components/motion/loader'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { CheckpointMenuButton } from '@/components/chat/Phase6Bar'
+import { AskUserCard, AskUserReceipt } from '@/components/chat/AskUserCard'
 import { DayDivider } from '@/components/assistant-ui/elements/day-separator'
 import { StreamingText } from '@/components/assistant-ui/elements/streaming-text'
+import { TodoList, type TodoStatus } from '@/components/assistant-ui/elements/todo-list'
 import {
   ActivityDisplay,
   ApprovalElement,
@@ -1088,11 +1089,11 @@ function BrainstormCard({
   )
 }
 
-const PLAN_STEP_GLYPH: Record<PlanStepStatus, string> = {
-  completed: '✓',
-  in_progress: '▸',
-  pending: '○',
-  blocked: '!',
+const PLAN_STATUS_TO_TODO: Record<PlanStepStatus, TodoStatus> = {
+  pending: 'pending',
+  in_progress: 'active',
+  completed: 'done',
+  blocked: 'cancelled',
 }
 
 function ExecutionPlanCard({ plan, bouncy }: { plan: ExecutionPlan; bouncy: boolean }) {
@@ -1102,56 +1103,28 @@ function ExecutionPlanCard({ plan, bouncy }: { plan: ExecutionPlan; bouncy: bool
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
   const body = (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5">
       <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bg)]">
         <div
           className="h-full transition-all"
           style={{ width: `${pct}%`, backgroundColor: 'var(--accent)' }}
         />
       </div>
-      <p className="text-[12.5px] text-[var(--fg)]/90">{plan.goal}</p>
-      <div className="flex flex-col gap-1.5">
-        {plan.steps.map((step) => (
-          <div
-            key={step.id}
-            className="flex items-start justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5"
-          >
-            <div className="flex items-start gap-2">
-              <span
-                className="mt-0.5 font-mono text-[11px]"
-                style={{
-                  color:
-                    step.status === 'in_progress' || step.status === 'completed'
-                      ? 'var(--accent)'
-                      : 'var(--muted)',
-                }}
-              >
-                {PLAN_STEP_GLYPH[step.status] || '○'}
-              </span>
-              <div>
-                <div
-                  className={cn(
-                    'text-[12px]',
-                    step.status === 'completed'
-                      ? 'text-[var(--muted)] line-through'
-                      : 'text-[var(--fg)]',
-                  )}
-                >
-                  {step.title}
-                </div>
-                {step.depends_on.length > 0 && (
-                  <div className="font-mono text-[10px] text-[var(--muted)]">
-                    after: {step.depends_on.join(', ')}
-                  </div>
-                )}
-              </div>
-            </div>
-            <span className="shrink-0 font-mono text-[10px] text-[var(--muted)]">
-              {step.status}
-            </span>
-          </div>
-        ))}
-      </div>
+      <TodoList
+        title={plan.goal || 'Execution Plan'}
+        className="max-w-none"
+        items={plan.steps.map((step) => ({
+          id: step.id,
+          text: step.title,
+          status: PLAN_STATUS_TO_TODO[step.status] || 'pending',
+          description:
+            step.depends_on.length > 0
+              ? `after: ${step.depends_on.join(', ')}${step.verification ? ` · verify: ${step.verification}` : ''}`
+              : step.verification
+                ? `verify: ${step.verification}`
+                : undefined,
+        }))}
+      />
       {plan.rubric_warnings && plan.rubric_warnings.length > 0 && (
         <div className="font-mono text-[10.5px] text-[var(--muted)]">
           Rubric: {plan.rubric_warnings.join(' · ')}
@@ -1209,88 +1182,6 @@ function ExecutionPlanCard({ plan, bouncy }: { plan: ExecutionPlan; bouncy: bool
         />
       </div>
       {open && <div className="mt-2.5">{body}</div>}
-    </div>
-  )
-}
-
-function ClarificationDecisionPill({ decision }: { decision: ClarificationDecisionNote }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)]/75 px-3 py-2 text-[12px]">
-      <div className="flex items-center gap-2 text-[var(--fg)]/90">
-        <Check size={13} style={{ color: 'var(--accent)' }} />
-        <span className="font-medium">{decision.question}</span>
-        <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--fg)]">
-          {decision.selected_option_id}
-        </span>
-      </div>
-      <span className="font-mono text-[10.5px] text-[var(--muted)]">
-        {decision.resolved_by}
-        {decision.custom_answer ? ` · ${decision.custom_answer}` : ''}
-      </span>
-    </div>
-  )
-}
-
-function ClarificationCard({
-  item,
-  onResolve,
-}: {
-  item: ClarificationRecord
-  onResolve: (id: string, selectedOptionId: string, customAnswer?: string) => void
-}) {
-  const [custom, setCustom] = useState('')
-  return (
-    <div
-      className="rounded-[var(--radius)] border p-4"
-      style={{
-        borderColor: 'color-mix(in srgb, var(--accent) 48%, var(--border))',
-        backgroundColor: 'color-mix(in srgb, var(--accent) 6%, var(--card))',
-      }}
-    >
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-[13.5px] font-semibold text-[var(--fg)]">
-          <Sliders size={14} style={{ color: 'var(--accent)' }} />
-          <span>Design Decision Needed</span>
-        </div>
-        <span className="rounded-full border border-[var(--border)] px-2 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-          rec: {item.recommended_option_id}
-        </span>
-      </div>
-      <p className="text-[13.5px] font-medium text-[var(--fg)]">{item.question}</p>
-      {item.context && <p className="mt-1 text-[12px] text-[var(--muted)]">{item.context}</p>}
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {item.options.map((opt) => (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => onResolve(item.id, opt.id, custom.trim() || undefined)}
-            className="flex cursor-pointer flex-col rounded-[var(--radius-sm)] border bg-[var(--bg)] p-2.5 text-left transition-colors hover:border-[var(--accent)]"
-            style={{
-              borderColor: opt.recommended
-                ? 'color-mix(in srgb, var(--accent) 45%, var(--border))'
-                : 'var(--border)',
-            }}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[12.5px] font-medium text-[var(--fg)]">{opt.label}</span>
-              {opt.recommended && (
-                <span className="font-mono text-[10px] uppercase" style={{ color: 'var(--accent)' }}>
-                  recommended
-                </span>
-              )}
-            </div>
-            {opt.description && (
-              <span className="mt-0.5 text-[11.5px] text-[var(--muted)]">{opt.description}</span>
-            )}
-          </button>
-        ))}
-      </div>
-      <input
-        value={custom}
-        onChange={(e) => setCustom(e.target.value)}
-        placeholder="Optional extra constraint before picking an option..."
-        className="mt-2.5 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-1.5 text-[12px] text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
-      />
     </div>
   )
 }
@@ -1683,7 +1574,7 @@ export function ChatStream({
   onEditBranch: (parentId: string | null, text: string) => void
   onSwitchBranch: (eventId: string) => void
   onResolveApproval: (id: string, decision: 'approve' | 'deny' | 'always_allow') => void
-  onResolveClarification?: (id: string, selectedOptionId: string, customAnswer?: string) => void
+  onResolveClarification?: (id: string, resolution: AskUserResolution) => void | Promise<void>
 }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const blocks = useMemo(() => groupEvents(events), [events])
@@ -1883,7 +1774,7 @@ export function ChatStream({
             return <ExecutionPlanCard key={block.id} plan={block.plan} bouncy={bouncyCards} />
           }
           if (block.kind === 'clarification_decision') {
-            return <ClarificationDecisionPill key={block.id} decision={block.decision} />
+            return <AskUserReceipt key={block.id} decision={block.decision} />
           }
           if (block.kind === 'compaction_checkpoint') {
             return (
@@ -2042,10 +1933,10 @@ export function ChatStream({
         />
       )}
 
-      {/* Interactive Orchestrator Clarification Cards */}
+      {/* Interactive Ask-User Prompts (@assistant-ui Elements) */}
       {onResolveClarification &&
         pendingClarifications.map((item) => (
-          <ClarificationCard key={item.id} item={item} onResolve={onResolveClarification} />
+          <AskUserCard key={item.id} item={item} onResolve={onResolveClarification} />
         ))}
 
       {/* HITL Tool Approval Cards — PermissionGrant (Default) | BeUI ToolApproval | Compact Card */}

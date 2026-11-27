@@ -2165,7 +2165,7 @@ impl AgentRuntime {
                             "plan": plan,
                         })
                     }),
-                    (false, TOOL_ASK_CLARIFICATION, false) => {
+                    (false, TOOL_ASK_USER | TOOL_ASK_CLARIFICATION, false) => {
                         done.output.metadata.as_ref().map(|dec| {
                             json!({
                                 "note_kind": NOTE_KIND_CLARIFICATION_DECISION,

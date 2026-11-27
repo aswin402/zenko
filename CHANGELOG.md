@@ -4,6 +4,23 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.49] - 2026-11-27
+
+Introduced sovereign interactive **`ask_user`** elicitation (inspired by `rpiv-mono`, `micode`, and `octto`) paired with all five official **`@assistant-ui` Elements** (`option-list`, `question-flow`, `recommendation-card`, `feedback-dialog`, `todo-list`) wired end-to-end across Zenko's Rust runtime, ZPowers continuity ledger, HTTP API, Telegram gateway, and embedded WebUI.
+
+### Added
+- **Sovereign Epistemic `ask_user` Tool & Backwards-Compatible Alias (`crates/zenko-core/src/{constants,types,traits,registry}.rs`, `crates/zenko-tools/src/{orchestrator_tools,lib}.rs`, `crates/zenko-memory/src/snapshot.rs`):**
+  - Replaced single-purpose `ask_clarification` with first-class eager `ask_user` supporting five interactive surfaces (`option_list` single/multi-select, `question_flow` multi-step guided prompts, `recommendation` opinionated cards with pros/cons + Accept/Alternatives, `data_input` structured/secret/freeform fields, and `feedback` wrap-up check-ins) usable freely at any point in a turn (start, mid-turn, or wrap-up).
+  - Centralized `ASK_USER_ENVIRONMENT_POLICY` inside Tier-1 `<environment>` (zero KV-cache drift) instructing the orchestrator to ask instead of guessing whenever missing user data, ambiguity, or low confidence arise.
+  - Added centralized `TOOL_NAME_ALIASES` + `resolve_tool_name_alias` in `ToolRegistry` so legacy `ask_clarification` invocations route seamlessly to `ask_user`.
+- **Headless-Safe Epistemic Resolver & ZPowers Decisions Ledger (`crates/zenko-runtime/src/{orchestrator/brainstorm,zpowers,runtime/turn,runtime/ipc}.rs`):**
+  - Added `resolve_headless_ask_user`: safely auto-selects recommended defaults for choices/flows/recommendations in headless 24/7 mode, while NEVER fabricating fake data for required `data_input` fields lacking defaults (`needs_user_input: true`).
+  - Persisted resolved user answers and secret-masked provided data into `.zenko/sessions/<id>/zpowers/decisions.md` so decisions survive Stage-B compactions and subagents never re-ask solved questions.
+  - Extended `POST /api/clarifications/{id}`, Unix IPC `clarification.resolve`, `activity_logger`, and the Telegram gateway to handle all five `AskUserKind` surfaces cleanly.
+- **Official `@assistant-ui` Elements Integrated with 60/30/10 Theme Discipline (`webui/src/components/assistant-ui/elements/{feedback-dialog,option-list,question-flow,recommendation-card,todo-list}.tsx`, `webui/src/components/chat/{AskUserCard,ChatStream,Phase6Bar}.tsx`, `webui/src/App.tsx`):**
+  - Installed all five `@assistant-ui/elements-*` components via the shadcn `@assistant-ui` registry and aligned them with Zenko's global CSS variables (`var(--bg)`, `var(--surface)`, `var(--card)`, `var(--border)`, `var(--fg)`, `var(--muted)`, `var(--accent)`, `var(--destructive)`) and `themed-lucide.tsx` icon family shim.
+  - Added declarative `AskUserCard` & `AskUserReceipt` rendering all five interactive `ask_user` prompt kinds plus persistent collapsed receipts in `ChatStream`, and wired `TodoList` into both `ExecutionPlanCard` and the live `WorkspaceToolsPopovers` Task DAG panel synced with `.zenko/sessions/<id>/zpowers/plan.md`.
+
 ## [0.0.48] - 2026-11-27
 
 Completed full sovereign **ZPowers** parity with `obra/superpowers` — closing all 5 plan-first / live-todo enforcement gaps using purely state-driven orchestration (zero turn-number hardcoding, zero regex, zero `else if` ladders) plus bidirectional `plan.md <-> session_tasks` syncing, fresh-subagent two-stage `run_review`, and the full 12-skill ZPowers playbook library.

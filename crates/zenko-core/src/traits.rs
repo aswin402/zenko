@@ -183,7 +183,18 @@ pub trait OrchestratorBridge: Send + Sync {
     /// Validates DAG invariants (cycle-free dependencies) and broadcasts a live `ExecutionPlan`.
     fn update_plan(&self, session_id: &str, plan: &ExecutionPlan) -> Result<ExecutionPlan>;
 
-    /// Requests structured human clarification (or deterministically auto-resolves in headless mode).
+    /// Requests rich structured user interaction (`ask_user`: option list, multi-step question flow,
+    /// recommendation card, free-form data input, or feedback) — auto-resolving safely where defaults
+    /// exist or returning `needs_user_input` for required missing data in headless mode.
+    async fn request_ask_user(
+        &self,
+        session_id: &str,
+        spec: crate::types::AskUserRequestSpec,
+        headless_no_wait: bool,
+        cancel: CancellationToken,
+    ) -> Result<ClarificationAnswer>;
+
+    /// Backwards-compatible wrapper forwarding simple multiple-choice clarifications into `request_ask_user`.
     async fn request_clarification(
         &self,
         session_id: &str,
@@ -192,7 +203,27 @@ pub trait OrchestratorBridge: Send + Sync {
         options: Vec<ClarificationOption>,
         headless_no_wait: bool,
         cancel: CancellationToken,
-    ) -> Result<ClarificationAnswer>;
+    ) -> Result<ClarificationAnswer> {
+        self.request_ask_user(
+            session_id,
+            crate::types::AskUserRequestSpec {
+                kind: crate::types::AskUserKind::OptionList,
+                title: String::new(),
+                question: question.to_string(),
+                context: context.to_string(),
+                selection_mode: crate::types::AskUserSelectionMode::Single,
+                options,
+                steps: Vec::new(),
+                fields: Vec::new(),
+                recommendation: None,
+                allow_custom: true,
+                allow_auto_default: true,
+            },
+            headless_no_wait,
+            cancel,
+        )
+        .await
+    }
 
     /// Lists currently pending clarifications (optionally filtered by session).
     fn list_pending_clarifications(&self, session_id: Option<&str>) -> Vec<ClarificationRecord>;

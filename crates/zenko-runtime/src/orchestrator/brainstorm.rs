@@ -21,7 +21,9 @@ use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use zenko_core::{
-    AgentEvent, BrainstormOption, BrainstormSpec, BrainstormStage, CLARIFICATION_RESOLVER_HEADLESS,
+    ASK_USER_OPTION_ACCEPT, ASK_USER_OPTION_CUSTOM, ASK_USER_OPTION_DATA_SUBMITTED,
+    ASK_USER_RESOLVER_NEEDS_INPUT, AgentEvent, AskUserKind, AskUserRequestSpec, AskUserResolution,
+    BrainstormOption, BrainstormSpec, BrainstormStage, CLARIFICATION_RESOLVER_HEADLESS,
     CLARIFICATION_RESOLVER_STEERED, CLARIFICATION_RESOLVER_TIMEOUT, ClarificationAnswer,
     ClarificationOption, ClarificationRecord, ClarificationStatus, ExecutionPlan,
     ORCH_BRAINSTORM_MAX_OPTIONS, ORCH_CLARIFICATION_TIMEOUT_SECS, ORCH_SCORE_BLAST_HIGH,
@@ -188,6 +190,146 @@ pub fn resolve_headless_clarification(options: &[ClarificationOption]) -> (Strin
     }
 }
 
+/// Pure deterministic headless resolver for rich `ask_user` prompts:
+/// - Choices, recommendations, and multi-step flows with recommended defaults auto-resolve safely.
+/// - Required `DataInput` prompts lacking defaults NEVER fabricate fake data; they return
+///   `needs_user_input = true` so the orchestrator reports the exact missing input cleanly.
+pub fn resolve_headless_ask_user(spec: &AskUserRequestSpec) -> ClarificationAnswer {
+    match spec.kind {
+        AskUserKind::OptionList => {
+            let (rec_id, note) = resolve_headless_clarification(&spec.options);
+            ClarificationAnswer {
+                selected_option_id: rec_id.clone(),
+                selected_option_ids: vec![rec_id],
+                step_answers: std::collections::BTreeMap::new(),
+                field_values: std::collections::BTreeMap::new(),
+                custom_answer: Some(note),
+                rating: None,
+                resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
+                auto_resolved: true,
+                needs_user_input: false,
+            }
+        }
+        AskUserKind::Recommendation => {
+            let rec_id = match spec.options.is_empty() {
+                true => ASK_USER_OPTION_ACCEPT.to_string(),
+                false => resolve_headless_clarification(&spec.options).0,
+            };
+            ClarificationAnswer {
+                selected_option_id: rec_id.clone(),
+                selected_option_ids: vec![rec_id],
+                step_answers: std::collections::BTreeMap::new(),
+                field_values: std::collections::BTreeMap::new(),
+                custom_answer: Some(
+                    "Headless autonomous mode accepted the recommended proposal.".into(),
+                ),
+                rating: None,
+                resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
+                auto_resolved: true,
+                needs_user_input: false,
+            }
+        }
+        AskUserKind::QuestionFlow => {
+            let mut step_answers = std::collections::BTreeMap::new();
+            for step in &spec.steps {
+                let (rec_id, _) = resolve_headless_clarification(&step.options);
+                step_answers.insert(step.id.clone(), vec![rec_id]);
+            }
+            ClarificationAnswer {
+                selected_option_id: "flow_defaults".to_string(),
+                selected_option_ids: Vec::new(),
+                step_answers,
+                field_values: std::collections::BTreeMap::new(),
+                custom_answer: Some(
+                    "Headless autonomous mode selected recommended defaults across all flow steps."
+                        .into(),
+                ),
+                rating: None,
+                resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
+                auto_resolved: true,
+                needs_user_input: false,
+            }
+        }
+        AskUserKind::DataInput => {
+            let mut field_values = std::collections::BTreeMap::new();
+            let mut missing_required: Vec<&str> = Vec::new();
+            for field in &spec.fields {
+                match field
+                    .default_value
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(def) => {
+                        field_values.insert(field.id.clone(), def.to_string());
+                    }
+                    None if field.required => missing_required.push(field.label.as_str()),
+                    None => {}
+                }
+            }
+            let missing_unstructured = spec.fields.is_empty() && !spec.allow_auto_default;
+            match !missing_required.is_empty() || missing_unstructured {
+                true => ClarificationAnswer {
+                    selected_option_id: ASK_USER_RESOLVER_NEEDS_INPUT.to_string(),
+                    selected_option_ids: Vec::new(),
+                    step_answers: std::collections::BTreeMap::new(),
+                    field_values,
+                    custom_answer: Some(format!(
+                        "Headless mode cannot fabricate required user data ({}). Pause and report missing input to the user.",
+                        match missing_required.is_empty() {
+                            true => spec.question.as_str().to_string(),
+                            false => missing_required.join(", "),
+                        }
+                    )),
+                    rating: None,
+                    resolved_by: ASK_USER_RESOLVER_NEEDS_INPUT.to_string(),
+                    auto_resolved: false,
+                    needs_user_input: true,
+                },
+                false => ClarificationAnswer {
+                    selected_option_id: ASK_USER_OPTION_DATA_SUBMITTED.to_string(),
+                    selected_option_ids: Vec::new(),
+                    step_answers: std::collections::BTreeMap::new(),
+                    field_values,
+                    custom_answer: Some(
+                        "Headless autonomous mode applied provided field defaults.".into(),
+                    ),
+                    rating: None,
+                    resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
+                    auto_resolved: true,
+                    needs_user_input: false,
+                },
+            }
+        }
+        AskUserKind::Feedback => match spec.allow_auto_default {
+            true => ClarificationAnswer {
+                selected_option_id: ASK_USER_OPTION_ACCEPT.to_string(),
+                selected_option_ids: Vec::new(),
+                step_answers: std::collections::BTreeMap::new(),
+                field_values: std::collections::BTreeMap::new(),
+                custom_answer: Some("Headless run proceeded without interactive feedback.".into()),
+                rating: None,
+                resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
+                auto_resolved: true,
+                needs_user_input: false,
+            },
+            false => ClarificationAnswer {
+                selected_option_id: ASK_USER_RESOLVER_NEEDS_INPUT.to_string(),
+                selected_option_ids: Vec::new(),
+                step_answers: std::collections::BTreeMap::new(),
+                field_values: std::collections::BTreeMap::new(),
+                custom_answer: Some(
+                    "Interactive user feedback requested; awaiting human response.".into(),
+                ),
+                rating: None,
+                resolved_by: ASK_USER_RESOLVER_NEEDS_INPUT.to_string(),
+                auto_resolved: false,
+                needs_user_input: true,
+            },
+        },
+    }
+}
+
 struct PendingClarification {
     record: ClarificationRecord,
     tx: oneshot::Sender<ClarificationAnswer>,
@@ -319,6 +461,42 @@ impl ClarificationHub {
         );
     }
 
+    fn sync_zpowers_decision(
+        &self,
+        session_id: &str,
+        rec: &ClarificationRecord,
+        ans: &ClarificationAnswer,
+    ) {
+        if ans.needs_user_input {
+            return;
+        }
+        let Some(rt) = self.runtime.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let cfg = rt.config();
+        if !cfg.orchestrator.zpowers.sync_artifacts_to_workspace {
+            return;
+        }
+        let board_sid = self.resolve_board_session_id(session_id);
+        let ws = rt.session_workspace_dir(&board_sid);
+        let (title, parent) = self
+            .store
+            .get_session(&board_sid)
+            .ok()
+            .flatten()
+            .map(|s| (s.title, s.parent_session_id))
+            .unwrap_or_else(|| (String::new(), None));
+        let _ = crate::zpowers::append_user_decision(
+            &ws,
+            &board_sid,
+            &title,
+            parent.as_deref(),
+            rec,
+            ans,
+            &cfg.orchestrator.zpowers,
+        );
+    }
+
     fn emit_tasks_updated(&self, board_sid: &str) {
         if let Ok(tasks) = self.store.list_session_tasks(board_sid) {
             self.sync_zpowers_tasks(board_sid, &tasks);
@@ -329,11 +507,10 @@ impl ClarificationHub {
         }
     }
 
-    pub fn resolve_clarification(
+    pub fn resolve_ask_user(
         &self,
         clarification_id: &str,
-        selected_option_id: &str,
-        custom_answer: Option<String>,
+        resolution: AskUserResolution,
         resolved_by: &str,
     ) -> Option<ClarificationRecord> {
         let entry = self
@@ -343,27 +520,95 @@ impl ClarificationHub {
             .and_then(|mut map| map.remove(clarification_id))?;
 
         let mut rec = entry.record;
+        let selected_ids: Vec<String> = resolution
+            .selected_option_ids
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let custom_answer = resolution
+            .custom_answer
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let rating = resolution
+            .rating
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let primary_id = match resolution.selected_option_id.trim() {
+            "" => match selected_ids.first() {
+                Some(first) => first.clone(),
+                None => match rec.kind {
+                    AskUserKind::DataInput => ASK_USER_OPTION_DATA_SUBMITTED.to_string(),
+                    AskUserKind::QuestionFlow => "flow_completed".to_string(),
+                    AskUserKind::Feedback => rating
+                        .clone()
+                        .unwrap_or_else(|| ASK_USER_OPTION_ACCEPT.to_string()),
+                    AskUserKind::Recommendation => ASK_USER_OPTION_ACCEPT.to_string(),
+                    AskUserKind::OptionList => ASK_USER_OPTION_CUSTOM.to_string(),
+                },
+            },
+            id => id.to_string(),
+        };
+
         rec.status = ClarificationStatus::Answered;
-        rec.selected_option_id = Some(selected_option_id.to_string());
+        rec.selected_option_id = Some(primary_id.clone());
+        rec.selected_option_ids = selected_ids.clone();
+        rec.step_answers = resolution.step_answers.clone();
+        rec.field_values = resolution.field_values.clone();
         rec.custom_answer = custom_answer.clone();
+        rec.rating = rating.clone();
         rec.resolved_by = Some(resolved_by.to_string());
         rec.resolved_at = Some(Utc::now());
 
         let answer = ClarificationAnswer {
-            selected_option_id: selected_option_id.to_string(),
+            selected_option_id: primary_id.clone(),
+            selected_option_ids: selected_ids,
+            step_answers: resolution.step_answers,
+            field_values: resolution.field_values,
             custom_answer: custom_answer.clone(),
+            rating,
             resolved_by: resolved_by.to_string(),
             auto_resolved: false,
+            needs_user_input: false,
         };
+        self.sync_zpowers_decision(&rec.session_id, &rec, &answer);
         let _ = entry.tx.send(answer);
         let _ = self.events.send(AgentEvent::ClarificationResolved {
             clarification_id: rec.id.clone(),
             session_id: rec.session_id.clone(),
-            selected_option_id: selected_option_id.to_string(),
+            selected_option_id: primary_id,
             custom_answer,
             resolved_by: resolved_by.to_string(),
         });
         Some(rec)
+    }
+
+    pub fn resolve_clarification(
+        &self,
+        clarification_id: &str,
+        selected_option_id: &str,
+        custom_answer: Option<String>,
+        resolved_by: &str,
+    ) -> Option<ClarificationRecord> {
+        let trimmed = selected_option_id.trim().to_string();
+        let selected_option_ids = match trimmed.is_empty() {
+            true => Vec::new(),
+            false => vec![trimmed.clone()],
+        };
+        self.resolve_ask_user(
+            clarification_id,
+            AskUserResolution {
+                selected_option_id: trimmed,
+                selected_option_ids,
+                custom_answer,
+                ..Default::default()
+            },
+            resolved_by,
+        )
     }
 
     /// Resolves a pending clarification by zero-based option index (used by Telegram inline
@@ -491,48 +736,64 @@ impl OrchestratorBridge for ClarificationHub {
         Ok(normalized)
     }
 
-    async fn request_clarification(
+    async fn request_ask_user(
         &self,
         session_id: &str,
-        question: &str,
-        context: &str,
-        options: Vec<ClarificationOption>,
+        spec: AskUserRequestSpec,
         headless_no_wait: bool,
         cancel: CancellationToken,
     ) -> Result<ClarificationAnswer> {
-        let (rec_opt_id, auto_note) = resolve_headless_clarification(&options);
-        if headless_no_wait {
-            let cid = new_id();
-            let _ = self.events.send(AgentEvent::ClarificationResolved {
-                clarification_id: cid,
-                session_id: session_id.to_string(),
-                selected_option_id: rec_opt_id.clone(),
-                custom_answer: Some(auto_note.clone()),
-                resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
-            });
-            return Ok(ClarificationAnswer {
-                selected_option_id: rec_opt_id,
-                custom_answer: Some(auto_note),
-                resolved_by: CLARIFICATION_RESOLVER_HEADLESS.to_string(),
-                auto_resolved: true,
-            });
-        }
+        let rec_opt_id = match spec.kind {
+            AskUserKind::OptionList => resolve_headless_clarification(&spec.options).0,
+            AskUserKind::Recommendation => match spec.options.is_empty() {
+                true => ASK_USER_OPTION_ACCEPT.to_string(),
+                false => resolve_headless_clarification(&spec.options).0,
+            },
+            AskUserKind::QuestionFlow => "flow_defaults".to_string(),
+            AskUserKind::DataInput => ASK_USER_OPTION_DATA_SUBMITTED.to_string(),
+            AskUserKind::Feedback => ASK_USER_OPTION_ACCEPT.to_string(),
+        };
 
         let id = new_id();
         let record = ClarificationRecord {
             id: id.clone(),
             session_id: session_id.to_string(),
-            question: question.to_string(),
-            context: context.to_string(),
-            options,
-            recommended_option_id: rec_opt_id.clone(),
+            kind: spec.kind,
+            title: spec.title.clone(),
+            question: spec.question.clone(),
+            context: spec.context.clone(),
+            selection_mode: spec.selection_mode,
+            options: spec.options.clone(),
+            steps: spec.steps.clone(),
+            fields: spec.fields.clone(),
+            recommendation: spec.recommendation.clone(),
+            allow_custom: spec.allow_custom,
+            allow_auto_default: spec.allow_auto_default,
+            recommended_option_id: rec_opt_id,
             status: ClarificationStatus::Pending,
             selected_option_id: None,
+            selected_option_ids: Vec::new(),
+            step_answers: std::collections::BTreeMap::new(),
+            field_values: std::collections::BTreeMap::new(),
             custom_answer: None,
+            rating: None,
             resolved_by: None,
             created_at: Utc::now(),
             resolved_at: None,
         };
+
+        if headless_no_wait {
+            let answer = resolve_headless_ask_user(&spec);
+            self.sync_zpowers_decision(session_id, &record, &answer);
+            let _ = self.events.send(AgentEvent::ClarificationResolved {
+                clarification_id: id,
+                session_id: session_id.to_string(),
+                selected_option_id: answer.selected_option_id.clone(),
+                custom_answer: answer.custom_answer.clone(),
+                resolved_by: answer.resolved_by.clone(),
+            });
+            return Ok(answer);
+        }
 
         let (tx, rx) = oneshot::channel();
         if let Ok(mut map) = self.pending.lock() {
@@ -545,7 +806,7 @@ impl OrchestratorBridge for ClarificationHub {
             );
         }
         let _ = self.events.send(AgentEvent::ClarificationRequested {
-            clarification: record,
+            clarification: record.clone(),
         });
 
         let wait = tokio::time::timeout(Duration::from_secs(ORCH_CLARIFICATION_TIMEOUT_SECS), rx);
@@ -563,19 +824,27 @@ impl OrchestratorBridge for ClarificationHub {
                     if let Ok(mut map) = self.pending.lock() {
                         map.remove(&id);
                     }
+                    let mut fallback = resolve_headless_ask_user(&spec);
+                    match fallback.needs_user_input {
+                        true => {
+                            fallback.resolved_by = ASK_USER_RESOLVER_NEEDS_INPUT.to_string();
+                        }
+                        false => {
+                            fallback.resolved_by = CLARIFICATION_RESOLVER_TIMEOUT.to_string();
+                            fallback.custom_answer = Some(
+                                "Timed out waiting for human response; proceeding with recommended default.".into(),
+                            );
+                        }
+                    }
+                    self.sync_zpowers_decision(session_id, &record, &fallback);
                     let _ = self.events.send(AgentEvent::ClarificationResolved {
                         clarification_id: id,
                         session_id: session_id.to_string(),
-                        selected_option_id: rec_opt_id.clone(),
-                        custom_answer: Some("Timed out waiting for human response; proceeding with recommended option.".into()),
-                        resolved_by: CLARIFICATION_RESOLVER_TIMEOUT.to_string(),
+                        selected_option_id: fallback.selected_option_id.clone(),
+                        custom_answer: fallback.custom_answer.clone(),
+                        resolved_by: fallback.resolved_by.clone(),
                     });
-                    Ok(ClarificationAnswer {
-                        selected_option_id: rec_opt_id,
-                        custom_answer: Some("Timed out; proceeded with recommended option.".into()),
-                        resolved_by: CLARIFICATION_RESOLVER_TIMEOUT.to_string(),
-                        auto_resolved: true,
-                    })
+                    Ok(fallback)
                 }
             }
         }
@@ -989,5 +1258,156 @@ mod tests {
         assert!(!interactive_ans.auto_resolved);
         assert_eq!(interactive_ans.selected_option_id, "grpc");
         assert_eq!(interactive_ans.resolved_by, "telegram:@owner");
+    }
+
+    #[tokio::test]
+    async fn ask_user_headless_safety_rich_resolution_and_zpowers_decisions_persistence() {
+        let test_dir = std::env::temp_dir().join(format!("zenko_ask_user_{}", new_id()));
+        std::fs::create_dir_all(&test_dir).expect("mkdir");
+        let store = SqliteStore::open(test_dir.join("zenko.db")).expect("db");
+        let (tx, _) = broadcast::channel(16);
+        let hub = ClarificationHub::new(store, tx);
+
+        // 1. Required DataInput with no defaults MUST NOT fabricate data in headless mode.
+        let data_spec = AskUserRequestSpec {
+            kind: AskUserKind::DataInput,
+            title: "Deployment target".into(),
+            question: "Which cluster URL and token should be used?".into(),
+            context: "Cannot infer production target from workspace.".into(),
+            selection_mode: zenko_core::AskUserSelectionMode::Single,
+            options: Vec::new(),
+            steps: Vec::new(),
+            fields: vec![
+                zenko_core::AskUserField {
+                    id: "cluster_url".into(),
+                    label: "Cluster URL".into(),
+                    description: String::new(),
+                    placeholder: "https://...".into(),
+                    default_value: None,
+                    required: true,
+                    secret: false,
+                    multiline: false,
+                },
+                zenko_core::AskUserField {
+                    id: "api_key".into(),
+                    label: "API Key".into(),
+                    description: String::new(),
+                    placeholder: "sk-...".into(),
+                    default_value: None,
+                    required: true,
+                    secret: true,
+                    multiline: false,
+                },
+            ],
+            recommendation: None,
+            allow_custom: true,
+            allow_auto_default: false,
+        };
+        let headless_data = hub
+            .request_ask_user("s_headless", data_spec.clone(), true, CancellationToken::new())
+            .await
+            .expect("headless data result");
+        assert!(headless_data.needs_user_input);
+        assert!(!headless_data.auto_resolved);
+        assert_eq!(headless_data.resolved_by, ASK_USER_RESOLVER_NEEDS_INPUT);
+
+        // 2. QuestionFlow headless auto-resolution picks recommended defaults cleanly.
+        let flow_spec = AskUserRequestSpec {
+            kind: AskUserKind::QuestionFlow,
+            title: "Setup flow".into(),
+            question: "Configure target runtime".into(),
+            context: String::new(),
+            selection_mode: zenko_core::AskUserSelectionMode::Single,
+            options: Vec::new(),
+            steps: vec![
+                zenko_core::AskUserStep {
+                    id: "db".into(),
+                    question: "Database?".into(),
+                    description: String::new(),
+                    selection_mode: zenko_core::AskUserSelectionMode::Single,
+                    options: vec![
+                        ClarificationOption {
+                            id: "pg".into(),
+                            label: "Postgres".into(),
+                            description: String::new(),
+                            recommended: false,
+                        },
+                        ClarificationOption {
+                            id: "sqlite".into(),
+                            label: "SQLite".into(),
+                            description: String::new(),
+                            recommended: true,
+                        },
+                    ],
+                    min_selections: None,
+                    max_selections: None,
+                    allow_custom: false,
+                },
+            ],
+            fields: Vec::new(),
+            recommendation: None,
+            allow_custom: false,
+            allow_auto_default: true,
+        };
+        let flow_headless = hub
+            .request_ask_user("s_flow", flow_spec, true, CancellationToken::new())
+            .await
+            .expect("flow headless");
+        assert!(!flow_headless.needs_user_input);
+        assert!(flow_headless.auto_resolved);
+        assert_eq!(
+            flow_headless.step_answers.get("db"),
+            Some(&vec!["sqlite".to_string()])
+        );
+
+        // 3. Interactive DataInput roundtrip + decisions.md persistence with secret masking.
+        let hub_bg = hub.clone();
+        let data_spec_bg = data_spec.clone();
+        let waiter = tokio::spawn(async move {
+            hub_bg
+                .request_ask_user("s_interactive", data_spec_bg, false, CancellationToken::new())
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let pending = hub.list_pending_clarifications(Some("s_interactive"));
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, AskUserKind::DataInput);
+
+        let mut field_values = std::collections::BTreeMap::new();
+        field_values.insert("cluster_url".into(), "https://prod.example.internal".into());
+        field_values.insert("api_key".into(), "super-secret-value-123".into());
+        let resolved_rec = hub
+            .resolve_ask_user(
+                &pending[0].id,
+                AskUserResolution {
+                    selected_option_id: ASK_USER_OPTION_DATA_SUBMITTED.into(),
+                    field_values,
+                    ..Default::default()
+                },
+                "webui",
+            )
+            .expect("resolved");
+        let interactive_ans = waiter.await.expect("join").expect("ans");
+        assert!(!interactive_ans.needs_user_input);
+        assert_eq!(
+            interactive_ans.field_values.get("cluster_url").map(String::as_str),
+            Some("https://prod.example.internal")
+        );
+
+        let dec_path = crate::zpowers::append_user_decision(
+            &test_dir,
+            "s_interactive",
+            "Deploy task",
+            None,
+            &resolved_rec,
+            &interactive_ans,
+            &zenko_core::ZPowersConfig::default(),
+        )
+        .expect("append decision");
+        let md = std::fs::read_to_string(dec_path).expect("read decisions.md");
+        assert!(md.contains("https://prod.example.internal"));
+        assert!(md.contains("[provided]"));
+        assert!(!md.contains("super-secret-value-123"));
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 }

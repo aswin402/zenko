@@ -110,7 +110,7 @@ impl ToolRegistry {
             reg.register(Arc::new(orchestrator_tools::OrchestrateControlTool::new(
                 bridge.clone(),
             )));
-            reg.register(Arc::new(orchestrator_tools::AskClarificationTool::new(
+            reg.register(Arc::new(orchestrator_tools::AskUserTool::new(
                 bridge,
             )));
         }
@@ -216,24 +216,32 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().ok().and_then(|map| map.get(name).cloned())
-    }
-
-    pub fn is_deferred(&self, name: &str) -> bool {
+        let canonical = zenko_core::resolve_tool_name_alias(name);
         self.tools
             .read()
             .ok()
-            .and_then(|map| map.get(name).map(|t| t.exposure() == ToolExposure::Deferred))
+            .and_then(|map| map.get(canonical).cloned())
+    }
+
+    pub fn is_deferred(&self, name: &str) -> bool {
+        let canonical = zenko_core::resolve_tool_name_alias(name);
+        self.tools
+            .read()
+            .ok()
+            .and_then(|map| map.get(canonical).map(|t| t.exposure() == ToolExposure::Deferred))
             .unwrap_or(false)
     }
 
     pub fn is_deferred_or_demoted(&self, name: &str, demoted_tools: &BTreeSet<String>) -> bool {
+        let canonical = zenko_core::resolve_tool_name_alias(name);
         self.tools
             .read()
             .ok()
             .and_then(|map| {
-                map.get(name)
-                    .map(|t| effective_exposure(t.as_ref(), name, demoted_tools) == ToolExposure::Deferred)
+                map.get(canonical).map(|t| {
+                    effective_exposure(t.as_ref(), canonical, demoted_tools)
+                        == ToolExposure::Deferred
+                })
             })
             .unwrap_or(false)
     }
