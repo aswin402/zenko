@@ -414,11 +414,13 @@ impl Tool for PlanUpdateTool {
                 validated.rubric_warnings.join(" | ")
             ),
         };
+        let step_ids: Vec<&str> = validated.steps.iter().map(|s| s.id.as_str()).collect();
         Ok(ToolOutput {
             content: format!(
-                "Updated DAG execution plan `{}` ({done}/{} steps completed).{rubric_note}",
+                "Updated DAG execution plan `{}` ({done}/{} steps completed; synced task IDs: {}).{rubric_note}",
                 validated.id,
-                validated.steps.len()
+                validated.steps.len(),
+                step_ids.join(", "),
             ),
             is_error: false,
             diff: None,

@@ -4,7 +4,7 @@ import { FeedbackDialog } from '@/components/assistant-ui/elements/feedback-dial
 import { OptionList } from '@/components/assistant-ui/elements/option-list'
 import { QuestionFlow } from '@/components/assistant-ui/elements/question-flow'
 import { RecommendationCard } from '@/components/assistant-ui/elements/recommendation-card'
-import { field as fieldSurface, inkButton, mono, paper } from '@/components/assistant-ui/elements/surfaces'
+import { field as fieldSurface, inkButton, mono } from '@/components/assistant-ui/elements/surfaces'
 import { cn } from '@/lib/utils'
 import type {
   AskUserKind,
@@ -67,17 +67,15 @@ function OptionListPrompt({
     <div
       data-slot="ask-user-card"
       data-kind="option_list"
-      className={cn(paper, 'flex w-full flex-col gap-3 rounded-[20px] p-4')}
+      className="flex w-full flex-col gap-2.5 border-l border-[var(--accent)]/55 pl-3.5 py-0.5"
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--fg)]">
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-foreground/[0.05] text-[var(--accent)]">
-            <HeaderIcon className="size-3.5" />
-          </span>
+        <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+          <HeaderIcon className="size-3.5 text-[var(--accent)]" />
           <span>{item.title || header.label}</span>
         </div>
         {item.recommended_option_id ? (
-          <span className={cn(mono, 'rounded-full border border-[var(--border)] px-2 py-0.5 text-[var(--muted)]')}>
+          <span className={cn(mono, 'text-[var(--muted)]')}>
             rec: {item.recommended_option_id}
           </span>
         ) : null}
@@ -160,9 +158,9 @@ function QuestionFlowPrompt({
     <div
       data-slot="ask-user-card"
       data-kind="question_flow"
-      className="flex w-full flex-col gap-2"
+      className="flex w-full flex-col gap-2 border-l border-[var(--accent)]/55 pl-3.5 py-0.5"
     >
-      <div className="flex items-center gap-2 px-1 text-[12px] font-medium text-[var(--muted)]">
+      <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
         <HeaderIcon className="size-3.5 text-[var(--accent)]" />
         <span>{item.title || item.question || header.label}</span>
       </div>
@@ -210,7 +208,7 @@ function RecommendationPrompt({
     <div
       data-slot="ask-user-card"
       data-kind="recommendation"
-      className="flex w-full flex-col gap-2.5"
+      className="flex w-full flex-col gap-2.5 border-l border-[var(--accent)]/55 pl-3.5 py-0.5"
     >
       <RecommendationCard
         state={accepted ? 'accepted' : 'idle'}
@@ -267,7 +265,7 @@ function RecommendationPrompt({
       </RecommendationCard>
 
       {showAlternatives && !accepted ? (
-        <div className={cn(paper, 'flex flex-col gap-2.5 rounded-[18px] p-3.5')}>
+        <div className="mt-1 flex flex-col gap-2 border-l border-[var(--border)] pl-3">
           {item.options.length > 0 ? (
             <OptionList
               options={item.options}
@@ -363,12 +361,10 @@ function DataInputPrompt({
     <div
       data-slot="ask-user-card"
       data-kind="data_input"
-      className={cn(paper, 'flex w-full flex-col gap-3 rounded-[20px] p-4')}
+      className="flex w-full flex-col gap-2.5 border-l border-[var(--accent)]/55 pl-3.5 py-0.5"
     >
-      <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--fg)]">
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-foreground/[0.05] text-[var(--accent)]">
-          <HeaderIcon className="size-3.5" />
-        </span>
+      <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+        <HeaderIcon className="size-3.5 text-[var(--accent)]" />
         <span>{item.title || header.label}</span>
       </div>
 
@@ -479,32 +475,38 @@ function FeedbackPrompt({
   }
 
   return (
-    <FeedbackDialog
-      title={item.title || item.question}
-      subtitle={item.context ? 'feedback' : 'optional'}
-      placeholder={item.context || 'Add details or adjustments...'}
-      submitLabel="Send feedback"
-      sentMessage="Feedback shared with Zenko."
-      reasons={reasons}
-      selected={selected}
-      note={note}
-      sent={sent}
-      className="max-w-none"
-      onToggleReason={toggleReason}
-      onNoteChange={setNote}
-      onSubmit={() => {
-        setSent(true)
-        const chosenIds = item.options
-          .filter((o) => selected.includes(o.label))
-          .map((o) => o.id)
-        void onResolve(item.id, {
-          selected_option_id: chosenIds[0] || selected[0] || 'accept',
-          selected_option_ids: chosenIds.length > 0 ? chosenIds : selected,
-          custom_answer: note.trim() || null,
-          rating: selected[0] || null,
-        })
-      }}
-    />
+    <div
+      data-slot="ask-user-card"
+      data-kind="feedback"
+      className="w-full border-l border-[var(--accent)]/55 pl-3.5 py-0.5"
+    >
+      <FeedbackDialog
+        title={item.title || item.question}
+        subtitle={item.context ? 'feedback' : 'optional'}
+        placeholder={item.context || 'Add details or adjustments...'}
+        submitLabel="Send feedback"
+        sentMessage="Feedback shared with Zenko."
+        reasons={reasons}
+        selected={selected}
+        note={note}
+        sent={sent}
+        className="max-w-none"
+        onToggleReason={toggleReason}
+        onNoteChange={setNote}
+        onSubmit={() => {
+          setSent(true)
+          const chosenIds = item.options
+            .filter((o) => selected.includes(o.label))
+            .map((o) => o.id)
+          void onResolve(item.id, {
+            selected_option_id: chosenIds[0] || selected[0] || 'accept',
+            selected_option_ids: chosenIds.length > 0 ? chosenIds : selected,
+            custom_answer: note.trim() || null,
+            rating: selected[0] || null,
+          })
+        }}
+      />
+    </div>
   )
 }
 
@@ -577,7 +579,7 @@ export function AskUserReceipt({ decision }: { decision: ClarificationDecisionNo
         ? decision.selected_option_ids
         : [decision.selected_option_id]
     return (
-      <div className={cn(paper, 'flex flex-col gap-1.5 rounded-2xl px-3.5 py-2.5')}>
+      <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
           <span className="font-medium text-[var(--fg)]/90">{decision.question}</span>
           <span className={cn(mono, 'text-[var(--muted)]')}>{decision.resolved_by}</span>
@@ -585,10 +587,10 @@ export function AskUserReceipt({ decision }: { decision: ClarificationDecisionNo
         <OptionList
           options={decision.options}
           choice={choiceIds}
-          className="max-w-none border-0 bg-transparent p-0"
+          className="max-w-none p-0"
         />
         {decision.custom_answer ? (
-          <p className="px-2 text-[11.5px] text-[var(--muted)]">{decision.custom_answer}</p>
+          <p className="text-[11.5px] text-[var(--muted)]">{decision.custom_answer}</p>
         ) : null}
       </div>
     )
@@ -610,18 +612,13 @@ export function AskUserReceipt({ decision }: { decision: ClarificationDecisionNo
 
   const fieldEntries = Object.entries(decision.field_values || {})
   return (
-    <div
-      className={cn(
-        paper,
-        'flex flex-col gap-1.5 rounded-[var(--radius-sm)] px-3 py-2 text-[12px]',
-      )}
-    >
+    <div className="flex flex-col gap-1 text-[12px]">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-[var(--fg)]/90">
+        <div className="flex items-center gap-1.5 text-[var(--fg)]/90">
           <Check size={13} style={{ color: 'var(--accent)' }} />
           <span className="font-medium">{decision.title || decision.question}</span>
           {decision.selected_option_id ? (
-            <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--fg)]">
+            <span className={cn(mono, 'text-[var(--accent)]')}>
               {decision.selected_option_ids && decision.selected_option_ids.length > 1
                 ? decision.selected_option_ids.join(', ')
                 : decision.selected_option_id}
@@ -634,13 +631,10 @@ export function AskUserReceipt({ decision }: { decision: ClarificationDecisionNo
         </span>
       </div>
       {fieldEntries.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5 pt-0.5">
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-4 font-mono text-[10.5px] text-[var(--muted)]">
           {fieldEntries.map(([k, v]) => (
-            <span
-              key={k}
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-0.5 font-mono text-[10.5px] text-[var(--muted)]"
-            >
-              {k}: <span className="text-[var(--fg)]/90">{v}</span>
+            <span key={k}>
+              {k}: <span className="text-[var(--fg)]/85">{v}</span>
             </span>
           ))}
         </div>

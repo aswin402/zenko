@@ -1,8 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 use zenko_core::{
     ARTIFACT_PATH_PREFIX, ARTIFACTS_DIR_NAME, HUB_PATH_PREFIX, JAIL_DIR_CREATE_MODE,
-    JAIL_MAX_SYMLINK_HOPS, JAIL_TMP_FILE_MODE, JAIL_TMP_FILE_PREFIX, Result, ZenkoError,
-    expand_tilde,
+    JAIL_MAX_SYMLINK_HOPS, JAIL_NEW_FILE_MODE, JAIL_TMP_FILE_MODE, JAIL_TMP_FILE_PREFIX, Result,
+    ZenkoError, expand_tilde,
 };
 
 /// Formats a resolved file path cleanly for tool output: workspace-relative when under `ws_root`,
@@ -294,7 +294,7 @@ mod unix_confined {
     use std::ffi::CString;
     use std::io::Write as _;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::io::FromRawFd;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
 
     struct OwnedRawFd(libc::c_int);
 
@@ -451,23 +451,27 @@ mod unix_confined {
         let name_c = os_to_cstring(file_name)?;
         let name_label = file_name.to_string_lossy();
 
-        // Reject overwriting a symlink at the destination inside the pinned parent directory.
+        // Reject overwriting a symlink at the destination inside the pinned parent directory,
+        // and capture any existing regular file's permission bits so edits preserve `+x` / `0644`.
         let mut existing_st: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: parent_fd.0 is a confined directory fd; AT_SYMLINK_NOFOLLOW inspects leaf directly.
-        if unsafe {
+        let existing_rc = unsafe {
             libc::fstatat(
                 parent_fd.0,
                 name_c.as_ptr(),
                 &mut existing_st,
                 libc::AT_SYMLINK_NOFOLLOW,
             )
-        } == 0
-            && (existing_st.st_mode & libc::S_IFMT) == libc::S_IFLNK
-        {
+        };
+        if existing_rc == 0 && (existing_st.st_mode & libc::S_IFMT) == libc::S_IFLNK {
             return Err(ZenkoError::PolicyDenied(format!(
                 "kernel AT_SYMLINK_NOFOLLOW blocked atomic write over symlink '{name_label}'"
             )));
         }
+        let target_mode: libc::mode_t = match existing_rc == 0 {
+            true => (existing_st.st_mode & 0o777) as libc::mode_t,
+            false => JAIL_NEW_FILE_MODE as libc::mode_t,
+        };
 
         let tmp_name = format!("{JAIL_TMP_FILE_PREFIX}{}", zenko_core::new_id());
         let tmp_c = CString::new(tmp_name.as_bytes())
@@ -488,6 +492,10 @@ mod unix_confined {
         // SAFETY: tmp_fd is uniquely owned and transfers into std::fs::File.
         let mut file = unsafe { std::fs::File::from_raw_fd(tmp_fd) };
         let write_res = file.write_all(content).and_then(|_| file.flush());
+        if write_res.is_ok() {
+            // SAFETY: fchmod operates directly on the owned open fd before renameat (TOCTOU-immune).
+            let _ = unsafe { libc::fchmod(file.as_raw_fd(), target_mode) };
+        }
         drop(file);
         if let Err(err) = write_res {
             // SAFETY: clean up temporary file inside the same confined directory fd.
@@ -707,6 +715,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(hub);
         let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_jailed_uses_0644_for_new_files_and_preserves_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("zenko_jail_perm_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        // 1. New project file gets readable 0644 (never locked down to 0600).
+        let html = dir.join("index.html");
+        atomic_write_jailed(&dir, &html, b"<h1>Zenko</h1>").expect("write new file");
+        let new_mode = std::fs::metadata(&html).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(new_mode, zenko_core::JAIL_NEW_FILE_MODE);
+
+        // 2. Existing executable 0755 script keeps its executable bit on overwrite.
+        let script = dir.join("run.sh");
+        std::fs::write(&script, "#!/bin/sh\necho old\n").expect("seed script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod 755");
+        atomic_write_jailed(&dir, &script, b"#!/bin/sh\necho new\n").expect("overwrite script");
+        let preserved = std::fs::metadata(&script).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(preserved, 0o755);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

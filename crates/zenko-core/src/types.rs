@@ -756,6 +756,10 @@ pub struct ChatRequest {
     pub system_prompt: String,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolSpec>,
+    /// Keeps the frozen `tools[]` prefix intact for KV-cache reuse while instructing the
+    /// provider (`tool_choice: "none"`) not to emit tool calls during final synthesis.
+    #[serde(default)]
+    pub disable_tool_calls: bool,
     pub temperature: f32,
     pub max_tokens: u32,
     #[serde(default = "default_req_true")]

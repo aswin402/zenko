@@ -35,6 +35,8 @@ import type {
   PlanStepStatus,
   RewindMode,
   SessionEvent,
+  SessionTask,
+  SessionTaskStatus,
   UiCustomization,
   WorkspaceCheckpoint,
 } from '@/lib/types'
@@ -66,7 +68,6 @@ import {
   AlertIcon,
   AlertTitle,
 } from '@/components/motion/alert'
-import { BouncyAccordion } from '@/components/motion/bouncy-accordion'
 import type { LoaderVariant } from '@/components/motion/loader'
 import { CompactScrollArea } from '@/components/ui/CompactScrollArea'
 import { CheckpointMenuButton } from '@/components/chat/Phase6Bar'
@@ -186,6 +187,9 @@ interface AssistantGroup {
     diff?: string | null
     content: string
   }[]
+  plan?: ExecutionPlan | null
+  brainstorms: BrainstormSpec[]
+  decisions: ClarificationDecisionNote[]
   tokens: number
   cache_read: number
   cost_usd: number
@@ -228,9 +232,6 @@ function compactArgsPreview(args: unknown): string {
 
 type RenderBlock =
   | { kind: 'user'; event: SessionEvent }
-  | { kind: 'brainstorm'; id: string; spec: BrainstormSpec }
-  | { kind: 'plan'; id: string; plan: ExecutionPlan }
-  | { kind: 'clarification_decision'; id: string; decision: ClarificationDecisionNote }
   | {
       kind: 'compaction_checkpoint'
       id: string
@@ -242,23 +243,25 @@ type RenderBlock =
     }
   | { kind: 'assistant'; group: AssistantGroup }
 
-const SYSTEM_NOTE_PARSERS: Record<string, (ev: SessionEvent) => RenderBlock | null> = {
-  brainstorm_spec: (ev) =>
-    ev.content_json?.spec
-      ? { kind: 'brainstorm', id: ev.id, spec: ev.content_json.spec as BrainstormSpec }
-      : null,
-  execution_plan: (ev) =>
-    ev.content_json?.plan
-      ? { kind: 'plan', id: ev.id, plan: ev.content_json.plan as ExecutionPlan }
-      : null,
-  clarification_decision: (ev) =>
-    ev.content_json?.decision
-      ? {
-          kind: 'clarification_decision',
-          id: ev.id,
-          decision: ev.content_json.decision as ClarificationDecisionNote,
-        }
-      : null,
+const SYSTEM_NOTE_ATTACHERS: Record<
+  string,
+  (group: AssistantGroup, ev: SessionEvent) => void
+> = {
+  brainstorm_spec: (group, ev) => {
+    if (ev.content_json?.spec) {
+      group.brainstorms.push(ev.content_json.spec as BrainstormSpec)
+    }
+  },
+  execution_plan: (group, ev) => {
+    if (ev.content_json?.plan) {
+      group.plan = ev.content_json.plan as ExecutionPlan
+    }
+  },
+  clarification_decision: (group, ev) => {
+    if (ev.content_json?.decision) {
+      group.decisions.push(ev.content_json.decision as ClarificationDecisionNote)
+    }
+  },
 }
 
 function classifyActivityAction(toolName: string): 'read' | 'edit' | 'run' | string {
@@ -298,6 +301,29 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
     }
   }
 
+  const ensureCurrent = (ev: SessionEvent, model = 'zenko'): AssistantGroup => {
+    if (!current) {
+      current = {
+        key: ev.id,
+        model,
+        startedAt: ev.created_at,
+        timestamp: ev.created_at,
+        durationMs: 0,
+        thinkingMs: 0,
+        thinking: '',
+        text: '',
+        tools: [],
+        plan: null,
+        brainstorms: [],
+        decisions: [],
+        tokens: 0,
+        cache_read: 0,
+        cost_usd: 0,
+      }
+    }
+    return current
+  }
+
   for (const ev of events) {
     if (ev.role === 'system') {
       if (ev.kind === 'compaction_checkpoint') {
@@ -313,11 +339,11 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
         })
         continue
       }
-      const parser = SYSTEM_NOTE_PARSERS[String(ev.content_json?.note_kind || '')]
-      const parsed = parser ? parser(ev) : null
-      if (parsed) {
-        flush()
-        blocks.push(parsed)
+      const attacher = SYSTEM_NOTE_ATTACHERS[String(ev.content_json?.note_kind || '')]
+      if (attacher) {
+        // Attach plans, brainstorms, and user decisions INSIDE the active assistant turn
+        // instead of flushing and splitting one turn into detached chat blocks.
+        attacher(ensureCurrent(ev), ev)
       }
       continue
     }
@@ -347,6 +373,9 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
           thinking,
           text,
           tools: [],
+          plan: null,
+          brainstorms: [],
+          decisions: [],
           tokens: ev.tokens_in + ev.tokens_out,
           cache_read: ev.cache_read_tokens,
           cost_usd: ev.cost_usd,
@@ -363,24 +392,9 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
         current.timestamp = ev.created_at
       }
     } else if (ev.role === 'tool') {
-      if (!current) {
-        current = {
-          key: ev.id,
-          model: 'zenko',
-          startedAt: ev.created_at,
-          timestamp: ev.created_at,
-          durationMs: 0,
-          thinkingMs: 0,
-          thinking: '',
-          text: '',
-          tools: [],
-          tokens: 0,
-          cache_read: 0,
-          cost_usd: 0,
-        }
-      }
+      const grp = ensureCurrent(ev)
       const callId = typeof ev.content_json?.tool_call_id === 'string' ? ev.content_json.tool_call_id : undefined
-      current.tools.push({
+      grp.tools.push({
         call_id: callId,
         name: ev.content_json?.tool_name || 'tool',
         args_preview: callId ? toolArgsById.get(callId) : undefined,
@@ -389,7 +403,7 @@ function groupEvents(events: SessionEvent[]): RenderBlock[] {
         diff: ev.content_json?.diff || null,
         content: String(ev.content_json?.content || ''),
       })
-      current.timestamp = ev.created_at
+      grp.timestamp = ev.created_at
     }
   }
   flush()
@@ -532,6 +546,7 @@ const CompactionCheckpointPill = memo(function CompactionCheckpointPill({
 const AssistantTurnView = memo(function AssistantTurnView({
   sessionId = null,
   group,
+  fallbackTasks = [],
   ui,
   promptForRegen,
   parentForRegen,
@@ -544,6 +559,7 @@ const AssistantTurnView = memo(function AssistantTurnView({
 }: {
   sessionId?: string | null
   group: AssistantGroup
+  fallbackTasks?: SessionTask[]
   ui: UiCustomization
   promptForRegen?: string
   parentForRegen?: string | null
@@ -567,7 +583,13 @@ const AssistantTurnView = memo(function AssistantTurnView({
   )
   const [stepsOpen, setStepsOpen] = useState(false)
   const hasThinking = Boolean(ui.widgets.show_thinking && group.thinking)
-  const stepCount = group.tools.length + (hasThinking ? 1 : 0)
+  const hasInlinePlan = Boolean(group.plan) || fallbackTasks.length > 0
+  const stepCount =
+    group.tools.length +
+    (hasThinking ? 1 : 0) +
+    (hasInlinePlan ? 1 : 0) +
+    group.brainstorms.length +
+    group.decisions.length
   const thoughtMs = useMemo(() => computeGroupThoughtMs(group), [group])
   const thoughtSeconds = thoughtMs > 0 ? Math.max(1, Math.round(thoughtMs / 1000)) : 0
   const thoughtLabel = thoughtMs > 0 ? formatDurationSeconds(thoughtMs) : ''
@@ -751,7 +773,12 @@ const AssistantTurnView = memo(function AssistantTurnView({
                   ]}
                 />
               </div>
-            ) : chatSlot.thinking_style === 'inline_quote' && hasThinking && group.tools.length === 0 ? (
+            ) : chatSlot.thinking_style === 'inline_quote' &&
+              hasThinking &&
+              group.tools.length === 0 &&
+              !hasInlinePlan &&
+              group.brainstorms.length === 0 &&
+              group.decisions.length === 0 ? (
               <div className="border-l-2 border-[var(--accent)]/45 pl-3 font-mono text-[11.5px] whitespace-pre-wrap text-[var(--muted)]">
                 {group.thinking}
               </div>
@@ -781,18 +808,14 @@ const AssistantTurnView = memo(function AssistantTurnView({
 
                 <AgentDisclosure open={stepsOpen}>
                   <div className="mt-1 flex flex-col gap-3 border-l border-[var(--border)] pl-3.5">
-                    {/* 1. Thought duration + full reasoning */}
+                    {/* 1. Thought duration + full reasoning (borderless inside activity rail) */}
                     {hasThinking && (
-                      <div className="flex flex-col gap-1.5">
+                      <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
                           <BrainIcon size={12} style={{ color: 'var(--accent)' }} />
                           <span>{thoughtLabel ? `Thought for ${thoughtLabel}` : 'Reasoning'}</span>
                         </div>
-                        <CompactScrollArea
-                          autoHeight
-                          className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)]"
-                          viewportClassName="max-h-56 p-3 pr-4"
-                        >
+                        <CompactScrollArea autoHeight viewportClassName="max-h-56 pr-3">
                           <div className="font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-[var(--muted)]">
                             {group.thinking}
                           </div>
@@ -800,7 +823,29 @@ const AssistantTurnView = memo(function AssistantTurnView({
                       </div>
                     )}
 
-                    {/* 2. Unified Agent Activity & Tool Execution (zero duplicate tool lists) */}
+                    {/* 2. Plan & Todos inside Agent Activity (borderless, zero detached card) */}
+                    {hasInlinePlan && (
+                      <InlinePlanActivity plan={group.plan ?? null} tasks={fallbackTasks} />
+                    )}
+
+                    {/* 3. Brainstorm Specs inside Agent Activity (borderless) */}
+                    {group.brainstorms.map((spec) => (
+                      <InlineBrainstormActivity key={spec.id} spec={spec} />
+                    ))}
+
+                    {/* 4. Resolved User Input Receipts inside Agent Activity (borderless) */}
+                    {group.decisions.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <span className="font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+                          User Input ({group.decisions.length})
+                        </span>
+                        {group.decisions.map((dec, idx) => (
+                          <AskUserReceipt key={`${group.key}-dec-${idx}`} decision={dec} />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 5. Unified Agent Activity & Tool Execution (zero duplicate tool lists) */}
                     {chatSlot.activity_style !== 'hidden' &&
                       (activityItems.length > 0 || normalizedTools.length > 0) && (
                         <div className="flex flex-col gap-1.5">
@@ -931,160 +976,56 @@ const AssistantTurnView = memo(function AssistantTurnView({
   )
 })
 
-function BrainstormCard({
-  spec,
-  bouncy,
-}: {
-  spec: BrainstormSpec
-  bouncy: boolean
-}) {
-  const [open, setOpen] = useState(true)
+function InlineBrainstormActivity({ spec }: { spec: BrainstormSpec }) {
   const stageLabel = spec.stage || (spec.selected_option_id ? 'committed' : 'exploring')
-  const badgeSummary = `${stageLabel} · ${spec.options.length} options · ${spec.selected_option_id || 'open'}`
-  const body = (
-    <div className="flex flex-col gap-3">
-      <p className="text-[13px] leading-relaxed text-[var(--fg)]/90">{spec.problem}</p>
-      {((spec.assumptions && spec.assumptions.length > 0) ||
-        (spec.blind_spots && spec.blind_spots.length > 0) ||
-        (spec.decision_criteria && spec.decision_criteria.length > 0)) && (
-        <div className="grid gap-2 sm:grid-cols-3">
-          {spec.assumptions && spec.assumptions.length > 0 && (
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-[11px] text-[var(--muted)]">
-              <strong className="block text-[var(--fg)]/85">Assumptions</strong>
-              <span className="mt-0.5 block">{spec.assumptions.join(' · ')}</span>
-            </div>
-          )}
-          {spec.blind_spots && spec.blind_spots.length > 0 && (
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-[11px] text-[var(--muted)]">
-              <strong className="block text-[var(--fg)]/85">Blind Spots</strong>
-              <span className="mt-0.5 block">{spec.blind_spots.join(' · ')}</span>
-            </div>
-          )}
-          {spec.decision_criteria && spec.decision_criteria.length > 0 && (
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-[11px] text-[var(--muted)]">
-              <strong className="block text-[var(--fg)]/85">Criteria</strong>
-              <span className="mt-0.5 block">{spec.decision_criteria.join(' · ')}</span>
-            </div>
-          )}
-        </div>
-      )}
-      <div className="grid gap-2 sm:grid-cols-2">
-        {spec.options.map((opt) => {
-          const isSelected = Boolean(spec.selected_option_id) && opt.id === spec.selected_option_id
-          return (
-            <div
-              key={opt.id}
-              className="rounded-[var(--radius-sm)] border bg-[var(--bg)] p-2.5"
-              style={{
-                borderColor: isSelected
-                  ? 'color-mix(in srgb, var(--accent) 52%, var(--border))'
-                  : 'var(--border)',
-              }}
-            >
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="font-medium text-[var(--fg)]">{opt.title}</span>
-                {isSelected && (
-                  <span className="font-mono text-[10px] uppercase" style={{ color: 'var(--accent)' }}>
-                    selected
-                  </span>
-                )}
-              </div>
-              <p className="mt-1 text-[11.5px] text-[var(--muted)]">{opt.summary}</p>
-              <div className="mt-1.5 flex flex-wrap gap-2 font-mono text-[10px] text-[var(--muted)]">
-                <span>rev:{opt.reversibility}</span>
-                <span>blast:{opt.blast_radius}</span>
-                <span>safe:{opt.safety_score}/10</span>
-                {opt.touched_files && opt.touched_files.length > 0 && (
-                  <span>files:{opt.touched_files.length}</span>
-                )}
-                {opt.rollback_steps && opt.rollback_steps.length > 0 && <span>rollback:ready</span>}
-              </div>
-            </div>
-          )
-        })}
+  return (
+    <div className="flex flex-col gap-2 text-[12px]">
+      <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+        <BrainIcon size={12} style={{ color: 'var(--accent)' }} />
+        <span>Brainstorm</span>
+        <span className="text-[var(--accent)]">· {stageLabel}</span>
+        <span>· {spec.options.length} options</span>
       </div>
+      <p className="text-[12.5px] leading-relaxed text-[var(--fg)]/85">{spec.problem}</p>
+      {spec.options.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {spec.options.map((opt) => {
+            const isSelected = Boolean(spec.selected_option_id) && opt.id === spec.selected_option_id
+            return (
+              <div
+                key={opt.id}
+                className={cn(
+                  'border-l pl-2.5 py-0.5',
+                  isSelected ? 'border-[var(--accent)]' : 'border-[var(--border)]/70',
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-[var(--fg)]/90">{opt.title}</span>
+                  {isSelected && (
+                    <span className="font-mono text-[10px] uppercase text-[var(--accent)]">
+                      selected
+                    </span>
+                  )}
+                  <span className="font-mono text-[10px] text-[var(--muted)]">
+                    rev:{opt.reversibility} · blast:{opt.blast_radius} · safe:{opt.safety_score}/10
+                  </span>
+                </div>
+                {opt.summary && <p className="text-[11.5px] text-[var(--muted)]">{opt.summary}</p>}
+              </div>
+            )
+          })}
+        </div>
+      )}
       {spec.selection_rationale && (
-        <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
-          <strong className="text-[var(--fg)]/85">Rationale:</strong> {spec.selection_rationale}
-        </div>
-      )}
-      {spec.critique && spec.critique.length > 0 && (
-        <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
-          <strong className="text-[var(--fg)]/85">Critique:</strong> {spec.critique.join(' · ')}
-        </div>
-      )}
-      {spec.pre_mortem && spec.pre_mortem.length > 0 && (
-        <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
-          <strong className="text-[var(--fg)]/85">Pre-Mortem:</strong> {spec.pre_mortem.join(' · ')}
-        </div>
-      )}
-      {spec.open_questions && spec.open_questions.length > 0 && (
-        <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11.5px] text-[var(--muted)]">
-          <strong className="text-[var(--fg)]/85">Open Questions:</strong> {spec.open_questions.join(' · ')}
-        </div>
+        <p className="text-[11.5px] text-[var(--muted)]">
+          <span className="font-medium text-[var(--fg)]/80">Rationale:</span> {spec.selection_rationale}
+        </p>
       )}
       {spec.verification_plan.length > 0 && (
-        <div className="font-mono text-[11px] text-[var(--muted)]">
+        <div className="font-mono text-[10.5px] text-[var(--muted)]">
           Verify: {spec.verification_plan.join(' · ')}
         </div>
       )}
-      {spec.rubric_warnings && spec.rubric_warnings.length > 0 && (
-        <div className="font-mono text-[10.5px] text-[var(--muted)]">
-          Notes: {spec.rubric_warnings.join(' · ')}
-        </div>
-      )}
-    </div>
-  )
-
-  if (bouncy) {
-    return (
-      <BouncyAccordion
-        defaultValue={spec.id}
-        collapsible
-        items={[
-          {
-            id: spec.id,
-            icon: <BrainIcon size={14} style={{ color: 'var(--accent)' }} />,
-            title: (
-              <span className="inline-flex items-center gap-2 text-[13px]">
-                <span>Structured Brainstorm</span>
-                <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-                  {badgeSummary}
-                </span>
-              </span>
-            ),
-            description: body,
-          },
-        ]}
-        classNames={{
-          item: 'border border-[var(--border)] bg-[var(--surface)]/92',
-          trigger: 'min-h-[46px] px-4',
-          description: 'text-[12.5px]',
-        }}
-      />
-    )
-  }
-
-  return (
-    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]/90 p-4 text-[12.5px]">
-      <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="inline-flex cursor-pointer items-center gap-2 text-left font-medium text-[var(--fg)]"
-        >
-          <BrainIcon size={13.5} style={{ color: 'var(--accent)' }} />
-          <span>Structured Brainstorm</span>
-          <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-            {badgeSummary}
-          </span>
-        </button>
-        <ChevronDown
-          size={14}
-          className={cn('text-[var(--muted)] transition-transform', open && 'rotate-180')}
-        />
-      </div>
-      {open && <div className="mt-3">{body}</div>}
     </div>
   )
 }
@@ -1096,98 +1037,71 @@ const PLAN_STATUS_TO_TODO: Record<PlanStepStatus, TodoStatus> = {
   blocked: 'cancelled',
 }
 
-function ExecutionPlanCard({ plan, bouncy }: { plan: ExecutionPlan; bouncy: boolean }) {
-  const [open, setOpen] = useState(true)
-  const done = plan.steps.filter((s) => s.status === 'completed').length
-  const total = plan.steps.length
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0
+const TASK_STATUS_TO_TODO: Record<SessionTaskStatus, TodoStatus> = {
+  pending: 'pending',
+  in_progress: 'active',
+  blocked: 'cancelled',
+  done: 'done',
+  failed: 'failed',
+}
 
-  const body = (
-    <div className="flex flex-col gap-2.5">
-      <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bg)]">
-        <div
-          className="h-full transition-all"
-          style={{ width: `${pct}%`, backgroundColor: 'var(--accent)' }}
-        />
-      </div>
-      <TodoList
-        title={plan.goal || 'Execution Plan'}
-        className="max-w-none"
-        items={plan.steps.map((step) => ({
-          id: step.id,
-          text: step.title,
-          status: PLAN_STATUS_TO_TODO[step.status] || 'pending',
-          description:
-            step.depends_on.length > 0
-              ? `after: ${step.depends_on.join(', ')}${step.verification ? ` · verify: ${step.verification}` : ''}`
-              : step.verification
-                ? `verify: ${step.verification}`
-                : undefined,
-        }))}
-      />
-      {plan.rubric_warnings && plan.rubric_warnings.length > 0 && (
-        <div className="font-mono text-[10.5px] text-[var(--muted)]">
-          Rubric: {plan.rubric_warnings.join(' · ')}
-        </div>
-      )}
-    </div>
-  )
+function InlinePlanActivity({
+  plan,
+  tasks = [],
+}: {
+  plan: ExecutionPlan | null
+  tasks?: SessionTask[]
+}) {
+  const todoItems = useMemo(() => {
+    if (tasks.length > 0) {
+      return tasks.map((t) => ({
+        id: t.id,
+        text: t.title,
+        status: TASK_STATUS_TO_TODO[t.status] || 'pending',
+        description:
+          t.active_label ||
+          (t.owner_agent
+            ? `owner: ${t.owner_agent.slice(0, 12)}`
+            : t.verification_cmd
+              ? `verify: ${t.verification_cmd}`
+              : undefined),
+        reason: t.status === 'failed' ? t.notes || t.verification_evidence || undefined : undefined,
+      }))
+    }
+    if (!plan) return []
+    return plan.steps.map((step) => ({
+      id: step.id,
+      text: step.title,
+      status: PLAN_STATUS_TO_TODO[step.status] || 'pending',
+      description:
+        step.depends_on.length > 0
+          ? `after: ${step.depends_on.join(', ')}${step.verification ? ` · verify: ${step.verification}` : ''}`
+          : step.verification
+            ? `verify: ${step.verification}`
+            : undefined,
+    }))
+  }, [plan, tasks])
 
-  if (bouncy) {
-    return (
-      <BouncyAccordion
-        defaultValue={plan.id}
-        collapsible
-        items={[
-          {
-            id: plan.id,
-            icon: <ListChecks size={14} style={{ color: 'var(--accent)' }} />,
-            title: (
-              <span className="inline-flex items-center gap-2 text-[13px]">
-                <span>Execution Plan</span>
-                <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-                  {done}/{total} done
-                </span>
-              </span>
-            ),
-            description: body,
-          },
-        ]}
-        classNames={{
-          item: 'border border-[var(--border)] bg-[var(--surface)]/92',
-          trigger: 'min-h-[46px] px-4',
-          description: 'text-[12.5px]',
-        }}
-      />
-    )
-  }
+  if (todoItems.length === 0) return null
 
   return (
-    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]/90 p-4 text-[12.5px]">
-      <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="inline-flex cursor-pointer items-center gap-2 text-left font-medium text-[var(--fg)]"
-        >
-          <ListChecks size={13.5} style={{ color: 'var(--accent)' }} />
-          <span>Execution Plan</span>
-          <span className="rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--muted)]">
-            {done}/{total} done
-          </span>
-        </button>
-        <ChevronDown
-          size={14}
-          className={cn('text-[var(--muted)] transition-transform', open && 'rotate-180')}
-        />
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+        <ListChecks size={12} style={{ color: 'var(--accent)' }} />
+        <span>Plan &amp; Todos</span>
       </div>
-      {open && <div className="mt-2.5">{body}</div>}
+      <TodoList
+        title={plan?.goal || 'Tracked Plan'}
+        className="max-w-none"
+        items={todoItems}
+      />
     </div>
   )
 }
 
 function LiveAssistantTurn({
   persistedGroup,
+  sessionTasks = [],
   liveOrchestrator,
   liveThinking,
   liveText,
@@ -1198,6 +1112,7 @@ function LiveAssistantTurn({
   ui,
 }: {
   persistedGroup: AssistantGroup | null
+  sessionTasks?: SessionTask[]
   liveOrchestrator: OrchestratorStatus | null
   liveThinking: string
   liveText: string
@@ -1320,8 +1235,14 @@ function LiveAssistantTurn({
     return 'Thinking...'
   }, [runningTool, liveText, mergedTools.length, mergedThinking, liveOrchestrator?.stage])
 
+  const hasLivePlan = Boolean(persistedGroup?.plan) || sessionTasks.length > 0
+  const liveBrainstorms = persistedGroup?.brainstorms || []
+  const liveDecisions = persistedGroup?.decisions || []
   const hasWorkDetails =
     Boolean(ui.widgets.show_thinking && mergedThinking) ||
+    hasLivePlan ||
+    liveBrainstorms.length > 0 ||
+    liveDecisions.length > 0 ||
     mergedTools.length > 0 ||
     liveActivityItems.length > 0
 
@@ -1395,19 +1316,14 @@ function LiveAssistantTurn({
             {hasWorkDetails && (
               <AgentDisclosure open={liveOpen}>
                 <div className="flex flex-col gap-3 border-l border-[var(--border)] pl-3.5">
-                  {/* 1. Live streaming reasoning inside a bounded scroll box */}
+                  {/* 1. Live streaming reasoning (borderless inside activity rail) */}
                   {ui.widgets.show_thinking && mergedThinking && (
-                    <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
                         <BrainIcon size={12} style={{ color: 'var(--accent)' }} />
                         <span>Thinking · {elapsedLabel}</span>
                       </div>
-                      <CompactScrollArea
-                        autoHeight
-                        stickToBottom
-                        className="zenko-aui-paper rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)]"
-                        viewportClassName="max-h-40 p-3 pr-4"
-                      >
+                      <CompactScrollArea autoHeight stickToBottom viewportClassName="max-h-40 pr-3">
                         <div className="font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-[var(--muted)]">
                           {mergedThinking}
                           {isRunning && !liveText && !runningTool && (
@@ -1422,7 +1338,30 @@ function LiveAssistantTurn({
                     </div>
                   )}
 
-                  {/* 2. Unified Live Agent Activity & Tool Execution inside matching bounded scroll box */}
+                  {/* 2. Live Plan & Todos inside Agent Activity (borderless) */}
+                  {hasLivePlan && (
+                    <InlinePlanActivity
+                      plan={persistedGroup?.plan ?? null}
+                      tasks={sessionTasks}
+                    />
+                  )}
+
+                  {/* 3. Live Brainstorms & User Decisions inside Agent Activity */}
+                  {liveBrainstorms.map((spec) => (
+                    <InlineBrainstormActivity key={spec.id} spec={spec} />
+                  ))}
+                  {liveDecisions.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="font-mono text-[10.5px] uppercase tracking-wider text-[var(--muted)]">
+                        User Input ({liveDecisions.length})
+                      </span>
+                      {liveDecisions.map((dec, idx) => (
+                        <AskUserReceipt key={`live-dec-${idx}`} decision={dec} />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 4. Unified Live Agent Activity & Tool Execution */}
                   {chatSlot.activity_style !== 'hidden' &&
                     (liveActivityItems.length > 0 || mergedTools.length > 0) && (
                       <div className="flex flex-col gap-1.5">
@@ -1516,6 +1455,7 @@ export function ChatStream({
   events,
   siblings,
   checkpoints = [],
+  sessionTasks = [],
   pendingApprovals,
   pendingClarifications = [],
   liveOrchestrator = null,
@@ -1546,6 +1486,7 @@ export function ChatStream({
   events: SessionEvent[]
   siblings: Record<string, string[]>
   checkpoints?: WorkspaceCheckpoint[]
+  sessionTasks?: SessionTask[]
   pendingApprovals: ApprovalRecord[]
   pendingClarifications?: ClarificationRecord[]
   liveOrchestrator?: OrchestratorStatus | null
@@ -1580,7 +1521,6 @@ export function ChatStream({
   const blocks = useMemo(() => groupEvents(events), [events])
   const chatSlot = ui.components.chat_page
   const scrollerStyle = chatSlot.scroller_style || 'beui_rail'
-  const bouncyCards = ui.surface.accordion_style !== 'compact'
 
   // Unified single-turn merge: if the session is actively running and earlier iterations
   // of THIS turn were already persisted into SQLite, merge that trailing assistant block
@@ -1767,15 +1707,6 @@ export function ChatStream({
             <DayDivider key={`day-${block.kind}-${blockIso}`} label={dayLabel} />
           ) : null
 
-          if (block.kind === 'brainstorm') {
-            return <BrainstormCard key={block.id} spec={block.spec} bouncy={bouncyCards} />
-          }
-          if (block.kind === 'plan') {
-            return <ExecutionPlanCard key={block.id} plan={block.plan} bouncy={bouncyCards} />
-          }
-          if (block.kind === 'clarification_decision') {
-            return <AskUserReceipt key={block.id} decision={block.decision} />
-          }
           if (block.kind === 'compaction_checkpoint') {
             return (
               <CompactionCheckpointPill
@@ -1881,6 +1812,11 @@ export function ChatStream({
               <AssistantTurnView
                 sessionId={sessionId}
                 group={block.group}
+                fallbackTasks={
+                  blockIdx === lastAssistantIdx && !hasLiveTurn && !block.group.plan
+                    ? sessionTasks
+                    : undefined
+                }
                 ui={ui}
                 promptForRegen={promptForRegen}
                 parentForRegen={parentForRegen}
@@ -1900,6 +1836,7 @@ export function ChatStream({
       {hasLiveTurn && (
         <LiveAssistantTurn
           persistedGroup={activePersistedGroup}
+          sessionTasks={sessionTasks}
           liveOrchestrator={liveOrchestrator}
           liveThinking={liveThinking}
           liveText={liveText}

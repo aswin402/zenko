@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import type { ReactNode } from "react";
 import { CheckIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { inkButton, mono, paper } from "./surfaces";
+import { inkButton, mono } from "./surfaces";
 import { useReceiptFocus } from "./receipt-focus";
 
 export type RecommendationState = "idle" | "accepted";
@@ -50,8 +50,7 @@ export function RecommendationCard({
     <div
       data-slot="recommendation-card"
       className={cn(
-        paper,
-        "flex w-full max-w-sm flex-col gap-3 rounded-[20px] p-4",
+        "flex w-full max-w-sm flex-col gap-3",
         className,
       )}
       {...props}

@@ -735,6 +735,7 @@ impl AgentRuntime {
         let mut tool_calls_count = 0usize;
         let mut pending_orch_hints: Vec<String> = Vec::new();
         let mut last_prompt_cache_key: Option<String> = None;
+        let mut last_active_tool_specs: Vec<ToolSpec> = Vec::new();
         let turn_checkpoint_event_id = parent_for_user.clone();
         let turn_checkpoint_label =
             format!("Before: {}", compact_preview(user_text, CHECKPOINT_LABEL_MAX_CHARS));
@@ -842,6 +843,7 @@ impl AgentRuntime {
                 &session_scope.availability,
                 |spec| session_scope.permits_spec(spec),
             );
+            last_active_tool_specs = active_tool_specs.clone();
             let live_bpt = self.prefix_cache.calibrated_bpt(&session_id);
             let active_specs_tokens =
                 estimate_tool_specs_tokens_calibrated(&active_tool_specs, live_bpt);
@@ -1209,6 +1211,7 @@ impl AgentRuntime {
                     system_prompt: effective_system_prompt.clone(),
                     messages: messages.clone(),
                     tools: active_tool_specs.clone(),
+                    disable_tool_calls: false,
                     temperature: cfg.provider.temperature,
                     max_tokens: active_max_tokens,
                     enable_streaming: cfg.provider.enable_streaming,
@@ -1906,8 +1909,21 @@ impl AgentRuntime {
                     {
                         orch.guard.update_active_plan(plan);
                     }
+                let batch_touched_tasks = eff_tool_name == TOOL_BATCH_TOOLS
+                    && eff_tool_args
+                        .get("calls")
+                        .and_then(Value::as_array)
+                        .is_some_and(|calls| {
+                            calls.iter().any(|c| {
+                                matches!(
+                                    c.get("tool").or_else(|| c.get("name")).and_then(Value::as_str),
+                                    Some(TOOL_SESSION_TASK | TOOL_PLAN_UPDATE | zenko_core::TOOL_ZPOWERS)
+                                )
+                            })
+                        });
                 if !was_phase_redirect
                     && (eff_tool_name == TOOL_SESSION_TASK
+                        || batch_touched_tasks
                         || (eff_tool_name == zenko_core::TOOL_ZPOWERS
                             && eff_tool_args
                                 .get("action")
@@ -2379,7 +2395,8 @@ impl AgentRuntime {
                     fallbacks: cfg.provider.fallbacks.clone(),
                     system_prompt: effective_system_prompt.clone(),
                     messages: messages.clone(),
-                    tools: Vec::new(),
+                    tools: last_active_tool_specs.clone(),
+                    disable_tool_calls: true,
                     temperature: cfg.provider.temperature,
                     max_tokens: active_max_tokens,
                     enable_streaming: cfg.provider.enable_streaming,

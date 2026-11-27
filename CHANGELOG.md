@@ -4,6 +4,23 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.51] - 2026-11-27
+
+Resolved three runtime bugs uncovered in forensic analysis of real-world session `01M8EVBZ05N3E006N5SSBADVT6` and streamlined the WebUI chat experience so plans, todos, brainstorms, and user-input receipts render borderlessly inside Agent Activity while keeping the prompt composer toolbar clean.
+
+### Fixed
+- **Batched Planning Support in ZPowers Plan-First Gate (`crates/zenko-runtime/src/{orchestrator/guard,runtime/turn}.rs`, `crates/zenko-tools/src/orchestrator_tools.rs`):**
+  - Extracted `ExecutionGuard::record_planning_outcome` and applied it both for top-level planning tools and for every successful `"ok"` step inside `batch_tools`, so creating tasks via `batch_tools([session_task(action="create"), ...])` immediately unlocks the ZPowers plan-first gate and refreshes `ExecutionGuard.active_plan` instead of falsely blocking the first `write_file`.
+  - Updated `plan_update` output to report the exact synced task IDs so follow-up `session_task` calls never reference stale pre-plan IDs.
+- **Standard Workspace File Permissions in Jailed Atomic Writes (`crates/zenko-core/src/constants.rs`, `crates/zenko-tools/src/jail.rs`):**
+  - Added `JAIL_NEW_FILE_MODE` (`0o644`) and updated `unix_confined::atomic_write_jailed` to apply `fchmod` on the open file descriptor before atomic `renameat` — preserving existing file mode bits (such as `0755` executable scripts) on overwrite and using `0644` for new workspace/hub files instead of leaking `0600` temp-file permissions (`vault.enc` and session secret paths continue using `write_owner_only_atomic` at `0600`).
+- **Frozen `tools[]` KV-Cache Preservation on Final Synthesis (`crates/zenko-core/src/types.rs`, `crates/zenko-providers/src/dialect.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Added `ChatRequest::disable_tool_calls` (emitting `"tool_choice": "none"` while keeping the exact sorted/canonicalized `tools[]` prefix intact) and reused `last_active_tool_specs` on the final wrap-up synthesis pass, preventing the ~85K-token KV-cache bust caused by stripping `tools[]` to empty.
+- **Clean Single-Row Composer & Borderless Inline Agent Activity (`webui/src/App.tsx`, `webui/src/components/chat/{ChatStream,AskUserCard}.tsx`, `webui/src/components/assistant-ui/elements/*.tsx`):**
+  - Removed the `plan` and `todo` popover pills (`WorkspaceToolsPopovers`) from the chat composer toolbar.
+  - Refactored `ChatStream.tsx` `groupEvents()` so `execution_plan`, `brainstorm_spec`, and `clarification_decision` system notes attach inline onto the active `AssistantGroup` instead of splitting an assistant turn into detached chat outputs.
+  - Replaced bordered card wrappers across `InlinePlanActivity`, `InlineBrainstormActivity`, `Thinking`, `AskUserCard`/`AskUserReceipt`, and all five `@assistant-ui` elements (`todo-list`, `option-list`, `question-flow`, `recommendation-card`, `feedback-dialog`) with clean borderless/left-hairline inline styling inside the collapsible Agent Activity section, and simplified `TodoList` status markers to crisp bare icons.
+
 ## [0.0.50] - 2026-11-27
 
 Polished three real-world rough edges uncovered during live end-to-end runs of `ask_user` and ZPowers against `MiniMax-M3.1-Flash`.

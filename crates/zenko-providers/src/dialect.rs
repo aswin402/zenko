@@ -183,7 +183,11 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                 })
                 .collect();
             obj.insert("tools".into(), Value::Array(tools));
-            obj.insert("tool_choice".into(), Value::String("auto".into()));
+            let tool_choice = match req.disable_tool_calls {
+                true => "none",
+                false => "auto",
+            };
+            obj.insert("tool_choice".into(), Value::String(tool_choice.into()));
         }
 
         // OpenRouter/Anthropic multi-breakpoint KV caching: place a 3rd cache breakpoint on the
@@ -326,6 +330,7 @@ mod tests {
                 },
             ],
             tools: vec![],
+            disable_tool_calls: false,
             temperature: temp,
             max_tokens: 1024,
             enable_streaming: true,
@@ -493,5 +498,34 @@ mod tests {
         assert_eq!(body_a["tools"][0]["function"]["name"], "alpha_tool");
         assert_eq!(body_a["tools"][1]["function"]["name"], "zeta_tool");
         assert_eq!(body_a["tools"][1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn disable_tool_calls_preserves_frozen_tools_prefix_with_tool_choice_none() {
+        let mut active_req = sample_request(0.2);
+        active_req.tools = vec![ToolSpec {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }),
+            risk: zenko_core::RiskLevel::Safe,
+        }];
+        active_req.disable_tool_calls = false;
+
+        let mut synth_req = active_req.clone();
+        synth_req.disable_tool_calls = true;
+
+        let active_body = build_request_body(ProviderDialect::MiniMax, &active_req);
+        let synth_body = build_request_body(ProviderDialect::MiniMax, &synth_req);
+
+        assert_eq!(active_body["tool_choice"], "auto");
+        assert_eq!(synth_body["tool_choice"], "none");
+        assert_eq!(
+            serde_json::to_string(&active_body["tools"]).expect("ser active tools"),
+            serde_json::to_string(&synth_body["tools"]).expect("ser synth tools"),
+        );
     }
 }

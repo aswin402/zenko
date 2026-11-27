@@ -10,7 +10,7 @@ import {
 import { useIsomorphicLayoutEffect } from "../utils/useIsomorphicLayoutEffect";
 import { cn } from "@/lib/utils";
 import { OptionList, type OptionListOption } from "./option-list";
-import { ghostButton, mono, paper } from "./surfaces";
+import { ghostButton, mono } from "./surfaces";
 import { useReceiptFocus } from "./receipt-focus";
 
 export interface QuestionFlowStep {
@@ -86,8 +86,7 @@ export function QuestionFlow({
   }, [currentStep?.id]);
 
   const root = cn(
-    paper,
-    "flex w-full max-w-sm flex-col rounded-2xl p-2",
+    "flex w-full max-w-sm flex-col",
     className,
   );
 

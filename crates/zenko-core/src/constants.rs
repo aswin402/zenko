@@ -1883,6 +1883,7 @@ pub const BRAIN_ACTIONS: &[&str] = &[
 // ── Chisel / Chisle Precision File I/O, Context Diet & Prose Yield ───────────
 pub const JAIL_DIR_CREATE_MODE: u32 = 0o755;
 pub const JAIL_TMP_FILE_MODE: u32 = 0o600;
+pub const JAIL_NEW_FILE_MODE: u32 = 0o644;
 pub const JAIL_TMP_FILE_PREFIX: &str = ".zenko-tmp-";
 pub const READ_FILE_MODE_LINES: &str = "lines";
 pub const READ_FILE_MODE_OUTLINE: &str = "outline";

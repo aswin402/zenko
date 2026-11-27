@@ -524,6 +524,7 @@ async fn execute_dream_stages(
             name: None,
         }],
         tools: Vec::new(),
+        disable_tool_calls: false,
         temperature: 0.1,
         max_tokens: DREAM_MAX_OUTPUT_TOKENS,
         enable_streaming: cfg.provider.enable_streaming,

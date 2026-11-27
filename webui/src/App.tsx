@@ -78,7 +78,7 @@ import { ThemeSelector } from '@/components/ui/ThemeSelector'
 import { ZenkoTooltipProvider } from '@/components/ui/Tooltip'
 import { Sidebar } from '@/components/chat/Sidebar'
 import { ChatStream, type LiveToolItem } from '@/components/chat/ChatStream'
-import { Phase6Bar, WorkspaceToolsPopovers } from '@/components/chat/Phase6Bar'
+import { Phase6Bar } from '@/components/chat/Phase6Bar'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { LoginGate } from '@/components/views/LoginGate'
 
@@ -163,7 +163,6 @@ export default function App() {
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([])
   const [sessionTasks, setSessionTasks] = useState<SessionTask[]>([])
   const [sessionCheckpoints, setSessionCheckpoints] = useState<WorkspaceCheckpoint[]>([])
-  const [zpowersRev, setZpowersRev] = useState(0)
   const [logCategories, setLogCategories] = useState<LogCategoryMeta[]>([])
   const [logCounts, setLogCounts] = useState<Record<string, number>>({})
   const [logsDir, setLogsDir] = useState<string>('')
@@ -581,18 +580,13 @@ export default function App() {
           detail: ev.detail || '',
           model: ev.model || null,
         })
-        if (ev.stage === 'zpowers') {
-          setZpowersRev((n) => n + 1)
-        }
       },
       brainstorm_recorded: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
-        setZpowersRev((n) => n + 1)
         loadSession(sid)
       },
       plan_updated: (ev, sid) => {
         if (!sid || ev.session_id !== sid) return
-        setZpowersRev((n) => n + 1)
         loadSession(sid)
       },
       clarification_requested: (ev, sid) => {
@@ -606,7 +600,6 @@ export default function App() {
       },
       clarification_resolved: (ev) => {
         setPendingClarifications((prev) => prev.filter((c) => c.id !== ev.clarification_id))
-        setZpowersRev((n) => n + 1)
       },
       subagent_spawned: (ev) => {
         if (!ev.agent) return
@@ -626,7 +619,6 @@ export default function App() {
       session_tasks_updated: (ev, sid) => {
         if (!sid || ev.session_id !== sid || !Array.isArray(ev.tasks)) return
         setSessionTasks(ev.tasks)
-        setZpowersRev((n) => n + 1)
       },
       checkpoint_created: (ev, sid) => {
         if (!sid || !ev.checkpoint || ev.checkpoint.session_id !== sid) return
@@ -1091,6 +1083,7 @@ export default function App() {
               events={events}
               siblings={siblings}
               checkpoints={sessionCheckpoints}
+              sessionTasks={sessionTasks}
               pendingApprovals={pendingApprovals}
               pendingClarifications={pendingClarifications}
               liveOrchestrator={liveOrchestrator}
@@ -1189,7 +1182,6 @@ export default function App() {
                     body: JSON.stringify(resolution),
                   })
                   setPendingClarifications((prev) => prev.filter((c) => c.id !== id))
-                  setZpowersRev((n) => n + 1)
                 } catch (e: any) {
                   toast(e?.message || 'Failed to submit response', 'error')
                 }
@@ -1343,14 +1335,6 @@ export default function App() {
               onOpenSettings={() => setActiveView('setup')}
               composerStyle={ui.components.composer}
               popoverStyle={ui.surface.popover_style || 'gooey'}
-              extraTools={
-                <WorkspaceToolsPopovers
-                  sessionId={activeSessionId}
-                  tasks={sessionTasks}
-                  zpowersRefreshKey={zpowersRev}
-                  popoverStyle={ui.surface.popover_style || 'gooey'}
-                />
-              }
             />
           </div>
         )}

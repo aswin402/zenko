@@ -3,7 +3,7 @@
 import { useCallback, useState, type ComponentProps } from "react";
 import { CheckIcon, Loader2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { inkButton, mono, paper } from "./surfaces";
+import { inkButton, mono } from "./surfaces";
 import { clamp } from "../utils/range";
 import { useReceiptFocus } from "./receipt-focus";
 
@@ -103,8 +103,7 @@ export function OptionList({
   );
 
   const root = cn(
-    paper,
-    "flex w-full max-w-sm flex-col gap-1 rounded-2xl p-2",
+    "flex w-full max-w-sm flex-col gap-1",
     className,
   );
 

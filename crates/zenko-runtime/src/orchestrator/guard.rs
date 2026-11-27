@@ -508,6 +508,44 @@ impl ExecutionGuard {
         }
     }
 
+    fn record_planning_outcome(&mut self, tool_name: &str, arguments: &Value) {
+        match tool_name {
+            TOOL_RECORD_BRAINSTORM => self.brainstorm_recorded = true,
+            TOOL_PLAN_UPDATE => self.plan_recorded = true,
+            TOOL_SESSION_TASK => {
+                let act = arguments.get("action").and_then(Value::as_str).unwrap_or("");
+                if matches!(act, "create" | "update" | "claim") {
+                    self.plan_recorded = true;
+                }
+            }
+            TOOL_ZPOWERS => {
+                let act = arguments
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .and_then(ZPowersAction::parse);
+                match act {
+                    Some(ZPowersAction::WriteSpec) => self.brainstorm_recorded = true,
+                    Some(ZPowersAction::WritePlan) => self.plan_recorded = true,
+                    Some(ZPowersAction::FastTrack) => {
+                        let reason = arguments
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or("fast_track");
+                        self.fast_track_reason = Some(reason.to_string());
+                    }
+                    Some(ZPowersAction::RecordReview | ZPowersAction::RunReview) => {
+                        self.reviews_recorded = self.reviews_recorded.saturating_add(1);
+                    }
+                    Some(ZPowersAction::WriteWalkthrough) => {
+                        self.walkthrough_recorded = true;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn record_tool_outcome(
         &mut self,
         tool_name: &str,
@@ -544,44 +582,10 @@ impl ExecutionGuard {
 
         // Track structured planning & ZPowers artifacts recorded during the turn
         if !is_error {
-            match tool_name {
-                TOOL_RECORD_BRAINSTORM => self.brainstorm_recorded = true,
-                TOOL_PLAN_UPDATE => self.plan_recorded = true,
-                TOOL_SESSION_TASK => {
-                    let act = arguments.get("action").and_then(Value::as_str).unwrap_or("");
-                    if matches!(act, "create" | "update" | "claim") {
-                        self.plan_recorded = true;
-                    }
-                }
-                TOOL_ZPOWERS => {
-                    let act = arguments
-                        .get("action")
-                        .and_then(Value::as_str)
-                        .and_then(ZPowersAction::parse);
-                    match act {
-                        Some(ZPowersAction::WriteSpec) => self.brainstorm_recorded = true,
-                        Some(ZPowersAction::WritePlan) => self.plan_recorded = true,
-                        Some(ZPowersAction::FastTrack) => {
-                            let reason = arguments
-                                .get("reason")
-                                .and_then(Value::as_str)
-                                .unwrap_or("fast_track");
-                            self.fast_track_reason = Some(reason.to_string());
-                        }
-                        Some(ZPowersAction::RecordReview | ZPowersAction::RunReview) => {
-                            self.reviews_recorded = self.reviews_recorded.saturating_add(1);
-                        }
-                        Some(ZPowersAction::WriteWalkthrough) => {
-                            self.walkthrough_recorded = true;
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
+            self.record_planning_outcome(tool_name, arguments);
         }
 
-        // Track mutated workspace files & verified completions (foreground, background-then-awaited, or inside `batch_tools`)
+        // Track mutated workspace files, planning steps & verified completions inside `batch_tools`
         if tool_name == TOOL_BATCH_TOOLS
             && let Some(calls) = arguments.get("calls").and_then(Value::as_array)
         {
@@ -607,6 +611,9 @@ impl ExecutionGuard {
                     .get("args")
                     .or_else(|| item.get("arguments"))
                     .unwrap_or(&Value::Null);
+                if step_status == "ok" {
+                    self.record_planning_outcome(inner_name, inner_args);
+                }
                 match (step_status, inner_name) {
                     ("ok", n) if MUTATING_FILE_TOOLS.contains(&n) => {
                         if let Some(p) = inner_args.get("path").and_then(Value::as_str) {
@@ -2175,6 +2182,43 @@ mod tests {
         );
         assert_eq!(
             resume_turn.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "src/new.rs"})),
+            PhaseGateDecision::Allow
+        );
+
+        // Batched `session_task(action="create")` calls inside `batch_tools` MUST satisfy
+        // the ZPowers plan-first gate immediately (regression from session 01M8EVBZ05N3E006N5SSBADVT6).
+        let mut batched = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        batched.configure_zpowers(
+            ZPowersMode::Guided,
+            false,
+            3,
+            std::env::temp_dir(),
+            "sess_batch".into(),
+            &ZPowersState::new("sess_batch", ZPowersMode::Guided),
+        );
+        batched.record_tool_outcome(
+            TOOL_BATCH_TOOLS,
+            &json!({
+                "calls": [
+                    { "tool": "session_task", "args": { "action": "create", "title": "Task 1" } },
+                    { "tool": "session_task", "args": { "action": "create", "title": "Task 2" } }
+                ]
+            }),
+            false,
+            "Batch completed (2/2 ok)",
+            Some(&json!({
+                "steps": [
+                    { "status": "ok" },
+                    { "status": "ok" }
+                ]
+            })),
+        );
+        assert_eq!(
+            batched.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "index.html"})),
             PhaseGateDecision::Allow
         );
     }

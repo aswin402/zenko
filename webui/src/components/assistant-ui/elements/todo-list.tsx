@@ -88,21 +88,15 @@ export function TodoList({
                 className="flex size-4 h-5 shrink-0 items-center justify-center"
               >
                 {item.status === "done" ? (
-                  <span className="flex size-3.5 items-center justify-center rounded-[5px] border border-[var(--accent)]/40 bg-[var(--accent)]/12">
-                    <CheckIcon className="size-2.5 text-[var(--accent)]" />
-                  </span>
+                  <CheckIcon className="size-3.5 text-[var(--accent)]" />
                 ) : item.status === "failed" ? (
-                  <span className="flex size-3.5 items-center justify-center rounded-[5px] border border-[var(--destructive)]/35 bg-[var(--destructive)]/10">
-                    <XIcon className="size-2.5 text-[var(--destructive)]" />
-                  </span>
+                  <XIcon className="size-3.5 text-[var(--destructive)]" />
                 ) : item.status === "cancelled" ? (
-                  <span className="border-foreground/15 text-muted-foreground flex size-3.5 items-center justify-center rounded-[5px] border">
-                    <MinusIcon className="size-2.5" />
-                  </span>
+                  <MinusIcon className="size-3.5 text-[var(--muted)]" />
                 ) : item.status === "active" ? (
                   <Loader2Icon className="size-3.5 animate-spin text-[var(--accent)] motion-reduce:animate-none" />
                 ) : (
-                  <span className="border-foreground/15 size-3.5 rounded-[5px] border" />
+                  <span className="size-1.5 rounded-full bg-[var(--muted)]/50" />
                 )}
               </span>
               <span className="sr-only">{item.status}</span>

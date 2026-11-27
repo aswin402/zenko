@@ -3,7 +3,7 @@
 import type { ComponentProps } from "react";
 import { CheckIcon, ThumbsDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { field, inkButton, mono, paper } from "./surfaces";
+import { field, inkButton, mono } from "./surfaces";
 
 export function FeedbackDialog({
   title = "What went wrong?",
@@ -49,8 +49,7 @@ export function FeedbackDialog({
     <div
       data-slot="feedback-dialog"
       className={cn(
-        paper,
-        "flex w-full max-w-sm rounded-[20px] p-4",
+        "flex w-full max-w-sm",
         sent ? "items-center gap-2.5 text-[13.5px]" : "flex-col gap-3",
         className,
       )}
