@@ -219,12 +219,68 @@ function computeGroupThoughtMs(group: AssistantGroup): number {
   return 0
 }
 
+const ARG_PREVIEW_PRIORITY_KEYS = [
+  'path',
+  'file_path',
+  'file',
+  'target',
+  'command',
+  'cmd',
+  'action',
+  'tool',
+  'name',
+  'id',
+  'query',
+  'pattern',
+  'url',
+  'cwd',
+  'title',
+  'reason',
+] as const
+
+const ARG_PREVIEW_PRIORITY_SET = new Set<string>(ARG_PREVIEW_PRIORITY_KEYS)
+
 function compactArgsPreview(args: unknown): string {
   if (args == null) return ''
-  if (typeof args === 'string') return args.slice(0, 120)
+  if (typeof args === 'string') return args.length > 240 ? `${args.slice(0, 240)}…` : args
+  if (typeof args === 'object' && !Array.isArray(args)) {
+    const rec = args as Record<string, unknown>
+    const orderedKeys: string[] = []
+    for (const k of ARG_PREVIEW_PRIORITY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(rec, k)) orderedKeys.push(k)
+    }
+    for (const k of Object.keys(rec)) {
+      if (!ARG_PREVIEW_PRIORITY_SET.has(k)) orderedKeys.push(k)
+    }
+    const maxBudget = 240
+    let out = '{'
+    let written = 0
+    for (const k of orderedKeys) {
+      const v = rec[k]
+      let valJson: string
+      try {
+        if (typeof v === 'string') {
+          valJson = JSON.stringify(v.length > 120 ? `${v.slice(0, 120)}…` : v)
+        } else {
+          const raw = JSON.stringify(v)
+          valJson = raw.length > 120 ? JSON.stringify(`${raw.slice(0, 100)}…`) : raw
+        }
+      } catch {
+        continue
+      }
+      const entry = `${written > 0 ? ',' : ''}${JSON.stringify(k)}:${valJson}`
+      if (out.length + entry.length + 1 > maxBudget) {
+        if (written === 0) return `${`{${JSON.stringify(k)}:${valJson}}`.slice(0, maxBudget)}…`
+        break
+      }
+      out += entry
+      written += 1
+    }
+    return `${out}}`
+  }
   try {
     const s = JSON.stringify(args)
-    return s.length > 120 ? `${s.slice(0, 120)}…` : s
+    return s.length > 240 ? `${s.slice(0, 240)}…` : s
   } catch {
     return ''
   }

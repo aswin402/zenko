@@ -1306,8 +1306,39 @@ pub const VERIFICATION_CMD_PREFIXES: &[&[&str]] = &[
     &["go", "build"],
     &["make", "test"],
     &["make", "check"],
+    &["just", "verify"],
+    &["just", "test"],
+    &["just", "check"],
+    &["just", "build"],
+    &["node", "--test"],
+    &["node", "--check"],
+    &["deno", "test"],
+    &["deno", "check"],
+    &["dotnet", "test"],
+    &["dotnet", "build"],
     &["vitest"],
     &["jest"],
+];
+
+/// Declarative key priority order for compact tool-argument previews so identifying fields
+/// (`path`, `command`, `action`, `query`) always appear ahead of large payload bodies (`content`).
+pub const TOOL_ARG_PREVIEW_PRIORITY_KEYS: &[&str] = &[
+    "path",
+    "file_path",
+    "file",
+    "target",
+    "command",
+    "cmd",
+    "action",
+    "tool",
+    "name",
+    "id",
+    "query",
+    "pattern",
+    "url",
+    "cwd",
+    "title",
+    "reason",
 ];
 
 /// Case-insensitive CLI flags/subcommands that only print version/help text (never real verification).

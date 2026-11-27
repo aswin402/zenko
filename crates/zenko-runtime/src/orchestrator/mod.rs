@@ -26,8 +26,9 @@ pub use brainstorm::{
     score_brainstorm_option, select_optimal_option,
 };
 pub use guard::{
-    GuardVerdict, PhaseGateDecision, ToolCategory, classify_tool_category, detect_text_doom_loop,
-    hash_canonical_json, is_read_only_shell_command, is_verification_command,
+    GuardVerdict, PhaseGateDecision, ToolCategory, call_satisfies_plan_gate,
+    classify_tool_category, detect_text_doom_loop, hash_canonical_json,
+    is_read_only_shell_command, is_verification_command,
 };
 pub use plan::{
     audit_plan_rubric, compute_ready_session_tasks, execution_plan_from_session_tasks,

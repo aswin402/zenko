@@ -130,6 +130,34 @@ impl CompactModelRegistry {
         }
         out
     }
+
+    /// Looks up model metadata by ID across preferred provider keys first, then across all
+    /// tracked providers (exact match, ASCII case-insensitive match, or vendor-stripped suffix).
+    pub fn lookup_model(&self, provider_keys: &[&str], model_id: &str) -> Option<&ExternalModelMeta> {
+        let trimmed = model_id.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let stripped = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        let matches_id = |m: &&ExternalModelMeta| {
+            m.id == trimmed
+                || m.id.eq_ignore_ascii_case(trimmed)
+                || m.id == stripped
+                || m.id.eq_ignore_ascii_case(stripped)
+        };
+        for key in provider_keys {
+            if let Some(hit) = self
+                .providers
+                .get(*key)
+                .and_then(|models| models.iter().find(matches_id))
+            {
+                return Some(hit);
+            }
+        }
+        self.providers
+            .values()
+            .find_map(|models| models.iter().find(matches_id))
+    }
 }
 
 /// Raw model record extracted from a provider's live `/models` endpoint.
@@ -952,5 +980,36 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "MiniMax-M3.1-Flash");
         assert_eq!(models[0].context_length, Some(1_000_000));
+    }
+
+    #[test]
+    fn compact_registry_lookup_resolves_omitted_provider_models_and_router_suffixes() {
+        let raw = serde_json::to_vec(&json!({
+            "minimax": {
+                "models": {
+                    "MiniMax-M2.7": {
+                        "name": "MiniMax M2.7",
+                        "limit": { "context": 204800, "output": 131072 },
+                        "tool_call": true,
+                        "reasoning": true
+                    }
+                }
+            }
+        }))
+        .expect("raw bytes");
+
+        let compact = CompactModelRegistry::parse_raw_models_dev_bytes(&raw).expect("compact");
+        let exact = compact
+            .lookup_model(&["minimax", "minimax-cn"], "MiniMax-M2.7")
+            .expect("exact match");
+        assert_eq!(exact.context_length, Some(204_800));
+        assert_eq!(exact.max_output_tokens, Some(131_072));
+        assert!(exact.supports_reasoning);
+
+        let ci_and_prefixed = compact
+            .lookup_model(&["openrouter"], "minimax/minimax-m2.7")
+            .expect("fallback suffix match");
+        assert_eq!(ci_and_prefixed.context_length, Some(204_800));
+        assert!(compact.lookup_model(&["minimax"], "").is_none());
     }
 }

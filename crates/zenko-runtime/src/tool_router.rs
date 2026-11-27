@@ -20,11 +20,12 @@ use zenko_core::{
     PermissionMode, REPO_RULE_FILES, Result, SHUNT_META_FIELD_ACTION,
     SHUNT_META_FIELD_SOURCE_KIND, SHUNT_META_FIELD_TOKENS_SAVED, SHUNT_META_KEY,
     ScriptBlockAction, ShuntActionKind, SkillManageAction, TOOL_APPLY_PATCH,
-    TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_PROJECT_BRAIN,
-    TOOL_READ_FILE, TOOL_SCRIPT_BLOCK, TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC,
-    TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH, TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency,
-    ToolContext, ToolOutput, ToolSpec, ZenkoConfig, ZenkoError, is_brain_tool_args_mutating,
-    is_git_tool_args_mutating, is_lsp_tool_args_mutating,
+    TOOL_ARG_PREVIEW_PRIORITY_KEYS, TOOL_CODE_SEARCH, TOOL_GIT, TOOL_HASH_EDIT, TOOL_INVOKE_TOOL,
+    TOOL_LSP, TOOL_PROJECT_BRAIN, TOOL_READ_FILE, TOOL_SCRIPT_BLOCK,
+    TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH,
+    TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec,
+    ZenkoConfig, ZenkoError, is_brain_tool_args_mutating, is_git_tool_args_mutating,
+    is_lsp_tool_args_mutating,
 };
 use zenko_tools::coerce::{coerce_and_repair_args, format_compact_schema_hint};
 
@@ -594,10 +595,10 @@ pub(crate) async fn dispatch_tool_call(
         }
     };
 
-    // Stage 2: Schema-guided zero-regex argument coercion & preview.
+    // Stage 2: Schema-guided zero-regex argument coercion & priority-ordered preview.
     let spec = tool.spec();
     tc.arguments = coerce_and_repair_args(tc.arguments, &spec.parameters);
-    let args_preview = truncate_preview(&tc.arguments.to_string(), 320);
+    let args_preview = format_prioritized_args_preview(&tc.arguments, 320);
 
     let _active_tool_guard =
         ActiveToolGuard::enter(rt.session_control(session_id), tc.name.clone());
@@ -1089,6 +1090,81 @@ fn truncate_preview(s: &str, max: usize) -> String {
     }
 }
 
+/// Formats a compact JSON preview of tool arguments with identifying keys (`path`, `command`,
+/// `action`, `query`, etc.) serialized FIRST so large payload bodies (`content`, `patch`) never
+/// push the filename or command out of the preview budget.
+pub(crate) fn format_prioritized_args_preview(args: &Value, max: usize) -> String {
+    let Some(map) = args.as_object() else {
+        return truncate_preview(&args.to_string(), max);
+    };
+    if map.is_empty() {
+        return "{}".to_string();
+    }
+
+    let mut ordered_keys: Vec<&str> = Vec::with_capacity(map.len());
+    for &prio in TOOL_ARG_PREVIEW_PRIORITY_KEYS {
+        if map.contains_key(prio) {
+            ordered_keys.push(prio);
+        }
+    }
+    for key in map.keys() {
+        let k = key.as_str();
+        if !TOOL_ARG_PREVIEW_PRIORITY_KEYS.contains(&k) {
+            ordered_keys.push(k);
+        }
+    }
+
+    let mut out = String::with_capacity(max.min(384));
+    out.push('{');
+    let mut written = 0usize;
+    for key in ordered_keys {
+        let Some(val) = map.get(key) else {
+            continue;
+        };
+        let key_json = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+        let val_json = match val {
+            Value::String(s) => {
+                let capped = truncate_preview(s, 120);
+                serde_json::to_string(&capped).unwrap_or_else(|_| "\"\"".to_string())
+            }
+            other => {
+                let raw = other.to_string();
+                match raw.len() > 140 {
+                    true => serde_json::to_string(&truncate_preview(&raw, 120))
+                        .unwrap_or_else(|_| "\"…\"".to_string()),
+                    false => raw,
+                }
+            }
+        };
+        let sep_len = match written > 0 {
+            true => 1,
+            false => 0,
+        };
+        let entry_len = sep_len + key_json.len() + 1 + val_json.len();
+        if out.len() + entry_len + 1 > max {
+            if written == 0 {
+                let mut single = String::with_capacity(entry_len + 2);
+                single.push('{');
+                single.push_str(&key_json);
+                single.push(':');
+                single.push_str(&val_json);
+                single.push('}');
+                return truncate_preview(&single, max);
+            }
+            break;
+        }
+        if written > 0 {
+            out.push(',');
+        }
+        out.push_str(&key_json);
+        out.push(':');
+        out.push_str(&val_json);
+        written += 1;
+    }
+    out.push('}');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1136,5 +1212,19 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn prioritized_args_preview_keeps_path_ahead_of_large_content_and_stays_valid_json() {
+        let big_body = "console.log('line');\n".repeat(400);
+        let args = json!({
+            "content": big_body,
+            "path": "src/md2html.js",
+            "mode": "create"
+        });
+        let preview = format_prioritized_args_preview(&args, 240);
+        assert!(preview.starts_with(r#"{"path":"src/md2html.js""#), "preview={preview}");
+        let parsed: Value = serde_json::from_str(&preview).expect("preview must remain valid JSON");
+        assert_eq!(parsed.get("path").and_then(Value::as_str), Some("src/md2html.js"));
     }
 }

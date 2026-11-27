@@ -635,6 +635,7 @@ impl AgentRuntime {
         let mut last_prompt_cache_key: Option<String> = None;
         let mut last_active_tool_specs: Vec<ToolSpec> = Vec::new();
         let mut last_iter_microcompacted = false;
+        let mut last_logged_microcompact_tools: usize = 0;
         let turn_checkpoint_event_id = parent_for_user.clone();
         let turn_checkpoint_label =
             format!("Before: {}", compact_preview(user_text, CHECKPOINT_LABEL_MAX_CHARS));
@@ -780,7 +781,7 @@ impl AgentRuntime {
                 false => (raw_messages, Default::default()),
             };
             last_iter_microcompacted = mc_stats.compacted_tools > 0;
-            if mc_stats.compacted_tools > 0 {
+            if mc_stats.compacted_tools > last_logged_microcompact_tools {
                 self.emit(AgentEvent::OrchestratorUpdated {
                     session_id: session_id.clone(),
                     stage: ORCH_STAGE_MICROCOMPACT.into(),
@@ -792,6 +793,7 @@ impl AgentRuntime {
                     model: None,
                 });
             }
+            last_logged_microcompact_tools = mc_stats.compacted_tools;
 
             // Stage B: Persisted iterative-merge CompactionCheckpoint (proactive ZMode window cap)
             let usable_window = usable_input_window(proactive_window, active_max_tokens);
@@ -865,6 +867,7 @@ impl AgentRuntime {
                         live_bpt,
                     );
                     last_iter_microcompacted = rebuilt_stats.compacted_tools > 0;
+                    last_logged_microcompact_tools = rebuilt_stats.compacted_tools;
                     messages = rebuilt_mc;
                 }
 
@@ -1512,8 +1515,11 @@ impl AgentRuntime {
 
             // Pre-tool deterministic Role Policy Guard (subagent allowlist/denylist) +
             // Phase Gate (`Recon -> Plan -> Execute` on Orchestrated turns) & Read-Only Intent Gate.
-            let mut allowed_indexed: Vec<(usize, ToolCall)> = Vec::with_capacity(tool_calls.len());
+            let total_wave_calls = tool_calls.len();
+            let mut permitted_indexed: Vec<(usize, ToolCall)> =
+                Vec::with_capacity(total_wave_calls);
             let mut redirected_indexed: Vec<(usize, ExecutedToolCall)> = Vec::new();
+            let mut pre_executed_indexed: Vec<(usize, ExecutedToolCall)> = Vec::new();
             let mut phase_gate_event: Option<(&'static str, String, String)> = None;
             let mut saw_phase_gate_redirect = false;
 
@@ -1535,7 +1541,126 @@ impl AgentRuntime {
                     ));
                     continue;
                 }
-                match active_role.is_none() && cfg.orchestrator.enabled && cfg.orchestrator.phase_gating {
+                permitted_indexed.push((idx, tc));
+            }
+
+            let phase_gating_active =
+                active_role.is_none() && cfg.orchestrator.enabled && cfg.orchestrator.phase_gating;
+
+            // Two-stage wave ordering: if the model emitted a planning/fast-track tool alongside
+            // sibling workspace mutations in the SAME wave (e.g. `session_task(batch)` + `write_file`),
+            // run the planning call(s) first and feed their real outcome into `orch.guard` so sibling
+            // mutations evaluate against the freshly persisted plan instead of suffering a false redirect.
+            if phase_gating_active {
+                let has_plan_call = permitted_indexed
+                    .iter()
+                    .any(|(_, tc)| orchestrator::call_satisfies_plan_gate(&tc.name, &tc.arguments));
+                let has_gated_sibling = permitted_indexed.iter().any(|(_, tc)| {
+                    !orchestrator::call_satisfies_plan_gate(&tc.name, &tc.arguments)
+                        && !matches!(
+                            orch.guard
+                                .check_pre_tool_phase_gate(true, &tc.name, &tc.arguments),
+                            PhaseGateDecision::Allow
+                        )
+                });
+                if has_plan_call && has_gated_sibling {
+                    let (plan_stage, rest_stage): (Vec<_>, Vec<_>) =
+                        permitted_indexed.into_iter().partition(|(_, tc)| {
+                            orchestrator::call_satisfies_plan_gate(&tc.name, &tc.arguments)
+                        });
+                    permitted_indexed = rest_stage;
+                    let plan_calls: Vec<ToolCall> =
+                        plan_stage.iter().map(|(_, tc)| tc.clone()).collect();
+                    match execute_tool_waves(
+                        plan_calls,
+                        MAX_PARALLEL_TOOLS,
+                        |tc| self.classify_tool_call(cfg, effective_permission, tc),
+                        |tc| {
+                            let sid = session_id.clone();
+                            let ctx_ref = tool_ctx.clone();
+                            let cancel_ref = cancel.clone();
+                            async move {
+                                self.execute_single_tool_call(
+                                    cfg,
+                                    &sid,
+                                    effective_permission,
+                                    &ctx_ref,
+                                    opts.headless_no_wait,
+                                    tc,
+                                    &cancel_ref,
+                                )
+                                .await
+                            }
+                        },
+                    )
+                    .await
+                    {
+                        Ok(results) => {
+                            tool_calls_count += results.len();
+                            for ((idx, _), exec) in plan_stage.into_iter().zip(results) {
+                                orch.guard.apply_same_wave_planning_outcome(
+                                    &exec.tool_name,
+                                    &exec.arguments,
+                                    exec.output.is_error,
+                                );
+                                pre_executed_indexed.push((idx, exec));
+                            }
+                        }
+                        Err(err) => {
+                            let abort_msg = match err {
+                                ZenkoError::Cancelled => {
+                                    "Skipped: tool execution cancelled by user.".to_string()
+                                }
+                                ref other => format!("Skipped: tool wave aborted ({other})."),
+                            };
+                            for (_, tc) in plan_stage.iter().chain(permitted_indexed.iter()) {
+                                if let Ok(skip_ev) = self.store.append_event(
+                                    &session_id,
+                                    head_id.as_deref(),
+                                    EventRole::Tool,
+                                    EventKind::ToolResult,
+                                    json!({
+                                        "tool_call_id": tc.id,
+                                        "tool_name": tc.name,
+                                        "content": abort_msg,
+                                        "is_error": true,
+                                        "diff": Value::Null,
+                                        "duration_ms": 0,
+                                    }),
+                                    &UsageStats::default(),
+                                ) {
+                                    head_id = Some(skip_ev.id);
+                                }
+                            }
+                            for (_, redir) in &redirected_indexed {
+                                if let Ok(skip_ev) = self.store.append_event(
+                                    &session_id,
+                                    head_id.as_deref(),
+                                    EventRole::Tool,
+                                    EventKind::ToolResult,
+                                    json!({
+                                        "tool_call_id": redir.tool_call_id,
+                                        "tool_name": redir.tool_name,
+                                        "content": redir.output.content,
+                                        "is_error": true,
+                                        "diff": Value::Null,
+                                        "duration_ms": 0,
+                                    }),
+                                    &UsageStats::default(),
+                                ) {
+                                    head_id = Some(skip_ev.id);
+                                }
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+
+            let mut allowed_indexed: Vec<(usize, ToolCall)> =
+                Vec::with_capacity(permitted_indexed.len());
+            for (idx, tc) in permitted_indexed {
+                match phase_gating_active {
                     true => match orch
                         .guard
                         .check_pre_tool_phase_gate(true, &tc.name, &tc.arguments)
@@ -1591,7 +1716,6 @@ impl AgentRuntime {
                 pending_orch_hints.push(hint);
             }
 
-            let total_wave_calls = allowed_indexed.len() + redirected_indexed.len();
             tool_calls_count += allowed_indexed.len();
 
             // Phase 6 Lazy Pre-Mutation Workspace Checkpoint:
@@ -1679,6 +1803,25 @@ impl AgentRuntime {
                                 }
                                 ref other => format!("Skipped: tool wave aborted ({other})."),
                             };
+                            for (_, exec) in &pre_executed_indexed {
+                                if let Ok(done_ev) = self.store.append_event(
+                                    &session_id,
+                                    head_id.as_deref(),
+                                    EventRole::Tool,
+                                    EventKind::ToolResult,
+                                    json!({
+                                        "tool_call_id": exec.tool_call_id,
+                                        "tool_name": exec.tool_name,
+                                        "content": exec.output.content,
+                                        "is_error": exec.output.is_error,
+                                        "diff": exec.output.diff,
+                                        "duration_ms": exec.duration_ms,
+                                    }),
+                                    &UsageStats::default(),
+                                ) {
+                                    head_id = Some(done_ev.id);
+                                }
+                            }
                             for (_, tc) in &allowed_indexed {
                                 if let Ok(skip_ev) = self.store.append_event(
                                     &session_id,
@@ -1725,6 +1868,9 @@ impl AgentRuntime {
 
             let mut ordered_results: Vec<Option<(ExecutedToolCall, bool)>> =
                 (0..total_wave_calls).map(|_| None).collect();
+            for (idx, exec) in pre_executed_indexed {
+                ordered_results[idx] = Some((exec, false));
+            }
             for ((idx, _), exec) in allowed_indexed.into_iter().zip(executed_allowed) {
                 ordered_results[idx] = Some((exec, false));
             }

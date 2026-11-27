@@ -1113,6 +1113,23 @@ impl AgentRuntime {
         }
     }
 
+    /// Lazily resolves model metadata from the in-memory or SQLite-persisted compact `models.dev`
+    /// registry (`models_dev_compact_v2`) so models omitted by a provider's `/models` endpoint
+    /// (e.g. `MiniMax-M2.7`) still get their exact context window, max output, and reasoning flag.
+    fn resolve_compact_model_meta(&self, model_id: &str) -> Option<zenko_providers::ExternalModelMeta> {
+        let desc = find_provider(&self.config().provider.kind);
+        let reg = match self.provider.cached_metadata_registry() {
+            Some(existing) => existing,
+            None => {
+                let raw = self.store.get_kv(MODEL_KV_COMPACT_REGISTRY_KEY).ok()??;
+                let parsed = Arc::new(CompactModelRegistry::from_compact_json(&raw)?);
+                self.provider.seed_compact_registry(parsed.clone());
+                parsed
+            }
+        };
+        reg.lookup_model(desc.metadata_keys, model_id).cloned()
+    }
+
     fn resolve_context_window(&self, model_id: &str) -> u64 {
         let from_mem = self.cached_models.lock().ok().and_then(|guard| {
             guard.as_ref().and_then(|(_, list)| {
@@ -1146,29 +1163,51 @@ impl AgentRuntime {
                 return len;
             }
         }
+        if let Some(len) = self
+            .resolve_compact_model_meta(model_id)
+            .and_then(|m| m.context_length)
+            .filter(|&n| n >= 4_096)
+        {
+            return len;
+        }
         DEFAULT_CONTEXT_WINDOW_FALLBACK
     }
 
-    /// Returns `Some(true|false)` when `model_id` is hydrated in `cached_models`, else `None`.
+    /// Returns `Some(true|false)` when `model_id` is hydrated in `cached_models` or compact metadata registry.
     fn resolve_supports_reasoning(&self, model_id: &str) -> Option<bool> {
-        self.cached_models.lock().ok().and_then(|guard| {
-            guard.as_ref().and_then(|(_, list)| {
-                list.iter()
-                    .find(|m| m.id == model_id)
+        self.cached_models
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard.as_ref().and_then(|(_, list)| {
+                    list.iter()
+                        .find(|m| m.id == model_id)
+                        .map(|m| m.supports_reasoning)
+                })
+            })
+            .or_else(|| {
+                self.resolve_compact_model_meta(model_id)
                     .map(|m| m.supports_reasoning)
             })
-        })
     }
 
     fn resolve_max_output_tokens(&self, model_id: &str) -> Option<u32> {
-        self.cached_models.lock().ok().and_then(|guard| {
-            guard.as_ref().and_then(|(_, list)| {
-                list.iter()
-                    .find(|m| m.id == model_id)
+        self.cached_models
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard.as_ref().and_then(|(_, list)| {
+                    list.iter()
+                        .find(|m| m.id == model_id)
+                        .and_then(|m| m.max_output_tokens)
+                        .and_then(|v| u32::try_from(v).ok())
+                })
+            })
+            .or_else(|| {
+                self.resolve_compact_model_meta(model_id)
                     .and_then(|m| m.max_output_tokens)
                     .and_then(|v| u32::try_from(v).ok())
             })
-        })
     }
 
     /// Computes a safe output-token ceiling so reasoning models (which share `max_tokens` across

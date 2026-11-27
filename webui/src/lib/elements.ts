@@ -405,7 +405,7 @@ export function parseShellOrCodeTool(
 
   for (const line of rawLines) {
     if (line.startsWith('exit_code:') || line.startsWith('Exit code:')) {
-      const parsedNum = Number(line.slice(line.indexOf(':') + 1).trim())
+      const parsedNum = Number.parseInt(line.slice(line.indexOf(':') + 1).trim(), 10)
       if (Number.isFinite(parsedNum)) exitCode = parsedNum
       continue
     }

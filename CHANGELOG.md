@@ -4,6 +4,25 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.54] - 2026-11-28
+
+Resolved five runtime, ZPowers orchestration, telemetry, and WebUI bugs uncovered during live end-to-end testing with `MiniMax-M2.7` and `MiniMax-M3.1-Flash`.
+
+### Fixed
+- **Cold-Start Compact Metadata Registry Fallback (`crates/zenko-providers/src/{discovery,lib}.rs`, `crates/zenko-runtime/src/runtime/mod.rs`):**
+  - Added `CompactModelRegistry::lookup_model` (preferred provider keys first, exact / ASCII case-insensitive / vendor-suffix fallback) and wired `resolve_compact_model_meta` into `resolve_context_window`, `resolve_supports_reasoning`, and `resolve_max_output_tokens`.
+  - Models omitted from a provider's live `/models` endpoint (such as `MiniMax-M2.7` at `204,800` tokens) now resolve their exact context window, max output budget, and reasoning support immediately from SQLite `models_dev_compact_v2` instead of falling back to `64,000`.
+- **Same-Wave Planning + Mutation Two-Stage Execution (`crates/zenko-runtime/src/orchestrator/{guard,mod}.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Added deterministic `call_satisfies_plan_gate` and `ExecutionGuard::apply_same_wave_planning_outcome` helpers.
+  - When a model emits a planning/fast-track tool (`session_task(batch|create|update|claim)`, `plan_update`, `record_brainstorm`, `zpowers(write_plan|write_spec|fast_track)`) in the same parallel tool wave as workspace edits (`write_file`, `hash_edit`, etc.), `turn.rs` now executes the planning stage first, applies its real outcome to `orch.guard`, and then evaluates sibling mutations against the freshly recorded plan — eliminating false redirects while still blocking mutations if planning fails.
+- **Expanded Verification Command Table (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/orchestrator/guard.rs`):**
+  - Added `node --test`, `node --check`, `just verify`, `just test`, `just check`, `just build`, `deno test`, `deno check`, `dotnet test`, and `dotnet build` to `VERIFICATION_CMD_PREFIXES` so ZPowers `state.json` records `last_verification` receipts accurately for Node.js, Just, Deno, and .NET test suites.
+- **Deduplicated Stage-A Microcompaction Logs (`crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Tracked `last_logged_microcompact_tools` per turn so `ORCH_STAGE_MICROCOMPACT` events emit only when the compacted tool-result count actually increases instead of repeating on every LLM iteration.
+- **Priority-Ordered Tool Argument Previews & POSIX Signal Exit Code Parsing (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/tool_router.rs`, `webui/src/components/chat/ChatStream.tsx`, `webui/src/lib/elements.ts`):**
+  - Added declarative `TOOL_ARG_PREVIEW_PRIORITY_KEYS` and `format_prioritized_args_preview` (plus matching WebUI `compactArgsPreview`) so identifying fields (`path`, `command`, `action`, `query`) always serialize first inside valid compact JSON ahead of large `content`/`patch` bodies — ensuring `write_file` step rows display the filename instead of truncated file contents.
+  - Updated `parseShellOrCodeTool` to parse leading integer exit codes via `Number.parseInt(..., 10)` so POSIX signal headers like `exit_code: 143 (terminated by signal 15: SIGTERM)` display `143` instead of falling back to `1`.
+
 ## [0.0.53] - 2026-11-27
 
 Aligned Zenko's session grounding with **Hermes Agent**, **Oh My Hermes**, and **Prime Agent** — removing turn-based pre-turn reconnaissance and ephemeral Turn-1 message-0 injections in favor of a purely frozen session snapshot plus orchestrator-driven on-demand recon.

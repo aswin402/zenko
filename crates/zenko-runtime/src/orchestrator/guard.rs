@@ -110,6 +110,60 @@ fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
     }
 }
 
+/// Unwraps KV-cache-safe `invoke_tool` proxy arguments into the underlying `(tool_name, args)`.
+fn unwrap_invoke_tool_args<'a>(tool_name: &'a str, arguments: &'a Value) -> (&'a str, &'a Value) {
+    match tool_name == TOOL_INVOKE_TOOL {
+        true => {
+            let inner_name = arguments
+                .get("tool")
+                .or_else(|| arguments.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != TOOL_INVOKE_TOOL && *s != TOOL_BATCH_TOOLS);
+            match inner_name {
+                Some(n) => (
+                    n,
+                    arguments
+                        .get("args")
+                        .or_else(|| arguments.get("arguments"))
+                        .unwrap_or(&Value::Null),
+                ),
+                None => (tool_name, arguments),
+            }
+        }
+        false => (tool_name, arguments),
+    }
+}
+
+/// Deterministic zero-regex check for tool calls that record a plan, spec, or explicit fast-track
+/// capable of satisfying the ZPowers pre-mutation gate for sibling mutations in the same wave.
+pub fn call_satisfies_plan_gate(tool_name: &str, arguments: &Value) -> bool {
+    let (eff_name, eff_args) = unwrap_invoke_tool_args(tool_name, arguments);
+    match eff_name {
+        TOOL_RECORD_BRAINSTORM | TOOL_PLAN_UPDATE => true,
+        TOOL_SESSION_TASK => matches!(
+            eff_args
+                .get("action")
+                .and_then(Value::as_str)
+                .and_then(zenko_core::SessionTaskAction::parse),
+            Some(
+                zenko_core::SessionTaskAction::Create
+                    | zenko_core::SessionTaskAction::Update
+                    | zenko_core::SessionTaskAction::Batch
+                    | zenko_core::SessionTaskAction::Claim
+            )
+        ),
+        TOOL_ZPOWERS => matches!(
+            eff_args
+                .get("action")
+                .and_then(Value::as_str)
+                .and_then(ZPowersAction::parse),
+            Some(ZPowersAction::WriteSpec | ZPowersAction::WritePlan | ZPowersAction::FastTrack)
+        ),
+        _ => false,
+    }
+}
+
 /// Deterministic tool classifier driving the `OrchestratorPhase` state machine.
 pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategory {
     if tool_name == TOOL_INVOKE_TOOL {
@@ -507,6 +561,42 @@ impl ExecutionGuard {
                 reason,
                 hint: pivot_hint,
             },
+        }
+    }
+
+    /// Updates planning/spec/fast-track guard flags immediately after a stage-1 planning call
+    /// succeeds inside a mixed planning+mutation tool wave so sibling mutations in that same wave
+    /// can be evaluated against the freshly persisted plan without a wasted LLM round-trip.
+    pub fn apply_same_wave_planning_outcome(
+        &mut self,
+        tool_name: &str,
+        arguments: &Value,
+        is_error: bool,
+    ) {
+        if is_error {
+            return;
+        }
+        let (eff_name, eff_args) = unwrap_invoke_tool_args(tool_name, arguments);
+        self.record_planning_outcome(eff_name, eff_args);
+        if eff_name == TOOL_BATCH_TOOLS
+            && let Some(calls) = eff_args.get("calls").and_then(Value::as_array)
+        {
+            for item in calls {
+                let inner_name = item
+                    .get("tool")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if inner_name.is_empty() || inner_name == TOOL_BATCH_TOOLS {
+                    continue;
+                }
+                let inner_args = item
+                    .get("args")
+                    .or_else(|| item.get("arguments"))
+                    .unwrap_or(&Value::Null);
+                let (u_name, u_args) = unwrap_invoke_tool_args(inner_name, inner_args);
+                self.record_planning_outcome(u_name, u_args);
+            }
         }
     }
 
@@ -2328,5 +2418,73 @@ mod tests {
         assert!(nudge.contains("task_1"));
         assert!(nudge.contains("action=\"batch\""));
         assert!(drift_guard.check_todo_drift(false, true, &open_tasks).is_none());
+    }
+
+    #[test]
+    fn recognizes_node_just_deno_dotnet_verification_and_same_wave_plan_gate() {
+        assert!(is_verification_command("node --test md2html.test.js"));
+        assert!(is_verification_command("node --check calc.js"));
+        assert!(is_verification_command("just verify"));
+        assert!(is_verification_command("just test"));
+        assert!(is_verification_command("deno test"));
+        assert!(is_verification_command("dotnet test"));
+        assert!(!is_verification_command("node --test --help"));
+        assert!(!is_verification_command("node --test md2html.test.js || true"));
+
+        assert!(call_satisfies_plan_gate(
+            TOOL_SESSION_TASK,
+            &json!({ "action": "batch", "tasks": [{ "title": "A" }] })
+        ));
+        assert!(call_satisfies_plan_gate(
+            TOOL_INVOKE_TOOL,
+            &json!({ "tool": TOOL_ZPOWERS, "args": { "action": "fast_track", "reason": "tiny fix" } })
+        ));
+        assert!(!call_satisfies_plan_gate(
+            TOOL_SESSION_TASK,
+            &json!({ "action": "list" })
+        ));
+        assert!(!call_satisfies_plan_gate(
+            "write_file",
+            &json!({ "path": "a.js", "content": "1" })
+        ));
+
+        let mut wave_guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        wave_guard.configure_zpowers(
+            ZPowersMode::Guided,
+            false,
+            3,
+            std::env::temp_dir(),
+            "sess_wave".into(),
+            &ZPowersState::new("sess_wave", ZPowersMode::Guided),
+        );
+        // Before stage-1 succeeds, sibling write_file is gated.
+        assert!(matches!(
+            wave_guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "calc.js"})),
+            PhaseGateDecision::Redirect { .. }
+        ));
+        // If stage-1 errors, sibling write_file remains gated.
+        wave_guard.apply_same_wave_planning_outcome(
+            TOOL_SESSION_TASK,
+            &json!({ "action": "batch", "tasks": [] }),
+            true,
+        );
+        assert!(matches!(
+            wave_guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "calc.js"})),
+            PhaseGateDecision::Redirect { .. }
+        ));
+        // Once stage-1 succeeds, sibling write_file in the same wave proceeds cleanly.
+        wave_guard.apply_same_wave_planning_outcome(
+            TOOL_SESSION_TASK,
+            &json!({ "action": "batch", "tasks": [{ "title": "Write calc.js" }] }),
+            false,
+        );
+        assert_eq!(
+            wave_guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "calc.js"})),
+            PhaseGateDecision::Allow
+        );
     }
 }
