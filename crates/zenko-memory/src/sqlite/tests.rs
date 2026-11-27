@@ -486,3 +486,69 @@
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn turboquant_3way_rrf_persists_compact_vectors_and_rescues_morphological_queries() {
+        let dir = std::env::temp_dir().join(format!("zenko_tq_sqlite_{}", new_id()));
+        let store = SqliteStore::open(dir.join("zenko.db")).expect("open");
+
+        let e1 = store
+            .add_memory(
+                "project:tq",
+                "decision",
+                "HTTP Throttling Strategy",
+                "Use exponential backoff throttling to handle upstream 429 rate-limit bursts cleanly.",
+                1.2,
+            )
+            .expect("mem1");
+        let _e2 = store
+            .add_memory(
+                "project:tq",
+                "fact",
+                "WebUI Palette",
+                "Obsidian Vermilion matte black surface with single burnt orange accent.",
+                1.0,
+            )
+            .expect("mem2");
+
+        // Verify compact 4-bit TurboQuant BLOB was persisted in `memory_vectors` (~140 bytes)
+        let blob_len: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT LENGTH(vec_blob) FROM memory_vectors WHERE entry_id = ?1",
+                    params![e1.id],
+                    |r| r.get(0),
+                )
+            })
+            .expect("vector row exists");
+        assert_eq!(blob_len, 140);
+
+        // Typo + morphological query (`throttled backof rate-limiting`) that strict FTS5 misses
+        // must still be rescued and ranked #1 via 4-bit TurboQuant 3-way RRF!
+        let hits = store
+            .search_memory_hybrid(
+                "throttled backof rate-limiting",
+                Some("project:tq"),
+                false,
+                None,
+                3,
+            )
+            .expect("hybrid search");
+        assert!(!hits.is_empty(), "TurboQuant must rescue morphological/typo query");
+        assert_eq!(hits[0].entry.id, e1.id);
+
+        // Archiving removes the vector row cleanly
+        assert!(store.archive_memory(&e1.id).expect("archive"));
+        let remaining: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM memory_vectors WHERE entry_id = ?1",
+                    params![e1.id],
+                    |r| r.get(0),
+                )
+            })
+            .expect("count");
+        assert_eq!(remaining, 0);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }

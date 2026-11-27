@@ -603,6 +603,8 @@ pub(crate) async fn dispatch_tool_call(
             || (tc.name == TOOL_GIT && is_git_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_LSP && is_lsp_tool_args_mutating(&tc.arguments))
             || (tc.name == TOOL_PROJECT_BRAIN && is_brain_tool_args_mutating(&tc.arguments))
+            || (tc.name == zenko_core::TOOL_KNOWLEDGE_CATALOG
+                && zenko_core::is_okf_tool_args_mutating(&tc.arguments))
             || (tc.name == zenko_core::TOOL_CODE_REFACTOR
                 && zenko_core::is_code_refactor_args_mutating(&tc.arguments))
             || (tc.name == TOOL_SCRIPT_BLOCK
@@ -615,6 +617,15 @@ pub(crate) async fn dispatch_tool_call(
             || tc.name == TOOL_SHELL_EXEC);
     if mutated_workspace {
         rt.record_workspace_mutation();
+        if let Some(p) = tc
+            .arguments
+            .get("path")
+            .or_else(|| tc.arguments.get("file_path"))
+            .and_then(Value::as_str)
+        {
+            rt.prefix_cache
+                .invalidate_file(session_id, &tool_ctx.workspace_dir, p);
+        }
     }
 
     let triggers_lsp_diag = !tool_output.is_error

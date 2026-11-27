@@ -249,7 +249,15 @@ pub fn build_request_body(dialect: ProviderDialect, req: &ChatRequest) -> Value 
                 // Separate thinking into dedicated reasoning_content / reasoning_details fields.
                 obj.insert("reasoning_split".into(), Value::Bool(true));
             }
-            ProviderDialect::OpenAiCompat => {}
+            ProviderDialect::OpenAiCompat => {
+                // LMCache / vLLM / SGLang / OpenAI sticky prefix-routing key anchored on (SystemBase, ToolCatalog).
+                if req.enable_prompt_caching
+                    && let Some(ref key) = req.prompt_cache_key
+                    && !key.trim().is_empty()
+                {
+                    obj.insert("prompt_cache_key".into(), Value::String(key.clone()));
+                }
+            }
         }
     }
 
@@ -325,7 +333,23 @@ mod tests {
             sticky_session_routing: true,
             provider_sort: "price".into(),
             reasoning_effort: Some(zenko_core::ReasoningEffort::High),
+            prompt_cache_key: None,
         }
+    }
+
+    #[test]
+    fn openai_compat_dialect_emits_prompt_cache_key_when_caching_enabled() {
+        let mut req = sample_request(0.2);
+        req.prompt_cache_key = Some("zk-pfx-0123456789abcdef01234567".into());
+        let body = build_request_body(ProviderDialect::OpenAiCompat, &req);
+        assert_eq!(
+            body["prompt_cache_key"],
+            Value::String("zk-pfx-0123456789abcdef01234567".into())
+        );
+
+        req.enable_prompt_caching = false;
+        let disabled = build_request_body(ProviderDialect::OpenAiCompat, &req);
+        assert!(disabled.get("prompt_cache_key").is_none());
     }
 
     #[test]

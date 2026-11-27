@@ -16,7 +16,7 @@ use zenko_core::{
     MEMORY_INJECTION_BLOCKED_TAGS, MEMORY_PROJECT_SCOPE_BOOST, MEMORY_RRF_K,
     MEMORY_SCOPE_PROJECT_PREFIX, MEMORY_STALE_PATH_PENALTY, MEMORY_STOPWORDS, MemoryKind,
     NOTE_KIND_BRAINSTORM_SPEC, NOTE_KIND_CLARIFICATION_DECISION, NOTE_KIND_EXECUTION_PLAN,
-    compact_preview, scrub_secrets,
+    TURBOQUANT_RRF_WEIGHT, compact_preview, scrub_secrets,
 };
 
 /// Walks ancestors from `workspace_dir` looking for a `.git` directory or worktree `.git` file;
@@ -330,7 +330,7 @@ pub fn build_fts5_queries(raw: &str) -> (Option<String>, Option<String>) {
     (primary, plan.relaxed_or)
 }
 
-/// Pure-Rust Reciprocal Rank Fusion + ACT-R / Ebbinghaus temporal decay + access reinforcement
+/// Pure-Rust 2-way Reciprocal Rank Fusion + ACT-R / Ebbinghaus temporal decay + access reinforcement
 /// + workspace-scope boost + live filesystem staleness penalty.
 #[allow(clippy::too_many_arguments)]
 pub fn hybrid_memory_score(
@@ -343,9 +343,39 @@ pub fn hybrid_memory_score(
     is_project_match: bool,
     has_stale_paths: bool,
 ) -> f64 {
+    hybrid_memory_score_with_vector(
+        bm25_rank_pos,
+        jaccard_rank_pos,
+        None,
+        age_days,
+        kind,
+        salience,
+        access_count,
+        is_project_match,
+        has_stale_paths,
+    )
+}
+
+/// Pure-Rust 3-way Reciprocal Rank Fusion (FTS5 BM25 + Shingle Jaccard + TurboQuant Cosine)
+/// paired with ACT-R / Ebbinghaus temporal decay, access reinforcement, git-root project boost,
+/// and live filesystem staleness penalty.
+#[allow(clippy::too_many_arguments)]
+pub fn hybrid_memory_score_with_vector(
+    bm25_rank_pos: Option<usize>,
+    jaccard_rank_pos: Option<usize>,
+    vector_rank_pos: Option<usize>,
+    age_days: f64,
+    kind: MemoryKind,
+    salience: f64,
+    access_count: u64,
+    is_project_match: bool,
+    has_stale_paths: bool,
+) -> f64 {
     let rrf_bm25 = bm25_rank_pos.map_or(0.0, |r| 1.0 / (MEMORY_RRF_K + (r as f64) + 1.0));
     let rrf_jac = jaccard_rank_pos.map_or(0.0, |r| 0.85 / (MEMORY_RRF_K + (r as f64) + 1.0));
-    let lexical = (rrf_bm25 + rrf_jac).max(0.005);
+    let rrf_vec = vector_rank_pos
+        .map_or(0.0, |r| TURBOQUANT_RRF_WEIGHT / (MEMORY_RRF_K + (r as f64) + 1.0));
+    let relevance = (rrf_bm25 + rrf_jac + rrf_vec).max(0.005);
 
     let half_life = kind.half_life_days().max(1.0);
     let decay = (-std::f64::consts::LN_2 * (age_days.max(0.0) / half_life)).exp();
@@ -360,7 +390,7 @@ pub fn hybrid_memory_score(
         false => 1.0,
     };
 
-    lexical * decay * clamped_salience * access_boost * scope_boost * stale_mult
+    relevance * decay * clamped_salience * access_boost * scope_boost * stale_mult
 }
 
 /// Scrubs Vault/API secrets and neutralizes spoofed internal XML control tags before memory writes.

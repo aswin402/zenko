@@ -293,7 +293,8 @@ pub async fn run_parallel_recon(
             .collect::<Vec<_>>(),
             false => Vec::new(),
         };
-        (hits, sess_hits, prior_plan, brain_hits)
+        let (okf_summary, okf_hits) = zenko_memory::okf::format_okf_recon(&mem_ws, &query);
+        (hits, sess_hits, prior_plan, brain_hits, okf_summary, okf_hits)
     });
 
     let tasks_fut = tokio::task::spawn_blocking(move || {
@@ -318,7 +319,8 @@ pub async fn run_parallel_recon(
         ws_res.unwrap_or_default();
     let (git_branch, git_dirty_files) = git_res;
     let mentioned_files = probe_res.unwrap_or_default();
-    let (memory_hits, session_hits, prior_plan_summary, brain_hits) = mem_res.unwrap_or_default();
+    let (memory_hits, session_hits, prior_plan_summary, brain_hits, okf_summary, okf_hits) =
+        mem_res.unwrap_or_default();
     let active_tasks = tasks_res.unwrap_or_default();
 
     ReconSummary {
@@ -326,6 +328,8 @@ pub async fn run_parallel_recon(
         repo_markers,
         language_summary,
         service_brief,
+        okf_summary,
+        okf_hits,
         memory_hits,
         session_hits,
         brain_hits,
@@ -348,6 +352,16 @@ pub fn format_recon_context(summary: &ReconSummary) -> String {
     }
     if let Some(ref brief) = summary.service_brief {
         lines.push(format!("service_brief: {brief}"));
+    }
+    if let Some(ref okf_sum) = summary.okf_summary {
+        lines.push(format!("okf_knowledge: {okf_sum}"));
+    }
+    if !summary.okf_hits.is_empty() {
+        lines.push(format!(
+            "okf_concepts (verify `[STALE]`/`[DRIFTED]` entries before trusting; inspect via `invoke_tool(tool=\"{}\", args={{\"action\":\"read\",\"id\":\"...\"}})`):\n  - {}",
+            zenko_core::TOOL_KNOWLEDGE_CATALOG,
+            summary.okf_hits.join("\n  - ")
+        ));
     }
     if let Some(ref br) = summary.git_branch {
         let dirty_suffix = match summary.git_dirty_files.is_empty() {
@@ -455,6 +469,40 @@ mod tests {
             ..ReconSummary::default()
         });
         assert!(formatted.contains("service_brief: Component/billing-api"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn recon_emits_okf_concepts_with_trust_badges_only_when_catalog_exists() {
+        let base = std::env::temp_dir().join(format!("zenko_recon_okf_{}", zenko_core::new_id()));
+        let ws = base.join("ws");
+        let _ = std::fs::create_dir_all(&ws);
+
+        let (none_sum, none_hits) = zenko_memory::okf::format_okf_recon(&ws, "auth");
+        assert!(none_sum.is_none());
+        assert!(none_hits.is_empty());
+
+        let knowledge = ws.join("knowledge");
+        let _ = std::fs::create_dir_all(&knowledge);
+        let _ = std::fs::write(
+            knowledge.join("auth.md"),
+            "---\ntype: Architecture\ntitle: OAuth Flow\nverified_by: sec\nverified_at: 2099-01-01\nstale_after: 2099-12-31\n---\nToken validation pipeline.\n",
+        );
+
+        let (some_sum, some_hits) = zenko_memory::okf::format_okf_recon(&ws, "oauth validation");
+        assert!(some_sum.as_deref().is_some_and(|s| s.contains("1 concepts (1 verified")));
+        assert_eq!(some_hits.len(), 1);
+        assert!(some_hits[0].contains("[VERIFIED]"));
+
+        let formatted = format_recon_context(&ReconSummary {
+            okf_summary: some_sum,
+            okf_hits: some_hits,
+            ..ReconSummary::default()
+        });
+        assert!(formatted.contains("okf_knowledge: 1 concepts"));
+        assert!(formatted.contains("okf_concepts"));
+        assert!(formatted.contains(zenko_core::TOOL_KNOWLEDGE_CATALOG));
 
         let _ = std::fs::remove_dir_all(&base);
     }

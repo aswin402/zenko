@@ -149,7 +149,7 @@ impl Tool for TokenEconomyTool {
                 };
                 let text = format!(
                     "Token Economy ({scope}) · enabled={enabled}\n\
-                     - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · Shunt +{sh} ({sh_hits} hits) · Tool-Prune +{tp} · Overhead -{oh}]\n\
+                     - Net Saved: {net} tok (~${usd:.4}) [Read-Less +{rl} · Output-Dedup +{od} ({od_hits} hits) · Prefix-ChunkRef +{pc} ({pc_hits} hits) · Shunt +{sh} ({sh_hits} hits) · Tool-Prune +{tp} · Overhead -{oh}]\n\
                      - Compression Health: {ccr} CCR recovery read(s) · {raw} raw bypass(es)\n\
                      - By Command Family: {cmd_summary}\n\
                      - Custom Filters: {filter_line}\n\
@@ -163,6 +163,8 @@ impl Tool for TokenEconomyTool {
                     rl = s.read_less_tokens_saved,
                     od = s.output_dedup_tokens_saved,
                     od_hits = s.output_dedup_hits,
+                    pc = s.prefix_chunk_ref_tokens_saved,
+                    pc_hits = s.prefix_chunk_ref_hits,
                     sh = s.shunt_tokens_saved,
                     sh_hits = s.shunt_hits,
                     tp = s.tool_prune_tokens_saved,

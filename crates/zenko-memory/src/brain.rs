@@ -10,6 +10,10 @@
 //!   blocking any path traversal outside the active workspace directory.
 
 use crate::algorithms::{sanitize_memory_text_with_secrets, tokenize_terms};
+use crate::okf::{
+    evaluate_freshness, evaluate_source_provenance, evaluate_trust_tier, extract_markdown_links,
+};
+use crate::turboquant::TurboQuantCodec;
 use chrono::Utc;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -20,7 +24,9 @@ use zenko_core::{
     BRAIN_PREFS_DIR_NAME, BRAIN_PREFS_FILE_NAME, BRAIN_PREFS_ROOT_KEY, BRAIN_PROTOCOL_FILE,
     BRAIN_ROOT_SLOTS, BRAIN_TIMELINE_HEADING, BrainImpactGraph, BrainPage, BrainPageCategory,
     BrainPageStatus, BrainPageSummary, BrainRootSlot, BrainSearchHit, BrainTimelineEntry,
-    BrainTimelineKind, Result, ZenkoError, compact_preview, find_brain_root_slot,
+    BrainTimelineKind, OKF_KEY_SOURCES, OKF_KEY_STALE_AFTER, OKF_KEY_VERIFIED_AT,
+    OKF_KEY_VERIFIED_BY, OkfDocStatus, OkfFreshnessState, Result, TURBOQUANT_MIN_COSINE,
+    ZenkoError, compact_preview, find_brain_root_slot,
 };
 
 /// Resolves the workspace's Project Brain root directory, honoring `.mindmux/preferences.json`
@@ -203,6 +209,36 @@ pub fn serialize_brain_page(page: &BrainPage) -> String {
     }
     out.push_str(&format!("created: \"{}\"\n", escape_yaml_inline(&page.created)));
     out.push_str(&format!("updated: \"{}\"\n", escape_yaml_inline(&page.updated)));
+    if let Some(ref vb) = page.verified_by
+        && !vb.trim().is_empty()
+    {
+        out.push_str(&format!(
+            "{OKF_KEY_VERIFIED_BY}: \"{}\"\n",
+            escape_yaml_inline(vb)
+        ));
+    }
+    if let Some(ref va) = page.verified_at
+        && !va.trim().is_empty()
+    {
+        out.push_str(&format!(
+            "{OKF_KEY_VERIFIED_AT}: \"{}\"\n",
+            escape_yaml_inline(va)
+        ));
+    }
+    if let Some(ref sa) = page.stale_after
+        && !sa.trim().is_empty()
+    {
+        out.push_str(&format!(
+            "{OKF_KEY_STALE_AFTER}: \"{}\"\n",
+            escape_yaml_inline(sa)
+        ));
+    }
+    if !page.sources.is_empty() {
+        out.push_str(&format!(
+            "{OKF_KEY_SOURCES}: {}\n",
+            render_inline_list(&page.sources)
+        ));
+    }
     out.push_str("---\n");
     out.push_str(BRAIN_COMPILED_TRUTH_MARKER);
     out.push('\n');
@@ -260,6 +296,10 @@ pub fn parse_brain_page(fallback_id: &str, raw: &str) -> BrainPage {
     let mut tags: Vec<String> = Vec::new();
     let mut created = String::new();
     let mut updated = String::new();
+    let mut verified_by: Option<String> = None;
+    let mut verified_at: Option<String> = None;
+    let mut stale_after: Option<String> = None;
+    let mut sources: Vec<String> = Vec::new();
 
     let mut lines = raw.lines().peekable();
     if lines.peek().is_some_and(|l| l.trim() == "---") {
@@ -299,6 +339,27 @@ pub fn parse_brain_page(fallback_id: &str, raw: &str) -> BrainPage {
                 }
                 "created" => created = strip_quotes(v),
                 "updated" => updated = strip_quotes(v),
+                k if k == OKF_KEY_VERIFIED_BY => {
+                    let s = strip_quotes(v);
+                    if !s.is_empty() {
+                        verified_by = Some(s);
+                    }
+                }
+                k if k == OKF_KEY_VERIFIED_AT => {
+                    let s = strip_quotes(v);
+                    if !s.is_empty() {
+                        verified_at = Some(s);
+                    }
+                }
+                k if k == OKF_KEY_STALE_AFTER => {
+                    let s = strip_quotes(v);
+                    if !s.is_empty() {
+                        stale_after = Some(s);
+                    }
+                }
+                k if k == OKF_KEY_SOURCES => {
+                    sources = parse_inline_list(v);
+                }
                 _ => {}
             }
         }
@@ -357,6 +418,10 @@ pub fn parse_brain_page(fallback_id: &str, raw: &str) -> BrainPage {
         tags,
         created,
         updated,
+        verified_by,
+        verified_at,
+        stale_after,
+        sources,
         compiled_truth: truth_lines.join("\n").trim().to_string(),
         timeline,
     }
@@ -380,7 +445,22 @@ fn apply_timeline_field(entry: &mut BrainTimelineEntry, line: &str) {
     }
 }
 
+fn brain_status_to_okf_status(status: BrainPageStatus) -> OkfDocStatus {
+    match status {
+        BrainPageStatus::Active => OkfDocStatus::Active,
+        BrainPageStatus::Draft => OkfDocStatus::Draft,
+        BrainPageStatus::Archived => OkfDocStatus::Deprecated,
+    }
+}
+
 pub fn summarize_brain_page(page: &BrainPage) -> BrainPageSummary {
+    summarize_brain_page_in_workspace(page, None)
+}
+
+pub fn summarize_brain_page_in_workspace(
+    page: &BrainPage,
+    workspace_dir: Option<&Path>,
+) -> BrainPageSummary {
     let has_reversals = page
         .timeline
         .iter()
@@ -391,6 +471,17 @@ pub fn summarize_brain_page(page: &BrainPage) -> BrainPageSummary {
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with('#'))
         .unwrap_or(&page.title);
+    let freshness = evaluate_freshness(page.stale_after.as_deref(), Utc::now());
+    let (missing, drifted) = workspace_dir
+        .map(|ws| evaluate_source_provenance(ws, &page.sources, page.verified_at.as_deref()))
+        .unwrap_or_default();
+    let trust_tier = evaluate_trust_tier(
+        brain_status_to_okf_status(page.status),
+        page.verified_by.as_deref(),
+        page.verified_at.as_deref(),
+        &missing,
+        &drifted,
+    );
     BrainPageSummary {
         id: page.id.clone(),
         title: page.title.clone(),
@@ -401,6 +492,8 @@ pub fn summarize_brain_page(page: &BrainPage) -> BrainPageSummary {
         timeline_count: page.timeline.len(),
         has_reversals,
         truth_preview: compact_preview(first_line, zenko_core::BRAIN_TRUTH_PREVIEW_CHARS),
+        freshness,
+        trust_tier,
     }
 }
 
@@ -443,7 +536,7 @@ pub fn list_brain_pages(
         .into_iter()
         .filter(|p| status_filter.is_none_or(|st| p.status == st))
         .filter(|p| category_filter.is_none_or(|c| p.category == c))
-        .map(|p| summarize_brain_page(&p))
+        .map(|p| summarize_brain_page_in_workspace(&p, Some(workspace_dir)))
         .collect()
 }
 
@@ -515,6 +608,13 @@ pub fn create_brain_page(
         tags: sanitize_slug_list(tags, BRAIN_MAX_TAGS),
         created: now.clone(),
         updated: now.clone(),
+        verified_by: None,
+        verified_at: None,
+        stale_after: None,
+        sources: match clean_source.is_empty() {
+            true => Vec::new(),
+            false => vec![clean_source.clone()],
+        },
         compiled_truth: clean_truth,
         timeline: vec![BrainTimelineEntry {
             time: now,
@@ -734,6 +834,21 @@ pub fn compute_brain_impact_graph(workspace_dir: &Path, raw_id: &str) -> Result<
                 }
             }
         }
+        // Also fold OKF-style relative Markdown `[Title](other-page.md)` links into the graph
+        for raw_link in extract_markdown_links(&page.compiled_truth) {
+            let stem = raw_link
+                .rsplit('/')
+                .next()
+                .unwrap_or(&raw_link)
+                .strip_suffix(".md")
+                .unwrap_or(&raw_link);
+            if let Ok(slug) = sanitize_brain_slug(stem)
+                && slug != page.id
+            {
+                out_edges.insert(slug.clone());
+                reverse.entry(slug).or_default().insert(page.id.clone());
+            }
+        }
         forward.insert(page.id.clone(), out_edges);
     }
 
@@ -788,6 +903,8 @@ pub fn search_brain_pages(
         return Vec::new();
     }
     let pages = load_all_brain_pages(workspace_dir);
+    let tq_codec = TurboQuantCodec::default_memory_codec();
+    let tq_query = tq_codec.prepare_text_query(query);
     let mut scored: Vec<BrainSearchHit> = Vec::new();
 
     for page in pages {
@@ -812,14 +929,37 @@ pub fn search_brain_pages(
         let truth_hits = q_terms.intersection(&truth_terms).count() as f64;
         let timeline_hits = q_terms.intersection(&timeline_terms).count() as f64;
 
-        let raw_score = (title_hits * 3.0) + (tag_hits * 2.5) + (truth_hits * 1.5) + timeline_hits;
+        let tq_cos = match tq_query.is_zero() {
+            true => 0.0f32,
+            false => {
+                let doc_vec = tq_codec.encode_text(&format!(
+                    "{} {} {}",
+                    page.title,
+                    page.tags.join(" "),
+                    page.compiled_truth
+                ));
+                tq_query.cosine(&doc_vec)
+            }
+        };
+        let tq_bonus = match tq_cos >= TURBOQUANT_MIN_COSINE {
+            true => (tq_cos as f64) * 2.0,
+            false => 0.0,
+        };
+
+        let raw_score =
+            (title_hits * 3.0) + (tag_hits * 2.5) + (truth_hits * 1.5) + timeline_hits + tq_bonus;
         if raw_score <= 0.0 {
             continue;
         }
+        let summary = summarize_brain_page_in_workspace(&page, Some(workspace_dir));
         let status_mult = match page.status {
             BrainPageStatus::Active => 1.25,
             BrainPageStatus::Draft => 1.0,
             BrainPageStatus::Archived => 0.75,
+        };
+        let okf_mult = match summary.freshness {
+            OkfFreshnessState::Stale => summary.freshness.rank_weight(),
+            _ => 1.0,
         };
         let reversal_bonus = match page
             .timeline
@@ -836,8 +976,8 @@ pub fn search_brain_pages(
             }
         }
         scored.push(BrainSearchHit {
-            summary: summarize_brain_page(&page),
-            score: (raw_score * status_mult) + reversal_bonus,
+            summary,
+            score: (raw_score * status_mult * okf_mult) + reversal_bonus,
             affects: affects.into_iter().collect(),
         });
     }

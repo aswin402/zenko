@@ -4,6 +4,22 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.45] - 2026-11-27
+
+Added three interconnected pure-Rust intelligence subsystems inspired by `TurboQuant`/`turbovec`, `LMCache`/`CacheBlend`, and Google Cloud's Open Knowledge Format (`OKF`) — zero external ML/Python dependencies, zero `/commands`, zero hardcoding, zero `if/else` ladders, and zero regex.
+
+### Added
+- **Pure-Rust `TurboQuant` Vector Quantization & 3-Way RRF Memory Retrieval (`crates/zenko-memory/src/{turboquant.rs,algorithms.rs,sqlite/memories.rs}`):**
+  - Implemented data-oblivious 2-bit and 4-bit vector quantization using deterministic SplitMix64 Rademacher sign flips, in-place orthonormal Fast Walsh-Hadamard Transform (`fwht_inplace`, `O(d log d)`), `const` standard-Gaussian Lloyd-Max threshold/centroid lookup tables, optional 1-bit QJL unbiased residual inner-product sketches, and zero-allocation asymmetric scoring directly on bit-packed bytes (`140 bytes` per 256-dim 4-bit vector).
+  - Added offline multi-scale feature hashing (code-aware sub-tokens, bigrams, and char 3/4-grams), persisted compressed vectors in SQLite `memory_vectors` (with lazy backfill and automatic archive/delete cleanup), and wired 4-bit TurboQuant cosine similarity as a 3rd RRF signal alongside FTS5 BM25 and Shingle Jaccard in `search_memory_hybrid` (rescuing morphological/typo/sub-word queries that FTS5 alone misses).
+- **Native Open Knowledge Format (`OKF v0.2/v0.3`) Graph, Trust & Freshness Engine (`crates/zenko-memory/src/{okf.rs,brain.rs}`, `crates/zenko-tools/src/okf_tool.rs`):**
+  - Built zero-regex indentation-stack YAML frontmatter parsing (enforcing OKF's single required `type:` field plus `verified_by`/`verified_at`/nested `verified:`, `stale_after`, and `sources:` provenance), a code-fence-aware byte state machine for Markdown `[Title](relative.md)` link graphs, live source-file `mtime` drift checks, bounded BFS link/backlink traversal, and trust/freshness-weighted TurboQuant hybrid search.
+  - Upgraded `project_brain` (`brain.md`) with backwards-compatible OKF trust/freshness frontmatter (`verified_by`, `verified_at`, `stale_after`, `sources`), Markdown link graph edges, and TurboQuant search scoring.
+  - Wired automatic zero-overhead Turn-1 OKF reconnaissance (`recon.rs`, emitting 0 bytes when no OKF bundle exists, or `[VERIFIED]` / `[STALE]` / `[DRIFTED]` trust-badged concepts when present) and registered the deferred `knowledge_catalog` tool with Plan-Mode read-only enforcement.
+- **LMCache-Inspired Chained Prefix-Chunk Engine & Cross-Turn Reference Dedup (`crates/zenko-runtime/src/prefix_cache.rs`, `crates/zenko-providers/src/dialect.rs`, `crates/zenko-runtime/src/runtime/{mod,turn}.rs`):**
+  - Built parent-chained SHA-256 prompt chunk hashing (`[SystemBase, ToolCatalog, HistoryMessage_0..N]`) for `O(n)` exact prefix-reuse vs. cache-bust attribution (`SystemMutated`, `ToolCatalogChanged`, `HistoryCompacted`, `HistoryDiverged`, `FullHit`), sticky `prompt_cache_key` emission for OpenAI / vLLM / SGLang + LMCache endpoints, and session-frozen Tier-1 micro-skills routing mid-session promotions cleanly to Tier-3 `<session_runtime_context>`.
+  - Added cross-turn file-stat `(canonical_path, mtime_ns, byte_len, sha256)` chunk-reference deduplication for repeated unchanged large `read_file` / `knowledge_catalog` reads already inside the live prompt prefix, auto-invalidated on writes or compaction and tracked via `EconomyLedgerKind::PrefixChunkRef`.
+
 ## [0.0.44] - 2026-11-27
 
 Refined WebUI chat ergonomics: relocated Workspace Checkpoints from the crowded chat composer bar into each assistant message footer, styled hover hint badges and the Checkpoints menu to match Zenko's 60/30/10 theme, and bounded Agent Activity inside a Thinking-style auto-scrolling box.

@@ -23,6 +23,7 @@ use crate::orchestrator::triage::{TriageInput, classify_turn};
 use crate::policy::{
     evaluate_verify_command_safety, is_tool_allowed_in_plan_schema, run_hooks,
 };
+use crate::prefix_cache::SessionPrefixTracker;
 use crate::scheduler::execute_tool_waves;
 use crate::telemetry::{LogBuffer, current_rss_bytes};
 use crate::tool_router;
@@ -424,6 +425,7 @@ pub struct AgentRuntime {
     pub lsp: Arc<LspPoolManager>,
     pub mcp_clients: Arc<McpClientManager>,
     pub file_state: Arc<SessionFileTracker>,
+    pub prefix_cache: Arc<SessionPrefixTracker>,
     pub pty: Arc<PtySessionManager>,
     os_sandbox: Arc<AtomicBool>,
     pub trigger_limiter: Arc<TriggerRateLimiter>,
@@ -441,6 +443,9 @@ pub struct AgentRuntime {
     /// Hermes + Oh My Pi KV-cache lock: freezes each session's initial prompt snapshot so
     /// mid-session memory edits never bust Tier-1/Tier-2 prompt caches.
     frozen_snapshots: Mutex<HashMap<String, (PathBuf, Arc<WorkspaceSnapshot>)>>,
+    /// LMCache / CacheBlend prefix lock: freezes each session's initial micro-skill set so
+    /// mid-session micro-skill promotions route to Tier-3 tail without busting Tier-1 KV cache.
+    frozen_micro_skills: Mutex<HashMap<String, Vec<zenko_core::RepoMicroSkill>>>,
     /// Tier-3 volatile delta notices surfaced cleanly when memory changes mid-session.
     memory_deltas: Mutex<HashMap<String, Vec<String>>>,
     cron_notify: Arc<Notify>,
@@ -598,6 +603,9 @@ impl AgentRuntime {
         tool_reg.register(Arc::new(zenko_tools::brain_tool::ProjectBrainTool::new_with_vault(
             vault.clone(),
         )));
+        tool_reg.register(Arc::new(
+            zenko_tools::okf_tool::KnowledgeCatalogTool::new_with_vault(vault.clone()),
+        ));
         mcp_clients.hydrate_cached_tools(&tool_reg);
         let tools = Arc::new(tool_reg);
 
@@ -624,6 +632,7 @@ impl AgentRuntime {
             lsp,
             mcp_clients,
             file_state: Arc::new(SessionFileTracker::new()),
+            prefix_cache: Arc::new(SessionPrefixTracker::new()),
             pty,
             os_sandbox,
             trigger_limiter: Arc::new(TriggerRateLimiter::new()),
@@ -639,6 +648,7 @@ impl AgentRuntime {
             always_allowed: RwLock::new(HashSet::new()),
             activated_deferred: Mutex::new(HashMap::new()),
             frozen_snapshots: Mutex::new(HashMap::new()),
+            frozen_micro_skills: Mutex::new(HashMap::new()),
             memory_deltas: Mutex::new(HashMap::new()),
             cron_notify,
             dream_notify: Arc::new(Notify::new()),
@@ -1350,6 +1360,10 @@ impl AgentRuntime {
         if let Ok(mut snaps) = self.frozen_snapshots.lock() {
             snaps.remove(session_id);
         }
+        if let Ok(mut ms) = self.frozen_micro_skills.lock() {
+            ms.remove(session_id);
+        }
+        self.prefix_cache.clear_session(session_id);
         if let Ok(mut deltas) = self.memory_deltas.lock() {
             deltas.remove(session_id);
         }
@@ -1400,6 +1414,38 @@ impl AgentRuntime {
             map.insert(session_id.to_string(), (workspace_dir.to_path_buf(), arc.clone()));
         }
         Ok(arc)
+    }
+
+    /// Freezes initial active micro-skills per session so mid-session promotions never mutate
+    /// Tier-1 `effective_system_prompt`; returns `(frozen_tier1_skills, newly_promoted_tail_skills)`.
+    fn partition_session_micro_skills(
+        &self,
+        session_id: &str,
+        live_skills: Vec<zenko_core::RepoMicroSkill>,
+    ) -> (Vec<zenko_core::RepoMicroSkill>, Vec<zenko_core::RepoMicroSkill>) {
+        let Ok(mut map) = self.frozen_micro_skills.lock() else {
+            return (live_skills, Vec::new());
+        };
+        match map.get(session_id) {
+            Some(frozen) => {
+                let frozen_sigs: HashSet<&str> =
+                    frozen.iter().map(|s| s.signature.as_str()).collect();
+                let delta: Vec<zenko_core::RepoMicroSkill> = live_skills
+                    .into_iter()
+                    .filter(|s| !frozen_sigs.contains(s.signature.as_str()))
+                    .collect();
+                (frozen.clone(), delta)
+            }
+            None => {
+                if map.len() > zenko_core::PREFIX_CACHE_MAX_SESSIONS
+                    && let Some(evict_key) = map.keys().find(|k| k.as_str() != session_id).cloned()
+                {
+                    map.remove(&evict_key);
+                }
+                map.insert(session_id.to_string(), live_skills.clone());
+                (live_skills, Vec::new())
+            }
+        }
     }
 
     pub fn record_memory_delta(&self, session_id: &str, note: String) {
@@ -1855,6 +1901,7 @@ impl AgentRuntime {
             sticky_session_routing: false,
             provider_sort: cfg.provider.provider_sort.clone(),
             reasoning_effort: None,
+            prompt_cache_key: None,
         };
 
         let out = tokio::time::timeout(Duration::from_secs(10), async {
@@ -1942,6 +1989,7 @@ impl AgentRuntime {
             sticky_session_routing: false,
             provider_sort: cfg.provider.provider_sort.clone(),
             reasoning_effort: None,
+            prompt_cache_key: None,
         };
 
         let llm_attempt = tokio::time::timeout(Duration::from_secs(45), async {

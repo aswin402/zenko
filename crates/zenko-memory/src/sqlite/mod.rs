@@ -1,8 +1,10 @@
 use crate::algorithms::{
     build_fts5_query_plan, compute_simhash64, extract_searchable_event_text,
-    find_missing_workspace_paths, hamming_distance, hybrid_memory_score, relaxed_term_overlap,
-    sanitize_memory_text_with_secrets, shingle_jaccard,
+    find_missing_workspace_paths, hamming_distance, hybrid_memory_score,
+    hybrid_memory_score_with_vector, relaxed_term_overlap, sanitize_memory_text_with_secrets,
+    shingle_jaccard,
 };
+use crate::turboquant::{TurboQuantCodec, TurboQuantVector};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, HashMap};
@@ -26,7 +28,8 @@ use zenko_core::{
     SQLITE_VACUUM_FREELIST_MIN_BYTES, ScoredMemoryHit, Session,
     SessionContextTurn, SessionContextWindow, SessionEvent, SessionRolloutSummary,
     SessionSearchFilter, SessionSearchHit, SessionStatus, SessionTask, SessionTaskStatus,
-    SubagentRecord, SubagentStatus, SubagentWorkspaceMode, TaskKind, ToolUsageStat,
+    SubagentRecord, SubagentStatus, SubagentWorkspaceMode, TURBOQUANT_MIN_COSINE,
+    TURBOQUANT_SQLITE_SCAN_LIMIT, TaskKind, ToolUsageStat,
     UiCustomization, UiProfile, UsageStats, WorkspaceCheckpoint, ZenkoError, new_id,
 };
 
@@ -234,6 +237,14 @@ impl SqliteStore {
                     entry_id UNINDEXED,
                     title,
                     content
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_vectors (
+                    entry_id TEXT PRIMARY KEY REFERENCES memory_entries(id) ON DELETE CASCADE,
+                    dim INTEGER NOT NULL,
+                    bits INTEGER NOT NULL,
+                    vec_blob BLOB NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS cron_jobs (

@@ -111,7 +111,10 @@ impl SqliteStore {
                     true => prev.title.clone(),
                     false => clean_title,
                 };
-                let merged_hash = compute_simhash64(&format!("{merged_title} {merged_content}"));
+                let merged_text = format!("{merged_title} {merged_content}");
+                let merged_hash = compute_simhash64(&merged_text);
+                let merged_tq = TurboQuantCodec::default_memory_codec().encode_text(&merged_text);
+                let merged_tq_blob = merged_tq.to_bytes();
                 let merged_sid = source_session_id
                     .map(String::from)
                     .or_else(|| prev.source_session_id.clone());
@@ -141,6 +144,17 @@ impl SqliteStore {
                     conn.execute(
                         "INSERT INTO memory_fts (entry_id, title, content) VALUES (?1, ?2, ?3)",
                         params![prev.id, merged_title, merged_content],
+                    )?;
+                    conn.execute(
+                        "INSERT OR REPLACE INTO memory_vectors (entry_id, dim, bits, vec_blob, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            prev.id,
+                            merged_tq.dim as i64,
+                            merged_tq.bits.bits_per_coord() as i64,
+                            merged_tq_blob,
+                            now_str,
+                        ],
                     )?;
                     Ok(())
                 })?;
@@ -177,6 +191,8 @@ impl SqliteStore {
             archived: false,
             created_at: now,
         };
+        let entry_tq = TurboQuantCodec::default_memory_codec().encode_text(&combined);
+        let entry_tq_blob = entry_tq.to_bytes();
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO memory_entries
@@ -199,6 +215,17 @@ impl SqliteStore {
             conn.execute(
                 "INSERT INTO memory_fts (entry_id, title, content) VALUES (?1, ?2, ?3)",
                 params![entry.id, entry.title, entry.content],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_vectors (entry_id, dim, bits, vec_blob, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    entry.id,
+                    entry_tq.dim as i64,
+                    entry_tq.bits.bits_per_coord() as i64,
+                    entry_tq_blob,
+                    now_str,
+                ],
             )?;
             Ok(())
         })?;
@@ -252,7 +279,10 @@ impl SqliteStore {
         }
         let now = Utc::now();
         cur.updated_at = Some(now);
-        cur.content_simhash = compute_simhash64(&format!("{} {}", cur.title, cur.content));
+        let cur_combined = format!("{} {}", cur.title, cur.content);
+        cur.content_simhash = compute_simhash64(&cur_combined);
+        let cur_tq = TurboQuantCodec::default_memory_codec().encode_text(&cur_combined);
+        let cur_tq_blob = cur_tq.to_bytes();
 
         self.with_conn(|conn| {
             let tx = rusqlite::Transaction::new_unchecked(
@@ -275,10 +305,22 @@ impl SqliteStore {
                 ],
             )?;
             tx.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![cur.id])?;
+            tx.execute("DELETE FROM memory_vectors WHERE entry_id = ?1", params![cur.id])?;
             if !cur.archived {
                 tx.execute(
                     "INSERT INTO memory_fts (entry_id, title, content) VALUES (?1, ?2, ?3)",
                     params![cur.id, cur.title, cur.content],
+                )?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO memory_vectors (entry_id, dim, bits, vec_blob, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        cur.id,
+                        cur_tq.dim as i64,
+                        cur_tq.bits.bits_per_coord() as i64,
+                        cur_tq_blob,
+                        now.to_rfc3339(),
+                    ],
                 )?;
             }
             tx.commit()?;
@@ -307,6 +349,7 @@ impl SqliteStore {
                 rusqlite::TransactionBehavior::Immediate,
             )?;
             tx.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![id])?;
+            tx.execute("DELETE FROM memory_vectors WHERE entry_id = ?1", params![id])?;
             let changed = tx.execute(
                 "UPDATE memory_entries SET archived = 1, updated_at = ?1 WHERE id = ?2 AND archived = 0",
                 params![now, id],
@@ -493,12 +536,118 @@ impl SqliteStore {
             Ok(())
         })?;
 
-        if bm25_ordered.is_empty() {
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        // Signal 3: Data-oblivious 4-bit TurboQuant compressed cosine scan (with lazy backfill for
+        // legacy pre-v0.0.45 rows) — rescues morphological/typo/sub-word hits FTS5 missed.
+        let tq_codec = TurboQuantCodec::default_memory_codec();
+        let tq_query = tq_codec.prepare_text_query(trimmed);
+        let mut vec_candidates: Vec<(MemoryEntry, f32)> = Vec::new();
+        if !tq_query.is_zero() {
+            let scan_limit = TURBOQUANT_SQLITE_SCAN_LIMIT as i64;
+            let scanned: Vec<(MemoryEntry, Option<Vec<u8>>)> = self.with_conn(|conn| {
+                let mut sql = String::from(
+                    "SELECT m.id, m.scope, m.kind, m.title, m.content, m.salience, m.access_count,
+                            m.last_accessed_at, m.updated_at, m.content_simhash,
+                            m.source_session_id, m.source_event_id, m.archived, m.created_at,
+                            v.vec_blob
+                     FROM memory_entries m
+                     LEFT JOIN memory_vectors v ON v.entry_id = m.id
+                     WHERE m.archived = 0",
+                );
+                let mut bind_vals: Vec<rusqlite::types::Value> = Vec::new();
+                match (project_scope, include_global) {
+                    (Some(ps), true) => {
+                        sql.push_str(" AND (m.scope = ? OR m.scope = ?)");
+                        bind_vals.push(rusqlite::types::Value::Text(ps.to_string()));
+                        bind_vals.push(rusqlite::types::Value::Text(MEMORY_SCOPE_GLOBAL.to_string()));
+                    }
+                    (Some(ps), false) => {
+                        sql.push_str(" AND m.scope = ?");
+                        bind_vals.push(rusqlite::types::Value::Text(ps.to_string()));
+                    }
+                    (None, false) => {
+                        sql.push_str(" AND m.scope = ?");
+                        bind_vals.push(rusqlite::types::Value::Text(MEMORY_SCOPE_GLOBAL.to_string()));
+                    }
+                    (None, true) => {}
+                }
+                sql.push_str(" ORDER BY COALESCE(m.updated_at, m.created_at) DESC LIMIT ?");
+                bind_vals.push(rusqlite::types::Value::Integer(scan_limit));
+
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(bind_vals), |r| {
+                    let entry = row_to_memory(r)?;
+                    let blob: Option<Vec<u8>> = r.get(14)?;
+                    Ok((entry, blob))
+                })?;
+                Ok(rows.flatten().collect())
+            })?;
+
+            let mut backfill: Vec<(String, u16, u8, Vec<u8>)> = Vec::new();
+            for (entry, maybe_blob) in scanned {
+                let tq_vec = match maybe_blob.as_deref().and_then(TurboQuantVector::from_bytes) {
+                    Some(v) if (v.dim as usize) == tq_codec.dim() => v,
+                    _ => {
+                        let encoded =
+                            tq_codec.encode_text(&format!("{} {}", entry.title, entry.content));
+                        backfill.push((
+                            entry.id.clone(),
+                            encoded.dim,
+                            encoded.bits.bits_per_coord(),
+                            encoded.to_bytes(),
+                        ));
+                        encoded
+                    }
+                };
+                let cos = tq_query.cosine(&tq_vec);
+                if cos >= TURBOQUANT_MIN_COSINE {
+                    vec_candidates.push((entry, cos));
+                }
+            }
+
+            if !backfill.is_empty() {
+                let _ = self.with_conn(|conn| {
+                    for (id, dim, bits, blob) in &backfill {
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO memory_vectors (entry_id, dim, bits, vec_blob, updated_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![id, *dim as i64, *bits as i64, blob, now_str],
+                        );
+                    }
+                    Ok(())
+                });
+            }
+            vec_candidates.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            vec_candidates.truncate((cap * 3).max(16));
+        }
+
+        // Unify FTS5 candidates with TurboQuant semantic rescue candidates
+        let mut bm25_rank_by_id: HashMap<String, usize> = HashMap::with_capacity(bm25_ordered.len());
+        let mut unified: Vec<MemoryEntry> = Vec::with_capacity(bm25_ordered.len() + vec_candidates.len());
+        for (rank, entry) in bm25_ordered.into_iter().enumerate() {
+            bm25_rank_by_id.insert(entry.id.clone(), rank);
+            unified.push(entry);
+        }
+        let mut vec_rank_by_id: HashMap<String, usize> =
+            HashMap::with_capacity(vec_candidates.len());
+        for (rank, (entry, _cos)) in vec_candidates.into_iter().enumerate() {
+            vec_rank_by_id.insert(entry.id.clone(), rank);
+            if seen_ids.insert(entry.id.clone()) {
+                unified.push(entry);
+            }
+        }
+
+        if unified.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Secondary lexical rank via symbol-aware shingle Jaccard overlap
-        let mut jac_pairs: Vec<(usize, f64)> = bm25_ordered
+        // Signal 2: Symbol-aware shingle Jaccard rank across unified candidates
+        let mut jac_pairs: Vec<(usize, f64)> = unified
             .iter()
             .enumerate()
             .map(|(idx, e)| {
@@ -514,20 +663,22 @@ impl SqliteStore {
             }
         }
 
-        let now = Utc::now();
-        let mut scored: Vec<ScoredMemoryHit> = bm25_ordered
+        let mut scored: Vec<ScoredMemoryHit> = unified
             .into_iter()
             .enumerate()
-            .map(|(bm25_rank, entry)| {
+            .map(|(idx, entry)| {
                 let stale_paths = workspace_dir
                     .map(|ws| find_missing_workspace_paths(ws, &entry.content))
                     .unwrap_or_default();
                 let ref_ts = entry.updated_at.unwrap_or(entry.created_at);
                 let age_days = (now - ref_ts).num_hours().max(0) as f64 / 24.0;
                 let is_proj = project_scope.is_some_and(|ps| entry.scope == ps);
-                let score = hybrid_memory_score(
-                    Some(bm25_rank),
-                    jac_rank_map.get(&bm25_rank).copied(),
+                let bm25_rank = bm25_rank_by_id.get(&entry.id).copied();
+                let vec_rank = vec_rank_by_id.get(&entry.id).copied();
+                let score = hybrid_memory_score_with_vector(
+                    bm25_rank,
+                    jac_rank_map.get(&idx).copied(),
+                    vec_rank,
                     age_days,
                     MemoryKind::from_str_loose(&entry.kind),
                     entry.salience,
@@ -551,7 +702,6 @@ impl SqliteStore {
         scored.truncate(cap);
 
         // ACT-R access reinforcement on returned hits
-        let now_str = now.to_rfc3339();
         let hit_ids: Vec<String> = scored.iter().map(|h| h.entry.id.clone()).collect();
         let _ = self.with_conn(|conn| {
             for id in &hit_ids {
@@ -700,6 +850,7 @@ impl SqliteStore {
     pub fn delete_memory(&self, id: &str) -> Result<bool> {
         let n = self.with_conn(|conn| {
             conn.execute("DELETE FROM memory_fts WHERE entry_id = ?1", params![id])?;
+            conn.execute("DELETE FROM memory_vectors WHERE entry_id = ?1", params![id])?;
             conn.execute("DELETE FROM memory_entries WHERE id = ?1", params![id])
         })?;
         Ok(n > 0)

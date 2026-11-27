@@ -710,6 +710,10 @@ pub struct ChatRequest {
     pub provider_sort: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Deterministic LMCache-style prefix anchor key for sticky KV-cache routing on
+    /// OpenAI / vLLM / SGLang + LMCache backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
 }
 
 fn default_req_true() -> bool {
@@ -2015,6 +2019,10 @@ pub struct ReconSummary {
     pub language_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_brief: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf_summary: Option<String>,
+    #[serde(default)]
+    pub okf_hits: Vec<String>,
     pub memory_hits: Vec<String>,
     #[serde(default)]
     pub session_hits: Vec<String>,
@@ -3892,6 +3900,7 @@ pub struct RepoToolUsage {
 pub enum EconomyLedgerKind {
     ReadLess,
     OutputDedup,
+    PrefixChunkRef,
     Shunt,
     ToolPrune,
     MicroSkill,
@@ -3907,6 +3916,7 @@ impl EconomyLedgerKind {
         match self {
             Self::ReadLess => "read_less",
             Self::OutputDedup => "output_dedup",
+            Self::PrefixChunkRef => "prefix_chunk_ref",
             Self::Shunt => "shunt",
             Self::ToolPrune => "tool_prune",
             Self::MicroSkill => "micro_skill",
@@ -3922,6 +3932,7 @@ impl EconomyLedgerKind {
         match raw.trim().to_ascii_lowercase().as_str() {
             "read_less" => Some(Self::ReadLess),
             "output_dedup" => Some(Self::OutputDedup),
+            "prefix_chunk_ref" => Some(Self::PrefixChunkRef),
             "shunt" => Some(Self::Shunt),
             "tool_prune" => Some(Self::ToolPrune),
             "micro_skill" => Some(Self::MicroSkill),
@@ -4077,6 +4088,10 @@ pub struct EconomyLedgerSummary {
     pub output_dedup_tokens_saved: u64,
     #[serde(default)]
     pub output_dedup_hits: u64,
+    #[serde(default)]
+    pub prefix_chunk_ref_hits: u64,
+    #[serde(default)]
+    pub prefix_chunk_ref_tokens_saved: u64,
     #[serde(default)]
     pub shunt_hits: u64,
     #[serde(default)]
@@ -4523,6 +4538,14 @@ pub struct BrainPage {
     pub tags: Vec<String>,
     pub created: String,
     pub updated: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
     pub compiled_truth: String,
     #[serde(default)]
     pub timeline: Vec<BrainTimelineEntry>,
@@ -4540,6 +4563,10 @@ pub struct BrainPageSummary {
     pub timeline_count: usize,
     pub has_reversals: bool,
     pub truth_preview: String,
+    #[serde(default)]
+    pub freshness: OkfFreshnessState,
+    #[serde(default)]
+    pub trust_tier: OkfTrustTier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4748,4 +4775,341 @@ pub fn is_code_refactor_args_mutating(args: &serde_json::Value) -> bool {
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     action.can_mutate() && !dry_run
+}
+
+// ── TurboQuant, OKF (Open Knowledge Format) & Chained Prefix-Cache Types ────
+
+/// Bit-width mode for Zenko's data-oblivious TurboQuant scalar quantizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TurboQuantBits {
+    Bits2,
+    #[default]
+    Bits4,
+}
+
+impl TurboQuantBits {
+    pub fn bits_per_coord(self) -> u8 {
+        match self {
+            Self::Bits2 => 2,
+            Self::Bits4 => 4,
+        }
+    }
+
+    pub fn from_u8(bits: u8) -> Option<Self> {
+        match bits {
+            2 => Some(Self::Bits2),
+            4 => Some(Self::Bits4),
+            _ => None,
+        }
+    }
+
+    pub fn coords_per_byte(self) -> usize {
+        match self {
+            Self::Bits2 => 4,
+            Self::Bits4 => 2,
+        }
+    }
+}
+
+/// Lifecycle status of an Open Knowledge Format (OKF) concept document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OkfDocStatus {
+    #[default]
+    Active,
+    Draft,
+    Deprecated,
+    Superseded,
+}
+
+impl OkfDocStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Draft => "draft",
+            Self::Deprecated => "deprecated",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "active" | "published" | "verified" => Some(Self::Active),
+            "draft" | "wip" => Some(Self::Draft),
+            "deprecated" | "retired" | "archived" => Some(Self::Deprecated),
+            "superseded" | "replaced" => Some(Self::Superseded),
+            _ => None,
+        }
+    }
+}
+
+/// Calendar freshness evaluated from OKF `stale_after` vs current time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OkfFreshnessState {
+    Fresh,
+    ExpiringSoon,
+    Stale,
+    #[default]
+    Unspecified,
+}
+
+impl OkfFreshnessState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::ExpiringSoon => "expiring_soon",
+            Self::Stale => "stale",
+            Self::Unspecified => "unspecified",
+        }
+    }
+
+    pub fn rank_weight(self) -> f64 {
+        match self {
+            Self::Fresh => crate::OKF_FRESHNESS_WEIGHT_FRESH,
+            Self::ExpiringSoon => crate::OKF_FRESHNESS_WEIGHT_EXPIRING,
+            Self::Stale => crate::OKF_FRESHNESS_WEIGHT_STALE,
+            Self::Unspecified => crate::OKF_FRESHNESS_WEIGHT_UNSPECIFIED,
+        }
+    }
+}
+
+/// Provenance & verification trust tier for an OKF concept or Project Brain page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OkfTrustTier {
+    Verified,
+    #[default]
+    Unverified,
+    SourceDrifted,
+    Deprecated,
+}
+
+impl OkfTrustTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Unverified => "unverified",
+            Self::SourceDrifted => "source_drifted",
+            Self::Deprecated => "deprecated",
+        }
+    }
+
+    pub fn badge(self) -> &'static str {
+        match self {
+            Self::Verified => "VERIFIED",
+            Self::Unverified => "UNVERIFIED",
+            Self::SourceDrifted => "DRIFTED",
+            Self::Deprecated => "DEPRECATED",
+        }
+    }
+
+    pub fn rank_weight(self) -> f64 {
+        match self {
+            Self::Verified => crate::OKF_TRUST_WEIGHT_VERIFIED,
+            Self::Unverified => crate::OKF_TRUST_WEIGHT_UNVERIFIED,
+            Self::SourceDrifted => crate::OKF_TRUST_WEIGHT_DRIFTED,
+            Self::Deprecated => crate::OKF_TRUST_WEIGHT_DEPRECATED,
+        }
+    }
+}
+
+/// Declarative action enum for the deferred `knowledge_catalog` OKF tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OkfAction {
+    List,
+    Search,
+    Read,
+    Graph,
+    AuditFreshness,
+    Upsert,
+}
+
+impl OkfAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "list" | "ls" => Some(Self::List),
+            "search" | "query" => Some(Self::Search),
+            "read" | "get" | "show" => Some(Self::Read),
+            "graph" | "links" | "neighbors" => Some(Self::Graph),
+            "audit_freshness" | "audit" | "freshness" => Some(Self::AuditFreshness),
+            "upsert" | "write" | "create" | "update" => Some(Self::Upsert),
+            _ => None,
+        }
+    }
+
+    pub fn is_mutating(self) -> bool {
+        matches!(self, Self::Upsert)
+    }
+}
+
+/// Returns `true` when `knowledge_catalog` arguments request a mutating repository write.
+pub fn is_okf_tool_args_mutating(args: &serde_json::Value) -> bool {
+    args.get("action")
+        .and_then(serde_json::Value::as_str)
+        .and_then(OkfAction::parse)
+        .is_none_or(OkfAction::is_mutating)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OkfConcept {
+    pub id: String,
+    pub rel_path: String,
+    pub doc_type: String,
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    pub status: OkfDocStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after: Option<String>,
+    #[serde(default)]
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub outbound_links: Vec<String>,
+    #[serde(default)]
+    pub missing_sources: Vec<String>,
+    #[serde(default)]
+    pub drifted_sources: Vec<String>,
+    pub freshness: OkfFreshnessState,
+    pub trust_tier: OkfTrustTier,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OkfConceptSummary {
+    pub id: String,
+    pub rel_path: String,
+    pub doc_type: String,
+    pub title: String,
+    pub status: OkfDocStatus,
+    pub freshness: OkfFreshnessState,
+    pub trust_tier: OkfTrustTier,
+    pub link_count: usize,
+    pub source_count: usize,
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OkfSearchHit {
+    pub summary: OkfConceptSummary,
+    pub score: f64,
+    pub vector_cosine: f32,
+    pub outbound_links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OkfGraphNeighborhood {
+    pub concept_id: String,
+    pub direct_outbound: Vec<String>,
+    pub transitive_outbound: Vec<String>,
+    pub backlinks: Vec<String>,
+    pub broken_links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OkfAuditIssueKind {
+    Stale,
+    ExpiringSoon,
+    MissingSource,
+    SourceDrifted,
+    BrokenLink,
+    Unverified,
+}
+
+impl OkfAuditIssueKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stale => "stale",
+            Self::ExpiringSoon => "expiring_soon",
+            Self::MissingSource => "missing_source",
+            Self::SourceDrifted => "source_drifted",
+            Self::BrokenLink => "broken_link",
+            Self::Unverified => "unverified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OkfAuditIssue {
+    pub concept_id: String,
+    pub rel_path: String,
+    pub kind: OkfAuditIssueKind,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OkfFreshnessAuditReport {
+    pub total_concepts: usize,
+    pub verified_count: usize,
+    pub stale_count: usize,
+    pub drifted_count: usize,
+    pub broken_links_count: usize,
+    pub issues: Vec<OkfAuditIssue>,
+}
+
+/// Semantic chunk category in Zenko's LMCache-inspired parent-chained prompt hash tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptChunkKind {
+    SystemBase,
+    ToolCatalog,
+    HistoryMessage,
+}
+
+impl PromptChunkKind {
+    pub fn tag_byte(self) -> u8 {
+        match self {
+            Self::SystemBase => 0x01,
+            Self::ToolCatalog => 0x02,
+            Self::HistoryMessage => 0x03,
+        }
+    }
+}
+
+/// Root cause of any prefix-cache divergence between consecutive turns in a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PrefixDriftReason {
+    #[default]
+    FirstTurn,
+    FullHit,
+    SystemMutated,
+    ToolCatalogChanged,
+    HistoryCompacted,
+    HistoryDiverged,
+}
+
+impl PrefixDriftReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstTurn => "first_turn",
+            Self::FullHit => "full_hit",
+            Self::SystemMutated => "system_mutated",
+            Self::ToolCatalogChanged => "tool_catalog_changed",
+            Self::HistoryCompacted => "history_compacted",
+            Self::HistoryDiverged => "history_diverged",
+        }
+    }
+}
+
+/// Deterministic prefix-cache reuse & drift evaluation for an outbound `ChatRequest`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrefixCacheEvaluation {
+    pub prompt_cache_key: String,
+    pub total_chunks: usize,
+    pub matched_chunks: usize,
+    pub reusable_tokens: usize,
+    pub busted_tokens: usize,
+    pub hit_ratio_pct: u8,
+    pub drift_reason: PrefixDriftReason,
 }

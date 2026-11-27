@@ -573,6 +573,7 @@ pub const TOOL_CODE_REFACTOR: &str = "code_refactor";
 pub const TOOL_WEB_FETCH: &str = "web_fetch";
 pub const TOOL_MEMORY: &str = "memory_tool";
 pub const TOOL_PROJECT_BRAIN: &str = "project_brain";
+pub const TOOL_KNOWLEDGE_CATALOG: &str = "knowledge_catalog";
 pub const TOOL_CRON: &str = "cron_tool";
 pub const TOOL_RECORD_BRAINSTORM: &str = "record_brainstorm";
 pub const TOOL_ASK_CLARIFICATION: &str = "ask_clarification";
@@ -1102,6 +1103,7 @@ pub const PLAN_MODE_SCOPED_TOOLS: &[&str] = &[
     TOOL_SHELL_EXEC,
     TOOL_MEMORY,
     TOOL_PROJECT_BRAIN,
+    TOOL_KNOWLEDGE_CATALOG,
     TOOL_SPAWN_AGENT,
     TOOL_AGENT_WORKTREE,
     TOOL_GIT,
@@ -1140,6 +1142,7 @@ pub const COMPACTION_PROTECTED_TOOLS: &[&str] = &[
     TOOL_ORCHESTRATE_CONTROL,
     TOOL_MEMORY,
     TOOL_PROJECT_BRAIN,
+    TOOL_KNOWLEDGE_CATALOG,
     TOOL_SKILL_VIEW,
     TOOL_SKILL_MANAGE,
     TOOL_GOAL_LOOP,
@@ -1945,3 +1948,122 @@ pub const SERVICE_CATALOG_ANNOTATION_KEYS: &[(&str, &str)] = &[
     ("backstage.io/source-location", "src"),
     ("runbook", "runbook"),
 ];
+
+// ── TurboQuant Data-Oblivious Vector Quantization (FWHT + Lloyd-Max + QJL) ──
+pub const TURBOQUANT_DEFAULT_DIM: usize = 256;
+pub const TURBOQUANT_MIN_DIM: usize = 16;
+pub const TURBOQUANT_MAX_DIM: usize = 4_096;
+pub const TURBOQUANT_MAGIC: [u8; 4] = *b"ZTQ1";
+pub const TURBOQUANT_FLAG_QJL: u8 = 0x01;
+pub const TURBOQUANT_SEED_MAIN: u64 = 0x5A45_4E4B_4F54_5131;
+pub const TURBOQUANT_SEED_QJL: u64 = 0x5A45_4E4B_4F51_4A4C;
+pub const TURBOQUANT_RRF_WEIGHT: f64 = 0.90;
+pub const TURBOQUANT_MIN_COSINE: f32 = 0.08;
+pub const TURBOQUANT_SQLITE_SCAN_LIMIT: usize = 512;
+pub const TURBOQUANT_CHAR_NGRAM_MIN: usize = 3;
+pub const TURBOQUANT_CHAR_NGRAM_MAX: usize = 4;
+pub const TURBOQUANT_TOKEN_WEIGHT: f32 = 1.60;
+pub const TURBOQUANT_BIGRAM_WEIGHT: f32 = 1.30;
+pub const TURBOQUANT_CHAR_NGRAM_WEIGHT: f32 = 0.55;
+/// Optimal standard-Gaussian N(0, 1) Lloyd-Max centroids for 2-bit scalar quantization (4 levels).
+pub const TURBOQUANT_LLOYD_MAX_2BIT_CENTROIDS: [f32; 4] =
+    [-1.510_417_6, -0.452_780_04, 0.452_780_04, 1.510_417_6];
+/// Optimal standard-Gaussian N(0, 1) Lloyd-Max decision boundaries for 2-bit scalar quantization.
+pub const TURBOQUANT_LLOYD_MAX_2BIT_THRESHOLDS: [f32; 3] = [-0.981_598_8, 0.0, 0.981_598_8];
+/// Optimal standard-Gaussian N(0, 1) Lloyd-Max centroids for 4-bit scalar quantization (16 levels).
+pub const TURBOQUANT_LLOYD_MAX_4BIT_CENTROIDS: [f32; 16] = [
+    -2.732_578_5,
+    -2.069_017_2,
+    -1.618_049_6,
+    -1.256_185_5,
+    -0.942_343_8,
+    -0.656_756_5,
+    -0.388_051_5,
+    -0.128_404_9,
+    0.128_404_9,
+    0.388_051_5,
+    0.656_756_5,
+    0.942_343_8,
+    1.256_185_5,
+    1.618_049_6,
+    2.069_017_2,
+    2.732_578_5,
+];
+/// Optimal standard-Gaussian N(0, 1) Lloyd-Max decision boundaries for 4-bit scalar quantization.
+pub const TURBOQUANT_LLOYD_MAX_4BIT_THRESHOLDS: [f32; 15] = [
+    -2.400_797_8,
+    -1.843_533_4,
+    -1.437_117_6,
+    -1.099_264_7,
+    -0.799_550_2,
+    -0.522_404_0,
+    -0.258_228_2,
+    0.0,
+    0.258_228_2,
+    0.522_404_0,
+    0.799_550_2,
+    1.099_264_7,
+    1.437_117_6,
+    1.843_533_4,
+    2.400_797_8,
+];
+
+// ── Open Knowledge Format (OKF v0.2/v0.3) Graph, Trust & Freshness Engine ───
+pub const ORCH_STAGE_OKF: &str = "okf";
+pub const OKF_DISCOVERY_DIRS: &[&str] = &["knowledge", "okf", ".okf", "docs/knowledge", "catalog"];
+pub const OKF_DEFAULT_WRITE_DIR: &str = "knowledge";
+pub const OKF_MAX_FILES_SCAN: usize = 256;
+pub const OKF_MAX_FILE_BYTES: u64 = 128 * 1024;
+pub const OKF_MAX_LINKS_PER_DOC: usize = 48;
+pub const OKF_MAX_SOURCES_PER_DOC: usize = 24;
+pub const OKF_MAX_GRAPH_HOPS: usize = 3;
+pub const OKF_EXPIRING_SOON_DAYS: i64 = 14;
+pub const OKF_RECON_MAX_HITS: usize = 4;
+pub const OKF_DEFAULT_SEARCH_LIMIT: usize = 8;
+pub const OKF_MAX_SEARCH_LIMIT: usize = 32;
+pub const OKF_SUMMARY_PREVIEW_CHARS: usize = 120;
+pub const OKF_FRONTMATTER_DELIM: &str = "---";
+pub const OKF_KEY_TYPE: &str = "type";
+pub const OKF_KEY_TITLE: &str = "title";
+pub const OKF_KEY_SUMMARY: &str = "summary";
+pub const OKF_KEY_DESCRIPTION: &str = "description";
+pub const OKF_KEY_STATUS: &str = "status";
+pub const OKF_KEY_OWNER: &str = "owner";
+pub const OKF_KEY_TAGS: &str = "tags";
+pub const OKF_KEY_VERIFIED: &str = "verified";
+pub const OKF_KEY_VERIFIED_BY: &str = "verified_by";
+pub const OKF_KEY_VERIFIED_AT: &str = "verified_at";
+pub const OKF_KEY_BY: &str = "by";
+pub const OKF_KEY_AT: &str = "at";
+pub const OKF_KEY_STALE_AFTER: &str = "stale_after";
+pub const OKF_KEY_SOURCES: &str = "sources";
+pub const OKF_KEY_RESOURCE: &str = "resource";
+pub const OKF_ACTIONS: &[&str] = &[
+    "list",
+    "search",
+    "read",
+    "graph",
+    "audit_freshness",
+    "upsert",
+];
+pub const OKF_STATUS_VALUES: &[&str] = &["active", "draft", "deprecated", "superseded"];
+pub const OKF_TRUST_WEIGHT_VERIFIED: f64 = 1.25;
+pub const OKF_TRUST_WEIGHT_UNVERIFIED: f64 = 1.00;
+pub const OKF_TRUST_WEIGHT_DRIFTED: f64 = 0.72;
+pub const OKF_TRUST_WEIGHT_DEPRECATED: f64 = 0.45;
+pub const OKF_FRESHNESS_WEIGHT_FRESH: f64 = 1.15;
+pub const OKF_FRESHNESS_WEIGHT_EXPIRING: f64 = 0.95;
+pub const OKF_FRESHNESS_WEIGHT_STALE: f64 = 0.65;
+pub const OKF_FRESHNESS_WEIGHT_UNSPECIFIED: f64 = 1.00;
+
+// ── LMCache-Inspired Chained Prefix-Chunk & Reference Cache Engine ──────────
+pub const ORCH_STAGE_PREFIX_CACHE: &str = "prefix_cache";
+pub const PREFIX_CACHE_MAX_SESSIONS: usize = 64;
+pub const PREFIX_CACHE_KEY_PREFIX: &str = "zk-pfx-";
+pub const PREFIX_CACHE_KEY_HEX_LEN: usize = 24;
+pub const PREFIX_CACHE_CHUNK_REF_MIN_BYTES: usize = 1_536;
+pub const PREFIX_CACHE_CHUNK_REF_MAX_ENTRIES: usize = 64;
+pub const PREFIX_CACHE_CHUNK_REF_META_KEY: &str = "prefix_chunk_ref";
+pub const PREFIX_CACHE_CHUNK_REF_TOKENS_SAVED_KEY: &str = "prefix_chunk_ref_tokens_saved";
+pub const PREFIX_CACHE_TAIL_BLOCK_TAG_OPEN: &str = "<session_runtime_context>";
+pub const PREFIX_CACHE_TAIL_BLOCK_TAG_CLOSE: &str = "</session_runtime_context>";

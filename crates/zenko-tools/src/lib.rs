@@ -18,6 +18,7 @@ pub mod lsp;
 pub mod mcp_client;
 pub mod memory_cron;
 pub mod minimalism;
+pub mod okf_tool;
 pub mod orchestrator_tools;
 pub mod outline;
 pub mod pty;
@@ -83,6 +84,7 @@ impl ToolRegistry {
             snapshots.clone(),
         )));
         reg.register(Arc::new(brain_tool::ProjectBrainTool::new()));
+        reg.register(Arc::new(okf_tool::KnowledgeCatalogTool::new()));
         reg.register(Arc::new(memory_cron::SessionSearchTool::new(store.clone())));
         reg.register(Arc::new(memory_cron::CronTool::new(store, cron_notify)));
         reg.register(Arc::new(context_tools::SkillViewTool::new(snapshots)));

@@ -34,6 +34,8 @@ pub struct TurnEconomyTrace {
     pub output_dedup_hits: usize,
     pub output_dedup_tokens_saved: usize,
     pub output_dedup_by_cmd: Vec<(String, usize)>,
+    pub prefix_chunk_ref_hits: usize,
+    pub prefix_chunk_ref_tokens_saved: usize,
     pub shunt_hits: usize,
     pub shunt_tokens_saved: usize,
     pub shunt_by_source: Vec<(String, usize)>,
@@ -453,6 +455,20 @@ pub fn after_turn_update(
             }
         }
         update.net_tokens_delta += trace.output_dedup_tokens_saved as i64;
+    }
+    if trace.prefix_chunk_ref_hits > 0 {
+        let _ = store.record_economy_ledger_event_with_cmd(
+            scope,
+            EconomyLedgerKind::PrefixChunkRef,
+            trace.prefix_chunk_ref_tokens_saved as i64,
+            0.0,
+            "prefix_ref",
+            &format!(
+                "Cross-turn live-prefix file-stat chunk references ({} hit(s))",
+                trace.prefix_chunk_ref_hits
+            ),
+        );
+        update.net_tokens_delta += trace.prefix_chunk_ref_tokens_saved as i64;
     }
     if trace.shunt_hits > 0 {
         for (src, tok) in &trace.shunt_by_source {

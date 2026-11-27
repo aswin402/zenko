@@ -567,10 +567,12 @@ impl AgentRuntime {
             true => self.store.list_pruned_tools(&repo_scope).unwrap_or_default(),
             false => BTreeSet::new(),
         };
-        let active_micro_skills = match cfg.economy.enabled && cfg.economy.auto_micro_skills {
+        let live_micro_skills = match cfg.economy.enabled && cfg.economy.auto_micro_skills {
             true => crate::economy::active_micro_skills_for_repo(&self.store, &repo_scope),
             false => Vec::new(),
         };
+        let (active_micro_skills, mut delta_micro_skills) =
+            self.partition_session_micro_skills(&session_id, live_micro_skills);
         if cfg.economy.enabled
             && cfg.economy.p90_loop_guard
             && let Ok((_, envelope_calls, _)) = self
@@ -697,6 +699,7 @@ impl AgentRuntime {
         let mut total_usage = UsageStats::default();
         let mut tool_calls_count = 0usize;
         let mut pending_orch_hints: Vec<String> = Vec::new();
+        let mut last_prompt_cache_key: Option<String> = None;
         let turn_checkpoint_event_id = parent_for_user.clone();
         let turn_checkpoint_label =
             format!("Before: {}", compact_preview(user_text, CHECKPOINT_LABEL_MAX_CHARS));
@@ -1013,6 +1016,16 @@ impl AgentRuntime {
             if !pending_orch_hints.is_empty() {
                 tail_reminders.append(&mut pending_orch_hints);
             }
+            if !delta_micro_skills.is_empty() {
+                if let Some(delta_ms_block) = render_repo_micro_skills_block(&delta_micro_skills) {
+                    tail_reminders.push(format!(
+                        "{}\n{delta_ms_block}\n{}",
+                        zenko_core::PREFIX_CACHE_TAIL_BLOCK_TAG_OPEN,
+                        zenko_core::PREFIX_CACHE_TAIL_BLOCK_TAG_CLOSE
+                    ));
+                }
+                delta_micro_skills.clear();
+            }
             let mem_deltas = self.drain_memory_deltas(&session_id);
             if !mem_deltas.is_empty() {
                 tail_reminders.push(format!(
@@ -1048,6 +1061,34 @@ impl AgentRuntime {
                 (eff, _) => eff,
             };
 
+            let prefix_eval = self.prefix_cache.evaluate_and_record(
+                &session_id,
+                &effective_system_prompt,
+                &active_tool_specs,
+                &messages,
+                compacted_now,
+            );
+            last_prompt_cache_key = Some(prefix_eval.prompt_cache_key.clone());
+            if !matches!(
+                prefix_eval.drift_reason,
+                zenko_core::PrefixDriftReason::FirstTurn | zenko_core::PrefixDriftReason::FullHit
+            ) && prefix_eval.busted_tokens > 0
+            {
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: session_id.clone(),
+                    stage: zenko_core::ORCH_STAGE_PREFIX_CACHE.into(),
+                    tier: orch.triage.tier,
+                    detail: format!(
+                        "Prefix {} ({}% reused · {} tok kept · {} tok busted)",
+                        prefix_eval.drift_reason.as_str(),
+                        prefix_eval.hit_ratio_pct,
+                        prefix_eval.reusable_tokens,
+                        prefix_eval.busted_tokens
+                    ),
+                    model: None,
+                });
+            }
+
             let chat_req = ChatRequest {
                 session_id: session_id.clone(),
                 model: model.clone(),
@@ -1062,6 +1103,7 @@ impl AgentRuntime {
                 sticky_session_routing: cfg.provider.sticky_session_routing,
                 provider_sort: cfg.provider.provider_sort.clone(),
                 reasoning_effort: effective_effort,
+                prompt_cache_key: Some(prefix_eval.prompt_cache_key),
             };
 
             let wire_req_meta = match wire_debug_enabled() {
@@ -1626,7 +1668,7 @@ impl AgentRuntime {
             let mut escalate_trigger: Option<(String, String)> = None;
             let mut wave_had_plan_or_mutation = false;
 
-            for (done, was_phase_redirect) in ordered_results.into_iter().flatten() {
+            for (mut done, was_phase_redirect) in ordered_results.into_iter().flatten() {
                 if !was_phase_redirect && !done.output.is_error {
                     let cat = orchestrator::classify_tool_category(&done.tool_name, &done.arguments);
                     if matches!(
@@ -1674,6 +1716,9 @@ impl AgentRuntime {
                         zenko_core::TOOL_PROJECT_BRAIN => {
                             zenko_core::is_brain_tool_args_mutating(eff_tool_args)
                         }
+                        zenko_core::TOOL_KNOWLEDGE_CATALOG => {
+                            zenko_core::is_okf_tool_args_mutating(eff_tool_args)
+                        }
                         _ => false,
                     };
                 if mutated_memory_surface {
@@ -1700,6 +1745,42 @@ impl AgentRuntime {
                         {
                             orch.guard.update_active_plan(plan);
                         }
+
+                if !was_phase_redirect && !done.output.is_error
+                    && let Some((stub, saved_tok, short_hash)) =
+                        self.prefix_cache.check_or_record_read_chunk(
+                            &session_id,
+                            &tool_ctx.workspace_dir,
+                            eff_tool_name,
+                            eff_tool_args,
+                            &done.output.content,
+                            iter_idx,
+                        )
+                {
+                    done.output.content = stub;
+                    let meta_obj = done
+                        .output
+                        .metadata
+                        .get_or_insert_with(|| json!({}));
+                    if let Some(m) = meta_obj.as_object_mut() {
+                        m.insert(
+                            zenko_core::PREFIX_CACHE_CHUNK_REF_META_KEY.into(),
+                            json!({
+                                "sha256": short_hash,
+                                "tokens_saved": saved_tok,
+                            }),
+                        );
+                        m.insert(
+                            zenko_core::PREFIX_CACHE_CHUNK_REF_TOKENS_SAVED_KEY.into(),
+                            json!(saved_tok),
+                        );
+                    }
+                    economy_trace.prefix_chunk_ref_hits =
+                        economy_trace.prefix_chunk_ref_hits.saturating_add(1);
+                    economy_trace.prefix_chunk_ref_tokens_saved = economy_trace
+                        .prefix_chunk_ref_tokens_saved
+                        .saturating_add(saved_tok);
+                }
 
                 if !was_phase_redirect {
                     crate::economy::record_tool_outcome_in_economy_trace(
@@ -2064,6 +2145,7 @@ impl AgentRuntime {
                 sticky_session_routing: cfg.provider.sticky_session_routing,
                 provider_sort: cfg.provider.provider_sort.clone(),
                 reasoning_effort: effective_effort,
+                prompt_cache_key: last_prompt_cache_key,
             };
             if let Ok(mut stream) = self.provider.stream_chat(synth_req, cancel.clone()).await {
                 let synth_turn_id = new_id();

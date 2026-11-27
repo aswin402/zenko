@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod log_store;
 pub mod orchestrator;
 pub mod policy;
+pub mod prefix_cache;
 pub mod read_less;
 pub mod runtime;
 pub mod scheduler;
@@ -50,6 +51,7 @@ pub use policy::{
     PolicyVerdict, ShellPolicyInspection, evaluate_policy, evaluate_verify_command_safety,
     inspect_shell_policy, run_hooks,
 };
+pub use prefix_cache::SessionPrefixTracker;
 pub use runtime::{AgentRuntime, TurnOptions, TurnResult};
 pub use scheduler::{ToolWave, execute_tool_waves, partition_tool_waves};
 pub use telemetry::{LogBroadcastLayer, LogBuffer, current_rss_bytes};

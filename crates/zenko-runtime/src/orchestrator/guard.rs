@@ -71,6 +71,7 @@ fn is_mutating_scoped_tool_call(tool_name: &str, arguments: &Value) -> bool {
         TOOL_GOAL_LOOP => is_goal_loop_args_mutating(arguments),
         TOOL_TOKEN_ECONOMY => is_economy_args_mutating(arguments),
         TOOL_PROJECT_BRAIN => is_brain_tool_args_mutating(arguments),
+        zenko_core::TOOL_KNOWLEDGE_CATALOG => zenko_core::is_okf_tool_args_mutating(arguments),
         TOOL_CODE_REFACTOR => is_code_refactor_args_mutating(arguments),
         TOOL_MEMORY => {
             let action = arguments.get("action").and_then(Value::as_str).unwrap_or("");
@@ -162,6 +163,8 @@ pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategor
             || (tool_name == TOOL_LSP && !is_lsp_tool_args_mutating(arguments))
             || (tool_name == TOOL_TOKEN_ECONOMY && !is_economy_args_mutating(arguments))
             || (tool_name == TOOL_PROJECT_BRAIN && !is_brain_tool_args_mutating(arguments))
+            || (tool_name == zenko_core::TOOL_KNOWLEDGE_CATALOG
+                && !zenko_core::is_okf_tool_args_mutating(arguments))
             || (tool_name == TOOL_CODE_REFACTOR && !is_code_refactor_args_mutating(arguments)),
         VERIFICATION_SHELL_TOOLS.contains(&tool_name),
     ) {

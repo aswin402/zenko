@@ -13,12 +13,12 @@ use zenko_core::{
     DANGEROUS_APPROVAL_BINS, HookConfig, HookEvent, MCP_TOOL_PREFIX, PIPE_TO_SHELL_BINS,
     PLAN_MODE_SCOPED_TOOLS, PLANNING_TOOLS, PROTECTED_DATA_SEGMENTS, PermissionMode, PolicyConfig,
     READ_ONLY_TOOLS, RiskLevel, SUBAGENT_ROLE_CUSTOM, ScriptBlockAction, TOOL_AGENT_WORKTREE,
-    TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_LSP, TOOL_MEMORY,
-    TOOL_PROJECT_BRAIN, TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_SPAWN_AGENT,
-    TOOL_TOKEN_ECONOMY, ToolSpec, VERIFY_SHELL_INTERPRETERS, WorktreeAction, find_subagent_role,
-    is_brain_tool_args_mutating, is_economy_args_mutating, is_git_tool_args_mutating,
-    is_goal_loop_args_mutating, is_lsp_tool_args_mutating, is_memory_mutating_action,
-    is_skill_manage_args_mutating,
+    TOOL_BATCH_TOOLS, TOOL_GIT, TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_KNOWLEDGE_CATALOG, TOOL_LSP,
+    TOOL_MEMORY, TOOL_PROJECT_BRAIN, TOOL_SCRIPT_BLOCK, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE,
+    TOOL_SPAWN_AGENT, TOOL_TOKEN_ECONOMY, ToolSpec, VERIFY_SHELL_INTERPRETERS, WorktreeAction,
+    find_subagent_role, is_brain_tool_args_mutating, is_economy_args_mutating,
+    is_git_tool_args_mutating, is_goal_loop_args_mutating, is_lsp_tool_args_mutating,
+    is_memory_mutating_action, is_okf_tool_args_mutating, is_skill_manage_args_mutating,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -820,6 +820,13 @@ fn evaluate_plan_mode_policy(spec: &ToolSpec, args: &Value) -> PolicyVerdict {
             false => PolicyVerdict::Allow,
             true => PolicyVerdict::Deny(
                 "Read-only Plan Mode only permits read-only `project_brain` actions (`list_pages`, `read_page`, `read_root`, `search`, `impact`). Approve the plan before writing to `brain/`."
+                    .into(),
+            ),
+        },
+        TOOL_KNOWLEDGE_CATALOG => match is_okf_tool_args_mutating(args) {
+            false => PolicyVerdict::Allow,
+            true => PolicyVerdict::Deny(
+                "Read-only Plan Mode only permits read-only `knowledge_catalog` actions (`list`, `search`, `read`, `graph`, `audit_freshness`). Approve the plan before authoring OKF files."
                     .into(),
             ),
         },

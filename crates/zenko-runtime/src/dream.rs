@@ -531,6 +531,7 @@ async fn execute_dream_stages(
         sticky_session_routing: false,
         provider_sort: cfg.provider.provider_sort.clone(),
         reasoning_effort: None,
+        prompt_cache_key: None,
     };
 
     let llm_out = tokio::time::timeout(std::time::Duration::from_secs(60), async {
