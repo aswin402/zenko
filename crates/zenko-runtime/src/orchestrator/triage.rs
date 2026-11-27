@@ -1,23 +1,22 @@
 //! Language-Agnostic Structural Turn Profiler (zero hardcoded keyword dictionaries,
-//! zero regex, zero `if/else` ladders, zero `/commands`).
+//! zero turn-number rules, zero regex, zero `if/else` ladders, zero `/commands`).
 //!
-//! Instead of guessing user intent from English word lists and locking out LLM tools,
-//! Zenko profiles strictly objective structural signals (`PermissionMode::Plan`,
-//! `is_first_turn`, mentioned workspace paths, prior turn errors, configured model slots)
-//! and hands full strategic sovereignty to the LLM itself via `orchestrate_control`,
-//! `record_brainstorm`, `ask_clarification`, `plan_update`, `session_task`, and `spawn_agent`.
+//! Instead of guessing user intent from English word lists or running hidden turn-based recon
+//! that busts provider KV caches, Zenko profiles strictly stateless structural signals
+//! (`PermissionMode::Plan`, mentioned workspace paths, prior turn errors, multiline input) and
+//! hands full strategic & reconnaissance sovereignty to the orchestrator itself via
+//! `orchestrate_control(refresh_recon=true)`, `record_brainstorm`, `ask_user`, `plan_update`,
+//! `session_task`, and `spawn_agent`.
 
 use zenko_core::{
-    DeliberationDepth, ExecutionTier, FIRST_TURN_RECON_MIN_WORDS, IntentKind, ModelRoutingRole,
-    PermissionMode, ReasoningEffort, SHORT_TASK_MAX_NONEMPTY_LINES, SHORT_TASK_MAX_PROMPT_CHARS,
-    TriageReport,
+    DeliberationDepth, ExecutionTier, IntentKind, ModelRoutingRole, PermissionMode,
+    ReasoningEffort, SHORT_TASK_MAX_NONEMPTY_LINES, SHORT_TASK_MAX_PROMPT_CHARS, TriageReport,
 };
 
 #[derive(Debug, Clone)]
 pub struct TriageInput<'a> {
     pub prompt: &'a str,
     pub prior_turn_errors: usize,
-    pub is_first_turn: bool,
     pub permission_mode: PermissionMode,
     pub has_fast_model: bool,
     pub has_plan_model: bool,
@@ -80,21 +79,12 @@ pub fn extract_path_like_tokens(prompt: &str) -> Vec<String> {
 pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
     let trimmed = input.prompt.trim();
     let line_count = trimmed.lines().filter(|l| !l.trim().is_empty()).count();
-    let word_count = tokenize_words(trimmed).len();
     let path_count = extract_path_like_tokens(trimmed).len();
     let is_explicit_plan_mode = input.permission_mode == PermissionMode::Plan;
-    let first_turn_substantive = input.is_first_turn
-        && (is_explicit_plan_mode
-            || path_count > 0
-            || line_count >= 2
-            || word_count >= FIRST_TURN_RECON_MIN_WORDS);
 
-    let mut matched_signals: Vec<String> = Vec::with_capacity(6);
+    let mut matched_signals: Vec<String> = Vec::with_capacity(4);
     if is_explicit_plan_mode {
         matched_signals.push("explicit_plan_mode".into());
-    }
-    if first_turn_substantive {
-        matched_signals.push("first_turn_grounding".into());
     }
     if path_count > 0 {
         matched_signals.push(format!("paths({path_count})"));
@@ -106,12 +96,15 @@ pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
         matched_signals.push(format!("multiline({line_count})"));
     }
 
-    let needs_recon = is_explicit_plan_mode
-        || first_turn_substantive
-        || path_count > 0
-        || input.prior_turn_errors > 0;
+    // Reconnaissance is strictly orchestrator-driven on demand (`orchestrate_control(refresh_recon=true)`
+    // or standard read-only tools), matching Hermes / Prime / Oh My Hermes zero-drift KV-cache discipline.
+    let needs_recon = false;
 
-    let tier = match is_explicit_plan_mode || needs_recon || line_count >= 4 {
+    let tier = match is_explicit_plan_mode
+        || path_count > 0
+        || input.prior_turn_errors > 0
+        || line_count >= 4
+    {
         true => ExecutionTier::Orchestrated,
         false => ExecutionTier::Standard,
     };
@@ -146,15 +139,12 @@ pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
             _ => 2,
         };
 
-    let reason = match (is_explicit_plan_mode, needs_recon) {
-        (true, _) => {
-            "Explicit read-only Plan Mode -> situational recon + Plan role (LLM controls brainstorm & DAG).".into()
+    let reason = match is_explicit_plan_mode {
+        true => {
+            "Explicit read-only Plan Mode -> Plan role (LLM controls on-demand recon, brainstorm & DAG).".into()
         }
-        (false, true) => {
-            "LLM-sovereign turn -> lightweight situational recon attached; LLM controls posture, brainstorming, gear & delegation.".into()
-        }
-        (false, false) => {
-            "LLM-sovereign turn -> direct ReAct membrane; LLM may call `orchestrate_control`, `record_brainstorm`, or `spawn_agent` anytime.".into()
+        false => {
+            "LLM-sovereign turn -> direct ReAct membrane (frozen session snapshot + on-demand `orchestrate_control`, `record_brainstorm`, `ask_user`, or `spawn_agent`).".into()
         }
     };
 
@@ -175,22 +165,19 @@ pub fn classify_turn(input: &TriageInput<'_>) -> TriageReport {
 }
 
 /// Net-positive Short-Task Overhead Guard (inspired by Chisle's published failure benchmarks):
-/// returns `true` strictly when objective structural signals indicate a tiny, non-first-turn,
-/// non-Plan follow-up with zero mentioned paths and zero prior errors — allowing the orchestrator
-/// to skip heavy volatile turn scaffolding unless the model escalates into tool iterations.
+/// returns `true` strictly when stateless structural signals indicate a tiny, non-Plan prompt
+/// with zero mentioned paths and zero prior errors — allowing the orchestrator to skip heavy
+/// volatile turn scaffolding unless the model escalates into tool iterations.
 /// Never alters Tier-1/Tier-2 system prompts, preserving 100% KV-cache stability.
 pub fn is_short_trivial_turn(
     prompt: &str,
     triage: &TriageReport,
-    is_first_turn: bool,
     permission_mode: PermissionMode,
 ) -> bool {
     let trimmed = prompt.trim();
     let nonempty_lines = trimmed.lines().filter(|l| !l.trim().is_empty()).count();
     triage.tier == ExecutionTier::Standard
         && permission_mode != PermissionMode::Plan
-        && !is_first_turn
-        && !triage.needs_recon
         && triage.complexity_score == 0
         && trimmed.chars().count() <= SHORT_TASK_MAX_PROMPT_CHARS
         && nonempty_lines <= SHORT_TASK_MAX_NONEMPTY_LINES
@@ -201,10 +188,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profiler_is_language_agnostic_and_never_keyword_locks_llm() {
-        // Non-English, casual, or "explain + fix" prompts MUST stay sovereign (never keyword-locked read-only)
+    fn profiler_is_language_agnostic_stateless_and_never_runs_turn_based_recon() {
+        // Non-English, casual, or "explain + fix" prompts MUST stay sovereign (never keyword-locked
+        // read-only, never triggering turn-based automatic recon).
         for prompt in [
             "hi!",
+            "hii",
             "explain why auth fails and fix it",
             "compare Redis vs SQLite and build whichever is cleaner",
             "இதை சரி செய் crates/zenko-runtime/src/lib.rs",
@@ -213,7 +202,6 @@ mod tests {
             let report = classify_turn(&TriageInput {
                 prompt,
                 prior_turn_errors: 0,
-                is_first_turn: false,
                 permission_mode: PermissionMode::Autonomous,
                 has_fast_model: true,
                 has_plan_model: true,
@@ -225,14 +213,14 @@ mod tests {
             );
             assert!(!report.intent.is_read_only());
             assert_eq!(report.recommended_model_role, ModelRoutingRole::Lead);
+            assert!(!report.needs_recon, "recon must remain strictly orchestrator-driven");
             assert!(!report.needs_brainstorm);
         }
 
-        // Explicit user PermissionMode::Plan honors read-only Advisory + Plan slot
+        // Explicit user PermissionMode::Plan honors read-only Advisory + Plan slot (recon stays on-demand)
         let plan_mode = classify_turn(&TriageInput {
             prompt: "design the caching layer",
             prior_turn_errors: 0,
-            is_first_turn: true,
             permission_mode: PermissionMode::Plan,
             has_fast_model: true,
             has_plan_model: true,
@@ -241,26 +229,25 @@ mod tests {
         assert!(plan_mode.intent.is_read_only());
         assert_eq!(plan_mode.recommended_model_role, ModelRoutingRole::Plan);
         assert_eq!(plan_mode.recommended_effort, ReasoningEffort::High);
-        assert!(plan_mode.needs_recon);
+        assert!(!plan_mode.needs_recon);
 
-        // Mentioned paths or prior errors automatically attach zero-token recon
+        // Mentioned paths elevate structural tier without forcing hidden pre-turn recon
         let with_path = classify_turn(&TriageInput {
             prompt: "check crates/zenko-core/src/types.rs",
             prior_turn_errors: 0,
-            is_first_turn: false,
             permission_mode: PermissionMode::Autonomous,
             has_fast_model: true,
             has_plan_model: false,
         });
-        assert!(with_path.needs_recon);
+        assert_eq!(with_path.tier, ExecutionTier::Orchestrated);
+        assert!(!with_path.needs_recon);
         assert!(with_path.matched_signals.iter().any(|s| s == "paths(1)"));
 
-        // Short-Task Overhead Guard: true ONLY on trivial non-first-turn non-Plan follow-ups
+        // Short-Task Overhead Guard: stateless check on tiny pathless non-Plan prompts
         let trivial_prompt = "what does that flag default to?";
         let trivial = classify_turn(&TriageInput {
             prompt: trivial_prompt,
             prior_turn_errors: 0,
-            is_first_turn: false,
             permission_mode: PermissionMode::Autonomous,
             has_fast_model: true,
             has_plan_model: true,
@@ -268,50 +255,17 @@ mod tests {
         assert!(is_short_trivial_turn(
             trivial_prompt,
             &trivial,
-            false,
-            PermissionMode::Autonomous
-        ));
-        assert!(!is_short_trivial_turn(
-            trivial_prompt,
-            &trivial,
-            true,
             PermissionMode::Autonomous
         ));
         assert!(!is_short_trivial_turn(
             "check crates/zenko-core/src/types.rs",
             &with_path,
-            false,
             PermissionMode::Autonomous
         ));
         assert!(!is_short_trivial_turn(
             "design the caching layer",
             &plan_mode,
-            false,
             PermissionMode::Plan
         ));
-
-        // Tiny Turn-1 greeting skips unnecessary disk recon & stays Standard (zero Turn-1->2 KV bust)
-        let greeting = classify_turn(&TriageInput {
-            prompt: "hii",
-            prior_turn_errors: 0,
-            is_first_turn: true,
-            permission_mode: PermissionMode::Autonomous,
-            has_fast_model: true,
-            has_plan_model: false,
-        });
-        assert!(!greeting.needs_recon);
-        assert_eq!(greeting.tier, ExecutionTier::Standard);
-
-        // First substantive task prompt gets full Orchestrated + lightweight recon
-        let substantive = classify_turn(&TriageInput {
-            prompt: "create an intro website for zenko",
-            prior_turn_errors: 0,
-            is_first_turn: true,
-            permission_mode: PermissionMode::Autonomous,
-            has_fast_model: true,
-            has_plan_model: false,
-        });
-        assert!(substantive.needs_recon);
-        assert_eq!(substantive.tier, ExecutionTier::Orchestrated);
     }
 }

@@ -11,19 +11,15 @@ pub mod recon;
 pub mod router;
 pub mod triage;
 
-use crate::jobs::LocalJobSupervisor;
 use brainstorm::ClarificationHub;
 use guard::ExecutionGuard;
-use recon::{format_recon_context, run_parallel_recon};
 use router::{ModelRouteDecision, select_turn_model};
-use std::path::PathBuf;
 use std::sync::Arc;
 use triage::{TriageInput, classify_turn, is_short_trivial_turn};
 use zenko_core::{
     DeliberationDepth, ExecutionTier, IntentKind, ModelRoutingRole, PermissionMode,
-    ReasoningEffort, ReconSummary, TriageReport, ZenkoConfig,
+    ReasoningEffort, TriageReport, ZenkoConfig,
 };
-use zenko_memory::SqliteStore;
 
 pub use brainstorm::{
     audit_brainstorm_rubric, finalize_brainstorm_spec, resolve_headless_clarification,
@@ -47,31 +43,21 @@ pub struct OrchestratorTurnPlan {
     pub route: Option<ModelRouteDecision>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub has_explicit_model_override: bool,
-    pub recon: Option<ReconSummary>,
-    pub guidance_block: Option<String>,
     pub guard: ExecutionGuard,
 }
 
-/// Runs lightweight, non-blocking pre-turn membrane preparation:
-/// 1. Language-agnostic structural profiling (zero keyword tables, zero forced blocks)
-/// 2. Initial model & effort selection (LLM can dynamically shift anytime via `orchestrate_control`)
-/// 3. Fast 5-way parallel read-only recon (`tokio::join!`) when structurally useful
-/// 4. Neutral, non-bossy Tier-3 `<situational_awareness>` snapshot preserving full LLM sovereignty
+/// Zero-I/O, zero-latency pre-turn membrane preparation (Hermes + Prime + Oh My Hermes discipline):
+/// 1. Language-agnostic stateless structural profiling (zero keyword tables, zero turn-number rules)
+/// 2. Initial model & effort selection (LLM can shift gears or run on-demand recon anytime via `orchestrate_control`)
+/// 3. Zero hidden pre-turn disk/git scans or ephemeral message-0 injections (100% KV-cache-safe!)
 #[allow(clippy::too_many_arguments)]
-pub async fn prepare_turn(
+pub fn prepare_turn(
     cfg: &ZenkoConfig,
-    session_id: &str,
     prompt: &str,
-    workspace_dir: PathBuf,
-    hub_dir: PathBuf,
     permission_mode: PermissionMode,
-    is_first_turn: bool,
     prior_turn_errors: usize,
     opt_model_override: Option<&str>,
     session_model_override: Option<&str>,
-    _headless_no_wait: bool,
-    store: SqliteStore,
-    jobs: Arc<LocalJobSupervisor>,
 ) -> OrchestratorTurnPlan {
     let has_fast_model = !cfg.provider.fast_model.trim().is_empty();
     let has_plan_model = !cfg.provider.plan_model.trim().is_empty();
@@ -88,7 +74,6 @@ pub async fn prepare_turn(
         true => classify_turn(&TriageInput {
             prompt,
             prior_turn_errors,
-            is_first_turn,
             permission_mode,
             has_fast_model,
             has_plan_model,
@@ -109,7 +94,7 @@ pub async fn prepare_turn(
         },
     };
 
-    let short_trivial_turn = is_short_trivial_turn(prompt, &triage, is_first_turn, permission_mode);
+    let short_trivial_turn = is_short_trivial_turn(prompt, &triage, permission_mode);
     let route = select_turn_model(
         cfg,
         opt_model_override,
@@ -125,33 +110,6 @@ pub async fn prepare_turn(
         false => None,
     };
 
-    let recon = match cfg.orchestrator.enabled
-        && cfg.orchestrator.auto_recon
-        && triage.needs_recon
-        && !short_trivial_turn
-    {
-        true => Some(
-            run_parallel_recon(
-                workspace_dir,
-                hub_dir,
-                session_id.to_string(),
-                prompt,
-                store,
-                jobs,
-            )
-            .await,
-        ),
-        false => None,
-    };
-
-    let guidance_block = recon
-        .as_ref()
-        .map(format_recon_context)
-        .filter(|s| !s.is_empty())
-        .map(|recon_txt| {
-            format!("<situational_awareness>\n{recon_txt}\n</situational_awareness>")
-        });
-
     OrchestratorTurnPlan {
         guard: ExecutionGuard::new(triage.tier, triage.intent, triage.deliberation),
         triage,
@@ -159,8 +117,6 @@ pub async fn prepare_turn(
         route,
         reasoning_effort,
         has_explicit_model_override,
-        recon,
-        guidance_block,
     }
 }
 

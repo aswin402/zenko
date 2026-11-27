@@ -373,30 +373,14 @@ impl AgentRuntime {
             })
             .count();
 
-        // Treat a session that only had tiny ungrounded chat turns (no prior tools or notes)
-        // as still needing initial grounding once a substantive request arrives.
-        let is_ungrounded_turn = is_first_turn
-            || !initial_branch.iter().any(|ev| {
-                ev.role == EventRole::Tool
-                    || (ev.role == EventRole::System && ev.kind == EventKind::SystemNote)
-            });
-
         let mut orch = orchestrator::prepare_turn(
             cfg,
-            &session_id,
             user_text,
-            workspace_dir.clone(),
-            cfg.resolved_hub_dir(),
             effective_permission,
-            is_ungrounded_turn,
             prior_turn_errors,
             opts.model_override.as_deref(),
             session.model_override.as_deref(),
-            opts.headless_no_wait,
-            self.store.clone(),
-            self.jobs.clone(),
-        )
-        .await;
+        );
 
         // Multi-turn plan continuity: hydrate durable SQLite `session_tasks` DAG first
         // (surviving compaction & daemon restarts!), falling back to latest event-branch plan.
@@ -434,85 +418,6 @@ impl AgentRuntime {
         let _ = self.hydrate_activated_deferred(&session_id, &initial_branch);
         let _ = self.hydrate_loaded_scoped_rules(&session_id, &initial_branch);
 
-        // Oh My Pi cache-safe First-Turn Auto-Recall for Standard turns (Orchestrated turns
-        // already recall inside parallel recon). Persisted as `NOTE_KIND_MEMORY_RECALL` once.
-        let mut first_turn_recall_block: Option<String> = None;
-        if is_first_turn
-            && orch.recon.is_none()
-            && orch.triage.tier != zenko_core::ExecutionTier::Instant
-            && cfg.memory.workspace_scoping
-        {
-            let already_recalled = initial_branch.iter().any(|ev| {
-                ev.role == EventRole::System
-                    && ev.kind == EventKind::SystemNote
-                    && ev.content_json.get("note_kind").and_then(Value::as_str)
-                        == Some(NOTE_KIND_MEMORY_RECALL)
-            });
-            if !already_recalled {
-                let q = filter_query_terms(user_text)
-                    .into_iter()
-                    .take(8)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !q.is_empty() {
-                    let ws_check = match cfg.memory.verify_file_staleness {
-                        true => Some(workspace_dir.as_path()),
-                        false => None,
-                    };
-                    if let Ok(hits) = self.store.search_memory_hybrid(
-                        &q,
-                        Some(&project_scope),
-                        true,
-                        ws_check,
-                        MEMORY_AUTO_RECALL_LIMIT,
-                    ) {
-                        let strong: Vec<_> = hits
-                            .into_iter()
-                            .filter(|h| h.score >= MEMORY_AUTO_RECALL_MIN_SCORE)
-                            .collect();
-                        if !strong.is_empty() {
-                            let lines: Vec<String> = strong
-                                .iter()
-                                .map(|h| {
-                                    let stale = match h.stale_paths.is_empty() {
-                                        true => String::new(),
-                                        false => format!(
-                                            " [stale-path: {}]",
-                                            h.stale_paths.join(", ")
-                                        ),
-                                    };
-                                    format!(
-                                        "- [{}][{}] {}: {}{}",
-                                        h.entry.scope,
-                                        h.entry.kind,
-                                        h.entry.title,
-                                        compact_preview(&h.entry.content, 120),
-                                        stale
-                                    )
-                                })
-                                .collect();
-                            let block = lines.join("\n");
-                            if let Ok(rec_ev) = self.store.append_event(
-                                &session_id,
-                                head_id.as_deref(),
-                                EventRole::System,
-                                EventKind::SystemNote,
-                                json!({
-                                    "note_kind": NOTE_KIND_MEMORY_RECALL,
-                                    "scope": &project_scope,
-                                    "summary": &block,
-                                }),
-                                &UsageStats::default(),
-                            ) {
-                                head_id = Some(rec_ev.id);
-                            }
-                            first_turn_recall_block = Some(block);
-                        }
-                    }
-                }
-            }
-        }
-
         let mut model = match orch.route.as_ref() {
             Some(dec) => dec.model_id.clone(),
             None => self
@@ -537,22 +442,6 @@ impl AgentRuntime {
                 detail: format!("{} (route={route_tag})", orch.triage.reason),
                 model: Some(model.clone()),
             });
-            if let Some(ref rec) = orch.recon {
-                self.emit(AgentEvent::OrchestratorUpdated {
-                    session_id: session_id.clone(),
-                    stage: ORCH_STAGE_RECON.into(),
-                    tier: orch.triage.tier,
-                    detail: format!(
-                        "{} entries, {} markers, {} prompt files, {} memory hits ({}ms)",
-                        rec.workspace_entries.len(),
-                        rec.repo_markers.len(),
-                        rec.mentioned_files.len(),
-                        rec.memory_hits.len(),
-                        rec.elapsed_ms
-                    ),
-                    model: None,
-                });
-            }
         }
 
         let mut context_window = self.resolve_context_window(&model);
@@ -1027,34 +916,20 @@ impl AgentRuntime {
                         "<branch_summary>\n{branch_sum}\n</branch_summary>"
                     ));
                 }
-                if let Some(ref guide) = orch.guidance_block {
-                    tail_reminders.push(guide.clone());
-                }
-                if let Some(ref recall) = first_turn_recall_block {
-                    tail_reminders.push(format!(
-                        "<recalled_memories scope=\"{project_scope}\">\nRelevant persistent memories auto-recalled for this workspace:\n{recall}\n</recalled_memories>"
-                    ));
-                }
                 let live_tasks = self
                     .clarifications
                     .list_session_tasks(&session_id)
                     .unwrap_or_default();
-                if let Some(dag_block) = format_session_tasks_prompt_block(&live_tasks) {
-                    tail_reminders.push(dag_block);
-                } else {
-                    let plan_already_in_recon = orch.guidance_block.is_some()
-                        && orch
-                            .recon
-                            .as_ref()
-                            .and_then(|r| r.prior_plan_summary.as_ref())
-                            .is_some();
-                    if !plan_already_in_recon
-                        && let Some(plan) = orch.guard.active_plan() {
+                match format_session_tasks_prompt_block(&live_tasks) {
+                    Some(dag_block) => tail_reminders.push(dag_block),
+                    None => {
+                        if let Some(plan) = orch.guard.active_plan() {
                             tail_reminders.push(format!(
                                 "<active_execution_plan>\nContinue active DAG plan (treat decided steps as locked): {}\n</active_execution_plan>",
                                 format_plan_summary(plan)
                             ));
                         }
+                    }
                 }
             }
             if compacted_now {

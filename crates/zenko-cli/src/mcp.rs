@@ -1020,7 +1020,6 @@ async fn execute_mcp_tool(
                         &zenko_runtime::orchestrator::triage::TriageInput {
                             prompt: &prompt,
                             prior_turn_errors: 0,
-                            is_first_turn: true,
                             permission_mode: mode
                                 .as_deref()
                                 .map(PermissionMode::from_str_loose)

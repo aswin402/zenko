@@ -584,7 +584,7 @@ impl Default for ZPowersConfig {
 pub struct OrchestratorConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_recon: bool,
     #[serde(default = "default_true")]
     pub auto_brainstorm: bool,
@@ -606,7 +606,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            auto_recon: true,
+            auto_recon: false,
             auto_brainstorm: true,
             phase_gating: true,
             adaptive_model_routing: true,

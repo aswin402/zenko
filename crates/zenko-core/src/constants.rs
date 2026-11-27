@@ -1067,10 +1067,6 @@ pub const ZMODE_BALANCED_COMPACTION_WINDOW_CAP: u64 = 128_000;
 pub const ZMODE_HIGH_COMPACTION_WINDOW_CAP: u64 = 96_000;
 pub const ZMODE_ULTRA_COMPACTION_WINDOW_CAP: u64 = 72_000;
 
-/// Structural minimum word count on a non-Plan, pathless single-line Turn 1 before attaching
-/// workspace recon (keeps tiny greetings fast and prevents Turn-1 ephemeral reminder cache bust).
-pub const FIRST_TURN_RECON_MIN_WORDS: usize = 4;
-
 /// Live Todo-DAG drift guard: after this many mutating iterations with open todos and zero
 /// task status transitions, surface one cache-safe `<active_task_dag>` reminder (bounded per turn).
 pub const TODO_DRIFT_MUTATION_ITERS: usize = 2;

@@ -1076,6 +1076,20 @@ impl OrchestratorBridge for ClarificationHub {
                 rt.jobs.clone(),
             )
             .await;
+            let _ = self.events.send(AgentEvent::OrchestratorUpdated {
+                session_id: session_id.to_string(),
+                stage: zenko_core::ORCH_STAGE_RECON.into(),
+                tier: zenko_core::ExecutionTier::Orchestrated,
+                detail: format!(
+                    "On-demand recon: {} entries, {} markers, {} prompt files, {} memory hits ({}ms)",
+                    recon.workspace_entries.len(),
+                    recon.repo_markers.len(),
+                    recon.mentioned_files.len(),
+                    recon.memory_hits.len(),
+                    recon.elapsed_ms
+                ),
+                model: None,
+            });
             let formatted = format_recon_context(&recon);
             if !formatted.is_empty() {
                 receipt.recon_summary = Some(formatted);

@@ -396,7 +396,6 @@ pub fn run_debug_triage(
     let report = triage::classify_turn(&triage::TriageInput {
         prompt,
         prior_turn_errors: 0,
-        is_first_turn: true,
         permission_mode: mode,
         has_fast_model: !cfg.provider.fast_model.trim().is_empty(),
         has_plan_model: !cfg.provider.plan_model.trim().is_empty(),
@@ -411,7 +410,7 @@ pub fn run_debug_triage(
             println!("  Ambiguity:    {}", report.ambiguity_score);
             println!("  Model Role:   {}", report.recommended_model_role.as_str());
             println!("  Effort:       {}", report.recommended_effort.as_str());
-            println!("  Auto Recon:   {}", report.needs_recon);
+            println!("  Recon Mode:   on-demand (orchestrator-driven)");
             println!("  Brainstorm:   {}", report.needs_brainstorm);
             println!("  Signals:      {}", report.matched_signals.join(", "));
             println!("  Reason:       {}", report.reason);

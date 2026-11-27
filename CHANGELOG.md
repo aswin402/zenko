@@ -4,6 +4,16 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.53] - 2026-11-27
+
+Aligned Zenko's session grounding with **Hermes Agent**, **Oh My Hermes**, and **Prime Agent** — removing turn-based pre-turn reconnaissance and ephemeral Turn-1 message-0 injections in favor of a purely frozen session snapshot plus orchestrator-driven on-demand recon.
+
+### Changed
+- **Zero Turn-Based Pre-Turn Recon & Pure KV-Cache Stability (`crates/zenko-core/src/{config,constants}.rs`, `crates/zenko-runtime/src/{orchestrator/triage,orchestrator/mod,orchestrator/brainstorm,runtime/mod,runtime/turn}.rs`, `crates/zenko-cli/src/{mcp,debug}.rs`):**
+  - Removed `is_first_turn`, `FIRST_TURN_RECON_MIN_WORDS`, automatic pre-turn `run_parallel_recon`, and ephemeral `first_turn_recall_block` message-0 injections — eliminating ~200ms pre-stream latency and Turn-1 → Turn-2 KV-cache prefix busts.
+  - Kept `prepare_turn` zero-I/O and stateless (profiling only `PermissionMode::Plan`, mentioned paths, prior errors, and multiline structure).
+  - Kept `run_parallel_recon` strictly on-demand via `orchestrate_control(refresh_recon=true)` (emitting `ORCH_STAGE_RECON` and returning as a normal persisted tool result with zero prefix drift) alongside the frozen per-session `WorkspaceSnapshot` (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, `PROJECT_MEMORY.md`, skills index).
+
 ## [0.0.52] - 2026-11-27
 
 Resolved six runtime, auto-compaction, todo-system, KV-cache, and shell-diagnostic bugs uncovered in forensic analysis of real-world session `01M8EZDHMM54PGBHYZ0SNK3NDB`.
