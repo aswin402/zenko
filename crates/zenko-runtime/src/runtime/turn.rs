@@ -2001,6 +2001,22 @@ impl AgentRuntime {
                         done.output.metadata.as_ref(),
                     ) {
                         GuardVerdict::Continue => {
+                            if !done.output.is_error
+                                && !orch.guard.mutated_files_set().is_empty()
+                                && (zenko_core::MUTATING_FILE_TOOLS.contains(&eff_tool_name)
+                                    || eff_tool_name == TOOL_BATCH_TOOLS
+                                    || (eff_tool_name == TOOL_LSP
+                                        && is_lsp_tool_args_mutating(eff_tool_args)))
+                            {
+                                crate::zpowers::record_mutation_if_materialized(
+                                    &zpowers_ws,
+                                    &zpowers_sid,
+                                    &session.title,
+                                    session.parent_session_id.as_deref(),
+                                    orch.guard.mutated_files_set(),
+                                    &cfg.orchestrator.zpowers,
+                                );
+                            }
                             if done.tool_name == TOOL_SHELL_EXEC {
                                 let cmd = done
                                     .arguments

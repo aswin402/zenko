@@ -1336,6 +1336,43 @@ pub fn record_fast_track(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn record_mutation_if_materialized(
+    workspace_dir: &Path,
+    session_id: &str,
+    title: &str,
+    parent_session_id: Option<&str>,
+    mutated_files: &BTreeSet<String>,
+    cfg: &ZPowersConfig,
+) {
+    if !cfg.sync_artifacts_to_workspace
+        || !is_materialized(workspace_dir, session_id)
+        || mutated_files.is_empty()
+    {
+        return;
+    }
+    let mut state = load_state(workspace_dir, session_id, cfg.mode);
+    let mut merged: BTreeSet<String> = state.mutated_files.iter().cloned().collect();
+    let prev_len = merged.len();
+    for f in mutated_files {
+        merged.insert(f.clone());
+    }
+    let next_phase = match state.phase {
+        ZPowersPhase::Idle
+        | ZPowersPhase::Recon
+        | ZPowersPhase::Spec
+        | ZPowersPhase::Plan
+        | ZPowersPhase::Verify => ZPowersPhase::Execute,
+        other => other,
+    };
+    if merged.len() == prev_len && next_phase == state.phase {
+        return;
+    }
+    state.mutated_files = merged.into_iter().collect();
+    state.phase = next_phase;
+    let _ = save_state(workspace_dir, session_id, title, parent_session_id, &mut state, cfg);
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn record_verification_if_materialized(
     workspace_dir: &Path,
     session_id: &str,
@@ -1854,5 +1891,49 @@ mod tests {
             parse_review_verdict_from_report("Some notes without explicit verdict"),
             ZPowersReviewVerdict::ChangesRequested
         );
+    }
+
+    #[test]
+    fn record_mutation_if_materialized_tracks_execute_phase_and_mutated_files() {
+        let ws = std::env::temp_dir().join(format!("zenko_zp_mut_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&ws).expect("mkdir");
+        let cfg = ZPowersConfig::default();
+
+        // Non-materialized session stays untouched on mutation.
+        let mut files = BTreeSet::new();
+        files.insert("src/main.rs".to_string());
+        record_mutation_if_materialized(&ws, "s_unmat", "Unmaterialized", None, &files, &cfg);
+        assert!(!is_materialized(&ws, "s_unmat"));
+
+        // Materialized plan transitions Plan -> Execute -> Verify -> Execute cleanly.
+        write_plan_doc(&ws, "s_mat", "Feature", None, Some("Plan"), "- [ ] Edit main", &cfg)
+            .expect("write plan");
+        assert_eq!(load_state(&ws, "s_mat", cfg.mode).phase, ZPowersPhase::Plan);
+
+        record_mutation_if_materialized(&ws, "s_mat", "Feature", None, &files, &cfg);
+        let st_exec = load_state(&ws, "s_mat", cfg.mode);
+        assert_eq!(st_exec.phase, ZPowersPhase::Execute);
+        assert_eq!(st_exec.mutated_files, vec!["src/main.rs"]);
+
+        record_verification_if_materialized(
+            &ws,
+            "s_mat",
+            "Feature",
+            None,
+            "cargo test",
+            true,
+            "all ok",
+            &files,
+            &cfg,
+        );
+        assert_eq!(load_state(&ws, "s_mat", cfg.mode).phase, ZPowersPhase::Verify);
+
+        files.insert("src/lib.rs".to_string());
+        record_mutation_if_materialized(&ws, "s_mat", "Feature", None, &files, &cfg);
+        let st_reexec = load_state(&ws, "s_mat", cfg.mode);
+        assert_eq!(st_reexec.phase, ZPowersPhase::Execute);
+        assert_eq!(st_reexec.mutated_files, vec!["src/lib.rs", "src/main.rs"]);
+
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

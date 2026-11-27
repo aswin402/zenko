@@ -4,6 +4,19 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.50] - 2026-11-27
+
+Polished three real-world rough edges uncovered during live end-to-end runs of `ask_user` and ZPowers against `MiniMax-M3.1-Flash`.
+
+### Fixed
+- **Resilient `ask_user` Top-Level `question` Fallback & Recommendation Alternatives (`crates/zenko-tools/src/orchestrator_tools.rs`, `webui/src/components/chat/AskUserCard.tsx`):**
+  - Derived `question` gracefully from `title`, `steps[0].question`, or `recommendation.title` whenever the model omits a redundant top-level `question` on `question_flow` or `recommendation` calls (eliminating wasted retry round-trips).
+  - Defaulted `allow_custom = true` on `recommendation` cards, synthesized a clear alternative choice alongside `accept` when `options[]` is omitted, and ensured `RecommendationCard` always exposes the `Alternatives` toggle whenever `alternatives_label`, `allow_custom`, or multiple options are present.
+- **Live ZPowers Execution Phase & `mutated_files` Persistence (`crates/zenko-runtime/src/{zpowers,runtime/turn}.rs`):**
+  - Added `record_mutation_if_materialized` called on successful file mutations so `.zenko/sessions/<id>/zpowers/state.json` transitions cleanly (`plan` -> `execute` -> `verify` -> `execute`) and tracks `mutated_files` live during execution instead of waiting solely for verification receipts.
+- **Unpiped Verification Command Guidance (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/orchestrator/guard.rs`):**
+  - Clarified in `ZPOWERS_ENVIRONMENT_POLICY` and `zpowers_iron_law` that build/test verification commands should run directly without piping through `| tail` or `| head`, preventing accidental POSIX exit-code masking while keeping anti-spoofing strict.
+
 ## [0.0.49] - 2026-11-27
 
 Introduced sovereign interactive **`ask_user`** elicitation (inspired by `rpiv-mono`, `micode`, and `octto`) paired with all five official **`@assistant-ui` Elements** (`option-list`, `question-flow`, `recommendation-card`, `feedback-dialog`, `todo-list`) wired end-to-end across Zenko's Rust runtime, ZPowers continuity ledger, HTTP API, Telegram gateway, and embedded WebUI.

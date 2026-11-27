@@ -203,7 +203,8 @@ function RecommendationPrompt({
   const rec = item.recommendation
   const primaryAcceptId =
     item.options.find((o) => o.recommended)?.id || item.options[0]?.id || 'accept'
-  const hasAlternatives = item.options.length > 1 || Boolean(item.allow_custom)
+  const hasAlternatives =
+    item.options.length > 1 || Boolean(item.allow_custom) || Boolean(rec?.alternatives_label)
 
   return (
     <div

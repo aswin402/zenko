@@ -1068,7 +1068,7 @@ impl Tool for AskUserTool {
                     "allow_custom": { "type": "boolean", "description": "Show a custom freeform note/override input alongside structured choices." },
                     "allow_auto_default": { "type": "boolean", "description": "Whether headless 24/7 mode may auto-apply defaults (set false for missing required facts/data)." }
                 },
-                "required": ["question"]
+                "required": []
             }),
             risk: RiskLevel::Safe,
         }
@@ -1080,13 +1080,6 @@ impl Tool for AskUserTool {
         args: Value,
         cancel: CancellationToken,
     ) -> Result<ToolOutput> {
-        let question = args
-            .get("question")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| ZenkoError::Tool("missing `question`".into()))?
-            .to_string();
         let title = args
             .get("title")
             .and_then(Value::as_str)
@@ -1107,14 +1100,37 @@ impl Tool for AskUserTool {
         let mut options = parse_ask_options(args.get("options"), ASK_USER_MAX_OPTIONS);
         let steps = parse_ask_steps(args.get("steps"));
         let fields = parse_ask_fields(args.get("fields"));
+        let raw_question = args
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
         let mut recommendation = parse_ask_recommendation(
             args.get("recommendation"),
-            match title.is_empty() {
-                true => &question,
-                false => &title,
+            match (!title.is_empty(), raw_question.as_deref()) {
+                (true, _) => title.as_str(),
+                (false, Some(q)) => q,
+                (false, None) => "",
             },
             &context,
         );
+        let question = raw_question
+            .or_else(|| (!title.is_empty()).then(|| title.clone()))
+            .or_else(|| steps.first().map(|s| s.question.clone()))
+            .or_else(|| {
+                recommendation
+                    .as_ref()
+                    .map(|r| r.title.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            })
+            .ok_or_else(|| {
+                ZenkoError::Tool(
+                    "missing `question` (provide `question`, `title`, `steps`, or `recommendation`)"
+                        .into(),
+                )
+            })?;
 
         let kind = match args.get("kind").and_then(Value::as_str) {
             Some(raw) => AskUserKind::parse(raw).ok_or_else(|| {
@@ -1165,14 +1181,26 @@ impl Tool for AskUserTool {
                     });
                 }
                 if options.is_empty() {
+                    let accept_label = recommendation
+                        .as_ref()
+                        .map(|r| r.accept_label.clone())
+                        .unwrap_or_else(|| "Accept".into());
+                    let alt_label = recommendation
+                        .as_ref()
+                        .map(|r| r.alternatives_label.clone())
+                        .filter(|s| !s.trim().is_empty() && s.trim() != accept_label.trim())
+                        .unwrap_or_else(|| "Alternatives".into());
                     options.push(ClarificationOption {
                         id: ASK_USER_OPTION_ACCEPT.into(),
-                        label: recommendation
-                            .as_ref()
-                            .map(|r| r.accept_label.clone())
-                            .unwrap_or_else(|| "Accept".into()),
+                        label: accept_label,
                         description: "Proceed with the recommended approach".into(),
                         recommended: true,
+                    });
+                    options.push(ClarificationOption {
+                        id: zenko_core::ASK_USER_OPTION_CUSTOM.into(),
+                        label: alt_label,
+                        description: "Choose a different approach or specify your preference".into(),
+                        recommended: false,
                     });
                 }
             }
@@ -1182,7 +1210,10 @@ impl Tool for AskUserTool {
         let allow_custom = args
             .get("allow_custom")
             .and_then(Value::as_bool)
-            .unwrap_or(matches!(kind, AskUserKind::DataInput | AskUserKind::Feedback));
+            .unwrap_or(matches!(
+                kind,
+                AskUserKind::DataInput | AskUserKind::Feedback | AskUserKind::Recommendation
+            ));
         let allow_auto_default = args
             .get("allow_auto_default")
             .and_then(Value::as_bool)
@@ -1685,23 +1716,51 @@ mod tests {
             .expect("flow execute");
         assert_eq!(out_flow.metadata.expect("meta")["kind"], "question_flow");
 
-        // 3. Recommendation inferred from `recommendation` object.
+        // 3. Recommendation inferred from `recommendation` object even when top-level `question` is omitted.
         let out_rec = canonical
             .execute(
                 &ctx,
                 json!({
-                    "question": "Proceed with SQLite WAL?",
                     "recommendation": {
                         "title": "Use SQLite WAL",
                         "summary": "Zero external daemon, ACID transactions",
                         "pros": ["Single file"],
-                        "cons": ["Single writer"]
+                        "cons": ["Single writer"],
+                        "accept_label": "Accept SQLite",
+                        "alternatives_label": "Use JSONL instead"
                     }
                 }),
                 CancellationToken::new(),
             )
             .await
             .expect("rec execute");
-        assert_eq!(out_rec.metadata.expect("meta")["kind"], "recommendation");
+        let rec_meta = out_rec.metadata.expect("rec meta");
+        assert_eq!(rec_meta["kind"], "recommendation");
+        assert_eq!(rec_meta["question"], "Use SQLite WAL");
+        assert_eq!(rec_meta["options"].as_array().map(Vec::len), Some(2));
+        assert_eq!(rec_meta["options"][1]["label"], "Use JSONL instead");
+
+        // 4. QuestionFlow omitting top-level `question` falls back cleanly to `title`.
+        let out_flow_no_q = canonical
+            .execute(
+                &ctx,
+                json!({
+                    "kind": "question_flow",
+                    "title": "calc.py onboarding",
+                    "steps": [
+                        {
+                            "id": "logging",
+                            "question": "Logging verbosity?",
+                            "options": [{ "id": "normal", "label": "Normal" }]
+                        }
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("flow without top-level question");
+        let flow_no_q_meta = out_flow_no_q.metadata.expect("flow no q meta");
+        assert_eq!(flow_no_q_meta["kind"], "question_flow");
+        assert_eq!(flow_no_q_meta["question"], "calc.py onboarding");
     }
 }

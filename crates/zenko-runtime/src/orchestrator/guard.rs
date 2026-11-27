@@ -1076,7 +1076,7 @@ impl ExecutionGuard {
                     true => format!(
                         "<orchestrator_hint type=\"zpowers_iron_law\">\n\
                          ZPowers Verification Iron Law: {} file(s) were modified ({}) with NO fresh passing verification run after your last edit.{fail_note} \
-                         Run the relevant build, typecheck, or test command now and confirm a passing exit code before claiming completion.\n\
+                         Run the relevant build, typecheck, or test command directly (without piping through `| tail` or `| head`) and confirm a passing exit code before claiming completion.\n\
                          </orchestrator_hint>",
                         files.len(),
                         files.join(", ")
