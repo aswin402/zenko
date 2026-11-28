@@ -32,7 +32,8 @@ use zenko_core::{
     COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS, COMPACTION_MIN_USABLE_INPUT_TOKENS,
     COMPACTION_PROTECTED_TOOLS, ChatMessage, CompactionCheckpointPayload, CompactionFileLedger,
     DEFAULT_COMPACTION_SNIPPET_CHARS, DEFAULT_COMPACTION_TRIGGER_RATIO, EventKind, EventRole,
-    MICROCOMPACT_EPOCH_STEP, MICROCOMPACT_MIN_TOOL_CHARS, MICROCOMPACT_PROTECT_RECENT_EXCHANGES,
+    MICROCOMPACT_EPOCH_STEP, MICROCOMPACT_MIN_MARGINAL_TOKENS, MICROCOMPACT_MIN_TOOL_CHARS,
+    MICROCOMPACT_MIN_WRITE_ARG_CHARS, MICROCOMPACT_PROTECT_RECENT_EXCHANGES,
     MICROCOMPACTABLE_TOOLS, PROVIDER_CONTEXT_OVERFLOW_SIGNATURES, SessionEvent,
     TOKEN_CALIBRATION_DEFAULT_BYTES_PER_TOK, TOKEN_CALIBRATION_EMA_ALPHA,
     TOKEN_CALIBRATION_MAX_BYTES_PER_TOK, TOKEN_CALIBRATION_MIN_BYTES_PER_TOK,
@@ -364,6 +365,7 @@ pub struct MicrocompactStats {
     pub compacted_tools: usize,
     pub stripped_reasoning_blocks: usize,
     pub tokens_saved: usize,
+    pub cut_units: usize,
 }
 
 fn extract_artifact_handle(content: &str) -> Option<&str> {
@@ -499,12 +501,109 @@ pub fn microcompact_messages(
     )
 }
 
-/// Stage-A lossless, KV-cache-friendly quantized microcompaction:
-/// - Subtracts output reservation from usable input window and uses calibrated `bytes_per_tok`.
-/// - Unwraps `invoke_tool` and inspects `batch_tools` so deferred read/search/web/git payloads
-///   microcompact while strictly protecting planning & memory tools.
-/// - Quantizes the compaction boundary to multiples of `MICROCOMPACT_EPOCH_STEP` so the active
-///   prefix stays byte-identical across consecutive turns (eliminating per-turn KV-cache busts).
+/// Collapses oversized historical `write_file` / `apply_patch` / `hash_edit` assistant tool-call
+/// body payloads (`content`, `patch`, `new_str`) once they age behind `protected_start`, so
+/// writing 50KB–80KB files does not stay permanently glued inside prompt history.
+fn compact_historical_write_call(tc: &mut zenko_core::ToolCall, bytes_per_tok: f64) -> usize {
+    let (eff_name, target_obj) = match tc.name.as_str() {
+        TOOL_INVOKE_TOOL => {
+            let inner = tc
+                .arguments
+                .get("tool")
+                .or_else(|| tc.arguments.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            let args_mut = match tc.arguments.get_mut("args").is_some() {
+                true => tc.arguments.get_mut("args"),
+                false => tc.arguments.get_mut("arguments"),
+            };
+            (inner, args_mut.and_then(Value::as_object_mut))
+        }
+        other => (other.to_string(), tc.arguments.as_object_mut()),
+    };
+    let Some(map) = target_obj else {
+        return 0;
+    };
+    let field_key = match eff_name.as_str() {
+        TOOL_WRITE_FILE => "content",
+        TOOL_APPLY_PATCH => "patch",
+        TOOL_HASH_EDIT => "new_str",
+        _ => return 0,
+    };
+    let Some(orig_len) = map
+        .get(field_key)
+        .and_then(Value::as_str)
+        .filter(|s| s.len() >= MICROCOMPACT_MIN_WRITE_ARG_CHARS && !s.starts_with("[microcompacted "))
+        .map(str::len)
+    else {
+        return 0;
+    };
+    let orig_lines = map
+        .get(field_key)
+        .and_then(Value::as_str)
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+    let path_label = map
+        .get("path")
+        .or_else(|| map.get("file_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("file")
+        .to_string();
+    let stub = format!(
+        "[microcompacted `{eff_name}` payload for `{path_label}` ({orig_lines} lines, {orig_len}B) — use `read_file` if needed]"
+    );
+    if stub.len() >= orig_len {
+        return 0;
+    }
+    let saved = bytes_to_tokens(orig_len.saturating_sub(stub.len()), bytes_per_tok);
+    map.insert(field_key.to_string(), Value::String(stub));
+    saved
+}
+
+fn estimate_unit_compactable_tokens(unit: &ExchangeUnit, bytes_per_tok: f64) -> usize {
+    let mut call_meta: HashMap<&str, (&str, &Value)> = HashMap::new();
+    let mut saved = 0usize;
+    for msg in &unit.messages {
+        match msg.role {
+            EventRole::Assistant => {
+                for tc in &msg.tool_calls {
+                    call_meta.insert(tc.id.as_str(), (tc.name.as_str(), &tc.arguments));
+                    let mut tc_clone = tc.clone();
+                    saved += compact_historical_write_call(&mut tc_clone, bytes_per_tok);
+                }
+                if let Some(ref reasoning) = msg.reasoning_content {
+                    saved += bytes_to_tokens(reasoning.len(), bytes_per_tok);
+                }
+            }
+            EventRole::Tool => {
+                if msg.content.len() < MICROCOMPACT_MIN_TOOL_CHARS {
+                    continue;
+                }
+                let meta = msg
+                    .tool_call_id
+                    .as_deref()
+                    .and_then(|id| call_meta.get(id).copied());
+                let outer_name = msg
+                    .name
+                    .as_deref()
+                    .or_else(|| meta.map(|(n, _)| n))
+                    .unwrap_or("");
+                if classify_microcompact_target(outer_name, meta.map(|(_, a)| a)).is_some() {
+                    let est_stub = 140usize;
+                    saved += bytes_to_tokens(msg.content.len().saturating_sub(est_stub), bytes_per_tok);
+                }
+            }
+            EventRole::User | EventRole::System => {}
+        }
+    }
+    saved
+}
+
+/// Stage-A lossless, KV-cache-friendly quantized microcompaction (stateless entrypoint).
 pub fn microcompact_messages_calibrated(
     messages: Vec<ChatMessage>,
     context_window: u64,
@@ -513,15 +612,46 @@ pub fn microcompact_messages_calibrated(
     trigger_ratio: f64,
     bytes_per_tok: f64,
 ) -> (Vec<ChatMessage>, MicrocompactStats) {
+    microcompact_messages_guarded(
+        messages,
+        context_window,
+        reserve_output_tokens,
+        prefix_tokens,
+        trigger_ratio,
+        DEFAULT_COMPACTION_TRIGGER_RATIO,
+        bytes_per_tok,
+        0,
+        false,
+    )
+}
+
+/// Cache-aware Stage-A microcompaction with KV-prefix ROI protection & sticky cut retention:
+/// - Never oscillates (once `prev_cut_units > 0`, keeps that prefix compacted across subsequent turns).
+/// - When `enforce_cache_roi` is true, refuses to advance `prev_cut_units -> candidate_cut` if doing
+///   so would bust a large warm KV-cache tail (`> 2x` marginal savings) while still safely below
+///   Stage-B compaction pressure.
+/// - Compacts both bulky historical `EventRole::Tool` results AND oversized historical
+///   `write_file`/`apply_patch`/`hash_edit` assistant tool-call payloads.
+#[allow(clippy::too_many_arguments)]
+pub fn microcompact_messages_guarded(
+    messages: Vec<ChatMessage>,
+    context_window: u64,
+    reserve_output_tokens: u32,
+    prefix_tokens: usize,
+    trigger_ratio: f64,
+    stage_b_ratio: f64,
+    bytes_per_tok: f64,
+    prev_cut_units: usize,
+    enforce_cache_roi: bool,
+) -> (Vec<ChatMessage>, MicrocompactStats) {
     let ratio = trigger_ratio.clamp(0.25, 0.90);
     let usable = usable_input_window(context_window, reserve_output_tokens);
     let trigger_budget = ((usable as f64) * ratio) as usize;
+    let stage_b_budget = ((usable as f64) * stage_b_ratio.clamp(0.45, 0.94)) as usize;
     let mut units = group_atomic_exchanges(messages, bytes_per_tok);
     let history_tokens: usize = units.iter().map(|u| u.est_tokens).sum();
 
-    if prefix_tokens + history_tokens <= trigger_budget
-        || units.len() <= MICROCOMPACT_PROTECT_RECENT_EXCHANGES
-    {
+    if units.len() <= MICROCOMPACT_PROTECT_RECENT_EXCHANGES {
         return (
             units.into_iter().flat_map(|u| u.messages).collect(),
             MicrocompactStats::default(),
@@ -529,23 +659,77 @@ pub fn microcompact_messages_calibrated(
     }
 
     let raw_protected_start = units.len().saturating_sub(MICROCOMPACT_PROTECT_RECENT_EXCHANGES);
-    // Quantize cut point to epoch multiples so KV prefix remains invariant for EPOCH_STEP turns.
-    // Fall back to exact `raw_protected_start` if quantized boundary is 0 (short heavy session).
-    let quantized_start = (raw_protected_start / MICROCOMPACT_EPOCH_STEP) * MICROCOMPACT_EPOCH_STEP;
-    let protected_start = match quantized_start > 0 {
+    let held_cut = prev_cut_units.min(raw_protected_start);
+
+    if prefix_tokens + history_tokens <= trigger_budget && held_cut == 0 {
+        return (
+            units.into_iter().flat_map(|u| u.messages).collect(),
+            MicrocompactStats::default(),
+        );
+    }
+
+    // Quantize cut point to epoch multiples so KV prefix remains invariant across turns:
+    // full `MICROCOMPACT_EPOCH_STEP` (8) once past the first epoch, half-step (4) before that
+    // so early turns (raw 4..7) also stay pinned instead of drifting by +1 each iteration.
+    let half_step = (MICROCOMPACT_EPOCH_STEP / 2).max(1);
+    let quantized_start = match raw_protected_start >= MICROCOMPACT_EPOCH_STEP {
+        true => (raw_protected_start / MICROCOMPACT_EPOCH_STEP) * MICROCOMPACT_EPOCH_STEP,
+        false => (raw_protected_start / half_step) * half_step,
+    };
+    let candidate_cut = match quantized_start > 0 {
         true => quantized_start,
         false => raw_protected_start,
     };
 
-    let mut stats = MicrocompactStats::default();
+    let protected_start = match (enforce_cache_roi, held_cut > 0, candidate_cut > held_cut) {
+        (true, true, true) => {
+            let saved_at_held: usize = units
+                .iter()
+                .take(held_cut)
+                .map(|u| estimate_unit_compactable_tokens(u, bytes_per_tok))
+                .sum();
+            let total_if_held =
+                prefix_tokens + history_tokens.saturating_sub(saved_at_held);
+            let near_stage_b = total_if_held.saturating_mul(100) >= stage_b_budget.saturating_mul(88);
+            let marginal_savings: usize = units
+                .iter()
+                .skip(held_cut)
+                .take(candidate_cut.saturating_sub(held_cut))
+                .map(|u| estimate_unit_compactable_tokens(u, bytes_per_tok))
+                .sum();
+            let busted_tail_tokens: usize = units
+                .iter()
+                .skip(held_cut)
+                .map(|u| u.est_tokens)
+                .sum();
+            let good_roi = marginal_savings >= MICROCOMPACT_MIN_MARGINAL_TOKENS
+                && marginal_savings.saturating_mul(2) >= busted_tail_tokens;
+            match near_stage_b || good_roi {
+                true => candidate_cut,
+                false => held_cut,
+            }
+        }
+        (_, true, false) => held_cut,
+        _ => candidate_cut,
+    };
+
+    let mut stats = MicrocompactStats {
+        cut_units: protected_start,
+        ..Default::default()
+    };
 
     for unit in units.iter_mut().take(protected_start) {
         let mut call_meta: HashMap<String, (String, Value)> = HashMap::new();
         for msg in &mut unit.messages {
             match msg.role {
                 EventRole::Assistant => {
-                    for tc in &msg.tool_calls {
+                    for tc in &mut msg.tool_calls {
                         call_meta.insert(tc.id.clone(), (tc.name.clone(), tc.arguments.clone()));
+                        let arg_saved = compact_historical_write_call(tc, bytes_per_tok);
+                        if arg_saved > 0 {
+                            stats.compacted_tools += 1;
+                            stats.tokens_saved += arg_saved;
+                        }
                     }
                     if let Some(reasoning) = msg.reasoning_content.take() {
                         stats.stripped_reasoning_blocks += 1;
@@ -604,6 +788,10 @@ pub fn microcompact_messages_calibrated(
                 EventRole::User | EventRole::System => {}
             }
         }
+    }
+
+    if stats.compacted_tools == 0 && stats.stripped_reasoning_blocks == 0 {
+        stats.cut_units = held_cut;
     }
 
     let out = units.into_iter().flat_map(|u| u.messages).collect();
@@ -2081,5 +2269,105 @@ mod tests {
             64_000
         );
         assert_eq!(effective_compaction_window(1_000_000, 0), 1_000_000);
+    }
+
+    #[test]
+    fn microcompact_guarded_compacts_historical_write_file_and_protects_warm_kv_cache() {
+        let mut msgs: Vec<ChatMessage> = vec![user_msg("Build portfolio website")];
+        // Unit 1: huge write_file(index.html) payload (~20KB) with tiny ok tool output
+        msgs.push(ChatMessage {
+            role: EventRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "w1".into(),
+                name: TOOL_WRITE_FILE.into(),
+                arguments: json!({
+                    "path": "index.html",
+                    "content": "<div>portfolio hero section</div>\n".repeat(600),
+                }),
+            }],
+            tool_call_id: None,
+            name: None,
+        });
+        msgs.push(ChatMessage {
+            role: EventRole::Tool,
+            content: "Wrote 20400 bytes to index.html".into(),
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            tool_call_id: Some("w1".into()),
+            name: Some(TOOL_WRITE_FILE.into()),
+        });
+        // Add 10 more small exchanges (total 12 units: 0..12, raw_protected_start = 8 -> cut = 8)
+        for i in 0..10 {
+            let cid = format!("r{i}");
+            msgs.push(ChatMessage {
+                role: EventRole::Assistant,
+                content: String::new(),
+                reasoning_content: None,
+                tool_calls: vec![ToolCall {
+                    id: cid.clone(),
+                    name: TOOL_READ_FILE.into(),
+                    arguments: json!({"path": format!("file_{i}.js")}),
+                }],
+                tool_call_id: None,
+                name: None,
+            });
+            msgs.push(ChatMessage {
+                role: EventRole::Tool,
+                content: format!("const x{i} = {i};\n").repeat(80),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                tool_call_id: Some(cid),
+                name: Some(TOOL_READ_FILE.into()),
+            });
+        }
+
+        // Initial Stage-A triggers (trigger_ratio=0.35 on 16k window) -> cuts at 8 and compacts w1's content!
+        let (compacted, stats1) = microcompact_messages_guarded(
+            msgs.clone(),
+            16_000,
+            1_000,
+            2_000,
+            0.35,
+            0.80,
+            3.5,
+            0,
+            true,
+        );
+        assert_eq!(stats1.cut_units, 8);
+        assert!(stats1.compacted_tools >= 1);
+        assert!(stats1.tokens_saved > 4_000);
+        let w1_content = compacted[1].tool_calls[0]
+            .arguments
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert!(
+            w1_content.starts_with("[microcompacted `write_file` payload for `index.html`"),
+            "expected write_file body stub, got: {w1_content}"
+        );
+
+        // Now grow by 8 tiny non-compactable units (total 20 units -> candidate_cut = 16 > held_cut = 8)
+        // Because the new tail has large warm tokens (~10k) and near-zero marginal savings while
+        // safely below Stage-B (128k window), ROI guard MUST hold cut_units at 8!
+        for i in 0..8 {
+            msgs.push(user_msg(&format!("follow-up note {i}: {}", "detail ".repeat(180))));
+        }
+        let (_held_msgs, stats2) = microcompact_messages_guarded(
+            msgs,
+            128_000,
+            4_000,
+            2_000,
+            0.35,
+            0.80,
+            3.5,
+            stats1.cut_units,
+            true,
+        );
+        assert_eq!(
+            stats2.cut_units, 8,
+            "ROI guard must keep warm KV-cache cut frozen at 8 instead of advancing to 16"
+        );
     }
 }

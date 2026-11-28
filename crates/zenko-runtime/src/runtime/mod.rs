@@ -10,7 +10,8 @@ use crate::compaction::{
     effective_compaction_window, estimate_messages_tokens_calibrated, estimate_text_tokens,
     estimate_text_tokens_calibrated, estimate_tool_specs_tokens,
     estimate_tool_specs_tokens_calibrated, is_provider_context_overflow_error, message_raw_bytes,
-    microcompact_messages_calibrated, plan_checkpoint_split_calibrated,
+    microcompact_messages_calibrated, microcompact_messages_guarded,
+    plan_checkpoint_split_calibrated,
     prepend_checkpoint_to_messages, sanitize_message_tool_pairs, slice_from_latest_checkpoint,
     tool_specs_raw_bytes, usable_input_window,
 };
@@ -93,7 +94,8 @@ use zenko_core::{
     IPC_METHOD_TASKS_DAG_CREATE, IPC_METHOD_TASKS_DAG_DELETE, IPC_METHOD_TASKS_DAG_LIST,
     IPC_METHOD_TASKS_DAG_UPDATE, IPC_METHOD_TRIGGERS_LIST, JOB_DEFAULT_LIST_LIMIT,
     JOB_DEFAULT_READ_BYTES, JOB_DEFAULT_WAIT_SECS, JOB_MAX_WAIT_SECS,
-    JOB_NOTICE_CMD_PREVIEW_CHARS, JOB_WAKE_COALESCE_MS, JobSupervisor, LOG_CATEGORIES, LlmDelta,
+    JOB_NOTICE_CMD_PREVIEW_CHARS, JOB_WAKE_COALESCE_MS, JobSupervisor, LEAKED_TOOL_MARKUP_MARKERS,
+    LOG_CATEGORIES, LlmDelta,
     LlmProvider, LogFilter, LspConfig, MAX_PARALLEL_TOOLS, MEMORY_SCOPE_GLOBAL,
     MODEL_CACHE_TTL_SECS, MODEL_KV_COMPACT_REGISTRY_KEY, MODEL_KV_LEGACY_COMPACT_THRESHOLD_BYTES,
     MODEL_KV_PROVIDER_PREFIX, MODEL_KV_REGISTRY_KEY, MUTATING_FILE_TOOLS, McpServerConfig,
@@ -106,7 +108,7 @@ use zenko_core::{
     ORCH_STAGE_COMPACTION, ORCH_STAGE_CONCISE, ORCH_STAGE_ECONOMY, ORCH_STAGE_ESCALATED,
     ORCH_STAGE_GEAR_SHIFT, ORCH_STAGE_INTENT_GATE, ORCH_STAGE_MICROCOMPACT, ORCH_STAGE_MINIMALISM,
     ORCH_STAGE_PACING, ORCH_STAGE_PHASE_GATE, ORCH_STAGE_PLAN_MODE, ORCH_STAGE_POSTURE,
-    ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TOOL_ACTIVATED, ORCH_STAGE_TRIAGED,
+    ORCH_STAGE_SYNTHESIS, ORCH_STAGE_TODO_SYNC, ORCH_STAGE_TOOL_ACTIVATED, ORCH_STAGE_TRIAGED,
     ORCH_STAGE_TRUNCATION_RECOVERY, ORCH_STAGE_VERIFICATION_GATE, OrchestrateControlReceipt,
     OrchestrateControlRequest, OrchestratorBridge, PeerRole, PermissionMode, QueuedPrompt,
     ReasoningEffort, Result, RewindMode, RewindRequest, SESSION_MAX_JOB_NOTICES, SHELL_BIN_UNIX,
@@ -1208,6 +1210,38 @@ impl AgentRuntime {
                     .and_then(|m| m.max_output_tokens)
                     .and_then(|v| u32::try_from(v).ok())
             })
+    }
+
+    /// Resolves live `(prompt_price_per_m, completion_price_per_m)` from cached provider models
+    /// or SQLite `models_dev_compact_v2` (zero hardcoded model prices).
+    fn resolve_model_pricing(&self, model_id: &str) -> Option<(f64, f64)> {
+        let from_mem = self.cached_models.lock().ok().and_then(|guard| {
+            guard.as_ref().and_then(|(_, list)| {
+                list.iter()
+                    .find(|m| m.id.eq_ignore_ascii_case(model_id))
+                    .and_then(|m| Some((m.prompt_price_per_m?, m.completion_price_per_m?)))
+            })
+        });
+        from_mem.or_else(|| {
+            let meta = self.resolve_compact_model_meta(model_id)?;
+            Some((meta.prompt_price_per_m?, meta.completion_price_per_m?))
+        })
+    }
+
+    /// Hydrates `usage.cost_usd` from live model pricing when the upstream provider omits
+    /// `usage.cost` (MiniMax, OpenAI, DeepSeek, Gemini), preserving exact provider-billed cost
+    /// whenever already populated (e.g. OpenRouter).
+    fn hydrate_usage_cost(&self, model_id: &str, usage: &mut UsageStats) {
+        if usage.cost_usd > 0.0 || (usage.prompt_tokens == 0 && usage.completion_tokens == 0) {
+            return;
+        }
+        let Some((prompt_pm, completion_pm)) = self.resolve_model_pricing(model_id) else {
+            return;
+        };
+        let computed = compute_fallback_usage_cost(usage, prompt_pm, completion_pm);
+        if computed > 0.0 {
+            usage.cost_usd = computed;
+        }
     }
 
     /// Computes a safe output-token ceiling so reasoning models (which share `max_tokens` across
@@ -3767,5 +3801,30 @@ fn build_script_command(script_path: &std::path::Path) -> String {
         Some("js" | "mjs" | "cjs") => format!("node {quoted}"),
         _ => format!("{SHELL_BIN_UNIX} {quoted}"),
     }
+}
+
+/// Pure deterministic fallback USD cost calculation applying `PROMPT_CACHE_READ_COST_MULTIPLIER`
+/// to cached prompt tokens whenever a provider omits `usage.cost`.
+pub(crate) fn compute_fallback_usage_cost(
+    usage: &UsageStats,
+    prompt_price_per_m: f64,
+    completion_price_per_m: f64,
+) -> f64 {
+    if usage.cost_usd > 0.0 {
+        return usage.cost_usd;
+    }
+    if (prompt_price_per_m <= 0.0 && completion_price_per_m <= 0.0)
+        || (usage.prompt_tokens == 0 && usage.completion_tokens == 0)
+    {
+        return 0.0;
+    }
+    let cached = usage.cache_read_tokens.min(usage.prompt_tokens);
+    let uncached = usage.prompt_tokens.saturating_sub(cached);
+    let in_cost = ((uncached as f64)
+        + (cached as f64) * zenko_core::PROMPT_CACHE_READ_COST_MULTIPLIER)
+        * (prompt_price_per_m.max(0.0) / 1_000_000.0);
+    let out_cost =
+        (usage.completion_tokens as f64) * (completion_price_per_m.max(0.0) / 1_000_000.0);
+    in_cost + out_cost
 }
 

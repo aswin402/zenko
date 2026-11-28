@@ -635,6 +635,7 @@ impl AgentRuntime {
         let mut last_prompt_cache_key: Option<String> = None;
         let mut last_active_tool_specs: Vec<ToolSpec> = Vec::new();
         let mut last_iter_microcompacted = false;
+        let mut last_microcompact_cut: usize = 0;
         let mut last_logged_microcompact_tools: usize = 0;
         let turn_checkpoint_event_id = parent_for_user.clone();
         let turn_checkpoint_label =
@@ -767,20 +768,24 @@ impl AgentRuntime {
                 zenko_core::find_zmode(active_zmode).compaction_window_cap,
             );
 
-            // Stage A: Zero-cost quantized selective microcompaction (clamped to ZMode proactive ceiling
-            // so 1M–2M context models still reclaim stale read/shell bloat before context rot!)
+            // Stage A: Cache-safe, ROI-guarded selective microcompaction (clamped to ZMode proactive
+            // ceiling; holds active cut frozen unless marginal savings justify busting warm KV cache).
             let (mut messages, mc_stats) = match cfg.context.enabled {
-                true => microcompact_messages_calibrated(
+                true => microcompact_messages_guarded(
                     raw_messages,
                     proactive_window,
                     active_max_tokens,
                     prefix_tokens,
                     cfg.context.microcompact_trigger_ratio,
+                    cfg.context.compaction_trigger_ratio,
                     live_bpt,
+                    last_microcompact_cut,
+                    true,
                 ),
                 false => (raw_messages, Default::default()),
             };
             last_iter_microcompacted = mc_stats.compacted_tools > 0;
+            last_microcompact_cut = mc_stats.cut_units;
             if mc_stats.compacted_tools > last_logged_microcompact_tools {
                 self.emit(AgentEvent::OrchestratorUpdated {
                     session_id: session_id.clone(),
@@ -867,6 +872,7 @@ impl AgentRuntime {
                         live_bpt,
                     );
                     last_iter_microcompacted = rebuilt_stats.compacted_tools > 0;
+                    last_microcompact_cut = rebuilt_stats.cut_units;
                     last_logged_microcompact_tools = rebuilt_stats.compacted_tools;
                     messages = rebuilt_mc;
                 }
@@ -1321,6 +1327,7 @@ impl AgentRuntime {
                 );
             }
 
+            self.hydrate_usage_cost(&model, &mut usage);
             total_usage.prompt_tokens += usage.prompt_tokens;
             total_usage.completion_tokens += usage.completion_tokens;
             total_usage.cache_read_tokens += usage.cache_read_tokens;
@@ -1359,6 +1366,58 @@ impl AgentRuntime {
                 _ => 0,
             };
 
+            let raw_tool_leak = has_leaked_tool_markup(&text_buf);
+            let was_truncated = finish_reason.as_deref() == Some("length")
+                || (tool_calls.is_empty() && text_buf.trim().is_empty())
+                || (tool_calls.is_empty() && raw_tool_leak);
+
+            // Suppress persisting corrupted raw XML tool-call leaks (`]<]minimax[>[<invoke ...>`,
+            // `<tool_call>`) or empty truncated turns when we can immediately recover cleanly —
+            // preventing WebUI transcript pollution and wasted history tokens on every later call!
+            if tool_calls.is_empty()
+                && !budget_exceeded
+                && was_truncated
+                && iter_idx + 1 < max_iters
+                && truncation_retries < ORCH_MAX_TRUNCATION_RETRIES
+            {
+                truncation_retries += 1;
+                let cap = self
+                    .resolve_max_output_tokens(&model)
+                    .unwrap_or(ORCH_REASONING_MAX_OUTPUT_CAP)
+                    .min(ORCH_REASONING_MAX_OUTPUT_CAP);
+                active_max_tokens = active_max_tokens
+                    .saturating_mul(2)
+                    .clamp(active_max_tokens, cap.max(active_max_tokens));
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: session_id.clone(),
+                    stage: ORCH_STAGE_TRUNCATION_RECOVERY.into(),
+                    tier: orch.triage.tier,
+                    detail: format!(
+                        "Suppressed & recovering {} response (finish_reason={:?}, text_chars={}, max_tokens={active_max_tokens}; retry {truncation_retries}/{ORCH_MAX_TRUNCATION_RETRIES})",
+                        match raw_tool_leak {
+                            true => "leaked-tool-markup",
+                            false => "truncated/empty",
+                        },
+                        finish_reason,
+                        text_buf.len()
+                    ),
+                    model: None,
+                });
+                pending_orch_hints.push(format!(
+                    "<orchestrator_hint type=\"truncation_recovery\">\n\
+                     Your previous response was cut off (finish_reason={:?}) or emitted raw unparsed tool markup in prose instead of a native tool call. \
+                     Keep your internal reasoning brief, do NOT write XML/markup tool tags in text, and immediately emit a valid native tool call or complete final answer NOW.\n\
+                     </orchestrator_hint>",
+                    finish_reason.as_deref().unwrap_or("empty")
+                ));
+                continue;
+            }
+
+            let sanitized_text = match raw_tool_leak {
+                true => strip_leaked_tool_markup(&text_buf),
+                false => text_buf.clone(),
+            };
+
             let assistant_ev = self.store.append_event(
                 &session_id,
                 head_id.as_deref(),
@@ -1368,7 +1427,7 @@ impl AgentRuntime {
                     false => EventKind::ToolCall,
                 },
                 json!({
-                    "text": text_buf,
+                    "text": sanitized_text,
                     "thinking": thinking_buf,
                     "tool_calls": tool_calls,
                     "model": model,
@@ -1388,19 +1447,13 @@ impl AgentRuntime {
 
             let doom_reason = match cfg.orchestrator.enabled && cfg.orchestrator.loop_circuit_breaker
             {
-                true => detect_text_doom_loop(&text_buf)
+                true => detect_text_doom_loop(&sanitized_text)
                     .or_else(|| detect_text_doom_loop(&thinking_buf)),
                 false => None,
             };
 
-            let raw_tool_leak = text_buf.contains("<tool_call>")
-                || text_buf.contains("<invoke name=");
-            let was_truncated = finish_reason.as_deref() == Some("length")
-                || (tool_calls.is_empty() && text_buf.trim().is_empty())
-                || (tool_calls.is_empty() && raw_tool_leak);
-
-            if !text_buf.is_empty() && !(was_truncated && raw_tool_leak) {
-                final_assistant_text = text_buf.clone();
+            if !sanitized_text.is_empty() && !(was_truncated && raw_tool_leak) {
+                final_assistant_text = sanitized_text;
             }
 
             if budget_exceeded {
@@ -1465,38 +1518,6 @@ impl AgentRuntime {
             }
 
             if tool_calls.is_empty() {
-                if was_truncated
-                    && iter_idx + 1 < max_iters
-                    && truncation_retries < ORCH_MAX_TRUNCATION_RETRIES
-                {
-                    truncation_retries += 1;
-                    let cap = self
-                        .resolve_max_output_tokens(&model)
-                        .unwrap_or(ORCH_REASONING_MAX_OUTPUT_CAP)
-                        .min(ORCH_REASONING_MAX_OUTPUT_CAP);
-                    active_max_tokens = active_max_tokens
-                        .saturating_mul(2)
-                        .clamp(active_max_tokens, cap.max(active_max_tokens));
-                    self.emit(AgentEvent::OrchestratorUpdated {
-                        session_id: session_id.clone(),
-                        stage: ORCH_STAGE_TRUNCATION_RECOVERY.into(),
-                        tier: orch.triage.tier,
-                        detail: format!(
-                            "Output truncated/empty (finish_reason={:?}, text_chars={}, max_tokens={active_max_tokens}); recovering ({truncation_retries}/{ORCH_MAX_TRUNCATION_RETRIES})",
-                            finish_reason,
-                            text_buf.len()
-                        ),
-                        model: None,
-                    });
-                    pending_orch_hints.push(format!(
-                        "<orchestrator_hint type=\"truncation_recovery\">\n\
-                         Your previous response was cut off (finish_reason={:?}) or emitted an unparsed/empty payload before finishing. \
-                         Keep your internal reasoning brief and keep JSON tool arguments compact (short bullets <= 15 words), then immediately emit your tool call or complete final answer NOW.\n\
-                         </orchestrator_hint>",
-                        finish_reason.as_deref().unwrap_or("empty")
-                    ));
-                    continue;
-                }
                 if let Some(reason) = doom_reason {
                     self.emit(AgentEvent::OrchestratorUpdated {
                         session_id: session_id.clone(),
@@ -2479,6 +2500,20 @@ impl AgentRuntime {
                     &live_tasks,
                 )
             {
+                let open_count = live_tasks
+                    .iter()
+                    .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
+                    .count();
+                self.emit(AgentEvent::OrchestratorUpdated {
+                    session_id: session_id.clone(),
+                    stage: ORCH_STAGE_TODO_SYNC.into(),
+                    tier: orch.triage.tier,
+                    detail: format!(
+                        "Todo-DAG drift nudge: {open_count}/{} task(s) still open across recent edits; requesting batch status sync",
+                        live_tasks.len()
+                    ),
+                    model: None,
+                });
                 pending_orch_hints.push(drift_hint);
             }
 
@@ -2524,15 +2559,18 @@ impl AgentRuntime {
                 zenko_core::find_zmode(active_zmode).compaction_window_cap,
             );
             // Keep message prefix byte-identical with the preceding iteration on synthesis: only
-            // replay microcompaction when it was already active on the previous iteration.
-            let mc_messages = match cfg.context.enabled && last_iter_microcompacted {
-                true => microcompact_messages_calibrated(
+            // replay microcompaction at the exact held cut when it was already active.
+            let mc_messages = match cfg.context.enabled && (last_iter_microcompacted || last_microcompact_cut > 0) {
+                true => microcompact_messages_guarded(
                     raw_messages,
                     synth_proactive_window,
                     active_max_tokens,
                     synth_prefix_tokens,
                     cfg.context.microcompact_trigger_ratio,
+                    cfg.context.compaction_trigger_ratio,
                     synth_bpt,
+                    last_microcompact_cut,
+                    true,
                 )
                 .0,
                 false => raw_messages,
@@ -2689,6 +2727,7 @@ impl AgentRuntime {
                         }
                     }
                 }
+                self.hydrate_usage_cost(&model, &mut synth_usage);
                 total_usage.prompt_tokens += synth_usage.prompt_tokens;
                 total_usage.completion_tokens += synth_usage.completion_tokens;
                 total_usage.cache_read_tokens += synth_usage.cache_read_tokens;
@@ -2704,13 +2743,17 @@ impl AgentRuntime {
                         &synth_usage,
                     );
                 }
+                let clean_synth_text = match has_leaked_tool_markup(&synth_text) {
+                    true => strip_leaked_tool_markup(&synth_text),
+                    false => synth_text,
+                };
                 if let Some(err_msg) = synth_stream_err {
                     warn!(
                         session_id = %session_id,
                         error = %err_msg,
                         "wrap-up synthesis stream failed; skipping partial assistant persistence"
                     );
-                } else if !cancel.is_cancelled() && !synth_text.trim().is_empty() {
+                } else if !cancel.is_cancelled() && !clean_synth_text.trim().is_empty() {
                     let synth_duration_ms = synth_started.elapsed().as_millis() as u64;
                     let synth_thinking_ms = match (synth_think_start, synth_think_end) {
                         (Some(start), Some(end)) if !synth_thinking.is_empty() => {
@@ -2724,7 +2767,7 @@ impl AgentRuntime {
                         EventRole::Assistant,
                         EventKind::Message,
                         json!({
-                            "text": synth_text,
+                            "text": clean_synth_text,
                             "thinking": synth_thinking,
                             "tool_calls": [],
                             "model": model,
@@ -2739,7 +2782,7 @@ impl AgentRuntime {
                         event_id: synth_ev.id,
                         usage: synth_usage,
                     });
-                    final_assistant_text = synth_text;
+                    final_assistant_text = clean_synth_text;
                 }
             }
             if final_assistant_text.trim().is_empty() {
@@ -2896,4 +2939,73 @@ impl AgentRuntime {
         Ok(decision)
     }
 
+}
+
+/// Deterministic detector for raw unparsed XML/MiniMax tool-call markup leaked into prose.
+pub(crate) fn has_leaked_tool_markup(text: &str) -> bool {
+    LEAKED_TOOL_MARKUP_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
+/// Strips trailing leaked tool-call markup at the earliest marker boundary while preserving
+/// any clean prose emitted prior to the leak (zero regex).
+pub(crate) fn strip_leaked_tool_markup(text: &str) -> String {
+    match LEAKED_TOOL_MARKUP_MARKERS
+        .iter()
+        .filter_map(|marker| text.find(marker))
+        .min()
+    {
+        Some(idx) => text[..idx].trim_end().to_string(),
+        None => text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod leak_guard_tests {
+    use super::*;
+
+    #[test]
+    fn detects_and_strips_minimax_and_xml_leaked_tool_markup() {
+        let leaked = "Updating the remaining tasks now.\n]<]minimax[>[<invoke name=\"session_task\">]<]minimax[>[<action>batch]</invoke>";
+        assert!(has_leaked_tool_markup(leaked));
+        assert_eq!(
+            strip_leaked_tool_markup(leaked),
+            "Updating the remaining tasks now."
+        );
+
+        let pure_leak = "]<]minimax[>[<invoke name=\"write_file\">";
+        assert!(has_leaked_tool_markup(pure_leak));
+        assert_eq!(strip_leaked_tool_markup(pure_leak), "");
+
+        let xml_leak = "Done!\n<tool_call>{\"name\":\"shell_exec\"}</tool_call>";
+        assert!(has_leaked_tool_markup(xml_leak));
+        assert_eq!(strip_leaked_tool_markup(xml_leak), "Done!");
+
+        let clean = "All 7 checks passed cleanly.";
+        assert!(!has_leaked_tool_markup(clean));
+        assert_eq!(strip_leaked_tool_markup(clean), clean);
+    }
+
+    #[test]
+    fn fallback_usage_cost_applies_cache_read_discount_and_preserves_provider_cost() {
+        // 1M total prompt (800k cached @ 0.10x = 80k eff + 200k uncached = 280k eff) * $0.30/M = $0.084
+        // + 50k completion * $1.20/M = $0.060 => $0.144 total
+        let usage = UsageStats {
+            prompt_tokens: 1_000_000,
+            completion_tokens: 50_000,
+            cache_read_tokens: 800_000,
+            cost_usd: 0.0,
+        };
+        let cost = compute_fallback_usage_cost(&usage, 0.30, 1.20);
+        assert!(
+            (cost - 0.144).abs() < 1e-9,
+            "expected $0.144, got {cost}"
+        );
+
+        // Provider-reported non-zero cost is preserved untouched.
+        let billed = UsageStats {
+            cost_usd: 0.42,
+            ..usage
+        };
+        assert!((compute_fallback_usage_cost(&billed, 0.30, 1.20) - 0.42).abs() < 1e-9);
+    }
 }

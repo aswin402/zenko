@@ -1613,7 +1613,22 @@ fn segment_is_read_only_shell(segment: &str) -> bool {
     if raw_tokens.is_empty() {
         return false;
     }
-    let lower_tokens: Vec<String> = raw_tokens
+    // Normalize `git -C <dir> <subcmd...>` -> `git <subcmd...>` so read-only cross-repo git probes
+    // (`git -C /other/repo status`, `git -C /other/repo remote -v`) never trigger false checkpoints.
+    let normalized_tokens: Vec<&str> = match (
+        raw_tokens.first().copied(),
+        raw_tokens.get(1).copied(),
+        raw_tokens.get(2).copied(),
+    ) {
+        (Some(bin), Some("-C"), Some(_dir)) if bin.eq_ignore_ascii_case("git") => {
+            let mut v = Vec::with_capacity(raw_tokens.len().saturating_sub(2));
+            v.push(bin);
+            v.extend_from_slice(&raw_tokens[3..]);
+            v
+        }
+        _ => raw_tokens.clone(),
+    };
+    let lower_tokens: Vec<String> = normalized_tokens
         .iter()
         .take(4)
         .map(|t| t.to_ascii_lowercase())
@@ -2486,5 +2501,17 @@ mod tests {
             wave_guard.check_pre_tool_phase_gate(true, "write_file", &json!({"path": "calc.js"})),
             PhaseGateDecision::Allow
         );
+    }
+
+    #[test]
+    fn recognizes_read_only_env_probes_and_git_dash_c_queries() {
+        assert!(is_read_only_shell_command(
+            "echo 'node:'; node -v 2>/dev/null; npm -v 2>/dev/null; python3 --version; cargo --version; git --version"
+        ));
+        assert!(is_read_only_shell_command("git -C /tmp/other-repo status --short && git -C /tmp/other-repo remote -v"));
+        assert!(is_read_only_shell_command("command -v bun; hostname; pwd"));
+        assert!(!is_read_only_shell_command("git -C /tmp/other-repo push origin main"));
+        assert!(!is_read_only_shell_command("echo hi > out.txt"));
+        assert!(!is_read_only_shell_command("node -e 'require(\"fs\").writeFileSync(\"x\",\"y\")'"));
     }
 }

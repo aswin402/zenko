@@ -325,14 +325,27 @@ pub fn diff_line_stats(diff: &str) -> (usize, usize) {
     (added, removed)
 }
 
-/// Formats JSON tool arguments into concise `key="val"` pairs for minimal logs.
+/// Formats JSON tool arguments into concise `key="val"` pairs for minimal logs,
+/// honoring `TOOL_ARG_PREVIEW_PRIORITY_KEYS` so `path`/`command`/`action` always lead ahead of `content`.
 pub fn compact_tool_args(raw_json_or_preview: &str, max_chars: usize) -> String {
     match serde_json::from_str::<Value>(raw_json_or_preview) {
         Ok(Value::Object(map)) => {
-            let parts: Vec<String> = map
-                .iter()
+            let mut ordered_keys: Vec<&str> = Vec::with_capacity(map.len());
+            for &prio in crate::TOOL_ARG_PREVIEW_PRIORITY_KEYS {
+                if map.contains_key(prio) {
+                    ordered_keys.push(prio);
+                }
+            }
+            for k in map.keys() {
+                if !crate::TOOL_ARG_PREVIEW_PRIORITY_KEYS.contains(&k.as_str()) {
+                    ordered_keys.push(k.as_str());
+                }
+            }
+            let parts: Vec<String> = ordered_keys
+                .into_iter()
                 .take(LOG_MAX_ARG_KEYS)
-                .map(|(k, v)| {
+                .filter_map(|k| {
+                    let v = map.get(k)?;
                     let val_str = match v {
                         Value::String(s) => {
                             format!("\"{}\"", compact_preview(s, LOG_PREVIEW_ARG_VAL_CHARS))
@@ -341,7 +354,7 @@ pub fn compact_tool_args(raw_json_or_preview: &str, max_chars: usize) -> String 
                         Value::Bool(b) => b.to_string(),
                         _ => compact_preview(&v.to_string(), LOG_PREVIEW_COMPLEX_VAL_CHARS),
                     };
-                    format!("{k}={val_str}")
+                    Some(format!("{k}={val_str}"))
                 })
                 .collect();
             compact_preview(&parts.join(" "), max_chars)
@@ -455,6 +468,15 @@ mod tests {
         assert_eq!(
             compact_tool_args(r#"{"path":"src/main.rs","start_line":10}"#, 80),
             r#"path="src/main.rs" start_line=10"#
+        );
+        // Priority keys (`path`) MUST lead ahead of alphabetically earlier bulk keys (`content`).
+        let write_preview = compact_tool_args(
+            r#"{"content":"<!DOCTYPE html><html>very long file body...","path":"index.html"}"#,
+            80,
+        );
+        assert!(
+            write_preview.starts_with(r#"path="index.html" content="#),
+            "expected path before content, got: {write_preview}"
         );
 
         let entry = format_hono_entry(

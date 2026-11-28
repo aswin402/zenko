@@ -4,6 +4,28 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.56] - 2026-11-28
+
+Resolved seven real-world runtime, KV-cache compaction, transcript hygiene, cost tracking, task-DAG broadcasting, and logging bugs uncovered during live session forensics (`01M8FCER9T84184CYFS9J89Y60`).
+
+### Fixed
+- **Cache-Safe ROI-Guarded Microcompaction & Historical Write Payload Stubbing (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/{compaction,lib,runtime/mod,runtime/turn}.rs`):**
+  - Added `microcompact_messages_guarded` with sticky `cut_units` retention, widened quantized epoch step (`MICROCOMPACT_EPOCH_STEP = 8`), and a warm KV-cache ROI guard (`MICROCOMPACT_MIN_MARGINAL_TOKENS = 8_000`, refusing cut advances unless near Stage-B or marginal savings cover `>= 50%` of the invalidated cache tail) — eliminating late-iteration 78s prefill stalls caused by busting 40K+ cached tokens for small savings.
+  - Added `compact_historical_write_call` to stub oversized historical `write_file`, `apply_patch`, and `hash_edit` assistant `tool_calls` payloads (`>= 4,096` chars) while retaining file path, line count, and byte count, and replayed the held cut identically into wrap-up synthesis.
+- **Pre-Persistence Suppression & Sanitization of Leaked Tool-Call Markup (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Added declarative `LEAKED_TOOL_MARKUP_MARKERS` and deterministic zero-regex `has_leaked_tool_markup` / `strip_leaked_tool_markup` helpers.
+  - Moved `truncation_recovery` ahead of `store.append_event` so retryable responses containing raw unparsed MiniMax/XML tool markup (`]<]minimax[>[<invoke ...>`, `<tool_call>`) are suppressed before persistence instead of polluting WebUI transcripts and downstream prompt history, with trailing markup stripped cleanly if retries exhaust or during wrap-up synthesis.
+- **Dynamic Fallback USD Cost Hydration (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/runtime/{mod,turn}.rs`):**
+  - Added `resolve_model_pricing`, `hydrate_usage_cost`, and pure `compute_fallback_usage_cost` applying `PROMPT_CACHE_READ_COST_MULTIPLIER` (`0.10x` for cached input tokens) from live cached model metadata (`models_cache_v1` / `models_dev_compact_v2`) whenever providers (MiniMax, OpenAI, DeepSeek, Gemini) omit `usage.cost` — fixing `$0.00` session cost reporting and restoring `daily_spend_limit_usd` protection across both main iterations and wrap-up synthesis.
+- **Atomic Single-Broadcast `session_task(action="batch")` (`crates/zenko-core/src/traits.rs`, `crates/zenko-runtime/src/orchestrator/brainstorm.rs`, `crates/zenko-tools/src/orchestrator_tools.rs`):**
+  - Added `OrchestratorBridge::batch_upsert_session_tasks` and implemented it in `ClarificationHub` under one DAG lock, one validation/normalization pass, one SQLite write, and one atomic `SessionTasksUpdated` broadcast + `plan.md` sync — eliminating racing out-of-order task count bursts.
+- **Read-Only Shell Probe Classification & `git -C` Normalization (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/orchestrator/guard.rs`):**
+  - Expanded `READ_ONLY_SHELL_CMD_PREFIXES` with environment/version probes (`printf`, `command -v`, `type`, `hostname`, `node`/`npm`/`pnpm`/`bun`/`python3`/`cargo`/`rustc`/`git` version checks, `git remote -v`) and normalized `git -C <dir> <subcmd...>` in `segment_is_read_only_shell` so read-only recon commands no longer false-trigger `shadow_git` workspace checkpoints.
+- **Visible `todo_sync` Drift Telemetry (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/runtime/turn.rs`):**
+  - Added `ORCH_STAGE_TODO_SYNC` and emitted `AgentEvent::OrchestratorUpdated` whenever `ExecutionGuard::check_todo_drift` nudges stale open todos.
+- **Priority-Ordered Hono Log Tool Argument Previews (`crates/zenko-core/src/logger.rs`):**
+  - Updated `compact_tool_args` to honor `TOOL_ARG_PREVIEW_PRIORITY_KEYS` ahead of remaining keys so `write_file` terminal and SSE logs display `path="..."` before `content="..."`.
+
 ## [0.0.55] - 2026-11-28
 
 Upgraded Zenko's orchestrator and knowledge architecture with a modular **Context Assembly & Multi-Source Relevance Engine** (explicitly separating Instruction Precedence from Context Relevance while preserving Tier-1/Tier-2 KV-cache stability) and a dual-scope **Karpathy LLM Wiki** layer (`hub:wiki/` + `raw/` + `index.md` + `log.md` + deterministic `lint`).

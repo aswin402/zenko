@@ -971,6 +971,96 @@ impl OrchestratorBridge for ClarificationHub {
         Ok(updated)
     }
 
+    fn batch_upsert_session_tasks(
+        &self,
+        session_id: &str,
+        creates: Vec<SessionTask>,
+        updates: Vec<(String, SessionTaskPatch)>,
+    ) -> Result<(usize, usize, Vec<SessionTask>)> {
+        let _dag_guard = self.dag_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let board_sid = self.resolve_board_session_id(session_id);
+        let default_branch_ev = self
+            .store
+            .get_session(&board_sid)?
+            .and_then(|s| s.head_event_id);
+        let mut all = self.store.list_session_tasks(&board_sid)?;
+        let mut created = 0usize;
+        let mut updated = 0usize;
+
+        for mut task in creates {
+            task.session_id = board_sid.clone();
+            if task.id.trim().is_empty() {
+                task.id = zenko_core::new_session_task_id();
+            }
+            if task.branch_event_id.is_none() {
+                task.branch_event_id = default_branch_ev.clone();
+            }
+            if let Some(ev) = task.verification_evidence.take() {
+                task.verification_evidence =
+                    Some(compact_preview(&ev, SESSION_TASK_EVIDENCE_MAX_CHARS));
+            }
+            if let Some(slot) = all.iter_mut().find(|t| t.id == task.id) {
+                *slot = task;
+                updated += 1;
+            } else {
+                all.push(task);
+                created += 1;
+            }
+        }
+
+        let now = Utc::now();
+        for (task_id, patch) in updates {
+            let Some(target) = all.iter_mut().find(|t| t.id == task_id) else {
+                return Err(ZenkoError::NotFound(format!(
+                    "session task `{task_id}` not found"
+                )));
+            };
+            if let Some(title) = patch.title {
+                target.title = title;
+            }
+            if let Some(desc) = patch.description {
+                target.description = desc;
+            }
+            if let Some(active) = patch.active_label {
+                target.active_label = active;
+            }
+            if let Some(status) = patch.status {
+                target.status = status;
+            }
+            if let Some(deps) = patch.depends_on {
+                target.depends_on = deps;
+            }
+            for dep in patch.add_depends_on {
+                if !dep.trim().is_empty() && !target.depends_on.iter().any(|d| d == dep.trim()) {
+                    target.depends_on.push(dep.trim().to_string());
+                }
+            }
+            if let Some(owner) = patch.owner_agent {
+                target.owner_agent = owner;
+            }
+            if let Some(cmd) = patch.verification_cmd {
+                target.verification_cmd = cmd;
+            }
+            if let Some(ev) = patch.verification_evidence {
+                target.verification_evidence =
+                    ev.map(|s| compact_preview(&s, SESSION_TASK_EVIDENCE_MAX_CHARS));
+            }
+            if let Some(notes) = patch.notes {
+                target.notes = notes;
+            }
+            if let Some(prio) = patch.priority {
+                target.priority = prio;
+            }
+            target.updated_at = now;
+            updated += 1;
+        }
+
+        validate_and_normalize_session_tasks(&mut all)?;
+        self.store.replace_session_tasks(&board_sid, &all)?;
+        self.emit_tasks_updated(&board_sid);
+        Ok((created, updated, all))
+    }
+
     fn claim_session_task(
         &self,
         session_id: &str,
@@ -1422,6 +1512,123 @@ mod tests {
         assert!(md.contains("https://prod.example.internal"));
         assert!(md.contains("[provided]"));
         assert!(!md.contains("super-secret-value-123"));
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[tokio::test]
+    async fn batch_upsert_session_tasks_emits_single_atomic_broadcast() {
+        let test_dir = std::env::temp_dir().join(format!("zenko_batch_dag_{}", new_id()));
+        std::fs::create_dir_all(&test_dir).expect("mkdir");
+        let store = SqliteStore::open(test_dir.join("zenko.db")).expect("db");
+        let sess = store
+            .create_session(
+                "Batch DAG test",
+                "webui",
+                None,
+                None,
+                zenko_core::PermissionMode::default(),
+            )
+            .expect("session");
+        let sid = sess.id;
+        let (tx, mut rx) = broadcast::channel(32);
+        let hub = ClarificationHub::new(store, tx);
+
+        // Create 4 tasks in a single atomic batch -> must emit exactly ONE SessionTasksUpdated.
+        let creates: Vec<zenko_core::SessionTask> = (1..=4)
+            .map(|i| zenko_core::SessionTask {
+                id: format!("task_{i}"),
+                session_id: sid.clone(),
+                branch_event_id: None,
+                title: format!("Step {i}"),
+                description: String::new(),
+                active_label: None,
+                status: zenko_core::SessionTaskStatus::Pending,
+                depends_on: Vec::new(),
+                owner_agent: None,
+                verification_cmd: None,
+                verification_evidence: None,
+                notes: None,
+                priority: i as i32,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .collect();
+
+        let (c1, u1, all1) = hub
+            .batch_upsert_session_tasks(&sid, creates, Vec::new())
+            .expect("batch create");
+        assert_eq!((c1, u1, all1.len()), (4, 0, 4));
+
+        let mut broadcasts = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::SessionTasksUpdated { tasks, .. } = ev {
+                broadcasts.push(tasks.len());
+            }
+        }
+        assert_eq!(
+            broadcasts,
+            vec![4],
+            "batch create of 4 tasks must emit exactly one SessionTasksUpdated snapshot"
+        );
+
+        // Now mixed create (1) + update (2) in one atomic batch -> still exactly ONE broadcast!
+        let extra = vec![zenko_core::SessionTask {
+            id: "task_5".into(),
+            session_id: sid.clone(),
+            branch_event_id: None,
+            title: "Step 5".into(),
+            description: String::new(),
+            active_label: None,
+            status: zenko_core::SessionTaskStatus::Pending,
+            depends_on: vec!["task_1".into()],
+            owner_agent: None,
+            verification_cmd: None,
+            verification_evidence: None,
+            notes: None,
+            priority: 5,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        let updates = vec![
+            (
+                "task_1".to_string(),
+                zenko_core::SessionTaskPatch {
+                    status: Some(zenko_core::SessionTaskStatus::Done),
+                    ..Default::default()
+                },
+            ),
+            (
+                "task_2".to_string(),
+                zenko_core::SessionTaskPatch {
+                    status: Some(zenko_core::SessionTaskStatus::InProgress),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let (c2, u2, all2) = hub
+            .batch_upsert_session_tasks(&sid, extra, updates)
+            .expect("batch mixed");
+        assert_eq!((c2, u2, all2.len()), (1, 2, 5));
+        assert_eq!(
+            all2.iter().find(|t| t.id == "task_1").map(|t| t.status),
+            Some(zenko_core::SessionTaskStatus::Done)
+        );
+        assert_eq!(
+            all2.iter().find(|t| t.id == "task_2").map(|t| t.status),
+            Some(zenko_core::SessionTaskStatus::InProgress)
+        );
+
+        let mut broadcasts2 = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::SessionTasksUpdated { tasks, .. } = ev {
+                broadcasts2.push(tasks.len());
+            }
+        }
+        assert_eq!(
+            broadcasts2,
+            vec![5],
+            "mixed batch create+update must emit exactly one SessionTasksUpdated snapshot"
+        );
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 }

@@ -124,9 +124,29 @@ pub const DEFAULT_COMPACTION_KEEP_RECENT: usize = 8;
 pub const DEFAULT_COMPACTION_SNIPPET_CHARS: usize = 220;
 pub const MICROCOMPACT_PROTECT_RECENT_EXCHANGES: usize = 4;
 pub const MICROCOMPACT_MIN_TOOL_CHARS: usize = 1_200;
+/// Minimum character length for historical `write_file`/`apply_patch` assistant tool-call payload
+/// arguments before Stage-A microcompaction stubs them out (keeps written path + byte/line count).
+pub const MICROCOMPACT_MIN_WRITE_ARG_CHARS: usize = 4_096;
 /// Quantized epoch step for Stage-A microcompaction cut boundaries so the KV prefix stays
 /// byte-identical across consecutive turns instead of shifting by 1 message every iteration.
-pub const MICROCOMPACT_EPOCH_STEP: usize = 4;
+pub const MICROCOMPACT_EPOCH_STEP: usize = 8;
+/// Minimum marginal token savings required to advance an already-active microcompact cut boundary
+/// when warm KV cache is sitting behind the cut (prevents busting 40K+ cache to reclaim 5K).
+pub const MICROCOMPACT_MIN_MARGINAL_TOKENS: usize = 8_000;
+/// Standard cached-input-token pricing multiplier (90% discount = 0.10x prompt price) used when
+/// computing fallback `cost_usd` for providers that omit `usage.cost` (MiniMax, OpenAI, DeepSeek, Gemini).
+pub const PROMPT_CACHE_READ_COST_MULTIPLIER: f64 = 0.10;
+/// Orchestrator stage emitted when `check_todo_drift` nudges stale open todos.
+pub const ORCH_STAGE_TODO_SYNC: &str = "todo_sync";
+/// Raw unparsed tool-call markup markers occasionally leaked into prose by reasoning models
+/// (e.g., MiniMax `]<]minimax[>[<invoke ...>`, XML `<tool_call>`). Used for deterministic
+/// pre-persistence suppression and trailing markup sanitization (zero regex).
+pub const LEAKED_TOOL_MARKUP_MARKERS: &[&str] = &[
+    "]<]minimax[>[",
+    "<minimax:tool_call>",
+    "<tool_call>",
+    "<invoke name=",
+];
 pub const COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS: usize = 8;
 pub const COMPACTION_MAX_CHECKPOINT_TOKENS: u32 = 2_048;
 pub const COMPACTION_MIN_USABLE_INPUT_TOKENS: usize = 4_096;
@@ -1352,6 +1372,7 @@ pub const READ_ONLY_SHELL_CMD_PREFIXES: &[&[&str]] = &[
     &["pwd"],
     &["cd"],
     &["echo"],
+    &["printf"],
     &["cat"],
     &["head"],
     &["tail"],
@@ -1362,7 +1383,10 @@ pub const READ_ONLY_SHELL_CMD_PREFIXES: &[&[&str]] = &[
     &["file"],
     &["tree"],
     &["which"],
+    &["command", "-v"],
+    &["type"],
     &["whoami"],
+    &["hostname"],
     &["uname"],
     &["printenv"],
     &["ps"],
@@ -1376,6 +1400,22 @@ pub const READ_ONLY_SHELL_CMD_PREFIXES: &[&[&str]] = &[
     &["date"],
     &["realpath"],
     &["readlink"],
+    &["node", "-v"],
+    &["node", "--version"],
+    &["npm", "-v"],
+    &["npm", "--version"],
+    &["pnpm", "-v"],
+    &["pnpm", "--version"],
+    &["bun", "-v"],
+    &["bun", "--version"],
+    &["python3", "-v"],
+    &["python3", "--version"],
+    &["cargo", "-v"],
+    &["cargo", "--version"],
+    &["rustc", "-v"],
+    &["rustc", "--version"],
+    &["git", "-v"],
+    &["git", "--version"],
     &["git", "status"],
     &["git", "diff"],
     &["git", "log"],
@@ -1383,6 +1423,7 @@ pub const READ_ONLY_SHELL_CMD_PREFIXES: &[&[&str]] = &[
     &["git", "ls-files"],
     &["git", "blame"],
     &["git", "rev-parse"],
+    &["git", "remote", "-v"],
     &["git", "branch", "--show-current"],
     &["git", "branch", "--list"],
     &["cargo", "metadata"],

@@ -246,6 +246,28 @@ pub trait OrchestratorBridge: Send + Sync {
         patch: SessionTaskPatch,
     ) -> Result<SessionTask>;
 
+    /// Atomically creates and updates multiple session tasks in a single DAG lock, single SQLite
+    /// transaction, and single `SessionTasksUpdated` broadcast (eliminating N-event batch chatter).
+    fn batch_upsert_session_tasks(
+        &self,
+        session_id: &str,
+        creates: Vec<SessionTask>,
+        updates: Vec<(String, SessionTaskPatch)>,
+    ) -> Result<(usize, usize, Vec<SessionTask>)> {
+        let mut created = 0usize;
+        let mut updated = 0usize;
+        for task in creates {
+            let _ = self.create_session_task(session_id, task)?;
+            created += 1;
+        }
+        for (id, patch) in updates {
+            let _ = self.update_session_task(session_id, &id, patch)?;
+            updated += 1;
+        }
+        let all = self.list_session_tasks(session_id)?;
+        Ok((created, updated, all))
+    }
+
     /// Atomically claims an unclaimed (or already self-owned) ready task for `owner_agent` in SQLite.
     fn claim_session_task(
         &self,

@@ -1524,25 +1524,28 @@ impl Tool for SessionTaskTool {
                     .into_iter()
                     .map(|t| t.id)
                     .collect();
-                let mut created = 0usize;
-                let mut updated = 0usize;
+                let mut creates = Vec::new();
+                let mut updates = Vec::new();
                 for item in items {
                     let maybe_id = task_id_in(item);
                     match maybe_id.as_deref() {
                         Some(id) if existing_ids.contains(id) => {
-                            let patch = build_patch(item);
-                            self.bridge.update_session_task(&ctx.session_id, id, patch)?;
-                            updated += 1;
+                            updates.push((id.to_string(), build_patch(item)));
                         }
                         _ => {
                             let task = build_new_task(item)?;
-                            let saved = self.bridge.create_session_task(&ctx.session_id, task)?;
-                            existing_ids.insert(saved.id);
-                            created += 1;
+                            if !task.id.is_empty() {
+                                existing_ids.insert(task.id.clone());
+                            }
+                            creates.push(task);
                         }
                     }
                 }
-                let all = self.bridge.list_session_tasks(&ctx.session_id)?;
+                let (created, updated, all) = self.bridge.batch_upsert_session_tasks(
+                    &ctx.session_id,
+                    creates,
+                    updates,
+                )?;
                 let mut out = ToolOutput::ok(format!(
                     "Batch synced tasks ({created} created, {updated} updated).\n{}",
                     format_task_progress_summary(&all)
