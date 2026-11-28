@@ -15,7 +15,9 @@ use zenko_core::{
     ORCH_NON_ERROR_REPEAT_THRESHOLD, ORCH_OSCILLATION_THRESHOLD, ORCH_STAGE_PHASE_GATE,
     ORCH_TEXT_DOOM_MIN_LINE_CHARS, ORCH_TEXT_DOOM_MIN_LINES, ORCH_TEXT_DOOM_REPEAT_THRESHOLD,
     OrchestratorPhase, PLANNING_TOOLS, READ_ONLY_FIND_MUTATING_FLAGS,
-    READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS, ScriptBlockAction, TOOL_AGENT_KILL,
+    READ_ONLY_SED_MUTATING_FLAGS, READ_ONLY_SHELL_CMD_PREFIXES, READ_ONLY_TOOLS,
+    ScriptBlockAction, TODO_DRIFT_MAX_NUDGES, TODO_DRIFT_MUTATION_ITERS, TODO_DRIFT_STALE_ITERS,
+    TOOL_AGENT_KILL,
     TOOL_AGENT_WORKTREE, TOOL_BATCH_TOOLS, TOOL_CODE_REFACTOR, TOOL_CRON, TOOL_GIT,
     TOOL_GOAL_LOOP, TOOL_INVOKE_TOOL, TOOL_JOB_WAIT, TOOL_LSP, TOOL_MEMORY, TOOL_PLAN_UPDATE,
     TOOL_PROJECT_BRAIN, TOOL_RECORD_BRAINSTORM, TOOL_SCRIPT_BLOCK, TOOL_SESSION_TASK,
@@ -235,9 +237,15 @@ pub fn classify_tool_category(tool_name: &str, arguments: &Value) -> ToolCategor
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            match tool_name == TOOL_JOB_WAIT || is_verification_command(cmd) {
-                true => ToolCategory::Verification,
-                false => ToolCategory::Other,
+            match (
+                tool_name == TOOL_JOB_WAIT || is_verification_command(cmd),
+                is_read_only_shell_command(cmd),
+                is_shell_mutation_command(cmd),
+            ) {
+                (true, _, _) => ToolCategory::Verification,
+                (false, true, _) => ToolCategory::ReadOnly,
+                (false, false, true) => ToolCategory::Mutation,
+                (false, false, false) => ToolCategory::Other,
             }
         }
         _ => ToolCategory::Other,
@@ -287,6 +295,7 @@ pub struct ExecutionGuard {
     walkthrough_recorded: bool,
     active_session_id: Option<String>,
     workspace_dir: Option<std::path::PathBuf>,
+    iters_since_task_update: usize,
     mutating_iters_since_task_update: usize,
     todo_drift_nudges: usize,
 }
@@ -733,13 +742,18 @@ impl ExecutionGuard {
                             .get("command")
                             .and_then(Value::as_str)
                             .unwrap_or("");
-                        let is_verify = is_verification_command(cmd)
-                            || (!self.mutated_files.is_empty()
-                                && !cmd.trim().is_empty()
-                                && !is_read_only_shell_command(cmd));
-                        if is_verify {
-                            self.verification_ran = true;
-                            self.last_verification_failed = false;
+                        let is_explicit_verify = is_verification_command(cmd);
+                        if !is_explicit_verify && is_shell_mutation_command(cmd) {
+                            self.verification_ran = false;
+                        } else {
+                            let is_verify = is_explicit_verify
+                                || (!self.mutated_files.is_empty()
+                                    && !cmd.trim().is_empty()
+                                    && !is_read_only_shell_command(cmd));
+                            if is_verify {
+                                self.verification_ran = true;
+                                self.last_verification_failed = false;
+                            }
                         }
                     }
                     ("ok", TOOL_LSP) => {
@@ -819,31 +833,36 @@ impl ExecutionGuard {
                         .unwrap_or("");
                     let status = metadata.and_then(|m| m.get("status")).and_then(Value::as_str);
                     let job_id = metadata.and_then(|m| m.get("id")).and_then(Value::as_str);
-                    // Accept any passing non-spoof shell check (not restricted solely to hardcoded command prefixes)
+                    // Accept any passing non-spoof, non-mutating shell check (never mistake
+                    // `cat >> file` / `sed -i` file writes for a passing verification check).
                     let is_explicit_verify = is_verification_command(cmd);
-                    let is_substantive_check = !self.mutated_files.is_empty()
-                        && !cmd.trim().is_empty()
-                        && !is_read_only_shell_command(cmd);
-                    if is_explicit_verify || is_substantive_check {
-                        match (status, job_id) {
-                            (Some(s), Some(jid)) if s == BackgroundJobStatus::Running.as_str() => {
-                                self.pending_verification_jobs.insert(jid.to_string());
+                    if !is_explicit_verify && is_shell_mutation_command(cmd) {
+                        self.verification_ran = false;
+                    } else {
+                        let is_substantive_check = !self.mutated_files.is_empty()
+                            && !cmd.trim().is_empty()
+                            && !is_read_only_shell_command(cmd);
+                        if is_explicit_verify || is_substantive_check {
+                            match (status, job_id) {
+                                (Some(s), Some(jid)) if s == BackgroundJobStatus::Running.as_str() => {
+                                    self.pending_verification_jobs.insert(jid.to_string());
+                                }
+                                (None, _) => {
+                                    self.verification_ran = true;
+                                    self.last_verification_failed = false;
+                                }
+                                (Some(s), _)
+                                    if s == BackgroundJobStatus::Completed.as_str()
+                                        && metadata
+                                            .and_then(|m| m.get("exit_code"))
+                                            .and_then(Value::as_i64)
+                                            == Some(0) =>
+                                {
+                                    self.verification_ran = true;
+                                    self.last_verification_failed = false;
+                                }
+                                _ => {}
                             }
-                            (None, _) => {
-                                self.verification_ran = true;
-                                self.last_verification_failed = false;
-                            }
-                            (Some(s), _)
-                                if s == BackgroundJobStatus::Completed.as_str()
-                                    && metadata
-                                        .and_then(|m| m.get("exit_code"))
-                                        .and_then(Value::as_i64)
-                                        == Some(0) =>
-                            {
-                                self.verification_ran = true;
-                                self.last_verification_failed = false;
-                            }
-                            _ => {}
                         }
                     }
                 }
@@ -1092,13 +1111,15 @@ impl ExecutionGuard {
     }
 
     /// Purely objective iteration-budget awareness: notifies the LLM ONCE when only a few
-    /// iterations remain before wrap-up, without ever nagging or cutting off research/brainstorming.
+    /// iterations remain before wrap-up, surfacing any remaining open Task DAG items so the
+    /// orchestrator can finish verification and close completed todos before budget exhaustion.
     pub fn check_iteration_pacing(
         &mut self,
         enabled: bool,
         iter_idx: usize,
         max_iters: usize,
         wave_had_plan_or_mutation: bool,
+        tasks: &[zenko_core::SessionTask],
     ) -> Option<(String, String)> {
         if !enabled {
             return None;
@@ -1111,10 +1132,26 @@ impl ExecutionGuard {
         let remaining = max_iters.saturating_sub(iter_idx + 1);
         if remaining > 0 && remaining <= ORCH_ITER_WRAPUP_REMAINING && !self.wrapup_nudge_sent {
             self.wrapup_nudge_sent = true;
-            let detail = format!("Iteration budget low ({remaining} remaining)");
+            let open_count = tasks
+                .iter()
+                .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
+                .count();
+            let detail = match open_count > 0 {
+                true => format!(
+                    "Iteration budget low ({remaining} remaining; {open_count}/{} todo(s) open)",
+                    tasks.len()
+                ),
+                false => format!("Iteration budget low ({remaining} remaining)"),
+            };
+            let dag_suffix = match super::plan::format_session_tasks_prompt_block(tasks) {
+                Some(dag) if open_count > 0 => format!(
+                    "\nFinish remaining edits/verification and batch-update your open todos via `session_task(action=\"batch\", tasks=[...])` before the turn ends:\n{dag}"
+                ),
+                _ => String::new(),
+            };
             let hint = format!(
                 "<orchestrator_hint type=\"pacing\">\n\
-                 Heads-up: {remaining} tool iteration(s) remain in this turn's budget. Wrap up any pending steps or synthesize your response cleanly.\n\
+                 Heads-up: {remaining} tool iteration(s) remain in this turn's budget. Wrap up any pending steps or synthesize your response cleanly.{dag_suffix}\n\
                  </orchestrator_hint>"
             );
             return Some((detail, hint));
@@ -1239,48 +1276,72 @@ impl ExecutionGuard {
         self.mutated_files.len()
     }
 
-    /// Detects silent Todo-DAG drift during execution: if the agent mutates workspace files across
-    /// `TODO_DRIFT_MUTATION_ITERS` consecutive waves while open todos exist and zero task updates
-    /// were recorded, emits one bounded cache-safe `<active_task_dag>` reminder so todos stay live.
+    /// Detects silent Todo-DAG drift during execution across two failure modes:
+    /// 1. **Mutation drift** (`mutating_iters_since_task_update >= TODO_DRIFT_MUTATION_ITERS`):
+    ///    workspace edits are happening while tracked todos stay stale.
+    /// 2. **Recon / stall drift** (`iters_since_task_update >= TODO_DRIFT_STALE_ITERS`):
+    ///    prolonged non-updating iterations elapsed with open todos and zero task progress or
+    ///    plan replacement (e.g., unbounded exploration or an obsolete plan after workspace pivot).
+    /// Returns `Some((telemetry_detail, cache_safe_hint))` bounded by `TODO_DRIFT_MAX_NUDGES`.
     pub fn check_todo_drift(
         &mut self,
         wave_mutated: bool,
         wave_updated_tasks: bool,
         tasks: &[zenko_core::SessionTask],
-    ) -> Option<String> {
-        if wave_updated_tasks {
-            self.mutating_iters_since_task_update = 0;
-            return None;
-        }
-        if !wave_mutated {
-            return None;
-        }
+    ) -> Option<(String, String)> {
         let open_count = tasks
             .iter()
             .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
             .count();
-        if open_count == 0 {
+        if wave_updated_tasks || open_count == 0 {
             self.mutating_iters_since_task_update = 0;
+            self.iters_since_task_update = 0;
             return None;
         }
-        self.mutating_iters_since_task_update =
-            self.mutating_iters_since_task_update.saturating_add(1);
-        if self.mutating_iters_since_task_update < zenko_core::TODO_DRIFT_MUTATION_ITERS
-            || self.todo_drift_nudges >= zenko_core::TODO_DRIFT_MAX_NUDGES
-        {
+        self.iters_since_task_update = self.iters_since_task_update.saturating_add(1);
+        if wave_mutated {
+            self.mutating_iters_since_task_update =
+                self.mutating_iters_since_task_update.saturating_add(1);
+        }
+        let mutation_drift = self.mutating_iters_since_task_update >= TODO_DRIFT_MUTATION_ITERS;
+        let stale_drift = self.iters_since_task_update >= TODO_DRIFT_STALE_ITERS;
+        if (!mutation_drift && !stale_drift) || self.todo_drift_nudges >= TODO_DRIFT_MAX_NUDGES {
             return None;
         }
+        let muts = self.mutating_iters_since_task_update;
+        let stale = self.iters_since_task_update;
         self.mutating_iters_since_task_update = 0;
+        self.iters_since_task_update = 0;
         self.todo_drift_nudges = self.todo_drift_nudges.saturating_add(1);
         let dag = super::plan::format_session_tasks_prompt_block(tasks)?;
-        Some(format!(
+        let total = tasks.len();
+        let (detail, guidance) = match mutation_drift {
+            true => (
+                format!(
+                    "Todo-DAG drift across {muts} editing wave(s) ({open_count}/{total} open); requesting batch status sync"
+                ),
+                format!(
+                    "Live Todo Check: you have mutated files across {muts} consecutive iteration(s) without updating your tracked todos ({open_count}/{total} still open). \
+                     Batch-mark completed steps `done` and the active step `in_progress` in ONE call via `session_task(action=\"batch\", tasks=[...])` alongside your next tool call:"
+                ),
+            ),
+            false => (
+                format!(
+                    "Todo-DAG stale across {stale} iteration(s) ({open_count}/{total} open); nudging execution/sync"
+                ),
+                format!(
+                    "Live Todo Check: {stale} consecutive iteration(s) elapsed with {open_count}/{total} open todo(s) and zero task updates. \
+                     Stop unbounded exploration and execute the active/ready task NOW. If the workspace differs from the original plan and those tasks are obsolete, atomically replace them in ONE call via `session_task(action=\"batch\", replace_existing=true, tasks=[...])`:"
+                ),
+            ),
+        };
+        let hint = format!(
             "<orchestrator_hint type=\"todo_sync\">\n\
-             Live Todo Check: you have mutated files across multiple iterations without updating your tracked todos ({open_count}/{} still open). \
-             Batch-mark completed steps `done` and the active step `in_progress` in ONE call via `session_task(action=\"batch\", tasks=[...])` alongside your next tool call:\n\
+             {guidance}\n\
              {dag}\n\
-             </orchestrator_hint>",
-            tasks.len()
-        ))
+             </orchestrator_hint>"
+        );
+        Some((detail, hint))
     }
 }
 
@@ -1608,6 +1669,23 @@ fn has_shell_mutation_syntax(cmd: &str) -> bool {
     false
 }
 
+fn segment_has_sed_in_place(segment: &str) -> bool {
+    let raw_tokens: Vec<&str> = segment.split_whitespace().collect();
+    raw_tokens.first().is_some_and(|t| t.eq_ignore_ascii_case("sed"))
+        && raw_tokens.iter().skip(1).any(|tok| {
+            READ_ONLY_SED_MUTATING_FLAGS
+                .iter()
+                .any(|flag| tok.starts_with(flag))
+        })
+}
+
+fn is_shell_mutation_command(cmd: &str) -> bool {
+    has_shell_mutation_syntax(cmd)
+        || split_shell_segments(cmd)
+            .iter()
+            .any(|(seg, _)| segment_has_sed_in_place(seg))
+}
+
 fn segment_is_read_only_shell(segment: &str) -> bool {
     let raw_tokens: Vec<&str> = segment.split_whitespace().collect();
     if raw_tokens.is_empty() {
@@ -1650,6 +1728,9 @@ fn segment_is_read_only_shell(segment: &str) -> bool {
                 .any(|flag| tok.eq_ignore_ascii_case(flag))
         })
     {
+        return false;
+    }
+    if segment_has_sed_in_place(segment) {
         return false;
     }
     true
@@ -1951,10 +2032,10 @@ mod tests {
 
         // Exploration never gets nagged mid-research; only near-end wrap-up notice fires
         for i in 0..10 {
-            assert!(guard.check_iteration_pacing(true, i, 24, false).is_none());
+            assert!(guard.check_iteration_pacing(true, i, 24, false, &[]).is_none());
         }
-        let wrap = guard.check_iteration_pacing(true, 20, 24, false);
-        assert!(matches!(wrap, Some((_, ref h)) if h.contains("3 tool iteration")));
+        let wrap = guard.check_iteration_pacing(true, 19, 24, false, &[]);
+        assert!(matches!(wrap, Some((_, ref h)) if h.contains("4 tool iteration")));
 
         // Text doom-loop pivot counter increments cleanly so retries stay bounded
         assert_eq!(guard.pivot_count(), 0);
@@ -2427,9 +2508,10 @@ mod tests {
             updated_at: chrono::Utc::now(),
         }];
         assert!(drift_guard.check_todo_drift(true, false, &open_tasks).is_none());
-        let nudge = drift_guard
+        let (detail, nudge) = drift_guard
             .check_todo_drift(true, false, &open_tasks)
             .expect("must nudge after 2 mutating waves with stale todos");
+        assert!(detail.contains("editing wave"));
         assert!(nudge.contains("task_1"));
         assert!(nudge.contains("action=\"batch\""));
         assert!(drift_guard.check_todo_drift(false, true, &open_tasks).is_none());
@@ -2510,8 +2592,106 @@ mod tests {
         ));
         assert!(is_read_only_shell_command("git -C /tmp/other-repo status --short && git -C /tmp/other-repo remote -v"));
         assert!(is_read_only_shell_command("command -v bun; hostname; pwd"));
+        assert!(is_read_only_shell_command(
+            "cd /tmp/site && grep -nE \"section|id=\" index.html | sed 's/^[[:space:]]*//' | cut -c1-160 | sort | uniq | tr 'A-Z' 'a-z' | head -80"
+        ));
+        assert!(!is_read_only_shell_command("sed -i 's/a/b/g' index.html"));
+        assert!(!is_read_only_shell_command("sed -i.bak 's/a/b/g' index.html"));
+        assert!(!is_read_only_shell_command("sed --in-place 's/a/b/g' index.html"));
         assert!(!is_read_only_shell_command("git -C /tmp/other-repo push origin main"));
         assert!(!is_read_only_shell_command("echo hi > out.txt"));
         assert!(!is_read_only_shell_command("node -e 'require(\"fs\").writeFileSync(\"x\",\"y\")'"));
+    }
+
+    #[test]
+    fn todo_drift_catches_prolonged_recon_stalls_task_aware_pacing_and_shell_mutations() {
+        let open_tasks = vec![zenko_core::SessionTask {
+            id: "task_recon".into(),
+            session_id: "sess_recon".into(),
+            branch_event_id: None,
+            title: "Upgrade index.html and styles.css".into(),
+            description: String::new(),
+            active_label: None,
+            status: zenko_core::SessionTaskStatus::InProgress,
+            depends_on: Vec::new(),
+            owner_agent: None,
+            verification_cmd: None,
+            verification_evidence: None,
+            notes: None,
+            priority: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }];
+
+        // 1. Prolonged non-mutating recon with open todos triggers stale-iteration drift with replace_existing hint
+        let mut guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        for _ in 0..(TODO_DRIFT_STALE_ITERS - 1) {
+            assert!(guard.check_todo_drift(false, false, &open_tasks).is_none());
+        }
+        let (detail, hint) = guard
+            .check_todo_drift(false, false, &open_tasks)
+            .expect("stale recon iterations with open todos must trigger todo_sync nudge");
+        assert!(detail.contains("stale across"), "detail={detail}");
+        assert!(hint.contains("task_recon"), "hint={hint}");
+        assert!(hint.contains("replace_existing=true"), "hint={hint}");
+
+        // 2. Task-aware iteration pacing embeds live open Task DAG before budget exhaustion
+        let (p_detail, p_hint) = guard
+            .check_iteration_pacing(true, 19, 24, false, &open_tasks)
+            .expect("pacing must fire at 4 remaining");
+        assert!(p_detail.contains("1/1 todo(s) open"), "detail={p_detail}");
+        assert!(p_hint.contains("task_recon"), "hint={p_hint}");
+        assert!(p_hint.contains("session_task(action=\"batch\""), "hint={p_hint}");
+
+        // 3. Mutating shell_exec (`cat >> styles.css`, `sed -i`) classifies as Mutation and NEVER fakes verification
+        assert_eq!(
+            classify_tool_category(
+                TOOL_SHELL_EXEC,
+                &json!({"command": "cd site && cat >> assets/css/styles.css << 'EOF'\n.a{}\nEOF"})
+            ),
+            ToolCategory::Mutation
+        );
+        assert_eq!(
+            classify_tool_category(
+                TOOL_SHELL_EXEC,
+                &json!({"command": "sed -i 's/foo/bar/g' index.html"})
+            ),
+            ToolCategory::Mutation
+        );
+        assert_eq!(
+            classify_tool_category(
+                TOOL_SHELL_EXEC,
+                &json!({"command": "grep foo index.html | sed 's/ //g' | cut -c1-40"})
+            ),
+            ToolCategory::ReadOnly
+        );
+
+        let mut verify_guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        verify_guard.record_tool_outcome(
+            "write_file",
+            &json!({"path": "index.html"}),
+            false,
+            "ok",
+            None,
+        );
+        verify_guard.record_tool_outcome(
+            TOOL_SHELL_EXEC,
+            &json!({"command": "cat >> styles.css << 'EOF'\nbody{}\nEOF"}),
+            false,
+            "",
+            None,
+        );
+        assert!(
+            !verify_guard.verification_state().0,
+            "file-mutating shell append must never falsely satisfy verification"
+        );
     }
 }

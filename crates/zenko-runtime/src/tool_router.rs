@@ -25,7 +25,7 @@ use zenko_core::{
     TOOL_SEARCH_FUZZY_MAX_SUGGESTIONS, TOOL_SHELL_EXEC, TOOL_SKILL_MANAGE, TOOL_TOOL_SEARCH,
     TOOL_WRITE_FILE, Tool, ToolCall, ToolConcurrency, ToolContext, ToolOutput, ToolSpec,
     ZenkoConfig, ZenkoError, is_brain_tool_args_mutating, is_git_tool_args_mutating,
-    is_lsp_tool_args_mutating,
+    is_lsp_tool_args_mutating, resolve_tool_name_alias,
 };
 use zenko_tools::coerce::{coerce_and_repair_args, format_compact_schema_hint};
 
@@ -37,8 +37,9 @@ pub(crate) fn classify_tool_call(
     effective_permission: PermissionMode,
     tc: &ToolCall,
 ) -> ToolConcurrency {
+    let eff_name = resolve_tool_name_alias(&tc.name);
     // Unwrap `invoke_tool` so parallel `Shared` / disjoint `Keyed` deferred calls run concurrently!
-    if tc.name == TOOL_INVOKE_TOOL
+    if eff_name == TOOL_INVOKE_TOOL
         && let Some(target_name) = tc
             .arguments
             .get("tool")
@@ -49,7 +50,7 @@ pub(crate) fn classify_tool_call(
     {
         let inner = ToolCall {
             id: tc.id.clone(),
-            name: target_name.to_string(),
+            name: resolve_tool_name_alias(target_name).to_string(),
             arguments: tc
                 .arguments
                 .get("args")
@@ -59,7 +60,7 @@ pub(crate) fn classify_tool_call(
         };
         return classify_tool_call(rt, cfg, effective_permission, &inner);
     }
-    let Some(tool) = rt.tools.get(&tc.name) else {
+    let Some(tool) = rt.tools.get(eff_name) else {
         return ToolConcurrency::Global;
     };
     let base = tool.concurrency_for_args(&tc.arguments);
@@ -580,6 +581,13 @@ pub(crate) async fn dispatch_tool_call(
     }
 
     let start_ts = Instant::now();
+
+    // Normalize common LLM tool-name aliases (`bash_exec` -> `shell_exec`) strictly BEFORE
+    // ExecPolicy, HITL approval, and sandbox gates so no security check is ever bypassed.
+    let canonical = resolve_tool_name_alias(&tc.name).to_string();
+    if canonical != tc.name {
+        tc.name = canonical;
+    }
 
     // Stage 1: Resolve tool & dynamic availability gate.
     let tool = match resolve_tool_for_session(rt, session_id, &tc) {
@@ -1226,5 +1234,19 @@ mod tests {
         assert!(preview.starts_with(r#"{"path":"src/md2html.js""#), "preview={preview}");
         let parsed: Value = serde_json::from_str(&preview).expect("preview must remain valid JSON");
         assert_eq!(parsed.get("path").and_then(Value::as_str), Some("src/md2html.js"));
+    }
+
+    #[test]
+    fn canonical_tool_name_normalizes_declared_aliases_before_policy_and_dispatch() {
+        assert_eq!(resolve_tool_name_alias("bash_exec"), TOOL_SHELL_EXEC);
+        assert_eq!(resolve_tool_name_alias("bash"), TOOL_SHELL_EXEC);
+        assert_eq!(resolve_tool_name_alias("run_command"), TOOL_SHELL_EXEC);
+        assert_eq!(resolve_tool_name_alias("shell"), TOOL_SHELL_EXEC);
+        assert_eq!(resolve_tool_name_alias("BASH_EXEC"), TOOL_SHELL_EXEC);
+        assert_eq!(resolve_tool_name_alias("read"), TOOL_READ_FILE);
+        assert_eq!(resolve_tool_name_alias("write"), TOOL_WRITE_FILE);
+        assert_eq!(resolve_tool_name_alias("ask_clarification"), "ask_user");
+        assert_eq!(resolve_tool_name_alias(TOOL_SHELL_EXEC), TOOL_SHELL_EXEC);
+        assert_eq!(resolve_tool_name_alias("custom_mcp_tool"), "custom_mcp_tool");
     }
 }

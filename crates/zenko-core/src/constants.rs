@@ -657,18 +657,28 @@ pub const TOOL_CRON: &str = "cron_tool";
 pub const TOOL_RECORD_BRAINSTORM: &str = "record_brainstorm";
 pub const TOOL_ASK_CLARIFICATION: &str = "ask_clarification";
 pub const TOOL_ASK_USER: &str = "ask_user";
-/// Declarative backwards-compatible tool-name aliases (zero duplicated tool schemas on the wire).
-pub const TOOL_NAME_ALIASES: &[(&str, &str)] = &[(TOOL_ASK_CLARIFICATION, TOOL_ASK_USER)];
+/// Declarative backwards-compatible & safe LLM tool-name aliases (zero duplicated tool schemas
+/// on the wire; resolved strictly BEFORE ExecPolicy, HITL approval, and sandbox enforcement).
+pub const TOOL_NAME_ALIASES: &[(&str, &str)] = &[
+    (TOOL_ASK_CLARIFICATION, TOOL_ASK_USER),
+    ("bash_exec", TOOL_SHELL_EXEC),
+    ("bash", TOOL_SHELL_EXEC),
+    ("run_command", TOOL_SHELL_EXEC),
+    ("shell", TOOL_SHELL_EXEC),
+    ("read", TOOL_READ_FILE),
+    ("write", TOOL_WRITE_FILE),
+];
 
-/// Resolves a legacy tool alias to its canonical registered tool name (O(K) table lookup).
+/// Resolves a legacy or common LLM tool alias to its canonical registered tool name (O(K) table lookup).
 pub fn resolve_tool_name_alias(raw: &str) -> &str {
+    let trimmed = raw.trim();
     TOOL_NAME_ALIASES
         .iter()
-        .find_map(|(alias, canonical)| match *alias == raw {
-            true => Some(*canonical),
+        .find_map(|&(alias, canonical)| match trimmed.eq_ignore_ascii_case(alias) {
+            true => Some(canonical),
             false => None,
         })
-        .unwrap_or(raw)
+        .unwrap_or(trimmed)
 }
 pub const TOOL_PLAN_UPDATE: &str = "plan_update";
 pub const TOOL_SESSION_TASK: &str = "session_task";
@@ -1090,10 +1100,12 @@ pub const ZMODE_BALANCED_COMPACTION_WINDOW_CAP: u64 = 128_000;
 pub const ZMODE_HIGH_COMPACTION_WINDOW_CAP: u64 = 96_000;
 pub const ZMODE_ULTRA_COMPACTION_WINDOW_CAP: u64 = 72_000;
 
-/// Live Todo-DAG drift guard: after this many mutating iterations with open todos and zero
-/// task status transitions, surface one cache-safe `<active_task_dag>` reminder (bounded per turn).
+/// Live Todo-DAG drift guard: after `TODO_DRIFT_MUTATION_ITERS` mutating waves OR
+/// `TODO_DRIFT_STALE_ITERS` consecutive iterations of any kind with open todos and zero
+/// task status transitions, surface a cache-safe `<active_task_dag>` sync reminder.
 pub const TODO_DRIFT_MUTATION_ITERS: usize = 2;
-pub const TODO_DRIFT_MAX_NUDGES: usize = 2;
+pub const TODO_DRIFT_STALE_ITERS: usize = 5;
+pub const TODO_DRIFT_MAX_NUDGES: usize = 4;
 
 /// POSIX signal exit base (`128 + sig`) and declarative signal name table for clear shell diagnostics.
 pub const POSIX_SIGNAL_EXIT_BASE: i32 = 128;
@@ -1151,7 +1163,7 @@ pub const ORCH_MAX_PHASE_GATE_NUDGES: usize = 1;
 pub const ORCH_RESEARCH_EXPLORE_SOFT_LIMIT: usize = 4;
 pub const ORCH_ADVISORY_EXPLORE_SOFT_LIMIT: usize = 3;
 pub const ORCH_IMPLEMENT_PRE_PLAN_SOFT_LIMIT: usize = 3;
-pub const ORCH_ITER_WRAPUP_REMAINING: usize = 3;
+pub const ORCH_ITER_WRAPUP_REMAINING: usize = 4;
 pub const ORCH_REASONING_MIN_MAX_TOKENS: u32 = 16_384;
 pub const ORCH_REASONING_MAX_OUTPUT_CAP: u32 = 32_768;
 pub const ORCH_MAX_TRUNCATION_RETRIES: usize = 2;
@@ -1380,6 +1392,11 @@ pub const READ_ONLY_SHELL_CMD_PREFIXES: &[&[&str]] = &[
     &["head"],
     &["tail"],
     &["wc"],
+    &["cut"],
+    &["sort"],
+    &["uniq"],
+    &["tr"],
+    &["sed"],
     &["rg"],
     &["grep"],
     &["stat"],
@@ -1448,6 +1465,9 @@ pub const READ_ONLY_FIND_MUTATING_FLAGS: &[&str] = &[
     "-fprintf",
     "-fls",
 ];
+
+/// Mutating in-place flags disallowed when `sed` is treated as a read-only stream filter.
+pub const READ_ONLY_SED_MUTATING_FLAGS: &[&str] = &["-i", "--in-place"];
 
 // Categorized persistent log storage & flight-recorder constants
 pub const LOG_DIR_NAME: &str = "logs";

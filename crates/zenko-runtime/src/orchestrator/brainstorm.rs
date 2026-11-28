@@ -976,6 +976,7 @@ impl OrchestratorBridge for ClarificationHub {
         session_id: &str,
         creates: Vec<SessionTask>,
         updates: Vec<(String, SessionTaskPatch)>,
+        replace_existing: bool,
     ) -> Result<(usize, usize, Vec<SessionTask>)> {
         let _dag_guard = self.dag_lock.lock().unwrap_or_else(|e| e.into_inner());
         let board_sid = self.resolve_board_session_id(session_id);
@@ -983,7 +984,10 @@ impl OrchestratorBridge for ClarificationHub {
             .store
             .get_session(&board_sid)?
             .and_then(|s| s.head_event_id);
-        let mut all = self.store.list_session_tasks(&board_sid)?;
+        let mut all = match replace_existing {
+            true => Vec::new(),
+            false => self.store.list_session_tasks(&board_sid)?,
+        };
         let mut created = 0usize;
         let mut updated = 0usize;
 
@@ -1556,7 +1560,7 @@ mod tests {
             .collect();
 
         let (c1, u1, all1) = hub
-            .batch_upsert_session_tasks(&sid, creates, Vec::new())
+            .batch_upsert_session_tasks(&sid, creates, Vec::new(), false)
             .expect("batch create");
         assert_eq!((c1, u1, all1.len()), (4, 0, 4));
 
@@ -1607,7 +1611,7 @@ mod tests {
             ),
         ];
         let (c2, u2, all2) = hub
-            .batch_upsert_session_tasks(&sid, extra, updates)
+            .batch_upsert_session_tasks(&sid, extra, updates, false)
             .expect("batch mixed");
         assert_eq!((c2, u2, all2.len()), (1, 2, 5));
         assert_eq!(
@@ -1629,6 +1633,41 @@ mod tests {
             broadcasts2,
             vec![5],
             "mixed batch create+update must emit exactly one SessionTasksUpdated snapshot"
+        );
+
+        // Atomic plan pivot with `replace_existing = true` replaces all 5 old tasks in 1 broadcast!
+        let pivoted = vec![zenko_core::SessionTask {
+            id: "upgrade_1".into(),
+            session_id: sid.clone(),
+            branch_event_id: None,
+            title: "Upgrade existing landing page".into(),
+            description: String::new(),
+            active_label: None,
+            status: zenko_core::SessionTaskStatus::InProgress,
+            depends_on: Vec::new(),
+            owner_agent: None,
+            verification_cmd: None,
+            verification_evidence: None,
+            notes: None,
+            priority: 10,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        let (c3, u3, all3) = hub
+            .batch_upsert_session_tasks(&sid, pivoted, Vec::new(), true)
+            .expect("batch replace");
+        assert_eq!((c3, u3, all3.len()), (1, 0, 1));
+        assert_eq!(all3[0].id, "upgrade_1");
+        let mut broadcasts3 = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::SessionTasksUpdated { tasks, .. } = ev {
+                broadcasts3.push(tasks.len());
+            }
+        }
+        assert_eq!(
+            broadcasts3,
+            vec![1],
+            "replace_existing batch must atomically emit one snapshot with new plan"
         );
         let _ = std::fs::remove_dir_all(&test_dir);
     }

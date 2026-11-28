@@ -74,7 +74,11 @@ impl Tool for CodeSearchTool {
     ) -> Result<ToolOutput> {
         let pattern = args
             .get("pattern")
+            .or_else(|| args.get("query"))
+            .or_else(|| args.get("regex"))
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| ZenkoError::Tool("missing `pattern`".into()))?
             .to_string();
         let req_path = args.get("path").and_then(Value::as_str).unwrap_or(".");
@@ -433,6 +437,36 @@ mod tests {
             .await
             .expect("count");
         assert!(counts.content.contains("src/a.rs: 1"));
+
+        // Common LLM argument aliases (`query` / `regex`) resolve seamlessly to `pattern`
+        let via_query = CodeSearchTool
+            .execute(
+                &ctx,
+                json!({
+                    "query": "Vec<String>",
+                    "fixed_strings": true,
+                    "output_mode": "files_only"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("query alias");
+        assert!(!via_query.is_error);
+        assert!(via_query.content.contains("src/a.rs"));
+
+        let via_regex = CodeSearchTool
+            .execute(
+                &ctx,
+                json!({
+                    "regex": "fn alpha",
+                    "output_mode": "files_only"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("regex alias");
+        assert!(!via_regex.is_error);
+        assert!(via_regex.content.contains("src/a.rs"));
 
         let _ = std::fs::remove_dir_all(dir);
     }

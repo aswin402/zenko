@@ -791,7 +791,8 @@ impl AgentRuntime {
             last_iter_microcompacted = mc_stats.compacted_tools > 0;
             last_microcompact_cut = mc_stats.cut_units;
             self.set_session_microcompact_cut(&session_id, last_microcompact_cut);
-            if mc_stats.compacted_tools > last_logged_microcompact_tools {
+            let stage_a_advanced = mc_stats.compacted_tools > last_logged_microcompact_tools;
+            if stage_a_advanced {
                 self.emit(AgentEvent::OrchestratorUpdated {
                     session_id: session_id.clone(),
                     stage: ORCH_STAGE_MICROCOMPACT.into(),
@@ -976,6 +977,27 @@ impl AgentRuntime {
                             );
                         }
                     }
+                }
+            }
+            if stage_a_advanced && iter_idx > 0 && !compacted_now {
+                let live_tasks = self
+                    .clarifications
+                    .list_session_tasks(&session_id)
+                    .unwrap_or_default();
+                let has_open_tasks = live_tasks
+                    .iter()
+                    .any(|t| t.status != zenko_core::SessionTaskStatus::Done);
+                if has_open_tasks
+                    && let Some(dag_block) = format_session_tasks_prompt_block(&live_tasks)
+                {
+                    tail_builder.push(
+                        zenko_core::InstructionPrecedence::ActiveTaskState,
+                        "post_microcompact_task_dag",
+                        true,
+                        format!(
+                            "Older tool outputs were microcompacted — keep executing and updating your live SQLite Task DAG:\n{dag_block}"
+                        ),
+                    );
                 }
             }
             if compacted_now {
@@ -2073,6 +2095,12 @@ impl AgentRuntime {
                         wave_updated_tasks = true;
                         wave_emitted_plan_note = true;
                     }
+                let session_task_mutated = eff_tool_name == TOOL_SESSION_TASK
+                    && eff_tool_args
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .and_then(zenko_core::SessionTaskAction::parse)
+                        .is_some_and(|act| !matches!(act, zenko_core::SessionTaskAction::List));
                 let batch_touched_tasks = eff_tool_name == TOOL_BATCH_TOOLS
                     && eff_tool_args
                         .get("calls")
@@ -2086,7 +2114,7 @@ impl AgentRuntime {
                             })
                         });
                 if !was_phase_redirect
-                    && (eff_tool_name == TOOL_SESSION_TASK
+                    && (session_task_mutated
                         || batch_touched_tasks
                         || (eff_tool_name == zenko_core::TOOL_ZPOWERS
                             && eff_tool_args
@@ -2506,48 +2534,45 @@ impl AgentRuntime {
                 head_id = Some(note_ev.id);
             }
 
-            // Live Todo-DAG drift guard: gently remind the orchestrator after consecutive
-            // mutating waves with open todos and zero task status updates.
-            if cfg.orchestrator.enabled
-                && (wave_mutated_files || wave_updated_tasks)
-                && let Ok(live_tasks) = self.clarifications.list_session_tasks(&session_id)
-                && let Some(drift_hint) = orch.guard.check_todo_drift(
+            // Live Todo-DAG drift guard + task-aware pacing: catch both edit waves with stale
+            // todos AND prolonged recon/stall loops while open tasks exist, and surface open
+            // todos when the turn budget enters the final wrap-up window.
+            if cfg.orchestrator.enabled {
+                let live_tasks = self
+                    .clarifications
+                    .list_session_tasks(&session_id)
+                    .unwrap_or_default();
+                if let Some((detail, drift_hint)) = orch.guard.check_todo_drift(
                     wave_mutated_files,
                     wave_updated_tasks,
                     &live_tasks,
-                )
-            {
-                let open_count = live_tasks
-                    .iter()
-                    .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
-                    .count();
-                self.emit(AgentEvent::OrchestratorUpdated {
-                    session_id: session_id.clone(),
-                    stage: ORCH_STAGE_TODO_SYNC.into(),
-                    tier: orch.triage.tier,
-                    detail: format!(
-                        "Todo-DAG drift nudge: {open_count}/{} task(s) still open across recent edits; requesting batch status sync",
-                        live_tasks.len()
-                    ),
-                    model: None,
-                });
-                pending_orch_hints.push(drift_hint);
-            }
+                ) {
+                    self.emit(AgentEvent::OrchestratorUpdated {
+                        session_id: session_id.clone(),
+                        stage: ORCH_STAGE_TODO_SYNC.into(),
+                        tier: orch.triage.tier,
+                        detail,
+                        model: None,
+                    });
+                    pending_orch_hints.push(drift_hint);
+                }
 
-            if let Some((detail, hint)) = orch.guard.check_iteration_pacing(
-                cfg.orchestrator.enabled,
-                iter_idx,
-                max_iters,
-                wave_had_plan_or_mutation,
-            ) {
-                self.emit(AgentEvent::OrchestratorUpdated {
-                    session_id: session_id.clone(),
-                    stage: ORCH_STAGE_PACING.into(),
-                    tier: orch.triage.tier,
-                    detail,
-                    model: None,
-                });
-                pending_orch_hints.push(hint);
+                if let Some((detail, hint)) = orch.guard.check_iteration_pacing(
+                    true,
+                    iter_idx,
+                    max_iters,
+                    wave_had_plan_or_mutation,
+                    &live_tasks,
+                ) {
+                    self.emit(AgentEvent::OrchestratorUpdated {
+                        session_id: session_id.clone(),
+                        stage: ORCH_STAGE_PACING.into(),
+                        tier: orch.triage.tier,
+                        detail,
+                        model: None,
+                    });
+                    pending_orch_hints.push(hint);
+                }
             }
         }
 
@@ -2604,15 +2629,27 @@ impl AgentRuntime {
                 .clarifications
                 .list_session_tasks(&session_id)
                 .unwrap_or_default();
-            let open_synth_tasks = synth_live_tasks
+            let open_synth_list: Vec<String> = synth_live_tasks
                 .iter()
                 .filter(|t| t.status != zenko_core::SessionTaskStatus::Done)
-                .count();
+                .map(|t| format!("- `{}` [{}]: {}", t.id, t.status.as_str(), t.title))
+                .collect();
+            let open_synth_tasks = open_synth_list.len();
             let (verify_ok, verify_failed) = orch.guard.verification_state();
             let mut honesty_notes: Vec<String> = Vec::new();
             if open_synth_tasks > 0 {
+                let preview = open_synth_list
+                    .iter()
+                    .take(6)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let more = match open_synth_tasks > 6 {
+                    true => format!("\n- ... (+{} more)", open_synth_tasks - 6),
+                    false => String::new(),
+                };
                 honesty_notes.push(format!(
-                    "Tracked todos status: {}/{} completed ({open_synth_tasks} still open).",
+                    "Tracked todos status: {}/{} completed ({open_synth_tasks} still open). Do NOT claim the overall task is fully done while tracked todos remain open — report exact completed vs. remaining status honestly:\n{preview}{more}",
                     synth_live_tasks.len().saturating_sub(open_synth_tasks),
                     synth_live_tasks.len()
                 ));

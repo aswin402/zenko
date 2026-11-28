@@ -1382,6 +1382,10 @@ impl Tool for SessionTaskTool {
                             }
                         }
                     },
+                    "replace_existing": {
+                        "type": "boolean",
+                        "description": "With `action=\"batch\"`, atomically replaces all existing session tasks with `tasks` in a single lock/broadcast (use when pivoting away from an obsolete plan)."
+                    },
                     "id": { "type": "string", "description": "Task ID (optional on create; required on single update/claim/delete)." },
                     "title": { "type": "string", "description": "Concise task title." },
                     "description": { "type": "string", "description": "Optional detailed specification." },
@@ -1540,13 +1544,20 @@ impl Tool for SessionTaskTool {
                             "`tasks` (non-empty array of task objects) is required for `batch`".into(),
                         )
                     })?;
-                let mut existing_ids: std::collections::HashSet<String> = self
-                    .bridge
-                    .list_session_tasks(&ctx.session_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| t.id)
-                    .collect();
+                let replace_existing = args
+                    .get("replace_existing")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let mut existing_ids: std::collections::HashSet<String> = match replace_existing {
+                    true => std::collections::HashSet::new(),
+                    false => self
+                        .bridge
+                        .list_session_tasks(&ctx.session_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|t| t.id)
+                        .collect(),
+                };
                 let mut creates = Vec::new();
                 let mut updates = Vec::new();
                 for item in items {
@@ -1568,9 +1579,14 @@ impl Tool for SessionTaskTool {
                     &ctx.session_id,
                     creates,
                     updates,
+                    replace_existing,
                 )?;
+                let mode_tag = match replace_existing {
+                    true => " (replaced obsolete plan)",
+                    false => "",
+                };
                 let mut out = ToolOutput::ok(format!(
-                    "Batch synced tasks ({created} created, {updated} updated).\n{}",
+                    "Batch synced tasks ({created} created, {updated} updated){mode_tag}.\n{}",
                     format_task_progress_summary(&all)
                 ));
                 out.metadata = serde_json::to_value(&all).ok();

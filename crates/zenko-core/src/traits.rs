@@ -248,12 +248,17 @@ pub trait OrchestratorBridge: Send + Sync {
 
     /// Atomically creates and updates multiple session tasks in a single DAG lock, single SQLite
     /// transaction, and single `SessionTasksUpdated` broadcast (eliminating N-event batch chatter).
+    /// When `replace_existing` is true, atomically clears obsolete tasks before inserting `creates`.
     fn batch_upsert_session_tasks(
         &self,
         session_id: &str,
         creates: Vec<SessionTask>,
         updates: Vec<(String, SessionTaskPatch)>,
+        replace_existing: bool,
     ) -> Result<(usize, usize, Vec<SessionTask>)> {
+        if replace_existing {
+            let _ = self.clear_session_tasks(session_id)?;
+        }
         let mut created = 0usize;
         let mut updated = 0usize;
         for task in creates {

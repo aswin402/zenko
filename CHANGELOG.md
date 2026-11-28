@@ -4,6 +4,23 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.58] - 2026-11-28
+
+Resolved Todo-DAG follow-through drift, silent recon stalls, false `shadow_git` recon checkpoints, and wasted LLM tool-alias errors uncovered during forensic analysis of session `01M8GZP8TZH5M0KZ7ZEB2VAQP5`.
+
+### Fixed
+- **Active Todo-DAG Follow-Through, Stale-Iteration Drift Detection & Atomic Plan Replacement (`crates/zenko-core/src/{constants,traits}.rs`, `crates/zenko-runtime/src/{orchestrator/brainstorm,orchestrator/guard,runtime/turn}.rs`, `crates/zenko-tools/src/orchestrator_tools.rs`):**
+  - Removed the `wave_mutated_files || wave_updated_tasks` blindfold on `ExecutionGuard::check_todo_drift` and added `TODO_DRIFT_STALE_ITERS` (`5`) alongside `TODO_DRIFT_MUTATION_ITERS` (`2`, with `TODO_DRIFT_MAX_NUDGES = 4`) so prolonged read-only exploration with open todos actively nudges execution or plan synchronization instead of drifting silently across 20+ iterations.
+  - Added atomic `replace_existing: true` to `session_task(action="batch")` (`OrchestratorBridge::batch_upsert_session_tasks` & `ClarificationHub`) so when workspace discovery reveals an existing implementation that obsoletes earlier todos, the orchestrator can replace the Task DAG cleanly under a single lock, SQLite write, and `SessionTasksUpdated` broadcast.
+  - Re-anchored the live `<active_task_dag>` into Tier-3 `tail_builder` whenever Stage-A microcompaction advances (`stage_a_advanced`) while open todos exist, preventing older microcompacted turns from pushing active tasks out of sight without busting Tier-1/Tier-2 KV caches.
+  - Made `check_iteration_pacing` task-aware (with `ORCH_ITER_WRAPUP_REMAINING = 4`) to embed remaining open todos before turn budget exhaustion, prevented read-only `session_task(action="list")` from resetting drift counters, and strengthened wrap-up synthesis `honesty_notes` to enumerate remaining open tasks and forbid claiming full completion while todos remain open.
+- **Mutating Shell Classification & Read-Only Pipeline Allowlist (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/orchestrator/guard.rs`):**
+  - Upgraded `classify_tool_category` for `shell_exec` to classify file-mutating shell commands (`cat >> file`, `echo ... > file`, `sed -i`) as `ToolCategory::Mutation` (feeding `wave_mutated_files` and `check_todo_drift`) and prevented mutating shell commands from falsely satisfying post-edit `verification_ran`.
+  - Added `cut`, `sort`, `uniq`, `tr`, and non-in-place `sed` (guarded by `READ_ONLY_SED_MUTATING_FLAGS = ["-i", "--in-place"]`) to `READ_ONLY_SHELL_CMD_PREFIXES` so read-only grep/sed/cut recon pipelines no longer trigger false `shadow_git` workspace checkpoints.
+- **Canonical Tool-Name Aliases & `code_search` Parameter Aliases (`crates/zenko-core/src/constants.rs`, `crates/zenko-runtime/src/tool_router.rs`, `crates/zenko-tools/src/search.rs`):**
+  - Added declarative `TOOL_NAME_ALIASES` (`bash_exec`/`bash`/`run_command`/`shell` -> `shell_exec`, `read` -> `read_file`, `write` -> `write_file`) normalized in `classify_tool_call` and `dispatch_tool_call` strictly before `ExecPolicy`, HITL approval, and sandbox gates so misnamed calls neither bypass security nor waste late-turn iterations.
+  - Updated `CodeSearchTool` to accept `query` and `regex` as fallbacks for `pattern` so searches succeed on the first call.
+
 ## [0.0.57] - 2026-11-28
 
 Made context compaction 100% autonomous and orchestrator-managed — removing manual click-to-compress UI controls from the WebUI context meter, fixing live context-window occupancy accuracy, hardening reasoning-model Stage-B checkpointing, and warming model pricing metadata on cold daemon boot.
