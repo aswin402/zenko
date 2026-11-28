@@ -634,6 +634,12 @@ pub struct ContextBreakdown {
     pub calibrated_bytes_per_token: f64,
     #[serde(default)]
     pub session_vars_count: usize,
+    #[serde(default)]
+    pub microcompact_trigger_ratio: f64,
+    #[serde(default)]
+    pub compaction_trigger_ratio: f64,
+    #[serde(default)]
+    pub proactive_compaction_window: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1956,6 +1962,10 @@ pub struct OrchestrateControlRequest {
     pub refresh_recon: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_query: Option<String>,
+    #[serde(default)]
+    pub compact_context: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_focus: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
 }
@@ -1979,6 +1989,8 @@ pub struct OrchestrateControlReceipt {
     pub zmode: Option<ZMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_summary: Option<String>,
+    #[serde(default)]
+    pub compact_scheduled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
     #[serde(default)]

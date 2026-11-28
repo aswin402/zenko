@@ -1147,6 +1147,7 @@ impl OrchestratorBridge for ClarificationHub {
                 concise_mode: req.concise_mode,
                 minimalism_mode: req.minimalism_mode,
                 recon_summary: None,
+                compact_scheduled: req.compact_context,
                 rationale: req.rationale.clone(),
                 model_locked_by_override: false,
             },

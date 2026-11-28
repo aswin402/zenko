@@ -149,6 +149,9 @@ pub const LEAKED_TOOL_MARKUP_MARKERS: &[&str] = &[
 ];
 pub const COMPACTION_MIN_EVENTS_BETWEEN_CHECKPOINTS: usize = 8;
 pub const COMPACTION_MAX_CHECKPOINT_TOKENS: u32 = 2_048;
+/// Output budget for reasoning-capable compaction models (e.g. MiniMax-M2.7) so internal
+/// thinking tokens do not starve the structured checkpoint summary into an empty fallback.
+pub const COMPACTION_REASONING_MAX_CHECKPOINT_TOKENS: u32 = 6_144;
 pub const COMPACTION_MIN_USABLE_INPUT_TOKENS: usize = 4_096;
 pub const COMPACTION_MAX_OUTPUT_RESERVE_NUM: u64 = 30;
 pub const COMPACTION_MAX_OUTPUT_RESERVE_DEN: u64 = 100;

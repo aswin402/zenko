@@ -536,6 +536,14 @@ impl Tool for OrchestrateControlTool {
                         "type": "string",
                         "description": "Optional focused search terms for memory/session recall when `refresh_recon` is true."
                     },
+                    "compact_context": {
+                        "type": "boolean",
+                        "description": "When true, schedules an autonomous Stage-B context compaction checkpoint at the next iteration boundary (preserving original goal, file ledger, and active task plan)."
+                    },
+                    "compact_focus": {
+                        "type": "string",
+                        "description": "Optional focus instruction telling the compactor which details, files, or decisions to prioritize when `compact_context` is true."
+                    },
                     "rationale": {
                         "type": "string",
                         "description": "Concise 1-line rationale recorded in session trace."
@@ -616,6 +624,16 @@ impl Tool for OrchestrateControlTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(String::from);
+        let compact_context = args
+            .get("compact_context")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let compact_focus = args
+            .get("compact_focus")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
         let rationale = args
             .get("rationale")
             .and_then(Value::as_str)
@@ -637,6 +655,8 @@ impl Tool for OrchestrateControlTool {
                     zmode,
                     refresh_recon,
                     recon_query,
+                    compact_context,
+                    compact_focus,
                     rationale,
                 },
             )
@@ -665,6 +685,9 @@ impl Tool for OrchestrateControlTool {
         }
         if let Some(mm) = receipt.minimalism_mode {
             parts.push(format!("minimalism_mode={}", mm.as_str()));
+        }
+        if receipt.compact_scheduled {
+            parts.push("context_compaction=scheduled".to_string());
         }
         let header = match parts.is_empty() {
             true => "Orchestration state inspected.".to_string(),

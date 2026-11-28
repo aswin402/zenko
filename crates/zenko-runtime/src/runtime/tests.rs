@@ -276,6 +276,8 @@
                     minimalism_mode: Some(CodeMinimalismMode::Full),
                     refresh_recon: true,
                     recon_query: Some("Cargo.toml".into()),
+                    compact_context: true,
+                    compact_focus: Some("Preserve auth invariants".into()),
                     rationale: Some("Deep architecture comparison".into()),
                 },
             )
@@ -284,6 +286,7 @@
         assert_eq!(receipt.posture, Some(TurnPosture::Brainstorm));
         assert_eq!(receipt.resolved_model.as_deref(), Some("slot/advisor"));
         assert!(!receipt.model_locked_by_override);
+        assert!(receipt.compact_scheduled);
         assert!(
             receipt
                 .recon_summary
@@ -297,6 +300,11 @@
         assert_eq!(pending.posture, Some(TurnPosture::Brainstorm));
         assert_eq!(pending.cognitive_tier, Some(ModelRoutingRole::Advisor));
         assert_eq!(pending.reasoning_effort, Some(ReasoningEffort::High));
+        assert!(pending.compact_context);
+        assert_eq!(
+            pending.compact_focus.as_deref(),
+            Some("Preserve auth invariants")
+        );
         assert!(rt.take_pending_control(&sess.id).is_none());
 
         // 2. Explicit model override lock prevents model swap while still allowing posture/effort shifts
@@ -317,6 +325,8 @@
                     minimalism_mode: None,
                     refresh_recon: false,
                     recon_query: None,
+                    compact_context: false,
+                    compact_focus: None,
                     rationale: None,
                 },
             )

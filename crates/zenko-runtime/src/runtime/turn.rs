@@ -635,8 +635,9 @@ impl AgentRuntime {
         let mut last_prompt_cache_key: Option<String> = None;
         let mut last_active_tool_specs: Vec<ToolSpec> = Vec::new();
         let mut last_iter_microcompacted = false;
-        let mut last_microcompact_cut: usize = 0;
+        let mut last_microcompact_cut: usize = self.session_microcompact_cut(&session_id);
         let mut last_logged_microcompact_tools: usize = 0;
+        let mut pending_compact_request: Option<Option<String>> = None;
         let turn_checkpoint_event_id = parent_for_user.clone();
         let turn_checkpoint_label =
             format!("Before: {}", compact_preview(user_text, CHECKPOINT_LABEL_MAX_CHARS));
@@ -716,6 +717,9 @@ impl AgentRuntime {
                         };
                         pending_orch_hints.push(hint);
                     }
+                    if shift.compact_context {
+                        pending_compact_request = Some(shift.compact_focus);
+                    }
                 }
                 for steer_text in self.drain_steering(&session_id) {
                     let steer_ev = self.store.append_event(
@@ -786,6 +790,7 @@ impl AgentRuntime {
             };
             last_iter_microcompacted = mc_stats.compacted_tools > 0;
             last_microcompact_cut = mc_stats.cut_units;
+            self.set_session_microcompact_cut(&session_id, last_microcompact_cut);
             if mc_stats.compacted_tools > last_logged_microcompact_tools {
                 self.emit(AgentEvent::OrchestratorUpdated {
                     session_id: session_id.clone(),
@@ -800,15 +805,21 @@ impl AgentRuntime {
             }
             last_logged_microcompact_tools = mc_stats.compacted_tools;
 
-            // Stage B: Persisted iterative-merge CompactionCheckpoint (proactive ZMode window cap)
+            // Stage B: Persisted iterative-merge CompactionCheckpoint (triggered automatically
+            // at the ZMode proactive budget OR proactively by Zenko's orchestrator via
+            // `orchestrate_control(compact_context=true)` — zero manual UI button required).
             let usable_window = usable_input_window(proactive_window, active_max_tokens);
             let stage_b_budget =
                 ((usable_window as f64) * cfg.context.compaction_trigger_ratio.clamp(0.45, 0.94))
                     as usize;
             let mut compacted_this_iter = false;
+            let orch_compact_focus = pending_compact_request.take();
+            let orch_requested_compact = orch_compact_focus.is_some();
+            let over_stage_b_budget =
+                prefix_tokens + estimate_messages_tokens_calibrated(&messages, live_bpt)
+                    > stage_b_budget;
             if cfg.context.enabled
-                && prefix_tokens + estimate_messages_tokens_calibrated(&messages, live_bpt)
-                    > stage_b_budget
+                && (over_stage_b_budget || orch_requested_compact)
                 && let Some(plan) = plan_checkpoint_split_calibrated(
                     &ckpt_slice,
                     proactive_window,
@@ -816,7 +827,7 @@ impl AgentRuntime {
                     prefix_tokens,
                     cfg.context.compaction_trigger_ratio,
                     live_bpt,
-                    false,
+                    orch_requested_compact,
                 ) {
                     let ckpt_payload = self
                         .run_stage_b_compaction(
@@ -827,6 +838,7 @@ impl AgentRuntime {
                             ckpt_slice.checkpoint.as_ref(),
                             orch.guard.active_plan(),
                             prefix_tokens,
+                            orch_compact_focus.as_ref().and_then(|opt| opt.as_deref()),
                             &cancel,
                         )
                         .await;
@@ -848,7 +860,11 @@ impl AgentRuntime {
                         stage: ORCH_STAGE_COMPACTION.into(),
                         tier: orch.triage.tier,
                         detail: format!(
-                            "Compacted {} events ({} -> {} tok, model={})",
+                            "{} {} events ({} -> {} tok, model={})",
+                            match orch_requested_compact {
+                                true => "Orchestrator compacted",
+                                false => "Compacted",
+                            },
                             ckpt_payload.compacted_events_count,
                             ckpt_payload.estimated_tokens_before,
                             ckpt_payload.estimated_tokens_after,
@@ -873,6 +889,7 @@ impl AgentRuntime {
                     );
                     last_iter_microcompacted = rebuilt_stats.compacted_tools > 0;
                     last_microcompact_cut = rebuilt_stats.cut_units;
+                    self.set_session_microcompact_cut(&session_id, last_microcompact_cut);
                     last_logged_microcompact_tools = rebuilt_stats.compacted_tools;
                     messages = rebuilt_mc;
                 }

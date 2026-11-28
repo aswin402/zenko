@@ -4,6 +4,22 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.57] - 2026-11-28
+
+Made context compaction 100% autonomous and orchestrator-managed — removing manual click-to-compress UI controls from the WebUI context meter, fixing live context-window occupancy accuracy, hardening reasoning-model Stage-B checkpointing, and warming model pricing metadata on cold daemon boot.
+
+### Fixed
+- **Read-Only Live WebUI Context Meter (Zero Manual Compression) (`webui/src/components/chat/PromptComposer.tsx`, `webui/src/components/kokonutui/ai-context-meter.tsx`, `webui/src/lib/types.ts`, `crates/zenko-core/src/types.rs`, `crates/zenko-runtime/src/runtime/mod.rs`):**
+  - Removed the manual `onCompact` / `"Compact now"` button from `KokonutContextMeter` and removed the interactive ZMode compression mutation buttons from inside the Context Breakdown popover so clicking the context meter is strictly a read-only live inspector.
+  - Auto-synced live `/api/sessions/:id/context` occupancy on session open and turn completion across all context meter variants (`progress_ring`, `motion_brew_ring`, `linear_bar`, `compact_text`, `smoothui_meter`, `kokonut_meter`), fixing the visual jump where closed meters previously showed cumulative lifetime billed tokens and abruptly dropped to active window tokens on click.
+  - Added `microcompact_trigger_ratio`, `compaction_trigger_ratio`, and `proactive_compaction_window` to `ContextBreakdown` and synced `SessionControl::last_microcompact_cut` so `inspect_session_context` mirrors live ROI-guarded microcompaction byte-for-byte.
+- **Orchestrator-Driven & Reasoning-Safe Stage-B Auto-Compaction (`crates/zenko-core/src/{constants,types}.rs`, `crates/zenko-tools/src/orchestrator_tools.rs`, `crates/zenko-runtime/src/{compaction,orchestrator/brainstorm,runtime/mod,runtime/turn}.rs`):**
+  - Added `compact_context` + `compact_focus` to `orchestrate_control` so Zenko's orchestrator can proactively schedule a lossless Stage-B `CompactionCheckpoint` at natural phase transitions without manual UI buttons.
+  - Added `COMPACTION_REASONING_MAX_CHECKPOINT_TOKENS` (`6_144`) so reasoning-capable compaction models (e.g. `MiniMax-M2.7`) do not starve summary text behind internal thinking tokens, and wired `hydrate_usage_cost` into `run_stage_b_compaction`.
+  - Fixed `plan_checkpoint_split_calibrated(..., force_overflow = true)` to bound `tail_budget` against `available.min(active_tokens)` so forced orchestrator compaction cleanly splits multi-turn histories on large (`128k`–`204k`) context windows.
+- **Cold-Start Model Metadata & Fallback Pricing Warmup (`crates/zenko-cli/src/daemon.rs`):**
+  - Added a non-blocking one-shot background `list_models(false)` warmup task on `zenko web` boot so fresh cold-start CLI/IPC turns immediately resolve exact `context_window` (`204,800` for `MiniMax-M2.7`) and live fallback USD pricing without waiting for a browser session to hit `/api/models`.
+
 ## [0.0.56] - 2026-11-28
 
 Resolved seven real-world runtime, KV-cache compaction, transcript hygiene, cost tracking, task-DAG broadcasting, and logging bugs uncovered during live session forensics (`01M8FCER9T84184CYFS9J89Y60`).

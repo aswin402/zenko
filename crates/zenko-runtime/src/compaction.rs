@@ -1326,7 +1326,11 @@ pub fn plan_checkpoint_split_calibrated<'a>(
         true => 25,
         false => 35,
     };
-    let tail_budget = ((available * tail_pct) / 100).max(1_024);
+    let effective_pool = match force_overflow {
+        true => available.min(active_tokens),
+        false => available,
+    };
+    let tail_budget = ((effective_pool * tail_pct) / 100).max(512);
     let min_keep = match force_overflow {
         true => 1,
         false => 2,
@@ -1483,6 +1487,16 @@ pub fn build_compaction_prompt(
     prior_checkpoint: Option<&CompactionCheckpointPayload>,
     active_plan_summary: Option<&str>,
 ) -> (String, String) {
+    build_compaction_prompt_with_focus(plan, prior_checkpoint, active_plan_summary, None)
+}
+
+/// Builds the iterative-merge compaction prompt with an optional orchestrator focus directive.
+pub fn build_compaction_prompt_with_focus(
+    plan: &CheckpointPlan<'_>,
+    prior_checkpoint: Option<&CompactionCheckpointPayload>,
+    active_plan_summary: Option<&str>,
+    focus: Option<&str>,
+) -> (String, String) {
     let sys = "You are Zenko's lossless context compactor. Merge the prior checkpoint (if any) and the new transcript segment into ONE dense, factual, structured handoff checkpoint.\n\
                STRICT RULES:\n\
                - Never invent file paths, symbol names, or test results.\n\
@@ -1498,6 +1512,11 @@ pub fn build_compaction_prompt(
         .to_string();
 
     let mut body = String::with_capacity(4096);
+    if let Some(focus_text) = focus.map(str::trim).filter(|s| !s.is_empty()) {
+        body.push_str("<compaction_focus>\n");
+        body.push_str(&compact_preview(focus_text, 400));
+        body.push_str("\n</compaction_focus>\n\n");
+    }
     if let Some(ref goal) = plan.original_goal {
         body.push_str("<original_goal>\n");
         body.push_str(goal);
@@ -2369,5 +2388,35 @@ mod tests {
             stats2.cut_units, 8,
             "ROI guard must keep warm KV-cache cut frozen at 8 instead of advancing to 16"
         );
+    }
+
+    #[test]
+    fn forced_orchestrator_compaction_splits_below_threshold_on_large_context_windows() {
+        let mut events = Vec::new();
+        for i in 0..8 {
+            events.push(mk_event(
+                &format!("u_{i}"),
+                EventRole::User,
+                EventKind::Message,
+                json!({"text": format!("Turn {i}: {}", "architecture requirement detail ".repeat(40))}),
+            ));
+            events.push(mk_event(
+                &format!("a_{i}"),
+                EventRole::Assistant,
+                EventKind::Message,
+                json!({"text": format!("Completed step {i}: {}", "verified module summary ".repeat(40))}),
+            ));
+        }
+        let slice = slice_from_latest_checkpoint(&events);
+        // Active history (~5k tok) is well below 128k window, so automatic split returns None,
+        // while explicit orchestrator `force_overflow = true` MUST still produce a valid split.
+        assert!(
+            plan_checkpoint_split_calibrated(&slice, 128_000, 16_384, 12_000, 0.78, 3.5, false)
+                .is_none()
+        );
+        let plan = plan_checkpoint_split_calibrated(&slice, 128_000, 16_384, 12_000, 0.78, 3.5, true)
+            .expect("forced orchestrator compaction must split multi-turn history on large window");
+        assert!(plan.compacted_events_count >= 4);
+        assert_ne!(plan.first_kept_event_id, "u_0");
     }
 }

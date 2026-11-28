@@ -5,7 +5,7 @@ use crate::agents::{
 use crate::artifacts;
 use crate::checkpoint::CheckpointManager;
 use crate::compaction::{
-    CheckpointPlan, build_abandoned_branch_summary, build_compaction_prompt,
+    CheckpointPlan, build_abandoned_branch_summary, build_compaction_prompt_with_focus,
     build_deterministic_checkpoint, compact_messages_to_budget_calibrated,
     effective_compaction_window, estimate_messages_tokens_calibrated, estimate_text_tokens,
     estimate_text_tokens_calibrated, estimate_tool_specs_tokens,
@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -53,7 +53,7 @@ use zenko_core::{
     ATTACH_DEFAULT_REPLAY_EVENTS, AgentEvent, ApprovalDecision, ApprovalRecord, ApprovalStatus,
     BackgroundJobRecord, BackgroundJobStatus, BatchToolRequest, BatchToolStepOutcome,
     CHECKPOINT_LABEL_MAX_CHARS, CHECKPOINT_LIST_DEFAULT_LIMIT, COMPACTION_MAX_CHECKPOINT_TOKENS,
-    ChatMessage, ChatRequest, ClarificationOption, CodeMinimalismMode,
+    COMPACTION_REASONING_MAX_CHECKPOINT_TOKENS, ChatMessage, ChatRequest, ClarificationOption, CodeMinimalismMode,
     CompactionCheckpointPayload, ConciseMode, ContextBreakdown, ContextBridge, CronJob,
     CronKind, DEFAULT_APPROVAL_TIMEOUT_SECS, DEFAULT_CONTEXT_WINDOW_FALLBACK,
     DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_PAIRING_TTL_MINS,
@@ -188,6 +188,8 @@ pub(crate) struct PendingControlShift {
     pub concise_mode: Option<ConciseMode>,
     pub minimalism_mode: Option<CodeMinimalismMode>,
     pub zmode: Option<zenko_core::ZMode>,
+    pub compact_context: bool,
+    pub compact_focus: Option<String>,
     pub rationale: Option<String>,
 }
 
@@ -324,6 +326,7 @@ pub(crate) struct SessionControl {
     read_less_stats: Mutex<ReadLessSessionStats>,
     output_dedup: Mutex<crate::read_less::SessionOutputDedup>,
     loaded_scoped_rules: Mutex<BTreeSet<String>>,
+    last_microcompact_cut: AtomicUsize,
 }
 
 /// RAII guard binding the live `SessionToolScope` while a turn executes (restores previous scope on drop).
@@ -1722,14 +1725,18 @@ impl AgentRuntime {
             context_window,
             zenko_core::find_zmode(active_zmode).compaction_window_cap,
         );
+        let held_cut = self.session_microcompact_cut(session_id);
         let (mc_messages, mc_stats) = match cfg.context.enabled {
-            true => microcompact_messages_calibrated(
+            true => microcompact_messages_guarded(
                 raw_messages,
                 proactive_window,
                 active_output_reserve,
                 prefix_tokens,
                 cfg.context.microcompact_trigger_ratio,
+                cfg.context.compaction_trigger_ratio,
                 calibrated_bpt,
+                held_cut,
+                true,
             ),
             false => (raw_messages, Default::default()),
         };
@@ -1828,6 +1835,9 @@ impl AgentRuntime {
             prefix_hit_ratio_pct: prefix_eval.as_ref().map_or(0, |e| e.hit_ratio_pct),
             calibrated_bytes_per_token: (calibrated_bpt * 100.0).round() / 100.0,
             session_vars_count,
+            microcompact_trigger_ratio: cfg.context.microcompact_trigger_ratio,
+            compaction_trigger_ratio: cfg.context.compaction_trigger_ratio,
+            proactive_compaction_window: proactive_window,
         })
     }
 
@@ -2591,11 +2601,16 @@ impl AgentRuntime {
         prior_checkpoint: Option<&CompactionCheckpointPayload>,
         active_exec_plan: Option<&ExecutionPlan>,
         prefix_tokens: usize,
+        compact_focus: Option<&str>,
         cancel: &CancellationToken,
     ) -> CompactionCheckpointPayload {
         let plan_summary = active_exec_plan.map(format_plan_summary);
-        let (sys_prompt, user_body) =
-            build_compaction_prompt(plan, prior_checkpoint, plan_summary.as_deref());
+        let (sys_prompt, user_body) = build_compaction_prompt_with_focus(
+            plan,
+            prior_checkpoint,
+            plan_summary.as_deref(),
+            compact_focus,
+        );
 
         let comp_model = [
             cfg.provider.compaction_model.as_str(),
@@ -2607,6 +2622,13 @@ impl AgentRuntime {
         .find(|m| !m.is_empty())
         .unwrap_or(active_model)
         .to_string();
+
+        // Reasoning-capable compaction models (e.g. MiniMax-M2.7) share max_tokens between
+        // internal thinking and final summary text; allocate headroom so summary isn't starved.
+        let comp_max_tokens = match self.resolve_supports_reasoning(&comp_model) {
+            Some(false) => COMPACTION_MAX_CHECKPOINT_TOKENS,
+            _ => COMPACTION_REASONING_MAX_CHECKPOINT_TOKENS,
+        };
 
         let comp_req = ChatRequest {
             session_id: session_id.to_string(),
@@ -2624,7 +2646,7 @@ impl AgentRuntime {
             tools: Vec::new(),
             disable_tool_calls: false,
             temperature: 0.1,
-            max_tokens: COMPACTION_MAX_CHECKPOINT_TOKENS,
+            max_tokens: comp_max_tokens,
             enable_streaming: false,
             enable_prompt_caching: false,
             sticky_session_routing: false,
@@ -2649,7 +2671,8 @@ impl AgentRuntime {
         .await;
 
         match llm_attempt {
-            Ok(Ok((summary, usage))) if !summary.trim().is_empty() => {
+            Ok(Ok((summary, mut usage))) if !summary.trim().is_empty() => {
+                self.hydrate_usage_cost(&comp_model, &mut usage);
                 if usage.prompt_tokens > 0 || usage.completion_tokens > 0 || usage.cost_usd > 0.0 {
                     let _ = self
                         .store
@@ -2817,7 +2840,8 @@ impl AgentRuntime {
             || req.reasoning_effort.is_some()
             || resolved_concise.is_some()
             || resolved_minimalism.is_some()
-            || req.zmode.is_some();
+            || req.zmode.is_some()
+            || req.compact_context;
         if has_shift && let Ok(mut slot) = ctrl.pending_control.lock() {
             let entry = slot.get_or_insert_with(PendingControlShift::default);
             if req.posture.is_some() {
@@ -2837,6 +2861,12 @@ impl AgentRuntime {
             }
             if req.zmode.is_some() {
                 entry.zmode = req.zmode;
+            }
+            if req.compact_context {
+                entry.compact_context = true;
+                if req.compact_focus.is_some() {
+                    entry.compact_focus = req.compact_focus.clone();
+                }
             }
             if req.rationale.is_some() {
                 entry.rationale = req.rationale.clone();
@@ -2920,9 +2950,22 @@ impl AgentRuntime {
             minimalism_mode: resolved_minimalism,
             zmode: req.zmode,
             recon_summary: None,
+            compact_scheduled: req.compact_context,
             rationale: req.rationale.clone(),
             model_locked_by_override: model_locked,
         }
+    }
+
+    pub(crate) fn session_microcompact_cut(&self, session_id: &str) -> usize {
+        self.session_control(session_id)
+            .last_microcompact_cut
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_session_microcompact_cut(&self, session_id: &str, cut: usize) {
+        self.session_control(session_id)
+            .last_microcompact_cut
+            .store(cut, Ordering::Relaxed);
     }
 
     pub(crate) fn record_read_less_savings(

@@ -209,6 +209,17 @@ pub(crate) async fn run_web_daemon(config_path: PathBuf, port: Option<u16>, bind
         runtime.logs.push(entry);
     }
 
+    // Non-blocking one-shot warmup of provider models & `models_dev_compact_v2` so even the very
+    // first CLI/IPC turn on a cold-start daemon resolves exact context windows & fallback pricing.
+    let warm_rt = runtime.clone();
+    let warm_cancel = cancel.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = warm_cancel.cancelled() => {}
+            _ = warm_rt.list_models_cached() => {}
+        }
+    });
+
     let flush_logs = runtime.logs.clone();
     let stop_jobs = runtime.jobs.clone();
     let stop_runtime = runtime.clone();

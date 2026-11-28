@@ -1231,6 +1231,9 @@ export interface ContextBreakdown {
   scoped_rules_loaded?: string[]
   nested_repo_docs_count?: number
   project_brain_pages_count?: number
+  microcompact_trigger_ratio?: number
+  compaction_trigger_ratio?: number
+  proactive_compaction_window?: number
 }
 
 export type CodeMinimalismMode = 'off' | 'lite' | 'full' | 'ultra'

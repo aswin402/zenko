@@ -231,6 +231,21 @@ export const PromptComposer = memo(function PromptComposer({
     setContextData(null)
   }, [activeSessionId])
 
+  // Keep live active context-window occupancy synced automatically on session load & turn
+  // completion (zero manual click-to-measure jumps, zero busy-polling).
+  useEffect(() => {
+    if (!activeSessionId) return
+    let cancelled = false
+    api<ContextBreakdown>(`/api/sessions/${encodeURIComponent(activeSessionId)}/context`)
+      .then((data) => {
+        if (!cancelled) setContextData(data)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionId, activeModel, zmode, totalTokens, isRunning])
+
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
@@ -239,8 +254,20 @@ export const PromptComposer = memo(function PromptComposer({
   }, [value])
 
   const modelMeta = models.find((m) => m.id === activeModel)
-  const contextLimit = modelMeta?.context_length ?? null
-  const usageRatio = contextLimit ? Math.min(100, (totalTokens / contextLimit) * 100) : 0
+  const activeZModeDesc =
+    (zmodes.length > 0 ? zmodes : FALLBACK_ZMODES).find((m) => m.id === (contextData?.zmode ?? zmode)) ||
+    FALLBACK_ZMODES[1]
+  const activeContextTokens = activeSessionId ? (contextData?.total_tokens ?? 0) : totalTokens
+  const contextLimit = contextData?.context_window ?? modelMeta?.context_length ?? null
+  const compactionTriggerRatio =
+    contextData?.compaction_trigger_ratio && contextData.compaction_trigger_ratio > 0
+      ? contextData.compaction_trigger_ratio
+      : activeZModeDesc.compaction_trigger_ratio
+  const microcompactTriggerRatio =
+    contextData?.microcompact_trigger_ratio && contextData.microcompact_trigger_ratio > 0
+      ? contextData.microcompact_trigger_ratio
+      : activeZModeDesc.microcompact_trigger_ratio
+  const usageRatio = contextLimit ? Math.min(100, (activeContextTokens / contextLimit) * 100) : 0
   const meterChrome: ContextMeterChrome =
     composerStyle.context_meter_chrome || 'bordered_filled'
   const meterChromeClass =
@@ -406,10 +433,10 @@ export const PromptComposer = memo(function PromptComposer({
         { label: 'Active History', tokens: contextData.history_tokens },
       ]
     : [
-        { label: 'Session Used', tokens: totalTokens },
+        { label: 'Active Context', tokens: activeContextTokens },
         {
           label: 'Available Window',
-          tokens: Math.max(0, (contextLimit ?? 128000) - totalTokens),
+          tokens: Math.max(0, (contextLimit ?? 128000) - activeContextTokens),
         },
       ]
 
@@ -480,7 +507,7 @@ export const PromptComposer = memo(function PromptComposer({
         { id: 'history', label: 'Active History', tokens: contextData.history_tokens },
       ]
     : [
-        { id: 'used', label: 'Session Used', tokens: totalTokens },
+        { id: 'used', label: 'Active Context', tokens: activeContextTokens },
       ]
 
   const contextMeterControl =
@@ -492,6 +519,7 @@ export const PromptComposer = memo(function PromptComposer({
           chrome={meterChrome}
           segments={kokonutSegments}
           limit={contextLimit ?? 128000}
+          compactAt={compactionTriggerRatio}
           model={activeModel}
           onOpenChange={(next) => {
             if (next && activeSessionId) refreshContextBreakdown(activeSessionId)
@@ -500,7 +528,7 @@ export const PromptComposer = memo(function PromptComposer({
       </div>
     ) : (
     <ZenkoTooltip
-      label="Inspect live context & KV-cache breakdown"
+      label="Inspect live context & auto-compaction telemetry"
       side="top"
       disabled={contextOpen || composerStyle.context_meter === 'smoothui_meter'}
     >
@@ -525,23 +553,25 @@ export const PromptComposer = memo(function PromptComposer({
           {composerStyle.context_meter === 'smoothui_meter' ? (
             <div className="inline-flex">
               <AIContextMeter
-                used={totalTokens}
+                used={activeContextTokens}
                 limit={contextLimit ?? 128000}
                 chrome={meterChrome}
                 breakdown={smoothBreakdown}
+                warningAt={microcompactTriggerRatio}
+                dangerAt={compactionTriggerRatio}
               />
             </div>
           ) : (
             <button
               type="button"
-              aria-label="Inspect live context & KV-cache breakdown"
+              aria-label="Inspect live context & auto-compaction telemetry"
               className={cn(
                 'inline-flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-[var(--muted)] transition-colors hover:text-[var(--fg)]',
                 meterChromeClass,
               )}
             >
               {composerStyle.context_meter === 'progress_ring' && contextLimit != null && (
-                <ProgressRing value={totalTokens} max={contextLimit} size={13} />
+                <ProgressRing value={activeContextTokens} max={contextLimit} size={13} />
               )}
               {composerStyle.context_meter === 'motion_brew_ring' && (
                 <CompactSegmentedRing ratio={usageRatio} />
@@ -555,7 +585,7 @@ export const PromptComposer = memo(function PromptComposer({
                 </div>
               )}
               <span>
-                {formatCompactTokens(totalTokens)}
+                {formatCompactTokens(activeContextTokens)}
                 {contextLimit != null ? ` / ${formatCompactTokens(contextLimit)}` : ' tok'}
               </span>
             </button>
@@ -661,6 +691,16 @@ export const PromptComposer = memo(function PromptComposer({
                   ],
                   ['Checkpoints', `${contextData.checkpoints_count}`],
                   ['Spilled Artifacts', `${contextData.spilled_artifacts_count}`],
+                  ['Session Billed', `${formatCompactTokens(totalTokens)} tok`],
+                  [
+                    'Auto-Compaction',
+                    `Auto · ${Math.round(microcompactTriggerRatio * 100)}% / ${Math.round(compactionTriggerRatio * 100)}%${
+                      contextData.proactive_compaction_window &&
+                      contextData.proactive_compaction_window < contextData.context_window
+                        ? ` (${formatCompactTokens(contextData.proactive_compaction_window)} cap)`
+                        : ''
+                    }`,
+                  ],
                 ].map(([label, val]) => (
                   <div key={label} className="flex items-center justify-between gap-2">
                     <span className="text-[var(--muted)]">{label}</span>
@@ -669,41 +709,9 @@ export const PromptComposer = memo(function PromptComposer({
                 ))}
               </div>
 
-              {onSelectZMode && (
-                <div className="space-y-1.5 border-t border-[var(--border)]/60 pt-2.5">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-[var(--muted)]">ZMode Profile</span>
-                    <span className="font-mono text-[10px] text-[var(--muted)]">
-                      prose:{contextData.concise_mode ?? 'lite'} · code:
-                      {contextData.minimalism_mode ?? 'lite'}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {(zmodes.length > 0 ? zmodes : FALLBACK_ZMODES).map((m) => {
-                      const active = (contextData.zmode ?? zmode) === m.id
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          title={`${m.label} — ${m.tagline}`}
-                          onClick={async () => {
-                            await onSelectZMode(m.id)
-                            if (activeSessionId) refreshContextBreakdown(activeSessionId)
-                          }}
-                          className={cn(
-                            'cursor-pointer rounded-md border px-1.5 py-1 font-mono text-[10.5px] transition-colors',
-                            active
-                              ? 'border-[var(--accent)] bg-[var(--accent)] font-semibold text-[var(--bg)]'
-                              : 'border-[var(--border)] bg-[var(--card)] text-[var(--muted)] hover:text-[var(--fg)]',
-                          )}
-                        >
-                          {m.label}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
+              <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10px] text-[var(--muted)]">
+                Context compression is fully autonomous — managed by Zenko&apos;s orchestrator.
+              </div>
 
               {contextData.repo_rules_loaded.length > 0 && (
                 <div className="border-t border-[var(--border)]/60 pt-2 font-mono text-[10.5px] text-[var(--muted)]">

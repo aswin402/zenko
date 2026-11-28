@@ -24,7 +24,6 @@ export interface KokonutContextMeterProps {
   segments: KokonutContextSegment[]
   limit?: number
   compactAt?: number
-  onCompact?: () => void
   model?: string
   /** Compact mode renders just the ring + percentage trigger (for PromptComposer toolbar). */
   compact?: boolean
@@ -144,8 +143,7 @@ function Ring({ share }: { share: number }) {
 export default function KokonutContextMeter({
   segments,
   limit = 128_000,
-  compactAt = 0.8,
-  onCompact,
+  compactAt = 0.78,
   model,
   compact = true,
   chrome = 'bordered_filled',
@@ -278,7 +276,7 @@ export default function KokonutContextMeter({
             />
           </div>
           <p className="mt-1.5 text-right font-mono text-[10.5px] text-[var(--muted)]">
-            Compacts at {Math.round(compactAt * 100)}%
+            Auto-compacts at {Math.round(compactAt * 100)}% · orchestrator
           </p>
 
           <ul className="mt-2 space-y-0.5">
@@ -318,20 +316,6 @@ export default function KokonutContextMeter({
               </span>
             </li>
           </ul>
-
-          {onCompact && (
-            <div className="mt-3 flex items-center justify-between border-t border-[var(--border)] pt-2.5">
-              <p className="text-[11px] text-[var(--muted)]">Summarize older turns</p>
-              <button
-                className="h-7 cursor-pointer rounded-full bg-[var(--primary)] px-3 text-[11px] font-medium text-[var(--primary-fg)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={used / safeLimit < 0.25}
-                onClick={onCompact}
-                type="button"
-              >
-                Compact now
-              </button>
-            </div>
-          )}
         </motion.div>
       )}
     </AnimatePresence>
