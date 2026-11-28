@@ -4,6 +4,23 @@ All notable changes to **Zenko** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.59] - 2026-11-28
+
+Resolved six real-world runtime, shell-pipe exit-code, malformed tool-JSON, edit-thrash breaker, phase-gate, and wrap-up KV-cache bugs uncovered during forensic analysis of session `01M8HHFB4SCS1XT585K4ECKW12`.
+
+### Fixed
+- **Safe `pipefail` Shell Execution (`crates/zenko-core/src/constants.rs`, `crates/zenko-tools/src/shell.rs`, `crates/zenko-runtime/src/jobs.rs`):**
+  - Added quote-aware `should_enable_pipefail` + shared `build_shell_command` (used by both `ShellExecTool` and `LocalJobSupervisor::spawn_shell`) that runs `/bin/bash -o pipefail -c` for pipelines whose downstream stages do not close stdin early (e.g. `node script.mjs 2>&1 | tail -60`, `cargo test 2>&1 | tail -20`), so crashed processes propagate their real non-zero exit code instead of masquerading as `exit_code: 0` and bypassing Failure-Tee and verification gates.
+  - Explicitly skips `pipefail` for early-closing pipe readers (`head`, `grep -q/-m`, `sed ...q`) via declarative `SHELL_PIPE_EARLY_CLOSERS` / `SHELL_GREP_EARLY_CLOSE_FLAGS` constants so commands like `find . | head -50 && ls` never suffer false `SIGPIPE` (`141`) failures.
+- **Explicit Malformed/Truncated Tool-JSON Diagnostics (`crates/zenko-runtime/src/tool_router.rs`):**
+  - Added `diagnose_unrecovered_raw_args` in Stage 2 right after `coerce_and_repair_args`: when a streamed tool call's JSON was truncated/malformed and remains wrapped in `{"_raw": "..."}`, `ToolRouter` immediately returns an exact parse error and recovery hint without executing the tool — eliminating misleading `missing 'tool' name` errors and blind retries.
+- **Eliminated 2x `file_edit_counts` Over-Counting & False Plan-First Redirects on `$(...)` Probes (`crates/zenko-runtime/src/orchestrator/guard.rs`):**
+  - Deduplicated normalized paths in `ExecutionGuard::record_tool_outcome` via `BTreeSet` across `arguments.path` and `metadata.edited_files`, stopping single `apply_patch`/`write_file`/`hash_edit` calls from counting twice and falsely tripping the `Repeated edit thrashing` circuit breaker after 3 edits.
+  - Split `scan_shell_syntax` into write-redirections vs. command substitutions so `is_read_only_shell_command` remains 100% strict for Plan Mode & ExecPolicy while `is_shell_mutation_command` only classifies definite write redirections (`>`/`>>`) and in-place mutations (`sed -i`, `find -delete`/`-exec`) as `ToolCategory::Mutation` — stopping read-only browser probes like `for b in chromium node; do printf ... "$(command -v $b)"; done` from tripping ZPowers Plan-First Gate.
+- **Wrap-Up KV-Cache Preservation, Same-Wave DAG Deduplication & `hub:` Checkpoint Hygiene (`crates/zenko-runtime/src/{compaction,lib,runtime/mod,runtime/turn}.rs`):**
+  - Added `microcompact_messages_at_pinned_cut` and deferred Stage-A microcompaction advances during the final `ORCH_ITER_WRAPUP_REMAINING` iterations (when comfortably below Stage-B) and wrap-up synthesis — preventing late-turn 36K-token KV-cache busts that hurt latency right before completion.
+  - Deduplicated `<active_task_dag>` injection when `todo_sync` and `pacing` fire on the exact same iteration, and skipped `workspace_dir` `shadow_git` checkpoints when `MUTATING_FILE_TOOLS` exclusively target `hub:` paths outside the workspace.
+
 ## [0.0.58] - 2026-11-28
 
 Resolved Todo-DAG follow-through drift, silent recon stalls, false `shadow_git` recon checkpoints, and wasted LLM tool-alias errors uncovered during forensic analysis of session `01M8GZP8TZH5M0KZ7ZEB2VAQP5`.

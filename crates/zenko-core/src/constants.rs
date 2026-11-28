@@ -46,6 +46,13 @@ pub const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 60;
 pub const SHELL_MAX_TIMEOUT_SECS: u64 = 300;
 pub const SHELL_MIN_OUTPUT_BYTES: usize = 1_024;
 pub const SHELL_BIN_UNIX: &str = "/bin/sh";
+pub const SHELL_BIN_BASH_UNIX: &str = "/bin/bash";
+/// Downstream pipe commands that intentionally close stdin early (triggering benign `SIGPIPE` = 141
+/// on upstream writers under `set -o pipefail`).
+pub const SHELL_PIPE_EARLY_CLOSERS: &[&str] = &["head"];
+/// `grep`/`rg` flags that stop reading stdin early once a match limit is reached.
+pub const SHELL_GREP_EARLY_CLOSE_FLAGS: &[&str] =
+    &["-q", "--quiet", "--silent", "-m", "--max-count"];
 pub const KILL_BIN_UNIX: &str = "/bin/kill";
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 16_384;
 pub const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 5;

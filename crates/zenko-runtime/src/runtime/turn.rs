@@ -771,11 +771,24 @@ impl AgentRuntime {
                 context_window,
                 zenko_core::find_zmode(active_zmode).compaction_window_cap,
             );
+            let usable_window = usable_input_window(proactive_window, active_max_tokens);
+            let stage_b_budget =
+                ((usable_window as f64) * cfg.context.compaction_trigger_ratio.clamp(0.45, 0.94))
+                    as usize;
+            let remaining_iters = max_iters.saturating_sub(iter_idx + 1);
+            let raw_total_tokens =
+                prefix_tokens + estimate_messages_tokens_calibrated(&raw_messages, live_bpt);
+            let near_stage_b =
+                raw_total_tokens.saturating_mul(100) >= stage_b_budget.saturating_mul(88);
+            // Avoid busting a warm KV-cache prefix in the final wrap-up window when ample headroom
+            // remains below Stage-B: hold any existing cut pinned, or skip first-time microcompact.
+            let defer_wrapup_mc =
+                remaining_iters <= zenko_core::ORCH_ITER_WRAPUP_REMAINING && !near_stage_b;
 
             // Stage A: Cache-safe, ROI-guarded selective microcompaction (clamped to ZMode proactive
             // ceiling; holds active cut frozen unless marginal savings justify busting warm KV cache).
-            let (mut messages, mc_stats) = match cfg.context.enabled {
-                true => microcompact_messages_guarded(
+            let (mut messages, mc_stats) = match (cfg.context.enabled, defer_wrapup_mc) {
+                (true, false) => microcompact_messages_guarded(
                     raw_messages,
                     proactive_window,
                     active_max_tokens,
@@ -786,7 +799,12 @@ impl AgentRuntime {
                     last_microcompact_cut,
                     true,
                 ),
-                false => (raw_messages, Default::default()),
+                (true, true) => microcompact_messages_at_pinned_cut(
+                    raw_messages,
+                    live_bpt,
+                    last_microcompact_cut,
+                ),
+                (false, _) => (raw_messages, Default::default()),
             };
             last_iter_microcompacted = mc_stats.compacted_tools > 0;
             last_microcompact_cut = mc_stats.cut_units;
@@ -809,10 +827,6 @@ impl AgentRuntime {
             // Stage B: Persisted iterative-merge CompactionCheckpoint (triggered automatically
             // at the ZMode proactive budget OR proactively by Zenko's orchestrator via
             // `orchestrate_control(compact_context=true)` — zero manual UI button required).
-            let usable_window = usable_input_window(proactive_window, active_max_tokens);
-            let stage_b_budget =
-                ((usable_window as f64) * cfg.context.compaction_trigger_ratio.clamp(0.45, 0.94))
-                    as usize;
             let mut compacted_this_iter = false;
             let orch_compact_focus = pending_compact_request.take();
             let orch_requested_compact = orch_compact_focus.is_some();
@@ -2542,11 +2556,13 @@ impl AgentRuntime {
                     .clarifications
                     .list_session_tasks(&session_id)
                     .unwrap_or_default();
+                let mut todo_dag_surfaced = false;
                 if let Some((detail, drift_hint)) = orch.guard.check_todo_drift(
                     wave_mutated_files,
                     wave_updated_tasks,
                     &live_tasks,
                 ) {
+                    todo_dag_surfaced = true;
                     self.emit(AgentEvent::OrchestratorUpdated {
                         session_id: session_id.clone(),
                         stage: ORCH_STAGE_TODO_SYNC.into(),
@@ -2563,6 +2579,7 @@ impl AgentRuntime {
                     max_iters,
                     wave_had_plan_or_mutation,
                     &live_tasks,
+                    todo_dag_surfaced,
                 ) {
                     self.emit(AgentEvent::OrchestratorUpdated {
                         session_id: session_id.clone(),
@@ -2596,23 +2613,13 @@ impl AgentRuntime {
             let synth_prefix_tokens =
                 estimate_text_tokens_calibrated(&effective_system_prompt, synth_bpt)
                     + estimate_tool_specs_tokens_calibrated(&last_active_tool_specs, synth_bpt);
-            let synth_proactive_window = effective_compaction_window(
-                context_window,
-                zenko_core::find_zmode(active_zmode).compaction_window_cap,
-            );
-            // Keep message prefix byte-identical with the preceding iteration on synthesis: only
-            // replay microcompaction at the exact held cut when it was already active.
+            // Keep message prefix byte-identical with the preceding iteration on synthesis:
+            // strictly replay microcompaction at the exact pinned cut without ever advancing it.
             let mc_messages = match cfg.context.enabled && (last_iter_microcompacted || last_microcompact_cut > 0) {
-                true => microcompact_messages_guarded(
+                true => microcompact_messages_at_pinned_cut(
                     raw_messages,
-                    synth_proactive_window,
-                    active_max_tokens,
-                    synth_prefix_tokens,
-                    cfg.context.microcompact_trigger_ratio,
-                    cfg.context.compaction_trigger_ratio,
                     synth_bpt,
                     last_microcompact_cut,
-                    true,
                 )
                 .0,
                 false => raw_messages,

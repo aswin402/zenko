@@ -784,14 +784,23 @@ impl ExecutionGuard {
             && (MUTATING_FILE_TOOLS.contains(&tool_name)
                 || (tool_name == TOOL_LSP && is_lsp_tool_args_mutating(arguments)))
         {
-            let mut touched: Vec<String> = Vec::new();
+            // Deduplicate normalized paths across `arguments` and `metadata.edited_files` so
+            // a single `apply_patch`/`write_file`/`hash_edit` call is counted ONCE per file,
+            // preventing 2x over-counting from falsely tripping the edit-oscillation breaker.
+            let mut touched: BTreeSet<String> = BTreeSet::new();
+            let mut insert_norm = |raw_p: &str| {
+                let norm = raw_p.trim().trim_start_matches("./").to_string();
+                if !norm.is_empty() {
+                    touched.insert(norm);
+                }
+            };
             if let Some(p) = arguments.get("path").and_then(Value::as_str) {
-                touched.push(p.to_string());
+                insert_norm(p);
             }
             if let Some(files) = arguments.get("files").and_then(Value::as_array) {
                 for item in files {
                     if let Some(p) = item.get("move_to").or_else(|| item.get("path")).and_then(Value::as_str) {
-                        touched.push(p.to_string());
+                        insert_norm(p);
                     }
                 }
             }
@@ -801,17 +810,14 @@ impl ExecutionGuard {
             {
                 for item in meta_files {
                     if let Some(p) = item.as_str() {
-                        touched.push(p.to_string());
+                        insert_norm(p);
                     }
                 }
             }
-            for raw_p in touched {
-                let norm = raw_p.trim().trim_start_matches("./").to_string();
-                if !norm.is_empty() {
-                    self.mutated_files.insert(norm.clone());
-                    *self.file_edit_counts.entry(norm).or_insert(0) += 1;
-                    self.verification_ran = false;
-                }
+            for norm in touched {
+                self.mutated_files.insert(norm.clone());
+                *self.file_edit_counts.entry(norm).or_insert(0) += 1;
+                self.verification_ran = false;
             }
         }
         if is_error && tool_name == TOOL_SHELL_EXEC {
@@ -1120,6 +1126,7 @@ impl ExecutionGuard {
         max_iters: usize,
         wave_had_plan_or_mutation: bool,
         tasks: &[zenko_core::SessionTask],
+        dag_already_surfaced: bool,
     ) -> Option<(String, String)> {
         if !enabled {
             return None;
@@ -1143,11 +1150,14 @@ impl ExecutionGuard {
                 ),
                 false => format!("Iteration budget low ({remaining} remaining)"),
             };
-            let dag_suffix = match super::plan::format_session_tasks_prompt_block(tasks) {
-                Some(dag) if open_count > 0 => format!(
+            let dag_suffix = match (!dag_already_surfaced && open_count > 0)
+                .then(|| super::plan::format_session_tasks_prompt_block(tasks))
+                .flatten()
+            {
+                Some(dag) => format!(
                     "\nFinish remaining edits/verification and batch-update your open todos via `session_task(action=\"batch\", tasks=[...])` before the turn ends:\n{dag}"
                 ),
-                _ => String::new(),
+                None => String::new(),
             };
             let hint = format!(
                 "<orchestrator_hint type=\"pacing\">\n\
@@ -1614,13 +1624,15 @@ fn is_shell_boundary(bytes: &[u8], idx: usize) -> bool {
         )
 }
 
-/// Quote-aware zero-regex check for shell redirection (`>`), process substitution (`<(` / `>(`),
-/// or command substitution (`$(...)` / backticks) that could mutate state on read-only turns.
-/// Permits strictly benign stderr discards (`2>/dev/null`) and stream merges (`2>&1`) on token boundaries.
-fn has_shell_mutation_syntax(cmd: &str) -> bool {
+/// Single-pass quote-aware zero-regex scanner returning `(has_write_redirect, has_cmd_substitution)`:
+/// - `has_write_redirect`: unquoted `>` / `>>` / `>(` excluding benign `2>/dev/null` and `2>&1`.
+/// - `has_cmd_substitution`: `$(...)`, backticks, or `<(` process substitution.
+fn scan_shell_syntax(cmd: &str) -> (bool, bool) {
     let bytes = cmd.as_bytes();
     let mut in_single = false;
     let mut in_double = false;
+    let mut has_write_redir = false;
+    let mut has_subst = false;
     let mut i = 0usize;
 
     while i < bytes.len() {
@@ -1659,14 +1671,33 @@ fn has_shell_mutation_syntax(cmd: &str) -> bool {
             {
                 i += 4;
             }
-            (false, false, b'>') => return true,
-            (false, false, b'<') if i + 1 < bytes.len() && bytes[i + 1] == b'(' => return true,
-            (false, _, b'$') if i + 1 < bytes.len() && bytes[i + 1] == b'(' => return true,
-            (false, _, b'`') => return true,
+            (false, false, b'>') => {
+                has_write_redir = true;
+                i += 1;
+            }
+            (false, false, b'<') if i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                has_subst = true;
+                i += 2;
+            }
+            (false, _, b'$') if i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                has_subst = true;
+                i += 2;
+            }
+            (false, _, b'`') => {
+                has_subst = true;
+                i += 1;
+            }
             _ => i += 1,
         }
     }
-    false
+    (has_write_redir, has_subst)
+}
+
+/// Strict read-only guard (Plan Mode & ExecPolicy): rejects both write redirections (`>`) AND
+/// command/process substitutions (`$(...)`, backticks, `<(`).
+fn has_shell_mutation_syntax(cmd: &str) -> bool {
+    let (redir, subst) = scan_shell_syntax(cmd);
+    redir || subst
 }
 
 fn segment_has_sed_in_place(segment: &str) -> bool {
@@ -1679,11 +1710,24 @@ fn segment_has_sed_in_place(segment: &str) -> bool {
         })
 }
 
+fn segment_has_find_mutation(segment: &str) -> bool {
+    let raw_tokens: Vec<&str> = segment.split_whitespace().collect();
+    raw_tokens.first().is_some_and(|t| t.eq_ignore_ascii_case("find"))
+        && raw_tokens.iter().skip(1).any(|tok| {
+            READ_ONLY_FIND_MUTATING_FLAGS
+                .iter()
+                .any(|flag| tok.eq_ignore_ascii_case(flag))
+        })
+}
+
+/// Definite file-mutating shell classifier (`>`, `>>`, `sed -i`, `find -delete`/`-exec`) used for
+/// `ToolCategory::Mutation`, ZPowers Plan-First Gate, and post-edit verification invalidation.
+/// Intentionally does NOT treat benign read-only probes containing `$(command -v ...)` as edits.
 fn is_shell_mutation_command(cmd: &str) -> bool {
-    has_shell_mutation_syntax(cmd)
+    scan_shell_syntax(cmd).0
         || split_shell_segments(cmd)
             .iter()
-            .any(|(seg, _)| segment_has_sed_in_place(seg))
+            .any(|(seg, _)| segment_has_sed_in_place(seg) || segment_has_find_mutation(seg))
 }
 
 fn segment_is_read_only_shell(segment: &str) -> bool {
@@ -2032,9 +2076,9 @@ mod tests {
 
         // Exploration never gets nagged mid-research; only near-end wrap-up notice fires
         for i in 0..10 {
-            assert!(guard.check_iteration_pacing(true, i, 24, false, &[]).is_none());
+            assert!(guard.check_iteration_pacing(true, i, 24, false, &[], false).is_none());
         }
-        let wrap = guard.check_iteration_pacing(true, 19, 24, false, &[]);
+        let wrap = guard.check_iteration_pacing(true, 19, 24, false, &[], false);
         assert!(matches!(wrap, Some((_, ref h)) if h.contains("4 tool iteration")));
 
         // Text doom-loop pivot counter increments cleanly so retries stay bounded
@@ -2641,13 +2685,33 @@ mod tests {
 
         // 2. Task-aware iteration pacing embeds live open Task DAG before budget exhaustion
         let (p_detail, p_hint) = guard
-            .check_iteration_pacing(true, 19, 24, false, &open_tasks)
+            .check_iteration_pacing(true, 19, 24, false, &open_tasks, false)
             .expect("pacing must fire at 4 remaining");
         assert!(p_detail.contains("1/1 todo(s) open"), "detail={p_detail}");
         assert!(p_hint.contains("task_recon"), "hint={p_hint}");
         assert!(p_hint.contains("session_task(action=\"batch\""), "hint={p_hint}");
 
-        // 3. Mutating shell_exec (`cat >> styles.css`, `sed -i`) classifies as Mutation and NEVER fakes verification
+        // 2b. When todo_sync already surfaced the DAG on the same wave, pacing skips duplicating it
+        let mut dedup_guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        let (d_detail, d_hint) = dedup_guard
+            .check_iteration_pacing(true, 19, 24, false, &open_tasks, true)
+            .expect("pacing still reports low budget");
+        assert!(d_detail.contains("1/1 todo(s) open"), "detail={d_detail}");
+        assert!(!d_hint.contains("<active_task_dag>"), "must not duplicate DAG on same wave: {d_hint}");
+
+        // 3. Mutating shell_exec (`cat >> styles.css`, `sed -i`) classifies as Mutation and NEVER fakes verification,
+        //    while read-only browser probes with `$(command -v ...)` stay `Other` (never blocked by Plan-First Gate!).
+        assert_eq!(
+            classify_tool_category(
+                TOOL_SHELL_EXEC,
+                &json!({"command": "for b in chromium node; do printf '%s %s\\n' \"$b\" \"$(command -v $b || echo '-')\"; done"})
+            ),
+            ToolCategory::Other
+        );
         assert_eq!(
             classify_tool_category(
                 TOOL_SHELL_EXEC,
@@ -2669,6 +2733,23 @@ mod tests {
             ),
             ToolCategory::ReadOnly
         );
+
+        // 4. Single edit carrying both `arguments.path` and `metadata.edited_files` must count ONCE (no 2x thrash false positive!)
+        let mut edit_guard = ExecutionGuard::new(
+            ExecutionTier::Orchestrated,
+            IntentKind::Implement,
+            DeliberationDepth::Standard,
+        );
+        for i in 0..3 {
+            let v = edit_guard.record_tool_outcome(
+                "apply_patch",
+                &json!({"path": "hub:scripts/audit.mjs", "patch_idx": i}),
+                false,
+                "patched",
+                Some(&json!({"edited_files": ["hub:scripts/audit.mjs"]})),
+            );
+            assert_eq!(v, GuardVerdict::Continue, "3 edits must not falsely trigger edit oscillation");
+        }
 
         let mut verify_guard = ExecutionGuard::new(
             ExecutionTier::Orchestrated,

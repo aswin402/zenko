@@ -3,8 +3,9 @@ use crate::pty::PtySessionManager;
 use crate::sandbox::{ShellSandboxPolicy, install_sandbox_on_command};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
@@ -13,10 +14,132 @@ use zenko_core::{
     ARTIFACT_HEAD_RATIO_DEN, ARTIFACT_HEAD_RATIO_NUM, BackgroundJobRecord, BackgroundJobStatus,
     JOB_MAX_AUTO_BACKGROUND_SECS, JobSupervisor, POSIX_SIGNAL_EXIT_BASE, PTY_ACTIONS,
     PTY_SEND_DEFAULT_WAIT_MS, PTY_SEND_MAX_WAIT_MS, PtyAction, Result, RiskLevel,
-    SAFE_SHELL_ENV_KEYS, SHELL_BIN_UNIX, SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES,
-    TOOL_SHELL_EXEC, TaskKind, Tool, ToolContext, ToolOutput, ToolSet, ToolSpec,
-    UNIX_SIGNAL_NAMES, ZenkoError,
+    SAFE_SHELL_ENV_KEYS, SHELL_BIN_BASH_UNIX, SHELL_BIN_UNIX, SHELL_GREP_EARLY_CLOSE_FLAGS,
+    SHELL_MAX_TIMEOUT_SECS, SHELL_MIN_OUTPUT_BYTES, SHELL_PIPE_EARLY_CLOSERS, TOOL_SHELL_EXEC,
+    TaskKind, Tool, ToolContext, ToolOutput, ToolSet, ToolSpec, UNIX_SIGNAL_NAMES, ZenkoError,
 };
+
+fn has_bash_unix() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| Path::new(SHELL_BIN_BASH_UNIX).is_file())
+}
+
+/// Quote-aware zero-regex check deciding whether `bash -o pipefail` can be enabled safely on
+/// `cmd_str` so crashed commands piped to `| tail` / `| tee` / `| awk` propagate their real
+/// non-zero exit code instead of being masked as `exit_code: 0`, while skipping pipelines with
+/// early-closing readers (`head`, `grep -q/-m`, `sed ...q`) that trigger benign `SIGPIPE` (`141`).
+pub fn should_enable_pipefail(cmd_str: &str) -> bool {
+    let bytes = cmd_str.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut pipe_positions: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        match (in_single, in_double, b) {
+            (false, false, b'\'') => {
+                in_single = true;
+                i += 1;
+            }
+            (true, false, b'\'') => {
+                in_single = false;
+                i += 1;
+            }
+            (false, false, b'"') => {
+                in_double = true;
+                i += 1;
+            }
+            (false, true, b'"') => {
+                in_double = false;
+                i += 1;
+            }
+            (false, _, b'\\') if i + 1 < bytes.len() => {
+                i += 2;
+            }
+            (false, false, b'|') if i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
+                i += 2;
+            }
+            (false, false, b'|') => {
+                pipe_positions.push(i);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if pipe_positions.is_empty() {
+        return false;
+    }
+
+    for pos in pipe_positions {
+        let mut start = pos + 1;
+        if start < bytes.len() && bytes[start] == b'&' {
+            start += 1;
+        }
+        let rest = &cmd_str[start..];
+        let seg_end = rest
+            .find([';', '\n', '\r', '|', '&'])
+            .unwrap_or(rest.len());
+        let downstream = rest[..seg_end].trim();
+        let tokens: Vec<&str> = downstream
+            .split_whitespace()
+            .skip_while(|t| t.contains('=') && !t.starts_with('-'))
+            .collect();
+        let Some(&raw_bin) = tokens.first() else {
+            continue;
+        };
+        let bin = raw_bin
+            .trim_start_matches('(')
+            .rsplit('/')
+            .next()
+            .unwrap_or(raw_bin);
+        if SHELL_PIPE_EARLY_CLOSERS
+            .iter()
+            .any(|c| bin.eq_ignore_ascii_case(c))
+        {
+            return false;
+        }
+        if matches!(
+            bin.to_ascii_lowercase().as_str(),
+            "grep" | "egrep" | "fgrep" | "rg"
+        ) && tokens.iter().skip(1).any(|tok| {
+            SHELL_GREP_EARLY_CLOSE_FLAGS
+                .iter()
+                .any(|f| tok.eq_ignore_ascii_case(f) || tok.starts_with("-m") || tok.starts_with("--max-count="))
+        }) {
+            return false;
+        }
+        if bin.eq_ignore_ascii_case("sed")
+            && tokens.iter().skip(1).any(|tok| {
+                let cleaned = tok.trim_matches(|c| c == '\'' || c == '"');
+                cleaned == "q" || cleaned.ends_with('q') || cleaned.contains(";q")
+            })
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Builds the OS shell `Command` shared by `ShellExecTool` and `LocalJobSupervisor::spawn_shell`.
+/// Uses `/bin/bash -o pipefail -c` for safe pipelines (e.g. `cmd 2>&1 | tail -60`) so crashed
+/// upstream processes never masquerade as `exit_code: 0`.
+pub fn build_shell_command(cmd_str: &str) -> Command {
+    match should_enable_pipefail(cmd_str) && has_bash_unix() {
+        true => {
+            let mut cmd = Command::new(SHELL_BIN_BASH_UNIX);
+            cmd.args(["-o", "pipefail", "-c", cmd_str]);
+            cmd
+        }
+        false => {
+            let mut cmd = Command::new(SHELL_BIN_UNIX);
+            cmd.arg("-c").arg(cmd_str);
+            cmd
+        }
+    }
+}
 
 fn format_shell_exit_header(code: i32, command: &str) -> String {
     let sig = code.checked_sub(POSIX_SIGNAL_EXIT_BASE).filter(|&s| s > 0 && s < 64);
@@ -432,10 +555,8 @@ impl Tool for ShellExecTool {
             (false, None) => {}
         }
 
-        let mut cmd = Command::new(SHELL_BIN_UNIX);
-        cmd.arg("-c")
-            .arg(cmd_str)
-            .current_dir(&exec_dir)
+        let mut cmd = build_shell_command(cmd_str);
+        cmd.current_dir(&exec_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -573,5 +694,58 @@ mod tests {
 
         let normal = format_shell_exit_header(2, "cargo test");
         assert_eq!(normal, "exit_code: 2");
+    }
+
+    #[tokio::test]
+    async fn safe_pipefail_propagates_tail_failures_without_breaking_head_sigpipe() {
+        assert!(should_enable_pipefail("node scripts/audit.mjs 2>&1 | tail -60"));
+        assert!(should_enable_pipefail("cargo test 2>&1 | tail -n 20"));
+        assert!(!should_enable_pipefail("find . -type f | head -50 && ls -la"));
+        assert!(!should_enable_pipefail("grep foo bar | sed 's/a/b/' | head -20"));
+        assert!(!should_enable_pipefail("cat file.txt | grep -q needle"));
+        assert!(!should_enable_pipefail("echo 'a | b'"));
+        assert!(!should_enable_pipefail("false || echo fallback"));
+
+        let dir = std::env::temp_dir().join(format!("zenko_pipefail_{}", zenko_core::new_id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let ctx = ToolContext {
+            session_id: "s_pf".into(),
+            workspace_dir: dir.clone(),
+            data_dir: dir.clone(),
+            hub_dir: dir.clone(),
+            shell_timeout_secs: 10,
+            auto_background_after_secs: 0,
+            max_output_bytes: 8192,
+            headless_no_wait: true,
+            demote_bg: Arc::new(tokio::sync::Notify::new()),
+            file_state: None,
+        };
+        let tool = ShellExecTool::new(None);
+
+        // Crashed command piped through `tail` MUST propagate non-zero exit code (is_error = true)
+        let failed = tool
+            .execute(
+                &ctx,
+                json!({ "command": "(echo boom >&2; exit 7) 2>&1 | tail -n 10" }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("pipefail exec");
+        assert!(failed.is_error, "piped crash must fail: {}", failed.content);
+        assert!(failed.content.contains("exit_code: 7"), "out={}", failed.content);
+
+        // Early-closing `head` pipeline MUST NOT fail with SIGPIPE 141
+        let head_ok = tool
+            .execute(
+                &ctx,
+                json!({ "command": "seq 1 50000 | head -n 1 && echo after_head" }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("head exec");
+        assert!(!head_ok.is_error, "head pipeline must succeed: {}", head_ok.content);
+        assert!(head_ok.content.contains("after_head"), "out={}", head_ok.content);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -608,6 +608,36 @@ pub(crate) async fn dispatch_tool_call(
     tc.arguments = coerce_and_repair_args(tc.arguments, &spec.parameters);
     let args_preview = format_prioritized_args_preview(&tc.arguments, 320);
 
+    // Reject unrecovered malformed/truncated JSON payloads (`{"_raw": "..."}`) cleanly BEFORE
+    // ExecPolicy, HITL approval, or tool execution so the model gets an exact diagnostic instead
+    // of a misleading `missing <field>` error that triggers blind retries.
+    if let Some(raw_err) = diagnose_unrecovered_raw_args(&tc.name, &tc.arguments) {
+        rt.emit(AgentEvent::ToolCallStarted {
+            session_id: session_id.to_string(),
+            call_id: tc.id.clone(),
+            tool_name: tc.name.clone(),
+            args_preview,
+            risk: spec.risk,
+        });
+        let output = ToolOutput::err(raw_err);
+        rt.emit(AgentEvent::ToolCallFinished {
+            session_id: session_id.to_string(),
+            call_id: tc.id.clone(),
+            tool_name: tc.name.clone(),
+            is_error: true,
+            output_preview: truncate_preview(&output.content, 240),
+            diff: None,
+            duration_ms: start_ts.elapsed().as_millis() as u64,
+        });
+        return Ok(ExecutedToolCall {
+            tool_call_id: tc.id,
+            tool_name: tc.name,
+            arguments: tc.arguments,
+            output,
+            duration_ms: start_ts.elapsed().as_millis() as u64,
+        });
+    }
+
     let _active_tool_guard =
         ActiveToolGuard::enter(rt.session_control(session_id), tc.name.clone());
     // Ensure composite proxies (`invoke_tool`, `batch_tools`) inherit the strictest effective
@@ -1091,6 +1121,27 @@ pub(crate) async fn dispatch_tool_call(
     })
 }
 
+fn diagnose_unrecovered_raw_args(tool_name: &str, args: &Value) -> Option<String> {
+    let map = args.as_object()?;
+    if map.len() != 1 {
+        return None;
+    }
+    let raw = map.get("_raw").and_then(Value::as_str)?;
+    let parse_err = match serde_json::from_str::<Value>(raw) {
+        Ok(_) => "non-object JSON payload".to_string(),
+        Err(e) => e.to_string(),
+    };
+    let extra = match tool_name == TOOL_INVOKE_TOOL {
+        true => " Avoid deeply nested payloads inside `invoke_tool` — call eager tools (e.g. `session_task(action=\"batch\", tasks=[...])`) directly with flat valid JSON.",
+        false => "",
+    };
+    Some(format!(
+        "Malformed or truncated JSON arguments for `{tool_name}` ({} bytes; parse error: {parse_err}). \
+         The tool was NOT executed. Re-emit concise, strictly valid JSON arguments.{extra}",
+        raw.len()
+    ))
+}
+
 fn truncate_preview(s: &str, max: usize) -> String {
     match s.len() <= max {
         true => s.to_string(),
@@ -1248,5 +1299,19 @@ mod tests {
         assert_eq!(resolve_tool_name_alias("ask_clarification"), "ask_user");
         assert_eq!(resolve_tool_name_alias(TOOL_SHELL_EXEC), TOOL_SHELL_EXEC);
         assert_eq!(resolve_tool_name_alias("custom_mcp_tool"), "custom_mcp_tool");
+    }
+
+    #[test]
+    fn diagnose_unrecovered_raw_args_flags_truncated_payloads_and_ignores_valid_args() {
+        let truncated = json!({
+            "_raw": "{\"args\":{\"goal\":\"Deliver page\",\"steps\":{\"item\":{\"id\":\"audit\",\"title\":"
+        });
+        let msg = diagnose_unrecovered_raw_args(TOOL_INVOKE_TOOL, &truncated)
+            .expect("must detect unrecovered _raw JSON payload");
+        assert!(msg.contains("Malformed or truncated JSON"), "msg={msg}");
+        assert!(msg.contains("session_task"), "msg={msg}");
+
+        assert!(diagnose_unrecovered_raw_args(TOOL_INVOKE_TOOL, &json!({"tool": "plan_update", "args": {}})).is_none());
+        assert!(diagnose_unrecovered_raw_args(TOOL_SHELL_EXEC, &json!({"command": "ls"})).is_none());
     }
 }

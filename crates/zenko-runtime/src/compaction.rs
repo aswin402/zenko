@@ -648,7 +648,7 @@ pub fn microcompact_messages_guarded(
     let usable = usable_input_window(context_window, reserve_output_tokens);
     let trigger_budget = ((usable as f64) * ratio) as usize;
     let stage_b_budget = ((usable as f64) * stage_b_ratio.clamp(0.45, 0.94)) as usize;
-    let mut units = group_atomic_exchanges(messages, bytes_per_tok);
+    let units = group_atomic_exchanges(messages, bytes_per_tok);
     let history_tokens: usize = units.iter().map(|u| u.est_tokens).sum();
 
     if units.len() <= MICROCOMPACT_PROTECT_RECENT_EXCHANGES {
@@ -713,6 +713,15 @@ pub fn microcompact_messages_guarded(
         _ => candidate_cut,
     };
 
+    apply_microcompact_to_units(units, protected_start, held_cut, bytes_per_tok)
+}
+
+fn apply_microcompact_to_units(
+    mut units: Vec<ExchangeUnit>,
+    protected_start: usize,
+    fallback_cut: usize,
+    bytes_per_tok: f64,
+) -> (Vec<ChatMessage>, MicrocompactStats) {
     let mut stats = MicrocompactStats {
         cut_units: protected_start,
         ..Default::default()
@@ -791,11 +800,34 @@ pub fn microcompact_messages_guarded(
     }
 
     if stats.compacted_tools == 0 && stats.stripped_reasoning_blocks == 0 {
-        stats.cut_units = held_cut;
+        stats.cut_units = fallback_cut;
     }
 
     let out = units.into_iter().flat_map(|u| u.messages).collect();
     (out, stats)
+}
+
+/// Replays Stage-A microcompaction strictly at an exact previously-committed `pinned_cut_units`
+/// boundary without ever advancing the cut — keeping KV prefixes 100% byte-identical during
+/// wrap-up iterations and tool-free final synthesis.
+pub fn microcompact_messages_at_pinned_cut(
+    messages: Vec<ChatMessage>,
+    bytes_per_tok: f64,
+    pinned_cut_units: usize,
+) -> (Vec<ChatMessage>, MicrocompactStats) {
+    if pinned_cut_units == 0 {
+        return (messages, MicrocompactStats::default());
+    }
+    let units = group_atomic_exchanges(messages, bytes_per_tok);
+    let raw_protected_start = units.len().saturating_sub(MICROCOMPACT_PROTECT_RECENT_EXCHANGES);
+    let cut = pinned_cut_units.min(raw_protected_start);
+    if cut == 0 {
+        return (
+            units.into_iter().flat_map(|u| u.messages).collect(),
+            MicrocompactStats::default(),
+        );
+    }
+    apply_microcompact_to_units(units, cut, cut, bytes_per_tok)
 }
 
 // ─── Oh My Pi Cumulative File-Op Ledger & Hermes Turn-1 Goal Anchor ──────────
@@ -2388,6 +2420,17 @@ mod tests {
             stats2.cut_units, 8,
             "ROI guard must keep warm KV-cache cut frozen at 8 instead of advancing to 16"
         );
+
+        // Pinned-cut replay (used during wrap-up iterations and synthesis) NEVER advances the cut
+        // and leaves cut=0 completely untouched.
+        let (unchanged, zero_stats) = microcompact_messages_at_pinned_cut(compacted.clone(), 3.5, 0);
+        assert_eq!(zero_stats.cut_units, 0);
+        assert_eq!(zero_stats.compacted_tools, 0);
+        assert_eq!(unchanged.len(), compacted.len());
+
+        let (_pinned_msgs, pinned_stats) =
+            microcompact_messages_at_pinned_cut(_held_msgs, 3.5, stats1.cut_units);
+        assert_eq!(pinned_stats.cut_units, stats1.cut_units);
     }
 
     #[test]

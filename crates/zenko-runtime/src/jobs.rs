@@ -21,11 +21,12 @@ use zenko_core::{
     JOB_LIVE_DELTA_COALESCE_MS, JOB_LIVE_DELTA_MAX_BYTES, JOB_MAX_LOG_BYTES, JOB_MAX_READ_BYTES,
     JOB_MIN_READ_BYTES, JOB_PUMP_DRAIN_MS, JOB_SIGKILL_WAIT_MS, JOB_STOP_GRACE_MS,
     JOB_STOP_WAIT_SECS, JOB_STREAM_BUF_BYTES, JobReadChunk, JobSupervisor, KILL_BIN_UNIX, Result,
-    SAFE_SHELL_ENV_KEYS, SHELL_BIN_UNIX, TASKS_DIR_NAME, TaskKind, TerminalStreamKind, ZenkoError,
+    SAFE_SHELL_ENV_KEYS, TASKS_DIR_NAME, TaskKind, TerminalStreamKind, ZenkoError,
     new_id,
 };
 use zenko_memory::SqliteStore;
 use zenko_tools::sandbox::{ShellSandboxPolicy, install_sandbox_on_command};
+use zenko_tools::shell::build_shell_command;
 
 type FinishCallback = Arc<dyn Fn(&BackgroundJobRecord) + Send + Sync>;
 
@@ -477,10 +478,8 @@ impl JobSupervisor for LocalJobSupervisor {
             .join(format!("{job_id}.log"));
         let disk_log = Arc::new(AsyncMutex::new(AsyncBoundedDiskLog::open(&log_path).await?));
 
-        let mut cmd = Command::new(SHELL_BIN_UNIX);
-        cmd.arg("-c")
-            .arg(command)
-            .current_dir(workspace_dir)
+        let mut cmd = build_shell_command(command);
+        cmd.current_dir(workspace_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

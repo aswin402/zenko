@@ -10,7 +10,8 @@ use crate::compaction::{
     effective_compaction_window, estimate_messages_tokens_calibrated, estimate_text_tokens,
     estimate_text_tokens_calibrated, estimate_tool_specs_tokens,
     estimate_tool_specs_tokens_calibrated, is_provider_context_overflow_error, message_raw_bytes,
-    microcompact_messages_calibrated, microcompact_messages_guarded,
+    microcompact_messages_at_pinned_cut, microcompact_messages_calibrated,
+    microcompact_messages_guarded,
     plan_checkpoint_split_calibrated,
     prepend_checkpoint_to_messages, sanitize_message_tool_pairs, slice_from_latest_checkpoint,
     tool_specs_raw_bytes, usable_input_window,
@@ -3546,7 +3547,20 @@ impl AgentRuntime {
 fn is_workspace_mutating_call(tc: &ToolCall) -> Option<&str> {
     let name = tc.name.as_str();
     match name {
-        n if MUTATING_FILE_TOOLS.contains(&n) => Some(n),
+        n if MUTATING_FILE_TOOLS.contains(&n) => {
+            // Skip workspace `shadow_git` snapshots when a file edit exclusively targets `hub:`
+            // (which lives outside `workspace_dir` and would otherwise produce an empty checkpoint).
+            let targets_hub_only = tc
+                .arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|p| p.starts_with(zenko_core::HUB_PATH_PREFIX));
+            match targets_hub_only {
+                true => None,
+                false => Some(n),
+            }
+        }
         TOOL_INVOKE_TOOL => {
             let inner_name = tc
                 .arguments
